@@ -32,7 +32,7 @@ services:
         max-file: "3"
 
   watchtower:
-    image: containrrr/watchtower:latest
+    image: nickfedor/watchtower:latest
     restart: unless-stopped
     command:
       - --label-enable
