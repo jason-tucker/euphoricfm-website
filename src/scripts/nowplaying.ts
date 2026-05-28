@@ -66,6 +66,11 @@ declare global {
   let duration = 0; // seconds
   let listeners = 0;
 
+  // Up-next reveal threshold: slide in when this many seconds (or fewer) remain
+  // on the current track. 40s sits in the sweet spot the user asked for (30–45s).
+  const UP_NEXT_REVEAL_SEC = 40;
+  let upNextReady = false; // becomes true once we have a valid playing_next song
+
   const fmtTime = (sec: number) => {
     if (!isFinite(sec) || sec < 0) sec = 0;
     const m = Math.floor(sec / 60);
@@ -86,9 +91,12 @@ declare global {
     duration = np.duration || 0;
   };
 
+  // Keep the panel's content primed at all times — the actual reveal is timed
+  // off the current song's remaining seconds in the RAF tick loop below.
   const applyUpNext = (next: AzuraNowPlayingEntry | null) => {
     if (!elUpNext) return;
     if (!next || !next.song || !(next.song.title || next.song.text)) {
+      upNextReady = false;
       elUpNext.classList.remove('is-open');
       return;
     }
@@ -96,7 +104,8 @@ declare global {
     if (elUpNextTitle) elUpNextTitle.textContent = song.title || song.text || '';
     if (elUpNextArtist) elUpNextArtist.textContent = song.artist || '';
     if (elUpNextArt && song.art) elUpNextArt.src = song.art;
-    elUpNext.classList.add('is-open');
+    upNextReady = true;
+    // Don't add .is-open here — tick() decides based on remaining seconds.
   };
 
   const applyRecent = (history: AzuraNowPlayingEntry[]) => {
@@ -162,7 +171,9 @@ declare global {
   };
 
   // RAF loop: paint the progress bar between polls using the server-anchored
-  // playedAt timestamp + duration. This makes the UI feel real-time.
+  // playedAt timestamp + duration. This makes the UI feel real-time. The Up
+  // Next panel is also toggled here so the reveal lines up smoothly with the
+  // progress bar rather than only on the 5-second poll cadence.
   const tick = () => {
     if (duration > 0 && playedAt > 0) {
       const elapsedSec = (Date.now() - playedAt) / 1000;
@@ -170,6 +181,18 @@ declare global {
       if (elBar) elBar.style.width = `${pct}%`;
       if (elTimes) {
         elTimes.textContent = `${fmtTime(elapsedSec)} / ${fmtTime(duration)}`;
+      }
+
+      // Slide Up Next in when remaining ≤ threshold; slide out otherwise.
+      // (Without `upNextReady`, the panel only animates the empty content.)
+      if (elUpNext) {
+        const remaining = duration - elapsedSec;
+        const shouldShow = upNextReady && remaining > 0 && remaining <= UP_NEXT_REVEAL_SEC;
+        if (shouldShow && !elUpNext.classList.contains('is-open')) {
+          elUpNext.classList.add('is-open');
+        } else if (!shouldShow && elUpNext.classList.contains('is-open')) {
+          elUpNext.classList.remove('is-open');
+        }
       }
     }
     requestAnimationFrame(tick);

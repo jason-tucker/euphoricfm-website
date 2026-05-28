@@ -5,6 +5,14 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.3.1] — 2026-05-28
+
+- Up Next slide-down is now timed: reveals only when ≤40s remain on the
+  current track (within the 30–45s window the user wanted) and slides back
+  out when a new song starts. Panel content is primed on every poll so the
+  reveal is instant when the threshold crosses. Lives inside the RAF tick
+  so it lines up smoothly with the progress bar, not the 5s poll cadence.
+
 ## [0.3.0] — 2026-05-28
 
 Major UX upgrade — site now scales gracefully from in-game phone iframe to
