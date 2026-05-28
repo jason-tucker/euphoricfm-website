@@ -16,13 +16,11 @@ export const site = {
     pollMs: 5000,
   },
 
+  // Webhook URLs are NEVER hardcoded or build-time inlined. They're served at
+  // runtime by Caddy from `/runtime-config.js`, which templates them out of the
+  // container's env vars (see Caddyfile + docker-compose.yml). The modals read
+  // them off `window.__EFM_CONFIG__.discord.{requestWebhook,contactWebhook}`.
   discord: {
-    requestWebhook:
-      import.meta.env.PUBLIC_DISCORD_REQUEST_WEBHOOK ??
-      'https://discord.com/api/webhooks/1416845833013559337/14NVcSFhQ1kWu3AOUhfcIxEwlzacEcNjfNhWfQVNs6kab81qWf-0vmr-6xUtEEASpRtW',
-    contactWebhook:
-      import.meta.env.PUBLIC_DISCORD_CONTACT_WEBHOOK ??
-      'https://discord.com/api/webhooks/1460091711043797046/FDiqu1V5sqJu2XWakdslO7TPJDES4O6TpXefUMlcFF0tT5ch4NXXS1K5pwN-aMLQ4hiQ',
     avatarUrl: 'https://euphoric.fm/static/android-chrome-192x192.png',
   },
 

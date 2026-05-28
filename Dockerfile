@@ -10,6 +10,9 @@ ARG PUBLIC_BASE_URL=https://info.euphoric.fm
 ENV PUBLIC_GIT_SHA=$PUBLIC_GIT_SHA
 ENV PUBLIC_BUILD_TIME=$PUBLIC_BUILD_TIME
 ENV PUBLIC_BASE_URL=$PUBLIC_BASE_URL
+# Webhook URLs are NOT build args — they're injected at runtime by Caddy
+# rendering /runtime-config.js from the container's env vars. The built image
+# contains zero webhook URLs.
 RUN pnpm build
 
 FROM caddy:2.10-alpine

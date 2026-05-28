@@ -19,6 +19,11 @@ services:
     restart: unless-stopped
     environment:
       PORT: ${PORT:-6094}
+      # Webhook URLs are injected at runtime by Caddy templating
+      # /runtime-config.js from these env vars. They live in .env on the host;
+      # editing them is `docker compose up -d`, no rebuild needed.
+      PUBLIC_DISCORD_REQUEST_WEBHOOK: ${PUBLIC_DISCORD_REQUEST_WEBHOOK:-}
+      PUBLIC_DISCORD_CONTACT_WEBHOOK: ${PUBLIC_DISCORD_CONTACT_WEBHOOK:-}
     # Loopback ONLY — cloudflared on the host reaches us at 127.0.0.1:${PORT}.
     # Never bind to 0.0.0.0.
     ports:

@@ -5,6 +5,18 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.2.0] — 2026-05-28
+
+- Strip Discord webhook URLs out of source code, build args, and CI secrets.
+  They're now templated into `/runtime-config.js` by Caddy at request time
+  from the container's `PUBLIC_DISCORD_*_WEBHOOK` env vars (set in `.env` on
+  the host). The built image contains zero webhook URLs — swapping a webhook
+  is a `.env` edit + `docker compose up -d`, no rebuild needed.
+- Modals read webhook URLs from `window.__EFM_CONFIG__.discord.*` at submit
+  time and surface a friendly error if they aren't configured.
+- Caddyfile uses the `templates` directive scoped to `/runtime-config.js`
+  with `Cache-Control: no-store` so changes propagate immediately.
+
 ## [0.1.0] — 2026-05-28
 
 Initial release of the in-game phone site for EuphoricFM, served at

@@ -51,8 +51,12 @@ const clientConfig = {
     <link rel="canonical" href={Astro.url.toString()} />
   </head>
   <body class="overflow-x-hidden">
+    <!-- Caddy renders /runtime-config.js from env vars at request time so
+         webhook URLs aren't baked into the static bundle. Loaded first so the
+         modals' inline scripts (later in body) can read window.__EFM_CONFIG__.discord. -->
+    <script is:inline src="/runtime-config.js"></script>
     <script is:inline define:vars={{ clientConfig }}>
-      window.__EFM_CONFIG__ = clientConfig;
+      window.__EFM_CONFIG__ = Object.assign(window.__EFM_CONFIG__ || {}, clientConfig);
     </script>
     <main id="main"><slot /></main>
     <script>

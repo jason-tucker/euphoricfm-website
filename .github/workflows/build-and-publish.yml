@@ -42,8 +42,6 @@ jobs:
         env:
           PUBLIC_GIT_SHA: ${{ github.sha }}
           PUBLIC_BUILD_TIME: ${{ github.event.head_commit.timestamp || github.run_started_at }}
-          PUBLIC_DISCORD_REQUEST_WEBHOOK: ${{ secrets.PUBLIC_DISCORD_REQUEST_WEBHOOK }}
-          PUBLIC_DISCORD_CONTACT_WEBHOOK: ${{ secrets.PUBLIC_DISCORD_CONTACT_WEBHOOK }}
 
       - name: Set up Docker Buildx
         if: github.event_name != 'pull_request'

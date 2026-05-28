@@ -30,13 +30,18 @@ import { site } from '../site.config';
   </div>
 </div>
 
-<script is:inline define:vars={{ webhook: site.discord.requestWebhook, avatar: site.discord.avatarUrl, stationName: site.name }}>
+<script is:inline define:vars={{ avatar: site.discord.avatarUrl, stationName: site.name }}>
   (function () {
     const overlay = document.getElementById('submit-overlay');
     const form = document.getElementById('submit-form');
     const msg = document.getElementById('submit-msg');
     const go = document.getElementById('submit-go');
     if (!overlay || !form || !msg || !go) return;
+
+    // Webhook URL is loaded at runtime from /runtime-config.js (templated by
+    // Caddy from container env vars). Read inside the submit handler so it
+    // reflects whatever Caddy served on this request.
+    const getWebhook = () => (window.__EFM_CONFIG__ && window.__EFM_CONFIG__.discord && window.__EFM_CONFIG__.discord.requestWebhook) || '';
 
     const setMsg = (text, kind) => {
       msg.textContent = text;
@@ -79,6 +84,9 @@ import { site } from '../site.config';
         footer: { text: 'EuphoricFM Song Submission' },
       };
       const threadName = `Submission: ${title} – ${artist}`.slice(0, 90);
+
+      const webhook = getWebhook();
+      if (!webhook) { setMsg('Submissions are temporarily disabled — webhook not configured.', 'error'); go.removeAttribute('disabled'); return; }
 
       try {
         const r = await fetch(webhook, {
