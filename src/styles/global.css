@@ -127,13 +127,23 @@
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* Audio visualizer canvas — sits behind/under the listen button on tap. */
+/* Audio visualizer canvas — sits inside the player card on tap. */
 .efm-vizcanvas {
   display: block;
   width: 100%;
   height: 56px;
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+}
+
+/* Bass-kick glow — `--efm-bass` is set on #np-card by drawViz every frame.
+   The card grows a sunburst halo proportional to the bass energy. */
+#np-card {
+  --efm-bass: 0;
+  box-shadow:
+    0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
+    color-mix(in oklch, #FEB139 calc(var(--efm-bass) * 55%), transparent);
+  transition: box-shadow 80ms linear;
 }
 
 /* Hover lift on action buttons (desktop only — phones shouldn't feel "hovery"). */

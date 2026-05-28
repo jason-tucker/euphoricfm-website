@@ -71,7 +71,7 @@ import { site } from '../site.config';
 
     <!-- Web Audio API visualizer — revealed on play. -->
     <div id="efm-viz" class="mt-3 hidden">
-      <canvas id="efm-viz-canvas" class="efm-vizcanvas" aria-hidden="true"></canvas>
+      <canvas id="efm-viz-canvas" class="efm-vizcanvas !h-20 lg:!h-24" aria-hidden="true"></canvas>
       <div id="efm-viz-fallback" class="hidden h-14 flex items-end gap-0.5 px-2">
         <span class="bar" style="--i:0"></span><span class="bar" style="--i:1"></span>
         <span class="bar" style="--i:2"></span><span class="bar" style="--i:3"></span>
@@ -139,16 +139,26 @@ import { site } from '../site.config';
     let rafId = 0;
     let sourceNode = null;
 
-    const setupAnalyser = () => {
+    const setupAnalyser = async () => {
       try {
-        if (audioCtx) return true;
+        if (audioCtx) {
+          if (audioCtx.state === 'suspended') await audioCtx.resume();
+          return true;
+        }
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) return false;
         audioCtx = new AC();
+        // Chrome creates the context suspended until a user gesture. We're
+        // already inside a click handler, but resume explicitly so audio
+        // actually flows through the analyser node.
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
         sourceNode = audioCtx.createMediaElementSource(audio);
         analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.78;
+        analyser.fftSize = 1024;             // 512 frequency bins — plenty of detail
+        analyser.smoothingTimeConstant = 0.6; // snappier response to transients
+        analyser.minDecibels = -85;          // pull more dynamic range out of quiet bits
+        analyser.maxDecibels = -10;
         dataArr = new Uint8Array(analyser.frequencyBinCount);
         sourceNode.connect(analyser);
         analyser.connect(audioCtx.destination);
@@ -159,6 +169,26 @@ import { site } from '../site.config';
       }
     };
 
+    // Precomputed log-scaled bin indices — bass gets more visual real estate
+    // than mid/high, matching how the ear hears music.
+    const BAR_COUNT = 56;
+    let binIndices = null;
+    const buildBinIndices = (binTotal) => {
+      const arr = new Uint16Array(BAR_COUNT);
+      const minBin = 1;
+      const maxBin = Math.min(binTotal - 1, Math.floor(binTotal * 0.85)); // ignore very top
+      const ratio = Math.log(maxBin / minBin);
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const t = i / (BAR_COUNT - 1);
+        arr[i] = Math.min(maxBin, Math.max(minBin, Math.round(minBin * Math.exp(t * ratio))));
+      }
+      binIndices = arr;
+    };
+
+    // Bass-kick glow: average the bottom ~6% of bins, drive a CSS variable
+    // for a sub-glow that pulses with kick drums.
+    const card = document.getElementById('np-card');
+
     const drawViz = () => {
       const ctx = vizCanvas.getContext('2d');
       if (!ctx || !analyser || !dataArr) return;
@@ -168,30 +198,47 @@ import { site } from '../site.config';
       if (vizCanvas.width !== w * dpr || vizCanvas.height !== h * dpr) {
         vizCanvas.width = w * dpr;
         vizCanvas.height = h * dpr;
-        ctx.scale(dpr, dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
+
       analyser.getByteFrequencyData(dataArr);
+      if (!binIndices) buildBinIndices(dataArr.length);
+
       ctx.clearRect(0, 0, w, h);
-      const bars = 48;
-      const step = Math.floor(dataArr.length / bars);
+
       const gap = 2;
-      const bw = (w - gap * (bars - 1)) / bars;
+      const bw = (w - gap * (BAR_COUNT - 1)) / BAR_COUNT;
+      const mid = h / 2;
       const grad = ctx.createLinearGradient(0, 0, 0, h);
-      grad.addColorStop(0, '#FEB139');
-      grad.addColorStop(1, '#D61C4E');
+      grad.addColorStop(0,    '#FEB139');
+      grad.addColorStop(0.5,  '#FFF80A');
+      grad.addColorStop(1,    '#D61C4E');
+
+      // Mirrored bars from the centerline — more dramatic than ground-up.
       ctx.fillStyle = grad;
-      for (let i = 0; i < bars; i++) {
-        let v = dataArr[i * step] / 255;
-        v = Math.pow(v, 0.85);
-        const bh = Math.max(2, v * h);
-        ctx.fillRect(i * (bw + gap), h - bh, bw, bh);
+      let bassSum = 0;
+      const bassCount = 4;
+      for (let i = 0; i < BAR_COUNT; i++) {
+        const idx = binIndices[i];
+        let v = dataArr[idx] / 255;
+        v = Math.pow(v, 0.75); // perceptual lift
+        if (i < bassCount) bassSum += v;
+        const half = Math.max(1.5, v * mid);
+        const x = i * (bw + gap);
+        ctx.fillRect(x, mid - half, bw, half * 2);
       }
+
+      // Bass glow — push average bass amplitude onto a CSS var for the card.
+      const bassAvg = bassSum / bassCount;
+      if (card) card.style.setProperty('--efm-bass', bassAvg.toFixed(3));
+
       rafId = requestAnimationFrame(drawViz);
     };
 
-    const startViz = () => {
+    const startViz = async () => {
       vizWrap.classList.remove('hidden');
-      if (setupAnalyser()) {
+      const ok = await setupAnalyser();
+      if (ok) {
         vizFallback.classList.add('hidden');
         vizCanvas.classList.remove('hidden');
         cancelAnimationFrame(rafId);
@@ -201,7 +248,15 @@ import { site } from '../site.config';
         vizFallback.classList.remove('hidden');
       }
     };
-    const stopViz = () => cancelAnimationFrame(rafId);
+    const stopViz = () => {
+      cancelAnimationFrame(rafId);
+      if (card) card.style.removeProperty('--efm-bass');
+    };
+
+    // Belt-and-suspenders crossOrigin — even though the HTML attribute is set,
+    // assigning it again here guarantees the audio request includes the Origin
+    // header so the analyser gets real PCM data instead of zeros.
+    audio.crossOrigin = 'anonymous';
 
     btn.addEventListener('click', async () => {
       try {
@@ -211,8 +266,7 @@ import { site } from '../site.config';
           icon.innerHTML = pauseIcon;
           if (label) label.textContent = 'Streaming live';
           if (npArt) npArt.classList.add('art-spinning');
-          if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
-          startViz();
+          await startViz();
         } else {
           audio.pause();
           audio.removeAttribute('src');

@@ -5,6 +5,24 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.3.3] — 2026-05-28
+
+- **Audio spectrum properly reacts to the music**: explicit
+  `audio.crossOrigin = 'anonymous'` in JS so the Origin header is sent
+  on every stream fetch (AzuraCast already allow-lists info.euphoric.fm);
+  explicit `audioCtx.resume()` after creation since Chrome creates the
+  context suspended; FFT bumped 256 → 1024 for 512 bins; smoothing
+  dropped 0.78 → 0.6 so transients hit visibly; min/max dB tuned for
+  better dynamic range. Bars are now logarithmically-binned (bass gets
+  more real estate, matching the ear), mirrored from a centerline for
+  drama, and 56 bars wide instead of 48. Canvas grows to 80–96px tall.
+- **Bass-kick glow**: every frame writes the average bass amplitude to a
+  CSS variable on the player card, which drives an OKLCH-blended sunburst
+  halo around the card. Pulses on the kick.
+- **Recently Played "X minutes ago"** now measures from when the track
+  *ended* (`played_at + duration`), not when it started. Tracks that just
+  finished show "just ended" instead of an off-by-3-minutes start time.
+
 ## [0.3.2] — 2026-05-28
 
 - Tighten desktop layout so the hero (header + player + action row + sticky
