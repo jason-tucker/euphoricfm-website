@@ -1,0 +1,62 @@
+---
+import '../styles/global.css';
+import { site } from '../site.config';
+
+interface Props {
+  title?: string;
+  description?: string;
+  ogImage?: string;
+}
+
+const {
+  title = site.name,
+  description = site.description,
+  ogImage = '/images/og.jpg',
+} = Astro.props;
+
+const fullTitle = title === site.name ? title : `${title} — ${site.name}`;
+
+// Client-side config — only fields used by nowplaying.ts.
+const clientConfig = {
+  apiBase: site.azuracast.apiBase,
+  stationId: site.azuracast.stationId,
+  pollMs: site.realtime.pollMs,
+  mode: site.realtime.mode,
+};
+---
+
+<!doctype html>
+<html lang="en" class="bg-ink">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#293462" />
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://euphoric.fm" crossorigin />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content={new URL(ogImage, Astro.site).toString()} />
+    <meta property="og:url" content={Astro.url.toString()} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="canonical" href={Astro.url.toString()} />
+  </head>
+  <body class="overflow-x-hidden">
+    <script is:inline define:vars={{ clientConfig }}>
+      window.__EFM_CONFIG__ = clientConfig;
+    </script>
+    <main id="main"><slot /></main>
+    <script>
+      import '../scripts/nowplaying.ts';
+    </script>
+  </body>
+</html>

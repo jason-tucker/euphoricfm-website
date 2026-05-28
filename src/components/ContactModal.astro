@@ -1,0 +1,118 @@
+---
+import { site } from '../site.config';
+---
+
+<div id="contact-overlay" class="hidden fixed inset-0 z-40 bg-ink/80 backdrop-blur-sm" aria-hidden="true">
+  <div class="phone h-full flex flex-col py-4">
+    <div class="card !p-4 flex-1 overflow-y-auto">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-base font-bold text-ruby">Contact Us</h2>
+        <button type="button" class="text-cream/60 text-xl leading-none px-2" data-close="contact-overlay" aria-label="Close">&times;</button>
+      </div>
+      <p class="text-xs text-cream/60 mb-3">Send a message to the EuphoricFM team.</p>
+
+      <form id="contact-form" novalidate class="space-y-2.5">
+        <div><label class="label">Your Name <span class="text-ruby">*</span></label><input class="input" name="name" required placeholder="e.g., Wyatt McKenzie" /></div>
+        <div><label class="label">Phone (optional)</label><input class="input" name="phone" type="tel" placeholder="Optional" /></div>
+        <div><label class="label">NewDayRP Profile (optional)</label><input class="input" name="profile" type="url" placeholder="https://newdayrp.com/members/9631/" /></div>
+        <div><label class="label">Subject <span class="text-ruby">*</span></label><input class="input" name="subject" required placeholder="What's this about?" /></div>
+        <div><label class="label">Message <span class="text-ruby">*</span></label><textarea class="input min-h-[110px]" name="message" required placeholder="Write your message here…"></textarea></div>
+
+        <div id="contact-msg" class="hidden text-xs px-3 py-2 rounded-lg"></div>
+
+        <div class="pt-2 flex gap-2">
+          <button type="button" class="btn flex-1 bg-cream/10 text-cream" data-close="contact-overlay">Cancel</button>
+          <button type="submit" id="contact-go" class="btn flex-1 btn-ruby">Send</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script is:inline define:vars={{ webhook: site.discord.contactWebhook, avatar: site.discord.avatarUrl, stationName: site.name, profilePattern: site.newDayRpProfilePattern }}>
+  (function () {
+    const overlay = document.getElementById('contact-overlay');
+    const form = document.getElementById('contact-form');
+    const msg = document.getElementById('contact-msg');
+    const go = document.getElementById('contact-go');
+    if (!overlay || !form || !msg || !go) return;
+
+    const setMsg = (text, kind) => {
+      msg.textContent = text;
+      msg.className = 'text-xs px-3 py-2 rounded-lg ' +
+        (kind === 'error' ? 'bg-ruby/15 text-ruby border border-ruby/30' : 'bg-sunburst/15 text-sunburst border border-sunburst/30');
+      msg.classList.remove('hidden');
+    };
+
+    const profileRe = new RegExp(profilePattern, 'i');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.classList.add('hidden');
+      const data = Object.fromEntries(new FormData(form).entries());
+      const name = String(data.name || '').trim();
+      const phone = String(data.phone || '').trim();
+      const profile = String(data.profile || '').trim();
+      const subject = String(data.subject || '').trim();
+      const message = String(data.message || '').trim();
+
+      if (!name || !subject || !message) { setMsg('Please fill in: Your name, Subject, and Message.', 'error'); return; }
+      if (profile && !profileRe.test(profile)) {
+        setMsg('Profile must be a valid NewDayRP link like https://newdayrp.com/members/9631/', 'error'); return;
+      }
+
+      go.setAttribute('disabled', 'true');
+
+      const fields = [
+        { name: 'Name', value: name, inline: true },
+        { name: 'Subject', value: subject, inline: true },
+      ];
+      if (phone) fields.push({ name: 'Phone', value: phone, inline: true });
+      if (profile) fields.push({ name: 'NewDayRP Profile', value: profile });
+      fields.push({ name: 'Message', value: message.length > 1024 ? message.slice(0, 1021) + '…' : message });
+
+      const embed = {
+        title: '📨 New Contact Form Submission',
+        description: `A new contact message was submitted from **${stationName}** (info.euphoric.fm).`,
+        color: 0xd61c4e,
+        fields,
+        timestamp: new Date().toISOString(),
+        footer: { text: 'EuphoricFM Contact Form' },
+      };
+      const threadName = `Contact: ${subject}`.slice(0, 90);
+
+      try {
+        const r = await fetch(webhook, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: 'EuphoricFM Contact',
+            avatar_url: avatar,
+            thread_name: threadName,
+            embeds: [embed],
+          }),
+        });
+        if (r.ok || r.status === 204) {
+          setMsg('Thanks! Your message was sent.', 'ok');
+          form.reset();
+          setTimeout(() => { overlay.classList.add('hidden'); msg.classList.add('hidden'); }, 1200);
+        } else if (r.status === 429) {
+          const j = await r.json().catch(() => ({}));
+          setMsg(`Rate limited by Discord. Try again in ${j.retry_after ?? 'a moment'}s.`, 'error');
+        } else {
+          setMsg(`Failed to send (HTTP ${r.status}).`, 'error');
+        }
+      } catch (err) {
+        console.warn('[efm] contact failed', err);
+        setMsg('Network error while sending.', 'error');
+      } finally {
+        go.removeAttribute('disabled');
+      }
+    });
+
+    document.addEventListener('efm:open-contact', () => {
+      overlay.classList.remove('hidden');
+      overlay.setAttribute('aria-hidden', 'false');
+    });
+  })();
+</script>

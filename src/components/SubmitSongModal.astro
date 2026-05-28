@@ -1,0 +1,117 @@
+---
+import { site } from '../site.config';
+---
+
+<div id="submit-overlay" class="hidden fixed inset-0 z-40 bg-ink/80 backdrop-blur-sm" aria-hidden="true">
+  <div class="phone h-full flex flex-col py-4">
+    <div class="card !p-4 flex-1 overflow-y-auto">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-base font-bold text-sunburst">Submit a Song</h2>
+        <button type="button" class="text-cream/60 text-xl leading-none px-2" data-close="submit-overlay" aria-label="Close">&times;</button>
+      </div>
+      <p class="text-xs text-cream/60 mb-3">Are you an artist? Submit your track to be added to the EuphoricFM rotation.</p>
+
+      <form id="submit-form" novalidate class="space-y-2.5">
+        <div><label class="label">Song Title <span class="text-ruby">*</span></label><input class="input" name="title" required placeholder="e.g., Blinding Lights" /></div>
+        <div><label class="label">Song Artist <span class="text-ruby">*</span></label><input class="input" name="artist" required placeholder="e.g., The Weeknd" /></div>
+        <div><label class="label">Album</label><input class="input" name="album" placeholder="Optional" /></div>
+        <div><label class="label">Genre</label><input class="input" name="genre" placeholder="e.g., Pop, EDM" /></div>
+        <div><label class="label">SoundCloud Link</label><input class="input" name="soundcloud" type="url" placeholder="https://soundcloud.com/…" /></div>
+        <div><label class="label">Your Name / Handle</label><input class="input" name="requester" placeholder="Optional (helps us follow up)" /></div>
+
+        <div id="submit-msg" class="hidden text-xs px-3 py-2 rounded-lg"></div>
+
+        <div class="pt-2 flex gap-2">
+          <button type="button" class="btn flex-1 bg-cream/10 text-cream" data-close="submit-overlay">Cancel</button>
+          <button type="submit" id="submit-go" class="btn flex-1 btn-sunburst">Submit</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script is:inline define:vars={{ webhook: site.discord.requestWebhook, avatar: site.discord.avatarUrl, stationName: site.name }}>
+  (function () {
+    const overlay = document.getElementById('submit-overlay');
+    const form = document.getElementById('submit-form');
+    const msg = document.getElementById('submit-msg');
+    const go = document.getElementById('submit-go');
+    if (!overlay || !form || !msg || !go) return;
+
+    const setMsg = (text, kind) => {
+      msg.textContent = text;
+      msg.className = 'text-xs px-3 py-2 rounded-lg ' +
+        (kind === 'error' ? 'bg-ruby/15 text-ruby border border-ruby/30' : 'bg-sunburst/15 text-sunburst border border-sunburst/30');
+      msg.classList.remove('hidden');
+    };
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.classList.add('hidden');
+      const data = Object.fromEntries(new FormData(form).entries());
+      const title = String(data.title || '').trim();
+      const artist = String(data.artist || '').trim();
+      const album = String(data.album || '').trim();
+      const genre = String(data.genre || '').trim();
+      const soundcloud = String(data.soundcloud || '').trim();
+      const requester = String(data.requester || '').trim();
+
+      if (!title || !artist) { setMsg('Please provide at least the Title and Artist.', 'error'); return; }
+      if (soundcloud && !/^https?:\/\/.+/i.test(soundcloud)) { setMsg('SoundCloud link must be a valid URL.', 'error'); return; }
+
+      go.setAttribute('disabled', 'true');
+
+      const fields = [
+        { name: 'Title', value: title, inline: true },
+        { name: 'Artist', value: artist, inline: true },
+      ];
+      if (album) fields.push({ name: 'Album', value: album, inline: true });
+      if (genre) fields.push({ name: 'Genre', value: genre, inline: true });
+      if (soundcloud) fields.push({ name: 'SoundCloud', value: soundcloud });
+      if (requester) fields.push({ name: 'Requested by', value: requester, inline: true });
+
+      const embed = {
+        title: '🎶 New Song Submission',
+        description: `A new song submission was received from **${stationName}** (info.euphoric.fm).`,
+        color: 0x59c1ff,
+        fields,
+        timestamp: new Date().toISOString(),
+        footer: { text: 'EuphoricFM Song Submission' },
+      };
+      const threadName = `Submission: ${title} – ${artist}`.slice(0, 90);
+
+      try {
+        const r = await fetch(webhook, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: 'EuphoricFM Submissions',
+            avatar_url: avatar,
+            thread_name: threadName,
+            embeds: [embed],
+          }),
+        });
+        if (r.ok || r.status === 204) {
+          setMsg('Thanks! Your submission was sent to our team.', 'ok');
+          form.reset();
+          setTimeout(() => { overlay.classList.add('hidden'); msg.classList.add('hidden'); }, 1200);
+        } else if (r.status === 429) {
+          const j = await r.json().catch(() => ({}));
+          setMsg(`Rate limited by Discord. Try again in ${j.retry_after ?? 'a moment'}s.`, 'error');
+        } else {
+          setMsg(`Failed to send (HTTP ${r.status}).`, 'error');
+        }
+      } catch (err) {
+        console.warn('[efm] submit failed', err);
+        setMsg('Network error while submitting.', 'error');
+      } finally {
+        go.removeAttribute('disabled');
+      }
+    });
+
+    document.addEventListener('efm:open-submit', () => {
+      overlay.classList.remove('hidden');
+      overlay.setAttribute('aria-hidden', 'false');
+    });
+  })();
+</script>

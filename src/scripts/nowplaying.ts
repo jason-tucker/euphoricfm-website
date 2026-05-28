@@ -1,0 +1,177 @@
+// Client-side driver for the now-playing card + recently-played list.
+//
+// Reads `window.__EFM_CONFIG__` (populated by BaseLayout.astro from site.config)
+// and polls the AzuraCast `/api/nowplaying/<station>` endpoint on an interval.
+// Between polls, a requestAnimationFrame loop interpolates the progress bar
+// using the server-provided `played_at` + `duration` so the UI feels real-time
+// even though we're polling every 5 seconds.
+//
+// Track changes are detected via `sh_id`; when it changes the now-playing card
+// flashes and the recently-played list is re-rendered.
+
+import type {
+  AzuraNowPlayingResponse,
+  AzuraNowPlayingEntry,
+} from '../lib/azuracast';
+
+interface EfmConfig {
+  apiBase: string;
+  stationId: string;
+  pollMs: number;
+  mode: 'poll' | 'sse';
+}
+
+declare global {
+  interface Window {
+    __EFM_CONFIG__: EfmConfig;
+  }
+}
+
+(() => {
+  const cfg = window.__EFM_CONFIG__;
+  if (!cfg) {
+    console.warn('[efm] no __EFM_CONFIG__ on window — nowplaying script disabled');
+    return;
+  }
+
+  const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
+    document.getElementById(id) as T | null;
+
+  const elArt = $<HTMLImageElement>('np-art');
+  const elTitle = $('np-title');
+  const elArtist = $('np-artist');
+  const elAlbum = $('np-album');
+  const elListeners = $('np-listeners');
+  const elBar = $('np-bar');
+  const elTimes = $('np-times');
+  const elCard = $('np-card');
+  const elRecent = $('recent-list');
+  const elStatus = $('np-status');
+
+  // Mutable state for the RAF loop.
+  let lastShId = 0;
+  let playedAt = 0; // ms
+  let duration = 0; // seconds
+  let listeners = 0;
+
+  const fmtTime = (sec: number) => {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const applyNowPlaying = (np: AzuraNowPlayingEntry) => {
+    const song = np.song;
+    if (elArt && song.art) {
+      elArt.src = song.art;
+      elArt.alt = `${song.title} — ${song.artist}`;
+    }
+    if (elTitle) elTitle.textContent = song.title || song.text || 'Unknown track';
+    if (elArtist) elArtist.textContent = song.artist || '—';
+    if (elAlbum) elAlbum.textContent = song.album || '';
+    playedAt = (np.played_at || 0) * 1000;
+    duration = np.duration || 0;
+  };
+
+  const applyRecent = (history: AzuraNowPlayingEntry[]) => {
+    if (!elRecent) return;
+    const rows = history.slice(0, 8).map((h) => {
+      const ago = Math.max(0, Math.floor((Date.now() / 1000 - h.played_at) / 60));
+      const agoText = ago === 0 ? 'just now' : `${ago}m ago`;
+      const art = h.song.art || '';
+      const title = escape(h.song.title || h.song.text || '');
+      const artist = escape(h.song.artist || '');
+      return `<li class="flex items-center gap-3 py-2 border-t border-cream/5 first:border-t-0">
+        <img src="${art}" alt="" class="w-10 h-10 rounded-md object-cover bg-cream/10 shrink-0" loading="lazy">
+        <div class="min-w-0 flex-1">
+          <div class="truncate text-sm font-semibold text-cream">${title}</div>
+          <div class="truncate text-xs text-cream/60">${artist}</div>
+        </div>
+        <div class="shrink-0 text-[10px] uppercase tracking-wider text-cream/40">${agoText}</div>
+      </li>`;
+    });
+    elRecent.innerHTML = rows.join('');
+  };
+
+  const escape = (s: string) =>
+    s.replace(/[&<>"']/g, (c) =>
+      c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
+    );
+
+  const setOnline = (online: boolean) => {
+    if (!elStatus) return;
+    elStatus.textContent = online ? 'LIVE' : 'OFFLINE';
+    elStatus.className = online
+      ? 'inline-block rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-ruby/20 text-ruby'
+      : 'inline-block rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-cream/10 text-cream/50';
+  };
+
+  const refresh = async () => {
+    try {
+      const r = await fetch(`${cfg.apiBase}/nowplaying/${cfg.stationId}`, {
+        cache: 'no-store',
+      });
+      if (!r.ok) return;
+      const data = (await r.json()) as AzuraNowPlayingResponse;
+      const np = data.now_playing;
+      listeners = data.listeners?.current ?? 0;
+      if (elListeners) elListeners.textContent = String(listeners);
+      setOnline(data.is_online !== false);
+
+      if (np && np.sh_id !== lastShId) {
+        applyNowPlaying(np);
+        if (lastShId !== 0 && elCard) {
+          elCard.classList.remove('np-flash');
+          void elCard.offsetWidth;
+          elCard.classList.add('np-flash');
+        }
+        lastShId = np.sh_id;
+      }
+      applyRecent(data.song_history || []);
+    } catch (err) {
+      console.warn('[efm] refresh failed', err);
+    }
+  };
+
+  // RAF loop: paint the progress bar between polls using the server-anchored
+  // playedAt timestamp + duration. This makes the UI feel real-time.
+  const tick = () => {
+    if (duration > 0 && playedAt > 0) {
+      const elapsedSec = (Date.now() - playedAt) / 1000;
+      const pct = Math.min(100, Math.max(0, (elapsedSec / duration) * 100));
+      if (elBar) elBar.style.width = `${pct}%`;
+      if (elTimes) {
+        elTimes.textContent = `${fmtTime(elapsedSec)} / ${fmtTime(duration)}`;
+      }
+    }
+    requestAnimationFrame(tick);
+  };
+
+  let pollHandle: number | null = null;
+  const startPolling = () => {
+    if (pollHandle != null) return;
+    pollHandle = window.setInterval(refresh, cfg.pollMs);
+  };
+  const stopPolling = () => {
+    if (pollHandle != null) {
+      clearInterval(pollHandle);
+      pollHandle = null;
+    }
+  };
+
+  // Pause polling when the iframe/page is hidden; snap back when visible.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      refresh();
+      startPolling();
+    } else {
+      stopPolling();
+    }
+  });
+
+  // Boot.
+  refresh();
+  startPolling();
+  requestAnimationFrame(tick);
+})();

@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Begaron — used for the "Euphoric" word in the wordmark. */
+@font-face {
+  font-family: 'Begaron';
+  src: url('/fonts/Begaron-Regular.woff2') format('woff2'),
+       url('/fonts/Begaron-Regular.woff') format('woff'),
+       url('/fonts/Begaron-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Cortado Script — used for the "FM" word in the wordmark. */
+@font-face {
+  font-family: 'Cortado Script';
+  src: url('/fonts/CortadoScript-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html {
+    @apply antialiased;
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-ink text-cream font-body min-h-dvh;
+    text-rendering: optimizeLegibility;
+  }
+  a:focus-visible, button:focus-visible {
+    @apply outline-none ring-2 ring-sunburst ring-offset-2 ring-offset-ink rounded-sm;
+  }
+  img {
+    @apply max-w-full h-auto;
+  }
+  ::selection {
+    @apply bg-sunburst text-ink;
+  }
+}
+
+@layer components {
+  /* Phone-frame container — sized for the in-game phone iframe (~360-400px). */
+  .phone {
+    @apply mx-auto w-full max-w-phone px-4;
+  }
+  .section {
+    @apply py-6;
+  }
+  .card {
+    @apply rounded-2xl border border-cream/10 bg-white/[0.03] p-4;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold min-h-[48px] transition-transform active:scale-[0.98];
+  }
+  .btn-sunburst {
+    @apply text-ink bg-gradient-to-br from-sunburst to-lemon;
+  }
+  .btn-midnight {
+    @apply text-cream bg-midnight;
+  }
+  .btn-ruby {
+    @apply text-cream bg-ruby;
+  }
+  .btn-mixed {
+    @apply text-cream bg-gradient-to-br from-midnight to-ruby;
+  }
+  .input {
+    @apply w-full rounded-xl border border-cream/15 bg-cream/[0.06] px-3 py-2 text-sm text-cream placeholder:text-cream/40 focus:outline-none focus:border-sunburst/60;
+  }
+  .label {
+    @apply block text-xs text-cream/70 mb-1;
+  }
+  /* Now-playing card flash when the song changes. */
+  .np-flash {
+    animation: np-flash 800ms ease-out;
+  }
+}
+
+@keyframes np-flash {
+  0%   { box-shadow: 0 0 0 0 rgba(254, 177, 57, 0.55); }
+  60%  { box-shadow: 0 0 0 12px rgba(254, 177, 57, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(254, 177, 57, 0); }
+}
+
+/* Marquee for long titles that overflow on a phone-width card. */
+.marquee {
+  display: inline-block;
+  white-space: nowrap;
+  animation: marquee 14s linear infinite;
+}
+@keyframes marquee {
+  0%   { transform: translateX(0); }
+  10%  { transform: translateX(0); }
+  90%  { transform: translateX(calc(-100% + 320px)); }
+  100% { transform: translateX(calc(-100% + 320px)); }
+}

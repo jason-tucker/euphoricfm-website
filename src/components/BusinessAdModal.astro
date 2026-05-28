@@ -1,0 +1,48 @@
+---
+import { site } from '../site.config';
+const ad = site.businessAd;
+---
+
+<div id="business-overlay" class="hidden fixed inset-0 z-40 bg-ink/80 backdrop-blur-sm" aria-hidden="true">
+  <div class="phone h-full flex flex-col py-4">
+    <div class="card !p-4 flex-1 overflow-y-auto">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-base font-bold text-sunburst">Business AD Info</h2>
+        <button type="button" class="text-cream/60 text-xl leading-none px-2" data-close="business-overlay" aria-label="Close">&times;</button>
+      </div>
+      <p class="text-xs text-cream/60 mb-3">Advertising on EuphoricFM</p>
+
+      <div class="text-2xl font-extrabold text-sunburst">{ad.price}</div>
+
+      <ul class="mt-3 space-y-2 text-sm text-cream/85">
+        {ad.perks.map((p) => (
+          <li class="flex gap-2">
+            <span class="text-sunburst shrink-0">✦</span>
+            <span>{p}</span>
+          </li>
+        ))}
+      </ul>
+
+      <p class="mt-4 text-xs text-cream/65">{ad.note}</p>
+
+      <div class="pt-4 flex gap-2">
+        <button type="button" class="btn flex-1 bg-cream/10 text-cream" data-close="business-overlay">Close</button>
+        <button type="button" id="business-contact" class="btn flex-1 btn-ruby">Contact us!</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script is:inline>
+  (function () {
+    document.addEventListener('efm:open-business', () => {
+      const o = document.getElementById('business-overlay');
+      if (o) { o.classList.remove('hidden'); o.setAttribute('aria-hidden', 'false'); }
+    });
+    document.getElementById('business-contact')?.addEventListener('click', () => {
+      const b = document.getElementById('business-overlay');
+      if (b) { b.classList.add('hidden'); b.setAttribute('aria-hidden', 'true'); }
+      document.dispatchEvent(new CustomEvent('efm:open-contact'));
+    });
+  })();
+</script>

@@ -1,0 +1,29 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Header from '../components/Header.astro';
+import NowPlaying from '../components/NowPlaying.astro';
+import ListenButton from '../components/ListenButton.astro';
+import ActionRow from '../components/ActionRow.astro';
+import RecentlyPlayed from '../components/RecentlyPlayed.astro';
+import About from '../components/About.astro';
+import RequestModal from '../components/RequestModal.astro';
+import SubmitSongModal from '../components/SubmitSongModal.astro';
+import ContactModal from '../components/ContactModal.astro';
+import BusinessAdModal from '../components/BusinessAdModal.astro';
+import Footer from '../components/Footer.astro';
+---
+
+<BaseLayout>
+  <Header />
+  <NowPlaying />
+  <ListenButton />
+  <ActionRow />
+  <RecentlyPlayed />
+  <About />
+  <Footer />
+
+  <RequestModal />
+  <SubmitSongModal />
+  <ContactModal />
+  <BusinessAdModal />
+</BaseLayout>

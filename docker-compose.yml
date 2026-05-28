@@ -1,0 +1,51 @@
+# euphoricfm-website — Docker Compose stack.
+#
+# Single container: Caddy serving a static Astro build. cloudflared (host
+# network mode on this VPS) is the only public ingress and reaches us via the
+# 127.0.0.1:${PORT:-6094} loopback bind.
+#
+# Watchtower polls GHCR every 60s and auto-pulls a new ${IMAGE}:latest when
+# CI pushes one — push to main → live in ~60-90s.
+
+services:
+  web:
+    image: ${IMAGE:-ghcr.io/jason-tucker/euphoricfm-website:latest}
+    build:
+      context: .
+      args:
+        PUBLIC_GIT_SHA: ${GIT_SHA:-dev}
+        PUBLIC_BUILD_TIME: ${BUILD_TIME:-unknown}
+        PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://info.euphoric.fm}
+    restart: unless-stopped
+    environment:
+      PORT: ${PORT:-6094}
+    # Loopback ONLY — cloudflared on the host reaches us at 127.0.0.1:${PORT}.
+    # Never bind to 0.0.0.0.
+    ports:
+      - "127.0.0.1:${PORT:-6094}:${PORT:-6094}"
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    restart: unless-stopped
+    command:
+      - --label-enable
+      - --cleanup
+      - --interval=60
+      - --include-stopped
+      - --revive-stopped
+    environment:
+      WATCHTOWER_NOTIFICATIONS_LEVEL: info
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

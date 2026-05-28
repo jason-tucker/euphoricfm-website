@@ -1,0 +1,15 @@
+node_modules
+.git
+.github
+dist
+.astro
+.cache
+.env
+.env.local
+.env.*.local
+*.log
+README.md
+CHANGELOG.md
+CLAUDE.md
+.vscode
+.idea

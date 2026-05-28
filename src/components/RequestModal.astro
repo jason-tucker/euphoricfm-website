@@ -1,0 +1,138 @@
+---
+import { site } from '../site.config';
+---
+
+<div
+  id="request-overlay"
+  class="hidden fixed inset-0 z-40 bg-ink/80 backdrop-blur-sm"
+  aria-hidden="true"
+>
+  <div class="phone h-full flex flex-col py-4">
+    <div class="card !p-4 flex-1 flex flex-col overflow-hidden">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-base font-bold text-sunburst">Request a Song</h2>
+        <button
+          type="button"
+          class="text-cream/60 text-xl leading-none px-2"
+          data-close="request-overlay"
+          aria-label="Close"
+        >&times;</button>
+      </div>
+      <p class="text-xs text-cream/60 mb-3">Search the EuphoricFM library and tap a song to request it.</p>
+
+      <input
+        id="req-search"
+        type="text"
+        class="input mb-3"
+        placeholder="Search title or artist…"
+        autocomplete="off"
+      />
+
+      <ul id="req-results" class="flex-1 overflow-y-auto divide-y divide-cream/5 -mx-1 px-1">
+        <li class="py-2 text-xs text-cream/40">Type to search the library.</li>
+      </ul>
+
+      <div id="req-toast" class="hidden mt-3 text-xs px-3 py-2 rounded-lg"></div>
+    </div>
+  </div>
+</div>
+
+<script is:inline define:vars={{ apiBase: site.azuracast.apiBase, stationId: site.azuracast.stationId }}>
+  (function () {
+    const overlay = document.getElementById('request-overlay');
+    const input = document.getElementById('req-search');
+    const list = document.getElementById('req-results');
+    const toast = document.getElementById('req-toast');
+    if (!overlay || !input || !list || !toast) return;
+
+    const escapeHtml = (s) =>
+      String(s).replace(/[&<>"']/g, (c) =>
+        c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;');
+
+    let timer = null;
+    const search = async (q) => {
+      try {
+        const url = new URL(`${apiBase}/station/${stationId}/requests`);
+        if (q) url.searchParams.set('searchPhrase', q);
+        const r = await fetch(url.toString(), { cache: 'no-store' });
+        if (!r.ok) { list.innerHTML = '<li class="py-2 text-xs text-ruby">Failed to load library.</li>'; return; }
+        const data = await r.json();
+        const items = Array.isArray(data) ? data : (data.rows || []);
+        if (!items.length) {
+          list.innerHTML = '<li class="py-2 text-xs text-cream/40">No matches.</li>';
+          return;
+        }
+        list.innerHTML = items.slice(0, 30).map((it) => {
+          const s = it.song || {};
+          const title = escapeHtml(s.title || s.text || 'Unknown');
+          const artist = escapeHtml(s.artist || '');
+          const art = s.art || '';
+          return `<li>
+            <button type="button" data-request-url="${escapeHtml(it.request_url || '')}" class="w-full text-left flex items-center gap-3 py-2 hover:bg-cream/5 rounded-md px-1 transition-colors">
+              <img src="${art}" alt="" class="w-10 h-10 rounded-md object-cover bg-cream/10 shrink-0" loading="lazy">
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-sm font-semibold text-cream">${title}</div>
+                <div class="truncate text-xs text-cream/60">${artist}</div>
+              </div>
+              <span class="text-[10px] uppercase tracking-wider text-sunburst shrink-0">Request</span>
+            </button>
+          </li>`;
+        }).join('');
+      } catch (err) {
+        console.warn('[efm] search failed', err);
+        list.innerHTML = '<li class="py-2 text-xs text-ruby">Failed to load library.</li>';
+      }
+    };
+
+    const showToast = (msg, kind) => {
+      toast.textContent = msg;
+      toast.className = 'mt-3 text-xs px-3 py-2 rounded-lg ' +
+        (kind === 'error' ? 'bg-ruby/15 text-ruby border border-ruby/30' : 'bg-sunburst/15 text-sunburst border border-sunburst/30');
+      toast.classList.remove('hidden');
+      setTimeout(() => toast.classList.add('hidden'), 4000);
+    };
+
+    const submitRequest = async (requestUrl) => {
+      try {
+        const apiOrigin = new URL(apiBase).origin;
+        const fullUrl = /^https?:\/\//.test(requestUrl) ? requestUrl : apiOrigin + requestUrl;
+        const r = await fetch(fullUrl, { method: 'POST', cache: 'no-store' });
+        const text = await r.text();
+        let body = null; try { body = JSON.parse(text); } catch {}
+        if (r.ok && body && body.success !== false) {
+          showToast('Request submitted! It will play soon.', 'ok');
+        } else {
+          const msg = (body && (body.formatted_message || body.message)) || `Couldn't submit request (HTTP ${r.status}).`;
+          showToast(msg, 'error');
+        }
+      } catch (err) {
+        console.warn('[efm] request failed', err);
+        showToast('Network error submitting request.', 'error');
+      }
+    };
+
+    input.addEventListener('input', () => {
+      const q = input.value.trim();
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => search(q), 250);
+    });
+
+    list.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-request-url]');
+      if (!btn) return;
+      const url = btn.getAttribute('data-request-url');
+      if (url) submitRequest(url);
+    });
+
+    // Open hook — load initial library when opened.
+    document.addEventListener('efm:open-request', () => {
+      overlay.classList.remove('hidden');
+      overlay.setAttribute('aria-hidden', 'false');
+      if (!list.dataset.loaded) {
+        list.dataset.loaded = '1';
+        search('');
+      }
+      input.focus();
+    });
+  })();
+</script>
