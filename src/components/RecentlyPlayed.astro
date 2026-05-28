@@ -1,10 +1,11 @@
 ---
-// Empty list — populated by nowplaying.ts.
+// Empty list — populated by nowplaying.ts. On desktop this becomes a sticky
+// sidebar via the index.astro grid layout.
 ---
 
-<section class="phone section pt-2">
-  <div class="card !py-3">
-    <h2 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/60 mb-1">Recently Played</h2>
+<section class="pt-2">
+  <div class="card !py-3 lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto">
+    <h2 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65 mb-1 lg:mb-3">Recently Played</h2>
     <ul id="recent-list" class="divide-y divide-cream/5">
       <li class="py-2 text-xs text-cream/40">Loading recent tracks…</li>
     </ul>

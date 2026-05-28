@@ -21,9 +21,16 @@ interface EfmConfig {
   mode: 'poll' | 'sse';
 }
 
+interface EfmAudioBridge {
+  play: () => void;
+  pause: () => void;
+  el: HTMLAudioElement;
+}
+
 declare global {
   interface Window {
     __EFM_CONFIG__: EfmConfig;
+    __efmAudio?: EfmAudioBridge;
   }
 }
 
@@ -47,6 +54,11 @@ declare global {
   const elCard = $('np-card');
   const elRecent = $('recent-list');
   const elStatus = $('np-status');
+  // Up-next slide-down panel.
+  const elUpNext = $('np-up-next');
+  const elUpNextArt = $<HTMLImageElement>('up-next-art');
+  const elUpNextTitle = $('up-next-title');
+  const elUpNextArtist = $('up-next-artist');
 
   // Mutable state for the RAF loop.
   let lastShId = 0;
@@ -72,6 +84,19 @@ declare global {
     if (elAlbum) elAlbum.textContent = song.album || '';
     playedAt = (np.played_at || 0) * 1000;
     duration = np.duration || 0;
+  };
+
+  const applyUpNext = (next: AzuraNowPlayingEntry | null) => {
+    if (!elUpNext) return;
+    if (!next || !next.song || !(next.song.title || next.song.text)) {
+      elUpNext.classList.remove('is-open');
+      return;
+    }
+    const song = next.song;
+    if (elUpNextTitle) elUpNextTitle.textContent = song.title || song.text || '';
+    if (elUpNextArtist) elUpNextArtist.textContent = song.artist || '';
+    if (elUpNextArt && song.art) elUpNextArt.src = song.art;
+    elUpNext.classList.add('is-open');
   };
 
   const applyRecent = (history: AzuraNowPlayingEntry[]) => {
@@ -127,8 +152,10 @@ declare global {
           elCard.classList.add('np-flash');
         }
         lastShId = np.sh_id;
+        updateMediaSession(np);
       }
       applyRecent(data.song_history || []);
+      applyUpNext(data.playing_next || null);
     } catch (err) {
       console.warn('[efm] refresh failed', err);
     }
@@ -169,6 +196,40 @@ declare global {
       stopPolling();
     }
   });
+
+  // ---- Media Session API ------------------------------------------------
+  // When the stream is playing, this exposes title/artist/album/artwork to
+  // the OS so it appears on lock screens, in the system tray on desktop, and
+  // bound to hardware media keys + bluetooth headphone controls.
+  const updateMediaSession = (np: AzuraNowPlayingEntry) => {
+    if (!('mediaSession' in navigator)) return;
+    const song = np.song;
+    try {
+      const art = song.art || '';
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: song.title || song.text || 'EuphoricFM',
+        artist: song.artist || 'EuphoricFM',
+        album: song.album || 'EuphoricFM',
+        artwork: art
+          ? [
+              { src: art, sizes: '96x96',   type: 'image/jpeg' },
+              { src: art, sizes: '192x192', type: 'image/jpeg' },
+              { src: art, sizes: '512x512', type: 'image/jpeg' },
+            ]
+          : [],
+      });
+    } catch (err) {
+      console.warn('[efm] mediaSession metadata failed', err);
+    }
+  };
+
+  if ('mediaSession' in navigator) {
+    const bridge = () => window.__efmAudio;
+    navigator.mediaSession.setActionHandler('play', () => bridge()?.play());
+    navigator.mediaSession.setActionHandler('pause', () => bridge()?.pause());
+    navigator.mediaSession.setActionHandler('stop', () => bridge()?.pause());
+    // Seek doesn't apply to a live stream; skip prev/next intentionally too.
+  }
 
   // Boot.
   refresh();

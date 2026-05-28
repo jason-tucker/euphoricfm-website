@@ -33,6 +33,10 @@ const clientConfig = {
     <meta name="theme-color" content="#293462" />
     <meta name="format-detection" content="telephone=no" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="preconnect" href="https://euphoric.fm" crossorigin />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -59,8 +63,75 @@ const clientConfig = {
       window.__EFM_CONFIG__ = Object.assign(window.__EFM_CONFIG__ || {}, clientConfig);
     </script>
     <main id="main"><slot /></main>
+
+    <!-- Install banner — appears once on supporting browsers (Chrome/Edge/Brave)
+         when the page is eligible for PWA install. Hidden by default. -->
+    <div id="efm-install-banner" class="hidden efm-extras fixed inset-x-0 bottom-3 z-30 mx-auto max-w-md px-4">
+      <div class="card !p-3 flex items-center gap-3 shadow-2xl">
+        <img src="/icon.svg" alt="" class="w-10 h-10 rounded-lg" />
+        <div class="min-w-0 flex-1">
+          <div class="text-sm font-semibold text-cream">Install the EuphoricFM player</div>
+          <div class="text-[11px] text-cream/60">Compact, resizable, lives in your dock or taskbar.</div>
+        </div>
+        <button id="efm-install-yes" type="button" class="btn !px-3 !py-2 btn-sunburst !min-h-0">Install</button>
+        <button id="efm-install-no" type="button" class="text-cream/50 text-xl leading-none px-2" aria-label="Dismiss">&times;</button>
+      </div>
+    </div>
+
     <script>
       import '../scripts/nowplaying.ts';
+    </script>
+    <script is:inline>
+      // Service worker registration — quietly no-ops where unsupported.
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+        });
+      }
+
+      // PWA install prompt capture + UI.
+      (function () {
+        let deferred = null;
+        const banner = document.getElementById('efm-install-banner');
+        const yes = document.getElementById('efm-install-yes');
+        const no = document.getElementById('efm-install-no');
+        const dismissedKey = 'efm-install-dismissed';
+
+        // Already in standalone? Don't show banner.
+        const standalone = window.matchMedia('(display-mode: standalone)').matches ||
+          window.matchMedia('(display-mode: minimal-ui)').matches ||
+          window.matchMedia('(display-mode: window-controls-overlay)').matches ||
+          window.navigator.standalone === true;
+        if (standalone) document.body.classList.add('pwa-mode');
+
+        if (banner && yes && no) {
+          window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferred = e;
+            if (localStorage.getItem(dismissedKey)) return;
+            if (standalone) return;
+            banner.classList.add('show');
+          });
+          yes.addEventListener('click', async () => {
+            if (!deferred) return;
+            banner.classList.remove('show');
+            deferred.prompt();
+            const choice = await deferred.userChoice.catch(() => null);
+            deferred = null;
+            if (choice && choice.outcome !== 'accepted') {
+              localStorage.setItem(dismissedKey, '1');
+            }
+          });
+          no.addEventListener('click', () => {
+            banner.classList.remove('show');
+            localStorage.setItem(dismissedKey, '1');
+          });
+          window.addEventListener('appinstalled', () => {
+            banner.classList.remove('show');
+            document.body.classList.add('pwa-mode');
+          });
+        }
+      })();
     </script>
   </body>
 </html>

@@ -5,6 +5,52 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.3.0] — 2026-05-28
+
+Major UX upgrade — site now scales gracefully from in-game phone iframe to
+tablet to desktop, and ships a pile of modern web platform features ("tech
+demo" mode).
+
+- **Unified PlayerCard** — merged the separate Now Playing + Listen Button
+  cards into a single integrated player. Old `NowPlaying.astro` and
+  `ListenButton.astro` removed.
+- **Up Next slide-down** — when AzuraCast reports a `playing_next` track,
+  a panel slides down inside the player showing the next song's art, title,
+  and artist. Hides automatically when nothing is queued.
+- **Responsive layout** — phone (default, max 24rem), tablet (md/lg, max
+  2xl with larger type), desktop (lg+, 12-column hero grid: big now-playing
+  on the left, sticky Recently Played sidebar on the right).
+- **Web Audio API visualizer** — real-time 48-bar FFT analyser drawing to
+  canvas at requestAnimationFrame rate while the stream is playing.
+  AzuraCast sends `Access-Control-Allow-Origin: https://info.euphoric.fm`
+  on the stream, so we get genuine PCM access. CSS-only pulsing fallback
+  if AudioContext creation fails.
+- **Media Session API** — track title/artist/album/artwork pushed to the OS
+  every time `sh_id` changes, so EuphoricFM shows up on phone lock screens,
+  desktop system trays, and hardware media keys / bluetooth headset
+  play/pause buttons work.
+- **PWA, installable everywhere** — `manifest.webmanifest` + `sw.js`. Service
+  worker caches the shell (network-first HTML, cache-first static assets,
+  passthrough for `/efm-runtime-config.js` and cross-origin). Display modes:
+  `window-controls-overlay` → `standalone` → `minimal-ui` (in order). An
+  install banner appears in normal web mode (Chrome/Edge) when the page is
+  eligible; dismissal is sticky via localStorage.
+- **PWA compact mode** — when running in any standalone display mode (or
+  when `body.pwa-mode` is set after `appinstalled`), the site hides every
+  `.efm-extras` block (action row, recently played, about) and shows only
+  the player. Window stays resizable; the player itself flexes to fit.
+- **View Transitions API** — modal open/close uses `document.startViewTransition`
+  on supporting browsers for a smooth crossfade. Falls back to plain show/hide.
+- **Vinyl-spin album art** — the now-playing artwork rotates while the
+  stream is playing; stops when paused. Disabled under
+  `prefers-reduced-motion`.
+- **OKLCH aurora background** — subtle radial gradient wash using
+  `color-mix(in oklch, ...)` for richer color interpolation on supporting
+  browsers (Chrome 111+, Safari 16.4+, Firefox 113+).
+- **Backdrop-filter glass cards** + hover lift on `(hover: hover)` devices.
+- **prefers-reduced-motion** respected globally.
+- **Apple touch icon + status bar style** for iOS Add-to-Home-Screen.
+
 ## [0.2.1] — 2026-05-28
 
 - Rename runtime-config endpoint `/runtime-config.js` → `/efm-runtime-config.js`

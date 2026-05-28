@@ -1,8 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import Header from '../components/Header.astro';
-import NowPlaying from '../components/NowPlaying.astro';
-import ListenButton from '../components/ListenButton.astro';
+import PlayerCard from '../components/PlayerCard.astro';
 import ActionRow from '../components/ActionRow.astro';
 import RecentlyPlayed from '../components/RecentlyPlayed.astro';
 import About from '../components/About.astro';
@@ -14,13 +13,29 @@ import Footer from '../components/Footer.astro';
 ---
 
 <BaseLayout>
-  <Header />
-  <NowPlaying />
-  <ListenButton />
-  <ActionRow />
-  <RecentlyPlayed />
-  <About />
-  <Footer />
+  <div class="phone">
+    <Header />
+
+    <!-- On phone+tablet: stack vertically. On lg+: 2-col hero with sticky sidebar.
+         In PWA standalone mode (`body.pwa-mode`), only the player is shown — the
+         CSS in global.css hides .efm-extras content. -->
+    <div class="lg:grid lg:grid-cols-12 lg:gap-6 lg:items-start">
+      <div class="lg:col-span-7 xl:col-span-8 lg:space-y-3">
+        <PlayerCard />
+        <div class="efm-extras">
+          <ActionRow />
+        </div>
+      </div>
+      <aside class="efm-extras lg:col-span-5 xl:col-span-4 lg:sticky lg:top-4">
+        <RecentlyPlayed />
+      </aside>
+    </div>
+
+    <div class="efm-extras">
+      <About />
+    </div>
+    <Footer />
+  </div>
 
   <RequestModal />
   <SubmitSongModal />
