@@ -5,6 +5,14 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.3.4] — 2026-05-28
+
+- Remove the spectrum bars and the vinyl-spin on album art (the art isn't
+  circular so the spin looked wrong). The bass-driven sunburst glow on the
+  player card stays — the Web Audio AnalyserNode now runs silently in the
+  background just to feed the `--efm-bass` CSS variable. Cheaper too: fft
+  size dropped 1024 → 256 since we only read the bottom 6% of bins.
+
 ## [0.3.3] — 2026-05-28
 
 - **Audio spectrum properly reacts to the music**: explicit

@@ -69,19 +69,6 @@ import { site } from '../site.config';
       <audio id="efm-audio" preload="none" crossorigin="anonymous"></audio>
     </div>
 
-    <!-- Web Audio API visualizer — revealed on play. -->
-    <div id="efm-viz" class="mt-3 hidden">
-      <canvas id="efm-viz-canvas" class="efm-vizcanvas !h-20 lg:!h-24" aria-hidden="true"></canvas>
-      <div id="efm-viz-fallback" class="hidden h-14 flex items-end gap-0.5 px-2">
-        <span class="bar" style="--i:0"></span><span class="bar" style="--i:1"></span>
-        <span class="bar" style="--i:2"></span><span class="bar" style="--i:3"></span>
-        <span class="bar" style="--i:4"></span><span class="bar" style="--i:5"></span>
-        <span class="bar" style="--i:6"></span><span class="bar" style="--i:7"></span>
-        <span class="bar" style="--i:8"></span><span class="bar" style="--i:9"></span>
-        <span class="bar" style="--i:10"></span><span class="bar" style="--i:11"></span>
-      </div>
-    </div>
-
     <!-- Up Next — slides down from the bottom of the card when playing_next is present. -->
     <div id="np-up-next" class="mt-3 overflow-hidden max-h-0 opacity-0 transition-[max-height,opacity] duration-500 ease-out">
       <div class="border-t border-cream/10 pt-3 flex items-center gap-3">
@@ -97,18 +84,6 @@ import { site } from '../site.config';
 </section>
 
 <style is:global>
-  #efm-viz-fallback .bar {
-    display: inline-block;
-    flex: 1;
-    background: linear-gradient(180deg, #FEB139, #D61C4E);
-    border-radius: 4px;
-    height: 30%;
-    animation: bar-pulse 0.9s ease-in-out infinite alternate;
-    animation-delay: calc(var(--i) * -0.07s);
-    transform-origin: bottom;
-  }
-  @keyframes bar-pulse { 0% { transform: scaleY(0.2); } 100% { transform: scaleY(1); } }
-
   /* Up-next reveal — driven by .is-open class on #np-up-next. */
   #np-up-next.is-open {
     max-height: 80px;
@@ -123,11 +98,8 @@ import { site } from '../site.config';
     const icon = document.getElementById('efm-play-icon');
     const vol = document.getElementById('efm-volume');
     const label = document.getElementById('efm-play-label');
-    const vizWrap = document.getElementById('efm-viz');
-    const vizCanvas = document.getElementById('efm-viz-canvas');
-    const vizFallback = document.getElementById('efm-viz-fallback');
-    const npArt = document.getElementById('np-art');
-    if (!audio || !btn || !icon || !vol || !vizWrap || !vizCanvas || !vizFallback) return;
+    const card = document.getElementById('np-card');
+    if (!audio || !btn || !icon || !vol) return;
 
     const playIcon = '<path d="M8 5v14l11-7z"/>';
     const pauseIcon = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
@@ -148,114 +120,54 @@ import { site } from '../site.config';
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) return false;
         audioCtx = new AC();
-        // Chrome creates the context suspended until a user gesture. We're
-        // already inside a click handler, but resume explicitly so audio
-        // actually flows through the analyser node.
         if (audioCtx.state === 'suspended') await audioCtx.resume();
 
         sourceNode = audioCtx.createMediaElementSource(audio);
         analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 1024;             // 512 frequency bins — plenty of detail
-        analyser.smoothingTimeConstant = 0.6; // snappier response to transients
-        analyser.minDecibels = -85;          // pull more dynamic range out of quiet bits
+        // The bass-glow loop only needs the bottom of the spectrum, so a
+        // smaller FFT is fine and cheaper. Smoothing kept low so kicks hit.
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.55;
+        analyser.minDecibels = -85;
         analyser.maxDecibels = -10;
         dataArr = new Uint8Array(analyser.frequencyBinCount);
         sourceNode.connect(analyser);
         analyser.connect(audioCtx.destination);
         return true;
       } catch (err) {
-        console.warn('[efm] Web Audio unavailable, using CSS fallback', err);
+        console.warn('[efm] Web Audio unavailable; bass glow disabled', err);
         return false;
       }
     };
 
-    // Precomputed log-scaled bin indices — bass gets more visual real estate
-    // than mid/high, matching how the ear hears music.
-    const BAR_COUNT = 56;
-    let binIndices = null;
-    const buildBinIndices = (binTotal) => {
-      const arr = new Uint16Array(BAR_COUNT);
-      const minBin = 1;
-      const maxBin = Math.min(binTotal - 1, Math.floor(binTotal * 0.85)); // ignore very top
-      const ratio = Math.log(maxBin / minBin);
-      for (let i = 0; i < BAR_COUNT; i++) {
-        const t = i / (BAR_COUNT - 1);
-        arr[i] = Math.min(maxBin, Math.max(minBin, Math.round(minBin * Math.exp(t * ratio))));
+    // Bass-glow tick — reads only the lowest ~6% of frequency bins each
+    // frame, averages them, and writes the value to `--efm-bass` on the
+    // player card. CSS in global.css drives the box-shadow halo from that.
+    const tickGlow = () => {
+      if (analyser && dataArr) {
+        analyser.getByteFrequencyData(dataArr);
+        const bassCount = Math.max(4, Math.floor(dataArr.length * 0.06));
+        let sum = 0;
+        for (let i = 0; i < bassCount; i++) sum += dataArr[i];
+        const bass = (sum / bassCount) / 255;
+        if (card) card.style.setProperty('--efm-bass', bass.toFixed(3));
       }
-      binIndices = arr;
+      rafId = requestAnimationFrame(tickGlow);
     };
 
-    // Bass-kick glow: average the bottom ~6% of bins, drive a CSS variable
-    // for a sub-glow that pulses with kick drums.
-    const card = document.getElementById('np-card');
-
-    const drawViz = () => {
-      const ctx = vizCanvas.getContext('2d');
-      if (!ctx || !analyser || !dataArr) return;
-      const dpr = window.devicePixelRatio || 1;
-      const w = vizCanvas.clientWidth;
-      const h = vizCanvas.clientHeight;
-      if (vizCanvas.width !== w * dpr || vizCanvas.height !== h * dpr) {
-        vizCanvas.width = w * dpr;
-        vizCanvas.height = h * dpr;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      }
-
-      analyser.getByteFrequencyData(dataArr);
-      if (!binIndices) buildBinIndices(dataArr.length);
-
-      ctx.clearRect(0, 0, w, h);
-
-      const gap = 2;
-      const bw = (w - gap * (BAR_COUNT - 1)) / BAR_COUNT;
-      const mid = h / 2;
-      const grad = ctx.createLinearGradient(0, 0, 0, h);
-      grad.addColorStop(0,    '#FEB139');
-      grad.addColorStop(0.5,  '#FFF80A');
-      grad.addColorStop(1,    '#D61C4E');
-
-      // Mirrored bars from the centerline — more dramatic than ground-up.
-      ctx.fillStyle = grad;
-      let bassSum = 0;
-      const bassCount = 4;
-      for (let i = 0; i < BAR_COUNT; i++) {
-        const idx = binIndices[i];
-        let v = dataArr[idx] / 255;
-        v = Math.pow(v, 0.75); // perceptual lift
-        if (i < bassCount) bassSum += v;
-        const half = Math.max(1.5, v * mid);
-        const x = i * (bw + gap);
-        ctx.fillRect(x, mid - half, bw, half * 2);
-      }
-
-      // Bass glow — push average bass amplitude onto a CSS var for the card.
-      const bassAvg = bassSum / bassCount;
-      if (card) card.style.setProperty('--efm-bass', bassAvg.toFixed(3));
-
-      rafId = requestAnimationFrame(drawViz);
-    };
-
-    const startViz = async () => {
-      vizWrap.classList.remove('hidden');
+    const startGlow = async () => {
       const ok = await setupAnalyser();
-      if (ok) {
-        vizFallback.classList.add('hidden');
-        vizCanvas.classList.remove('hidden');
-        cancelAnimationFrame(rafId);
-        rafId = requestAnimationFrame(drawViz);
-      } else {
-        vizCanvas.classList.add('hidden');
-        vizFallback.classList.remove('hidden');
-      }
+      if (!ok) return;
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(tickGlow);
     };
-    const stopViz = () => {
+    const stopGlow = () => {
       cancelAnimationFrame(rafId);
       if (card) card.style.removeProperty('--efm-bass');
     };
 
-    // Belt-and-suspenders crossOrigin — even though the HTML attribute is set,
-    // assigning it again here guarantees the audio request includes the Origin
-    // header so the analyser gets real PCM data instead of zeros.
+    // Belt-and-suspenders crossOrigin — guarantees the Origin header is sent
+    // so AnalyserNode gets real PCM data for the bass-glow loop.
     audio.crossOrigin = 'anonymous';
 
     btn.addEventListener('click', async () => {
@@ -265,17 +177,14 @@ import { site } from '../site.config';
           await audio.play();
           icon.innerHTML = pauseIcon;
           if (label) label.textContent = 'Streaming live';
-          if (npArt) npArt.classList.add('art-spinning');
-          await startViz();
+          await startGlow();
         } else {
           audio.pause();
           audio.removeAttribute('src');
           audio.load();
           icon.innerHTML = playIcon;
           if (label) label.textContent = 'Tap play to tune in';
-          if (npArt) npArt.classList.remove('art-spinning');
-          stopViz();
-          vizWrap.classList.add('hidden');
+          stopGlow();
         }
       } catch (err) {
         console.warn('[efm] audio play failed', err);
@@ -283,8 +192,8 @@ import { site } from '../site.config';
     });
 
     vol.addEventListener('input', () => { audio.volume = Number(vol.value) / 100; });
-    audio.addEventListener('ended', () => { icon.innerHTML = playIcon; if (npArt) npArt.classList.remove('art-spinning'); stopViz(); });
-    audio.addEventListener('error', () => { icon.innerHTML = playIcon; if (npArt) npArt.classList.remove('art-spinning'); stopViz(); });
+    audio.addEventListener('ended', () => { icon.innerHTML = playIcon; stopGlow(); });
+    audio.addEventListener('error', () => { icon.innerHTML = playIcon; stopGlow(); });
 
     // Bridge for Media Session API in nowplaying.ts.
     window.__efmAudio = {

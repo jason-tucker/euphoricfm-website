@@ -98,14 +98,6 @@
   100% { box-shadow: 0 0 0 0 rgba(254, 177, 57, 0); }
 }
 
-/* Vinyl-spin on album art while audio is playing. */
-.art-spinning {
-  animation: spin 18s linear infinite;
-}
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 /* View Transitions API — name the now-playing card so the browser can
    animate the modal-open/close crossfade smoothly. */
 @supports (view-transition-name: x) {
@@ -127,17 +119,11 @@
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* Audio visualizer canvas — sits inside the player card on tap. */
-.efm-vizcanvas {
-  display: block;
-  width: 100%;
-  height: 56px;
-  border-radius: 12px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
-}
-
-/* Bass-kick glow — `--efm-bass` is set on #np-card by drawViz every frame.
-   The card grows a sunburst halo proportional to the bass energy. */
+/* Bass-kick glow — `--efm-bass` is set on #np-card every frame by the
+   bass-glow loop in PlayerCard.astro. The card grows a sunburst halo
+   proportional to the bass energy. The analyser runs in the background
+   even though no spectrum is rendered — the user wanted the glow without
+   the spectrum bars. */
 #np-card {
   --efm-bass: 0;
   box-shadow:
