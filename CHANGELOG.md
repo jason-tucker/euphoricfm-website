@@ -5,6 +5,24 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.3.5] — 2026-05-28
+
+In-game phone loading reliability — the in-game phone is the most important
+use case and the previous build's PWA bits were tripping it up.
+
+- Detect iframe context up-front. Inside an iframe (which is exactly how the
+  in-game phone loads this site), skip service worker registration and skip
+  the `pwa-mode` class entirely. SWs in iframes can cache broken state across
+  sessions in older CEF builds, and `display-mode` media queries can misfire
+  and hide the player's surrounding UI.
+- Auto-unregister any service worker that a previous build left behind in
+  the iframe context — visitors who got stuck on a cached old version will
+  clear themselves the next time they load the site.
+- Wrap `color-mix(in oklch, ...)` rules in `@supports` blocks and provide
+  plain `rgba()` fallbacks for the aurora background and the bass-glow
+  halo. Older Chromium builds (pre-111) now render the page cleanly
+  instead of dropping the rule.
+
 ## [0.3.4] — 2026-05-28
 
 - Remove the spectrum bars and the vinyl-spin on album art (the art isn't

@@ -34,11 +34,19 @@
   body {
     @apply bg-ink text-cream font-body min-h-dvh;
     text-rendering: optimizeLegibility;
-    /* Subtle aurora wash behind content — only on tablet+, the phone stays minimal. */
-    background-image: radial-gradient(70% 40% at 30% -10%, color-mix(in oklch, #293462 65%, transparent), transparent 60%),
-                      radial-gradient(60% 40% at 90% 10%, color-mix(in oklch, #D61C4E 40%, transparent), transparent 55%),
-                      radial-gradient(80% 60% at 50% 110%, color-mix(in oklch, #FEB139 25%, transparent), transparent 60%);
+    /* Fallback aurora using plain rgba — works in every browser including
+       older CEF builds. Upgraded to OKLCH below where supported. */
+    background-image: radial-gradient(70% 40% at 30% -10%, rgba(41, 52, 98, 0.65), transparent 60%),
+                      radial-gradient(60% 40% at 90% 10%, rgba(214, 28, 78, 0.40), transparent 55%),
+                      radial-gradient(80% 60% at 50% 110%, rgba(254, 177, 57, 0.25), transparent 60%);
     background-attachment: fixed;
+  }
+  @supports (color: color-mix(in oklch, red, blue)) {
+    body {
+      background-image: radial-gradient(70% 40% at 30% -10%, color-mix(in oklch, #293462 65%, transparent), transparent 60%),
+                        radial-gradient(60% 40% at 90% 10%, color-mix(in oklch, #D61C4E 40%, transparent), transparent 55%),
+                        radial-gradient(80% 60% at 50% 110%, color-mix(in oklch, #FEB139 25%, transparent), transparent 60%);
+    }
   }
   a:focus-visible, button:focus-visible {
     @apply outline-none ring-2 ring-sunburst ring-offset-2 ring-offset-ink rounded-sm;
@@ -122,14 +130,23 @@
 /* Bass-kick glow — `--efm-bass` is set on #np-card every frame by the
    bass-glow loop in PlayerCard.astro. The card grows a sunburst halo
    proportional to the bass energy. The analyser runs in the background
-   even though no spectrum is rendered — the user wanted the glow without
-   the spectrum bars. */
+   even though no spectrum is rendered. */
 #np-card {
   --efm-bass: 0;
+  /* Plain rgba fallback for browsers that don't support color-mix() — old
+     CEF builds in the in-game phone may not. The next rule upgrades to
+     OKLCH on capable browsers. */
   box-shadow:
     0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
-    color-mix(in oklch, #FEB139 calc(var(--efm-bass) * 55%), transparent);
+    rgba(254, 177, 57, calc(var(--efm-bass) * 0.55));
   transition: box-shadow 80ms linear;
+}
+@supports (color: color-mix(in oklch, red, blue)) {
+  #np-card {
+    box-shadow:
+      0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
+      color-mix(in oklch, #FEB139 calc(var(--efm-bass) * 55%), transparent);
+  }
 }
 
 /* Hover lift on action buttons (desktop only — phones shouldn't feel "hovery"). */
