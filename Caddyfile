@@ -20,11 +20,11 @@
   header Content-Security-Policy "frame-ancestors *"
   header -X-Frame-Options
 
-  # /runtime-config.js is served inline by Caddy with env-var substitution at
+  # /efm-runtime-config.js is served inline by Caddy with env-var substitution at
   # config-parse time — webhook URLs come from the container's env vars and
   # NEVER end up in the built static bundle. Edit `.env` + `docker compose up -d`
   # to swap a webhook; no rebuild needed.
-  @runtimeConfig path /runtime-config.js
+  @runtimeConfig path /efm-runtime-config.js
   handle @runtimeConfig {
     header Content-Type "application/javascript; charset=utf-8"
     header Cache-Control "no-store"
@@ -52,6 +52,8 @@
   handle_errors {
     @404 expression `{err.status_code} == 404`
     handle @404 {
+      # Stop Cloudflare from caching 404s with its 4-hour default TTL.
+      header Cache-Control "no-store, max-age=0"
       respond "Page not found — try the home page at /" 404
     }
   }

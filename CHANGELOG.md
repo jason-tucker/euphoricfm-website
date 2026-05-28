@@ -5,6 +5,15 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.2.1] — 2026-05-28
+
+- Rename runtime-config endpoint `/runtime-config.js` → `/efm-runtime-config.js`
+  to bust a Cloudflare-cached 404 (Cloudflare cached the 404 from before the
+  endpoint existed with its default 4-hour TTL on errors). Verified via
+  `cf-cache-status: BYPASS` on the new path.
+- Add `Cache-Control: no-store, max-age=0` on the Caddy `handle_errors` 404
+  response so future 404s don't get cached by Cloudflare's edge.
+
 ## [0.2.0] — 2026-05-28
 
 - Strip Discord webhook URLs out of source code, build args, and CI secrets.
