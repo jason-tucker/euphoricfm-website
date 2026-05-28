@@ -18,7 +18,9 @@ export default {
       },
       maxWidth: {
         phone: '24rem',
-        frame: '72rem', // desktop hero layout cap
+        // Desktop cap — keeps the hero from over-stretching on widescreens
+        // and the whole above-the-fold layout fitting a 1080p viewport.
+        frame: '64rem',
       },
       keyframes: {
         spin: { to: { transform: 'rotate(360deg)' } },

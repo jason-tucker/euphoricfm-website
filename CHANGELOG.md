@@ -5,6 +5,16 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.3.2] — 2026-05-28
+
+- Tighten desktop layout so the hero (header + player + action row + sticky
+  Recently Played sidebar) fits above the fold on a typical 1080p viewport.
+  Artwork stays side-by-side at every breakpoint instead of stacking on lg+
+  (was making the card 600+px tall). Header wordmark capped at 5xl. Card
+  padding evens out at lg. Frame cap dropped from 72rem to 64rem so the
+  layout feels denser. Recently Played sidebar capped at 520px tall with
+  internal scrolling.
+
 ## [0.3.1] — 2026-05-28
 
 - Up Next slide-down is now timed: reveals only when ≤40s remain on the

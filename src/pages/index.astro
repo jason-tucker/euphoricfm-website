@@ -16,17 +16,18 @@ import Footer from '../components/Footer.astro';
   <div class="phone">
     <Header />
 
-    <!-- On phone+tablet: stack vertically. On lg+: 2-col hero with sticky sidebar.
-         In PWA standalone mode (`body.pwa-mode`), only the player is shown — the
-         CSS in global.css hides .efm-extras content. -->
-    <div class="lg:grid lg:grid-cols-12 lg:gap-6 lg:items-start">
-      <div class="lg:col-span-7 xl:col-span-8 lg:space-y-3">
+    <!-- On phone+tablet: stack vertically. On lg+: 2-col hero (player + sticky
+         Recently Played sidebar), sized so the whole hero + actions stay above
+         the fold on a typical 1080p desktop. In PWA standalone mode the
+         CSS in global.css hides .efm-extras so only the player renders. -->
+    <div class="lg:grid lg:grid-cols-12 lg:gap-4 lg:items-start">
+      <div class="lg:col-span-8 lg:space-y-2">
         <PlayerCard />
         <div class="efm-extras">
           <ActionRow />
         </div>
       </div>
-      <aside class="efm-extras lg:col-span-5 xl:col-span-4 lg:sticky lg:top-4">
+      <aside class="efm-extras lg:col-span-4 lg:sticky lg:top-4">
         <RecentlyPlayed />
       </aside>
     </div>

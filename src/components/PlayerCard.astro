@@ -6,33 +6,34 @@ import { site } from '../site.config';
      The script in this file owns the audio element + Web Audio analyser.
      `src/scripts/nowplaying.ts` hydrates the #np-* hooks on every poll. -->
 <section class="pt-2">
-  <div id="np-card" class="card vt-np !p-3 lg:!p-6 bg-midnight/40 border-midnight/40 overflow-hidden relative">
+  <div id="np-card" class="card vt-np !p-3 lg:!p-4 bg-midnight/40 border-midnight/40 overflow-hidden relative">
 
-    <!-- Top row: artwork + track info -->
-    <div class="flex items-start gap-3 lg:gap-6 lg:flex-col">
-      <div class="relative shrink-0 lg:w-full">
+    <!-- Top row: artwork + track info. Stays side-by-side at every breakpoint
+         so the card doesn't blow up vertically on desktop. -->
+    <div class="flex items-start gap-3 lg:gap-5">
+      <div class="relative shrink-0">
         <img
           id="np-art"
           src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E"
           alt=""
-          class="vt-art w-20 h-20 lg:w-full lg:h-auto lg:aspect-square rounded-lg lg:rounded-2xl object-cover bg-cream/10 shadow-xl"
+          class="vt-art w-20 h-20 lg:w-40 lg:h-40 rounded-lg lg:rounded-xl object-cover bg-cream/10 shadow-xl"
         />
-        <div class="hidden lg:block absolute inset-0 rounded-2xl pointer-events-none ring-1 ring-inset ring-cream/10"></div>
+        <div class="hidden lg:block absolute inset-0 rounded-xl pointer-events-none ring-1 ring-inset ring-cream/10"></div>
       </div>
 
-      <div class="min-w-0 flex-1 lg:w-full">
+      <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2 mb-1">
           <span id="np-status" class="inline-block rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-ruby/20 text-ruby">LIVE</span>
           <span class="text-[10px] uppercase tracking-widest text-cream/40">Now Playing</span>
         </div>
-        <div id="np-title" class="truncate text-base lg:text-2xl font-bold text-cream">Loading…</div>
-        <div id="np-artist" class="truncate text-sm lg:text-lg text-cream/75">—</div>
+        <div id="np-title" class="truncate text-base lg:text-xl font-bold text-cream">Loading…</div>
+        <div id="np-artist" class="truncate text-sm lg:text-base text-cream/75">—</div>
         <div id="np-album" class="truncate text-xs lg:text-sm text-cream/45 mt-0.5"></div>
       </div>
     </div>
 
     <!-- Progress bar + times -->
-    <div class="mt-3 lg:mt-5">
+    <div class="mt-3 lg:mt-4">
       <div class="h-1.5 lg:h-2 w-full rounded-full bg-cream/10 overflow-hidden">
         <div id="np-bar" class="h-full bg-gradient-to-r from-sunburst to-lemon transition-[width] duration-300 shadow-[0_0_20px_rgba(254,177,57,0.45)]" style="width: 0%"></div>
       </div>
@@ -43,7 +44,7 @@ import { site } from '../site.config';
     </div>
 
     <!-- Transport row: play + volume -->
-    <div class="mt-3 flex items-center gap-3">
+    <div class="mt-3 lg:mt-3 flex items-center gap-3">
       <button
         id="efm-play"
         type="button"
