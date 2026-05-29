@@ -3,71 +3,81 @@ import { site } from '../site.config';
 ---
 
 <!-- Unified player: now-playing + transport controls + visualizer + up-next.
-     The script in this file owns the audio element + Web Audio analyser.
-     `src/scripts/nowplaying.ts` hydrates the #np-* hooks on every poll. -->
+     Play button overlays the album art (Spotify-style) so the card reads as a
+     single integrated unit instead of a stack of disjoint rows. The inline
+     script owns the audio element + Web Audio analyser, and writes
+     --efm-bass / --efm-mid / --efm-high / --efm-energy CSS variables on
+     :root every frame so anything on the page can react to the music. -->
 <section class="pt-2">
   <div id="np-card" class="card vt-np !p-3 lg:!p-4 bg-midnight/40 border-midnight/40 overflow-hidden relative">
 
-    <!-- Top row: artwork + track info. Stays side-by-side at every breakpoint
-         so the card doesn't blow up vertically on desktop. -->
+    <!-- Top row: artwork (with play overlay) + track info. -->
     <div class="flex items-start gap-3 lg:gap-5">
-      <div class="relative shrink-0">
+      <div id="np-art-wrap" class="relative shrink-0">
         <img
           id="np-art"
           src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E"
           alt=""
-          class="vt-art w-20 h-20 lg:w-40 lg:h-40 rounded-lg lg:rounded-xl object-cover bg-cream/10 shadow-xl"
+          class="vt-art w-20 h-20 lg:w-40 lg:h-40 rounded-lg lg:rounded-xl object-cover bg-cream/10 shadow-xl block"
         />
+        <!-- Subtle inset ring on desktop only. -->
         <div class="hidden lg:block absolute inset-0 rounded-xl pointer-events-none ring-1 ring-inset ring-cream/10"></div>
+
+        <!-- Play / pause button — overlays the art. Slightly translucent so
+             the art shows through; gets a bass-driven glow halo when playing. -->
+        <button
+          id="efm-play"
+          type="button"
+          class="absolute inset-0 m-auto flex items-center justify-center w-10 h-10 lg:w-16 lg:h-16 rounded-full bg-ink/60 backdrop-blur-sm text-cream shadow-lg ring-1 ring-cream/20 active:scale-95 transition-transform"
+          aria-label="Play"
+        >
+          <svg id="efm-play-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5 lg:w-7 lg:h-7 ml-0.5"><path d="M8 5v14l11-7z"/></svg>
+        </button>
       </div>
 
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2 mb-1">
-          <span id="np-status" class="inline-block rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-ruby/20 text-ruby">LIVE</span>
+          <span id="np-status" class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-ruby/20 text-ruby">
+            <span id="np-live-dot" class="inline-block w-1.5 h-1.5 rounded-full bg-ruby"></span>LIVE
+          </span>
           <span class="text-[10px] uppercase tracking-widest text-cream/40">Now Playing</span>
         </div>
         <div id="np-title" class="truncate text-base lg:text-xl font-bold text-cream">Loading…</div>
         <div id="np-artist" class="truncate text-sm lg:text-base text-cream/75">—</div>
         <div id="np-album" class="truncate text-xs lg:text-sm text-cream/45 mt-0.5"></div>
+
+        <!-- Listener count + integrated volume slider, same row. The slider
+             takes whatever width remains so on a phone it's still tappable. -->
+        <div class="mt-2 flex items-center gap-2 text-[10px] lg:text-xs text-cream/60">
+          <span class="shrink-0"><span id="np-listeners">0</span> listening</span>
+          <div class="flex-1 flex items-center gap-1.5 min-w-0">
+            <svg id="efm-vol-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-3.5 h-3.5 lg:w-4 lg:h-4 shrink-0 text-cream/55"><path d="M3 10v4h4l5 4V6L7 10H3z"/></svg>
+            <input
+              id="efm-volume"
+              type="range"
+              min="0"
+              max="100"
+              value="80"
+              aria-label="Volume"
+              class="efm-range flex-1 min-w-0"
+            />
+          </div>
+        </div>
       </div>
     </div>
 
-    <!-- Progress bar + times -->
+    <!-- Progress bar + times. Bar shimmers with mid frequencies when playing. -->
     <div class="mt-3 lg:mt-4">
-      <div class="h-1.5 lg:h-2 w-full rounded-full bg-cream/10 overflow-hidden">
-        <div id="np-bar" class="h-full bg-gradient-to-r from-sunburst to-lemon transition-[width] duration-300 shadow-[0_0_20px_rgba(254,177,57,0.45)]" style="width: 0%"></div>
+      <div id="np-bar-track" class="h-1.5 lg:h-2 w-full rounded-full bg-cream/10 overflow-hidden relative">
+        <div id="np-bar" class="h-full bg-gradient-to-r from-sunburst to-lemon transition-[width] duration-300" style="width: 0%"></div>
       </div>
       <div class="mt-1.5 flex items-center justify-between text-[10px] lg:text-xs text-cream/60">
         <span id="np-times">0:00 / 0:00</span>
-        <span><span id="np-listeners">0</span> listening</span>
+        <span id="efm-play-label" class="text-cream/55">Tap play to tune in</span>
       </div>
     </div>
 
-    <!-- Transport row: play + volume -->
-    <div class="mt-3 lg:mt-3 flex items-center gap-3">
-      <button
-        id="efm-play"
-        type="button"
-        class="shrink-0 inline-flex items-center justify-center w-12 h-12 lg:w-14 lg:h-14 rounded-full bg-sunburst text-ink shadow-lg active:scale-95 transition-transform"
-        aria-label="Play"
-      >
-        <svg id="efm-play-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6 lg:w-7 lg:h-7"><path d="M8 5v14l11-7z"/></svg>
-      </button>
-      <div class="min-w-0 flex-1">
-        <div class="text-[10px] uppercase tracking-widest text-cream/50">Stream</div>
-        <div id="efm-play-label" class="text-sm lg:text-base font-semibold text-cream truncate">Tap play to tune in</div>
-      </div>
-      <input
-        id="efm-volume"
-        type="range"
-        min="0"
-        max="100"
-        value="80"
-        aria-label="Volume"
-        class="w-20 lg:w-28 accent-sunburst"
-      />
-      <audio id="efm-audio" preload="none" crossorigin="anonymous"></audio>
-    </div>
+    <audio id="efm-audio" preload="none" crossorigin="anonymous"></audio>
 
     <!-- Up Next — slides down from the bottom of the card when playing_next is present. -->
     <div id="np-up-next" class="mt-3 overflow-hidden max-h-0 opacity-0 transition-[max-height,opacity] duration-500 ease-out">
@@ -89,6 +99,40 @@ import { site } from '../site.config';
     max-height: 80px;
     opacity: 1;
   }
+
+  /* Custom range slider — integrated, slim. Cross-browser styling. */
+  input.efm-range {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      rgb(254 177 57) 0%,
+      rgb(254 177 57) var(--vol, 80%),
+      rgba(255 255 255 / 0.12) var(--vol, 80%),
+      rgba(255 255 255 / 0.12) 100%
+    );
+    cursor: pointer;
+  }
+  input.efm-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 9999px;
+    background: rgb(254 177 57);
+    box-shadow: 0 0 0 2px rgba(10 10 10 / 0.6);
+    cursor: pointer;
+  }
+  input.efm-range::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 9999px;
+    background: rgb(254 177 57);
+    border: 2px solid rgba(10 10 10 / 0.6);
+    cursor: pointer;
+  }
 </style>
 
 <script is:inline define:vars={{ streamUrl: site.azuracast.streamUrl }}>
@@ -101,15 +145,19 @@ import { site } from '../site.config';
     const card = document.getElementById('np-card');
     if (!audio || !btn || !icon || !vol) return;
 
+    const root = document.documentElement;
+
     const playIcon = '<path d="M8 5v14l11-7z"/>';
     const pauseIcon = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
     audio.volume = Number(vol.value) / 100;
+    vol.style.setProperty('--vol', vol.value + '%');
 
     let audioCtx = null;
     let analyser = null;
     let dataArr = null;
     let rafId = 0;
     let sourceNode = null;
+    let playing = false;
 
     const setupAnalyser = async () => {
       try {
@@ -124,8 +172,8 @@ import { site } from '../site.config';
 
         sourceNode = audioCtx.createMediaElementSource(audio);
         analyser = audioCtx.createAnalyser();
-        // The bass-glow loop only needs the bottom of the spectrum, so a
-        // smaller FFT is fine and cheaper. Smoothing kept low so kicks hit.
+        // 256 bins gives us enough resolution for bass/mid/high splits while
+        // keeping the per-frame copy cheap.
         analyser.fftSize = 256;
         analyser.smoothingTimeConstant = 0.55;
         analyser.minDecibels = -85;
@@ -135,65 +183,94 @@ import { site } from '../site.config';
         analyser.connect(audioCtx.destination);
         return true;
       } catch (err) {
-        console.warn('[efm] Web Audio unavailable; bass glow disabled', err);
+        console.warn('[efm] Web Audio unavailable; reactions disabled', err);
         return false;
       }
     };
 
-    // Bass-glow tick — reads only the lowest ~6% of frequency bins each
-    // frame, averages them, and writes the value to `--efm-bass` on the
-    // player card. CSS in global.css drives the box-shadow halo from that.
-    const tickGlow = () => {
+    // Per-frame tick — reads the FFT and writes four CSS variables on :root
+    // so anything on the page can react. Bands split roughly:
+    //   bass:  0 –  8% of bins  (kick + bass)
+    //   mid:   8 – 35%          (vocals, snare, instruments)
+    //   high: 35 – 100%         (cymbals, brightness)
+    //   energy: average of all  (overall loudness)
+    const tickReact = () => {
       if (analyser && dataArr) {
         analyser.getByteFrequencyData(dataArr);
-        const bassCount = Math.max(4, Math.floor(dataArr.length * 0.06));
-        let sum = 0;
-        for (let i = 0; i < bassCount; i++) sum += dataArr[i];
-        const bass = (sum / bassCount) / 255;
-        if (card) card.style.setProperty('--efm-bass', bass.toFixed(3));
+        const n = dataArr.length;
+        const bassEnd = Math.max(2, Math.floor(n * 0.08));
+        const midEnd  = Math.max(bassEnd + 2, Math.floor(n * 0.35));
+        let bs = 0, md = 0, hi = 0, all = 0;
+        for (let i = 0; i < n; i++) {
+          const v = dataArr[i];
+          all += v;
+          if (i < bassEnd) bs += v;
+          else if (i < midEnd) md += v;
+          else hi += v;
+        }
+        const bass = (bs / bassEnd) / 255;
+        const mid  = (md / (midEnd - bassEnd)) / 255;
+        const high = (hi / (n - midEnd)) / 255;
+        const energy = (all / n) / 255;
+        root.style.setProperty('--efm-bass',   bass.toFixed(3));
+        root.style.setProperty('--efm-mid',    mid.toFixed(3));
+        root.style.setProperty('--efm-high',   high.toFixed(3));
+        root.style.setProperty('--efm-energy', energy.toFixed(3));
       }
-      rafId = requestAnimationFrame(tickGlow);
+      rafId = requestAnimationFrame(tickReact);
     };
 
-    const startGlow = async () => {
+    const startReact = async () => {
       const ok = await setupAnalyser();
       if (!ok) return;
       cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(tickGlow);
+      rafId = requestAnimationFrame(tickReact);
     };
-    const stopGlow = () => {
+    const stopReact = () => {
       cancelAnimationFrame(rafId);
-      if (card) card.style.removeProperty('--efm-bass');
+      // Reset all reactivity vars so the page settles back to its idle look.
+      root.style.removeProperty('--efm-bass');
+      root.style.removeProperty('--efm-mid');
+      root.style.removeProperty('--efm-high');
+      root.style.removeProperty('--efm-energy');
+      if (card) card.classList.remove('is-playing');
     };
 
-    // Belt-and-suspenders crossOrigin — guarantees the Origin header is sent
-    // so AnalyserNode gets real PCM data for the bass-glow loop.
     audio.crossOrigin = 'anonymous';
+
+    const setPlayingUI = (isPlaying) => {
+      playing = isPlaying;
+      icon.innerHTML = isPlaying ? pauseIcon : playIcon;
+      btn.setAttribute('aria-label', isPlaying ? 'Pause' : 'Play');
+      if (label) label.textContent = isPlaying ? 'Streaming live' : 'Tap play to tune in';
+      if (card) card.classList.toggle('is-playing', isPlaying);
+    };
 
     btn.addEventListener('click', async () => {
       try {
         if (audio.paused) {
           audio.src = streamUrl + (streamUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
           await audio.play();
-          icon.innerHTML = pauseIcon;
-          if (label) label.textContent = 'Streaming live';
-          await startGlow();
+          setPlayingUI(true);
+          await startReact();
         } else {
           audio.pause();
           audio.removeAttribute('src');
           audio.load();
-          icon.innerHTML = playIcon;
-          if (label) label.textContent = 'Tap play to tune in';
-          stopGlow();
+          setPlayingUI(false);
+          stopReact();
         }
       } catch (err) {
         console.warn('[efm] audio play failed', err);
       }
     });
 
-    vol.addEventListener('input', () => { audio.volume = Number(vol.value) / 100; });
-    audio.addEventListener('ended', () => { icon.innerHTML = playIcon; stopGlow(); });
-    audio.addEventListener('error', () => { icon.innerHTML = playIcon; stopGlow(); });
+    vol.addEventListener('input', () => {
+      audio.volume = Number(vol.value) / 100;
+      vol.style.setProperty('--vol', vol.value + '%');
+    });
+    audio.addEventListener('ended', () => { setPlayingUI(false); stopReact(); });
+    audio.addEventListener('error', () => { setPlayingUI(false); stopReact(); });
 
     // Bridge for Media Session API in nowplaying.ts.
     window.__efmAudio = {

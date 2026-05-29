@@ -18,9 +18,15 @@ tense ("add", "fix", "wire up").
 Every PR gets a card on the dedicated **euphoricfm-website** Project board
 before the PR is opened. Link them via `gh project item-add`.
 
-### 4. No host ports beyond loopback
-Caddy binds to `127.0.0.1:${PORT:-6094}` only. Cloudflare Tunnel is the
-only public ingress. Never `0.0.0.0`.
+### 4. Caddy IS the public ingress (changed in 0.4.0)
+As of 0.4.0 Caddy binds `0.0.0.0:80` + `0.0.0.0:443` directly on the host
+and terminates TLS via Let's Encrypt. **No Cloudflare proxy.** This
+project is the exception to the account-wide "loopback only" rule because
+the primary use case — a custom in-game phone CEF iframe — couldn't load
+Cloudflare-fronted content. Container hardening compensates for the wider
+exposure: `cap_drop ALL` + `cap_add NET_BIND_SERVICE` +
+`no-new-privileges:true` + `read_only: true` + tmpfs `/tmp` + named
+volumes only for `/data` and `/config` (LE cert persistence).
 
 ### 5. Iframe-safe by default
 This site is embedded inside the in-game phone's iframe browser. The Caddyfile

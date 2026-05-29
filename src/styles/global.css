@@ -137,15 +137,31 @@
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* Bass-kick glow — `--efm-bass` is set on #np-card every frame by the
-   bass-glow loop in PlayerCard.astro. The card grows a sunburst halo
-   proportional to the bass energy. The analyser runs in the background
-   even though no spectrum is rendered. */
-#np-card {
+/* ---------------------------------------------------------------------------
+ * Music-reactive CSS variables.
+ *
+ * PlayerCard.astro's tick loop writes these on :root every frame while audio
+ * is playing, and removes them when paused (so the page falls back to its
+ * idle look). Defaults below mean: nothing on the page reacts when these
+ * vars are absent.
+ *
+ *   --efm-bass    0..1   kick + bass drum energy
+ *   --efm-mid     0..1   vocals / snare / instruments
+ *   --efm-high    0..1   cymbals / brightness
+ *   --efm-energy  0..1   overall loudness (avg of all bins)
+ *
+ * Reactions are kept SUBTLE on purpose — the user asked for "a lil" elsewhere
+ * on the page; the player card is allowed to be more expressive.
+ * ------------------------------------------------------------------------- */
+:root {
   --efm-bass: 0;
-  /* Plain rgba fallback for browsers that don't support color-mix() — old
-     CEF builds in the in-game phone may not. The next rule upgrades to
-     OKLCH on capable browsers. */
+  --efm-mid: 0;
+  --efm-high: 0;
+  --efm-energy: 0;
+}
+
+/* --- Player card: bass-driven halo (the main visual reaction). ---------- */
+#np-card {
   box-shadow:
     0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
     rgba(254, 177, 57, calc(var(--efm-bass) * 0.55));
@@ -157,6 +173,59 @@
       0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
       color-mix(in oklch, #FEB139 calc(var(--efm-bass) * 55%), transparent);
   }
+}
+
+/* --- Album art: subtle bass pulse + ring brighten. ---------------------- */
+#np-art {
+  transform: scale(calc(1 + var(--efm-bass) * 0.03));
+  transition: transform 80ms linear, filter 120ms linear;
+  filter: brightness(calc(1 + var(--efm-energy) * 0.08));
+  will-change: transform, filter;
+}
+
+/* --- Play button: glow with bass when playing. -------------------------- */
+#np-card.is-playing #efm-play {
+  box-shadow: 0 0 calc(var(--efm-bass) * 22px) calc(var(--efm-bass) * 4px)
+    rgba(254, 177, 57, calc(0.35 + var(--efm-bass) * 0.5));
+  transition: box-shadow 80ms linear;
+}
+
+/* --- Progress bar: mid-frequency shimmer (subtle horizontal gleam). ----- */
+#np-bar {
+  box-shadow:
+    0 0 calc(var(--efm-mid) * 18px) calc(var(--efm-mid) * 2px)
+    rgba(254, 177, 57, calc(0.35 + var(--efm-mid) * 0.45));
+  transition: box-shadow 80ms linear;
+}
+
+/* --- LIVE dot: high-frequency twinkle. ---------------------------------- */
+#np-live-dot {
+  box-shadow: 0 0 calc(var(--efm-high) * 10px) rgba(214, 28, 78, calc(0.4 + var(--efm-high) * 0.6));
+  transform: scale(calc(1 + var(--efm-high) * 0.4));
+  transition: box-shadow 80ms linear, transform 80ms linear;
+}
+
+/* --- Site-wide subtle reactions (kept "a lil"). ------------------------- */
+
+/* Header wordmark: tiny bass-driven scale + drop-shadow brightness. */
+header h1 span {
+  display: inline-block;
+  transform: scale(calc(1 + var(--efm-bass) * 0.015));
+  text-shadow: 0 0 calc(var(--efm-bass) * 12px) rgba(254, 177, 57, calc(var(--efm-bass) * 0.5));
+  transition: transform 80ms linear, text-shadow 80ms linear;
+}
+
+/* Body background gradient — overall energy brightens it slightly so the
+   page feels alive without distracting. ~3% max brightness shift. */
+body {
+  filter: brightness(calc(1 + var(--efm-energy) * 0.03));
+  transition: filter 200ms linear;
+}
+
+/* Action row + recently-played cards lift with bass kicks. Very small. */
+.efm-extras .btn, #recent-list li {
+  transform: translateY(calc(var(--efm-bass) * -1px));
+  transition: transform 80ms linear;
 }
 
 /* Hover lift on action buttons (desktop only — phones shouldn't feel "hovery"). */

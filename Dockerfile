@@ -26,4 +26,5 @@ LABEL org.opencontainers.image.title="euphoricfm-website" \
       org.opencontainers.image.revision="${PUBLIC_GIT_SHA}" \
       org.opencontainers.image.created="${PUBLIC_BUILD_TIME}"
 
-EXPOSE 6094
+# Caddy listens on 80 (ACME HTTP-01 + http→https redirect) and 443 (TLS).
+EXPOSE 80 443

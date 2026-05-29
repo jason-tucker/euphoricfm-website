@@ -1,8 +1,9 @@
 # euphoricfm-website — Docker Compose stack.
 #
-# Single container: Caddy serving a static Astro build. cloudflared (host
-# network mode on this VPS) is the only public ingress and reaches us via the
-# 127.0.0.1:${PORT:-6094} loopback bind.
+# As of 0.4.0 this is the PUBLIC ingress for info.euphoric.fm. Caddy binds
+# 0.0.0.0:80 + 0.0.0.0:443 directly on the host (not via cloudflared) so the
+# in-game phone iframe can reach us without Cloudflare's bot-detection layer
+# silently rejecting CEF clients. Let's Encrypt handles certs automatically.
 #
 # Watchtower polls GHCR every 60s and auto-pulls a new ${IMAGE}:latest when
 # CI pushes one — push to main → live in ~60-90s.
@@ -18,18 +19,46 @@ services:
         PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://info.euphoric.fm}
     restart: unless-stopped
     environment:
-      PORT: ${PORT:-6094}
+      # Hostname Caddy serves (and provisions a Let's Encrypt cert for).
+      SITE_HOSTNAME: ${SITE_HOSTNAME:-info.euphoric.fm}
       # Webhook URLs are injected at runtime by Caddy templating
-      # /runtime-config.js from these env vars. They live in .env on the host;
-      # editing them is `docker compose up -d`, no rebuild needed.
+      # /efm-runtime-config.js from these env vars. They live in .env on the
+      # host; editing them is `docker compose up -d`, no rebuild needed.
       PUBLIC_DISCORD_REQUEST_WEBHOOK: ${PUBLIC_DISCORD_REQUEST_WEBHOOK:-}
       PUBLIC_DISCORD_CONTACT_WEBHOOK: ${PUBLIC_DISCORD_CONTACT_WEBHOOK:-}
-    # Loopback ONLY — cloudflared on the host reaches us at 127.0.0.1:${PORT}.
-    # Never bind to 0.0.0.0.
+    # PUBLIC binding: Caddy needs :80 (ACME HTTP-01 challenge + http→https
+    # redirect) and :443 (TLS). HTTP/3 over UDP/443 is opt-in; we leave it
+    # off because some CEF clients hang trying to negotiate QUIC.
     ports:
-      - "127.0.0.1:${PORT:-6094}:${PORT:-6094}"
+      - "80:80"
+      - "443:443"
+    # ---- Hardening ---------------------------------------------------------
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Required so the non-root caddy user inside the container can bind
+      # to ports below 1024 (80, 443).
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    # Persist Let's Encrypt certs + ACME state across restarts/redeploys so
+    # we don't burn LE rate limits on every container restart.
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
     labels:
       com.centurylinklabs.watchtower.enable: "true"
+    healthcheck:
+      # Hit Caddy's own loopback on 80 — succeeds even before LE cert is
+      # provisioned (Caddy serves http→https redirect on 80 in the meantime).
+      test: ["CMD", "wget", "-q", "--spider", "--tries=1", "--timeout=3", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     logging:
       driver: json-file
       options:
@@ -49,8 +78,14 @@ services:
       WATCHTOWER_NOTIFICATIONS_LEVEL: info
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: json-file
       options:
         max-size: "5m"
         max-file: "2"
+
+volumes:
+  caddy_data:
+  caddy_config:

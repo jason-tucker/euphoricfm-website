@@ -5,6 +5,73 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.4.0] — 2026-05-29
+
+Major: dropped Cloudflare proxy, Caddy now binds public 80/443 directly with
+Let's Encrypt. Plus a player redesign with richer music reactivity.
+
+### Infrastructure (breaking — requires DNS flip)
+- Caddy binds `0.0.0.0:80` + `0.0.0.0:443` on the host. Was `127.0.0.1:6094`
+  behind cloudflared. The in-game phone CEF iframe couldn't load
+  Cloudflare-fronted content (Wix/WP sites worked in the same phone, so we
+  isolated the difference to CF's bot-detection layer rejecting CEF's TLS
+  fingerprint silently). Going direct removes that layer entirely.
+- Let's Encrypt auto-provisioning via Caddy ACME. Certs persist in a named
+  Docker volume so renewals survive container restarts. Will issue the
+  moment DNS points at the VPS public IP.
+- **DNS flip required**: in Cloudflare, change `info.euphoric.fm` A record
+  to `147.182.169.215` and toggle it to **DNS-only (gray cloud)**. The site
+  is offline for ~5 min during propagation, then comes back without CF in
+  the path.
+
+### Security review + hardening
+- Container: `cap_drop ALL` + `cap_add NET_BIND_SERVICE` (just enough to
+  bind privileged ports), `security_opt: no-new-privileges:true`,
+  `read_only: true` rootfs, tmpfs `/tmp`, named volumes only for cert
+  persistence. Watchtower also gets `no-new-privileges`.
+- Security headers added: `Strict-Transport-Security: max-age=31536000`,
+  `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: strict-origin-when-cross-origin`,
+  `Permissions-Policy` denying camera/mic/geo/payment/USB/etc.,
+  `-Server` to strip Caddy's version, kept `frame-ancestors *` since the
+  in-game phone iframe is the primary use case.
+- Caddy admin API explicitly `admin off`.
+- `/sw.js` now served with `no-cache, no-store, must-revalidate` so the
+  0.3.7 killswitch SW always reaches clients fresh.
+- Healthcheck added: hits Caddy on loopback so docker knows when the
+  container is unhealthy.
+- Documented in Caddyfile: webhook URLs in `/efm-runtime-config.js` ARE
+  intentionally exposed client-side. Trade-off — proxying through Caddy
+  would mean Discord sees only our IP for ALL posts, breaking per-user
+  rate limits. If the webhooks ever get abused at scale, rotate them in
+  Discord channel settings and update `.env`. Real abuse mitigation needs
+  a rate-limit plugin (not stock Caddy) — punted for now.
+
+### Player redesign
+- Play button now overlays the album art (Spotify/Apple-Music style).
+  Translucent ink-coloured disc with a bass-driven sunburst glow halo
+  when playing — feels like one integrated component instead of three
+  stacked rows.
+- Volume slider moved inline with the listener count and restyled with a
+  custom thumb + filled track. Slim, integrated, still 12px tappable thumb.
+- Removed the standalone transport row. "Tap play to tune in" / "Streaming
+  live" label moved next to the times below the progress bar.
+
+### Richer music reactions
+- Analyser now writes four CSS variables on `:root` every frame while
+  playing: `--efm-bass` (kick), `--efm-mid` (vocals/instruments),
+  `--efm-high` (cymbals), `--efm-energy` (overall). Anything on the page
+  can react.
+- Player card: bass-driven halo (kept), album art subtle bass pulse +
+  energy brighten, play button bass glow, progress bar mid-frequency
+  shimmer, LIVE dot high-frequency twinkle.
+- Site-wide (kept subtle): wordmark `Euphoric`/`FM` gets a small
+  bass-driven scale + sunburst text-shadow, body filter brightens ~3%
+  with overall energy, action-row buttons + recently-played rows nudge
+  up 1px with each kick.
+- All reactions stop and CSS vars are removed when audio pauses, so the
+  page settles back to its idle look.
+
 ## [0.3.8] — 2026-05-28
 
 The custom in-game phone hardcodes the iframe URL so we can't divert to
