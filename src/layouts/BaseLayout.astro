@@ -30,20 +30,13 @@ const clientConfig = {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#293462" />
     <meta name="format-detection" content="telephone=no" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="/icon.svg" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <link rel="preconnect" href="https://euphoric.fm" crossorigin />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
-      rel="stylesheet"
-    />
+    <!-- PWA bits (manifest, apple-touch-icon, theme-color, apple-mobile meta tags)
+         were removed. The in-game phone is the primary use case, and some custom
+         FiveM phone CEF builds were failing to first-paint the iframe when the
+         document declared a manifest. Body still has system-ui fallback so the
+         page looks identical without Inter loaded from Google Fonts. -->
     <title>{fullTitle}</title>
     <meta name="description" content={description} />
     <meta property="og:title" content={fullTitle} />
@@ -64,95 +57,19 @@ const clientConfig = {
     </script>
     <main id="main"><slot /></main>
 
-    <!-- Install banner — appears once on supporting browsers (Chrome/Edge/Brave)
-         when the page is eligible for PWA install. Hidden by default. -->
-    <div id="efm-install-banner" class="hidden efm-extras fixed inset-x-0 bottom-3 z-30 mx-auto max-w-md px-4">
-      <div class="card !p-3 flex items-center gap-3 shadow-2xl">
-        <img src="/icon.svg" alt="" class="w-10 h-10 rounded-lg" />
-        <div class="min-w-0 flex-1">
-          <div class="text-sm font-semibold text-cream">Install the EuphoricFM player</div>
-          <div class="text-[11px] text-cream/60">Compact, resizable, lives in your dock or taskbar.</div>
-        </div>
-        <button id="efm-install-yes" type="button" class="btn !px-3 !py-2 btn-sunburst !min-h-0">Install</button>
-        <button id="efm-install-no" type="button" class="text-cream/50 text-xl leading-none px-2" aria-label="Dismiss">&times;</button>
-      </div>
-    </div>
-
     <script>
       import '../scripts/nowplaying.ts';
     </script>
     <script is:inline>
-      // Detect iframe context FIRST. The in-game phone (CEF-based) loads this
-      // site inside an iframe — it is the most important use case. PWA bits
-      // (service worker, install banner, pwa-mode class) are skipped there
-      // because:
-      //   - Service workers in iframes have unpredictable scope behaviour
-      //     in older CEF builds and can cache broken state across sessions.
-      //   - PWA install is meaningless inside an iframe.
-      //   - display-mode media queries can misfire in CEF and mistakenly
-      //     hide the .efm-extras content.
-      let inIframe = false;
-      try { inIframe = window.self !== window.top; } catch (_) { inIframe = true; }
-
-      if (inIframe) {
-        // Best-effort cleanup of any service worker registered by a previous
-        // build, so visitors who already loaded the site don't stay stuck on
-        // a cached version.
-        if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
-          navigator.serviceWorker.getRegistrations().then((regs) => {
-            regs.forEach((r) => r.unregister().catch(() => {}));
-          }).catch(() => {});
-        }
-      } else {
-        // Standalone web view: register the service worker.
-        if ('serviceWorker' in navigator) {
-          window.addEventListener('load', () => {
-            navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
-          });
-        }
-
-        // PWA install prompt + standalone detection — web only.
-        (function () {
-          let deferred = null;
-          const banner = document.getElementById('efm-install-banner');
-          const yes = document.getElementById('efm-install-yes');
-          const no = document.getElementById('efm-install-no');
-          const dismissedKey = 'efm-install-dismissed';
-
-          const standalone = window.matchMedia('(display-mode: standalone)').matches ||
-            window.matchMedia('(display-mode: minimal-ui)').matches ||
-            window.matchMedia('(display-mode: window-controls-overlay)').matches ||
-            window.navigator.standalone === true;
-          if (standalone) document.body.classList.add('pwa-mode');
-
-          if (banner && yes && no) {
-            window.addEventListener('beforeinstallprompt', (e) => {
-              e.preventDefault();
-              deferred = e;
-              if (localStorage.getItem(dismissedKey)) return;
-              if (standalone) return;
-              banner.classList.add('show');
-            });
-            yes.addEventListener('click', async () => {
-              if (!deferred) return;
-              banner.classList.remove('show');
-              deferred.prompt();
-              const choice = await deferred.userChoice.catch(() => null);
-              deferred = null;
-              if (choice && choice.outcome !== 'accepted') {
-                localStorage.setItem(dismissedKey, '1');
-              }
-            });
-            no.addEventListener('click', () => {
-              banner.classList.remove('show');
-              localStorage.setItem(dismissedKey, '1');
-            });
-            window.addEventListener('appinstalled', () => {
-              banner.classList.remove('show');
-              document.body.classList.add('pwa-mode');
-            });
-          }
-        })();
+      // Best-effort cleanup of any service worker registered by an earlier
+      // build. sw.js itself is now a killswitch — visiting the page in any
+      // context that supports SW fetches the new sw.js, which unregisters
+      // itself and clears all caches on activate. The in-game phone is the
+      // primary use case and SW lifecycle there is unpredictable.
+      if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
+        navigator.serviceWorker.getRegistrations().then((regs) => {
+          regs.forEach((r) => r.unregister().catch(() => {}));
+        }).catch(() => {});
       }
     </script>
   </body>

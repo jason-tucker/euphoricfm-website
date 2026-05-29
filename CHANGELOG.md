@@ -5,6 +5,34 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.3.8] — 2026-05-28
+
+The custom in-game phone hardcodes the iframe URL so we can't divert to
+/cef-test.html for diagnosis. Stripped `/` down to remove every external
+dependency and every PWA bit that could plausibly block first-paint in CEF.
+
+- Removed the render-blocking Google Fonts `<link rel="stylesheet">` for
+  Inter. The body font-stack already has `system-ui, sans-serif` as a
+  fallback, so the layout looks effectively identical without Inter loaded.
+  In a CEF iframe that can't reach `fonts.googleapis.com` (sandboxed
+  network, CSP, or a slow CDN), the page was blocking on this stylesheet
+  before first-paint.
+- Removed `<link rel="manifest">`, `<link rel="apple-touch-icon">`,
+  `<meta name="theme-color">`, and the Apple mobile-web-app meta tags from
+  the head. Some custom phone CEF builds were tripping on manifest parsing
+  and refusing to first-paint the iframe.
+- Removed the cross-origin `<link rel="preconnect">` lines for
+  euphoric.fm + fonts.googleapis.com + fonts.gstatic.com. With no external
+  stylesheet to load, none of these preconnects buys us anything.
+- Removed the entire PWA install-banner DOM + script + CSS. The killswitch
+  in sw.js (0.3.7) means no SW gets installed anyway; the banner was dead
+  weight and one more inline script that could fail mid-execution.
+- Removed the `pwa-mode` body class plumbing in CSS. Nothing applies it
+  any more.
+
+The wordmark fonts (Begaron, Cortado Script) stay — they're self-hosted
+from `/fonts/` so they're same-origin and don't depend on any external CDN.
+
 ## [0.3.7] — 2026-05-28
 
 In-game phone still wouldn't load after 0.3.6. Confirmed via curl that

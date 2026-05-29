@@ -182,14 +182,6 @@
    The CSS `display-mode` media query was removed because CEF in the in-game
    phone (fullscreen overlay) can falsely match `display-mode: standalone`
    and hide most of the page, leaving an almost-empty black frame. */
-body.pwa-mode .efm-extras { display: none !important; }
-body.pwa-mode .phone { max-width: 100% !important; padding-left: 12px; padding-right: 12px; }
-body.pwa-mode header { padding-top: 8px; padding-bottom: 4px; }
-body.pwa-mode header h1 span { font-size: 2.25rem !important; }
-body.pwa-mode footer { padding-top: 8px; }
-
-/* Install banner — appears in normal web mode when the browser fires
-   beforeinstallprompt. Hidden by default; nowplaying.ts toggles it. */
-#efm-install-banner.show {
-  display: flex !important;
-}
+/* PWA bits (install banner, .pwa-mode body class) were removed entirely.
+   The in-game phone is the primary use case and the PWA wiring was causing
+   first-paint regressions in custom phone CEF builds. */
