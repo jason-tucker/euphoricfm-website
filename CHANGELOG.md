@@ -5,6 +5,27 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.3.7] — 2026-05-28
+
+In-game phone still wouldn't load after 0.3.6. Confirmed via curl that
+Cloudflare is delivering 200 OK with `frame-ancestors *` to a FiveM
+CitizenFX User-Agent on both http and https, so the page IS deliverable —
+the iframe just never paints. Two diagnostic/defensive changes:
+
+- Added `/cef-test.html` — a zero-JS, zero-fonts, zero-SW plain HTML page
+  with inline CSS only. If the in-game phone CAN load this URL but can't
+  load `/`, we know the root page's scripts/fonts/SW are at fault. If it
+  can't load this either, the iframe never reaches our origin and the
+  problem is on the phone resource side (CSP frame-src whitelist, cert
+  trust, etc.) which we can't fix from here.
+- Converted `public/sw.js` into a self-unregistering killswitch. The
+  service worker turned out to be more trouble than it was worth for the
+  in-game-phone primary use case: any previously-installed SW (cached in
+  the CEF profile from earlier visits) could intercept requests and serve
+  stale broken HTML. The new sw.js clears all caches and unregisters
+  itself on activate, so the next update cycle leaves no SW behind for
+  this origin.
+
 ## [0.3.6] — 2026-05-28
 
 In-game phone (FiveM CEF iframe) was loading as a fully black frame. Three

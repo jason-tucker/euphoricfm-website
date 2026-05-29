@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EFM CEF test</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #293462; color: #fff; font-family: Arial, sans-serif; min-height: 100vh; }
+    .box { padding: 16px; text-align: center; }
+    h1 { color: #feb139; margin: 8px 0; font-size: 28px; }
+    p  { margin: 6px 0; font-size: 14px; line-height: 1.4; }
+    .ok { color: #6cf06c; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>EFM CEF test</h1>
+    <p class="ok">If you can read this in the in-game phone, the iframe reached info.euphoric.fm successfully.</p>
+    <p>No JavaScript, no external fonts, no service worker. Plain HTML + inline CSS.</p>
+    <p id="ts">timestamp will appear below if JS runs</p>
+  </div>
+  <script>
+    document.getElementById('ts').textContent = 'JS executed at ' + new Date().toISOString();
+  </script>
+</body>
+</html>
