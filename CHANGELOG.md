@@ -5,6 +5,18 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.4.2] — 2026-05-29
+
+- Moved the play button off the album art (user feedback: didn't like the
+  Spotify-style overlay). Album art is clean again, with the original
+  prominent sunburst play button back in its own transport row below the
+  progress bar. Volume slider stays restyled (slim custom thumb + filled
+  track) and sits to the right of the "Stream / Tap play to tune in"
+  label. Bass-driven sunburst glow halo on the play button kept — works
+  even better against the bright sunburst fill.
+- Listener count moved back to the right of the times row (same row as
+  the elapsed/total timestamp).
+
 ## [0.4.1] — 2026-05-29
 
 Custom in-game phone CEF iframe STILL wouldn't load after 0.4.0 even with
