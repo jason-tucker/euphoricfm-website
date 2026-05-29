@@ -5,6 +5,32 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.3.6] — 2026-05-28
+
+In-game phone (FiveM CEF iframe) was loading as a fully black frame. Three
+fixes landed together:
+
+- Body `min-height: 100dvh` was the only sizing rule; older CEF builds don't
+  understand `dvh` so they dropped the declaration, body had no min-height,
+  and the iframe rendered as an empty black rectangle. Now declares
+  `min-height: 100vh` first (universal) with `100dvh` as a progressive
+  upgrade. Also added an explicit `background-color: #0a0a0a` on `html` as a
+  guaranteed fallback so the page never paints to a black void if any body
+  styling fails.
+- Removed `background-attachment: fixed` from body. CEF iframes don't own a
+  scroll viewport, and the fixed-attached gradient layer can fail to paint
+  entirely, leaving everything black behind the (transparent) content.
+- Removed the `@media (display-mode: standalone | minimal-ui |
+  window-controls-overlay)` rule that hid `.efm-extras`. CEF in the in-game
+  phone (fullscreen overlay) can falsely match these display modes, which
+  was hiding the Action row, Recently Played, and About sections. The
+  `body.pwa-mode` JS-applied class still drives the real PWA-install
+  behaviour, and the iframe branch in BaseLayout never applies it.
+- UI: dropped the SVG icons from the four action-row buttons (Request /
+  Submit / Contact / Business AD). Text-only fits the in-game phone width
+  better and there's no longer an icon column competing with the label on
+  narrow viewports.
+
 ## [0.3.5] — 2026-05-28
 
 In-game phone loading reliability — the in-game phone is the most important

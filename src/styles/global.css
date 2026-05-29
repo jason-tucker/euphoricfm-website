@@ -23,23 +23,33 @@
 }
 
 @layer base {
-  :root {
-    color-scheme: dark;
-  }
   html {
     @apply antialiased;
     -webkit-text-size-adjust: 100%;
     -webkit-tap-highlight-color: transparent;
+    /* Explicit solid base on html so even if body declarations fail to apply
+       (older CEF, weird iframe sizing), we never get a black void. The
+       in-game phone iframe sometimes computes 0px viewport height and never
+       paints body, so html paints the base color. */
+    background-color: #0a0a0a;
   }
   body {
-    @apply bg-ink text-cream font-body min-h-dvh;
+    @apply bg-ink text-cream font-body;
+    /* Use both vh (universal) and dvh (modern). Older CEF builds in the
+       in-game phone don't recognise dvh and would drop the declaration
+       entirely if dvh was the only value, leaving body with 0 min-height and
+       the page rendering as an empty black rectangle. */
+    min-height: 100vh;
+    min-height: 100dvh;
     text-rendering: optimizeLegibility;
     /* Fallback aurora using plain rgba — works in every browser including
-       older CEF builds. Upgraded to OKLCH below where supported. */
+       older CEF builds. Upgraded to OKLCH below where supported.
+       background-attachment: fixed was removed because CEF iframes don't
+       have their own scroll viewport and the fixed-attached layer can fail
+       to paint, leaving the entire body black. */
     background-image: radial-gradient(70% 40% at 30% -10%, rgba(41, 52, 98, 0.65), transparent 60%),
                       radial-gradient(60% 40% at 90% 10%, rgba(214, 28, 78, 0.40), transparent 55%),
                       radial-gradient(80% 60% at 50% 110%, rgba(254, 177, 57, 0.25), transparent 60%);
-    background-attachment: fixed;
   }
   @supports (color: color-mix(in oklch, red, blue)) {
     body {
@@ -167,20 +177,16 @@
 }
 
 /* PWA standalone / installed-app mode — hide everything except the player.
-   Triggered two ways:
-     1. CSS media query: `display-mode: standalone | minimal-ui | window-controls-overlay`
-     2. JS-applied `body.pwa-mode` for browsers without media query support
-   Either branch hides .efm-extras (Action row, Recently Played, About).
-   The player itself stays sized to whatever window the user resizes the PWA to. */
-@media (display-mode: standalone), (display-mode: minimal-ui), (display-mode: window-controls-overlay) {
-  body .efm-extras { display: none !important; }
-  body .phone { max-width: 100% !important; padding-left: 12px; padding-right: 12px; }
-  body header { padding-top: 8px; padding-bottom: 4px; }
-  body header h1 span { font-size: 2.25rem !important; } /* shrink wordmark */
-  body footer { padding-top: 8px; }
-}
+   Driven only by the JS-applied `body.pwa-mode` class on real PWA installs
+   (and never inside iframes — BaseLayout's iframe branch skips that code).
+   The CSS `display-mode` media query was removed because CEF in the in-game
+   phone (fullscreen overlay) can falsely match `display-mode: standalone`
+   and hide most of the page, leaving an almost-empty black frame. */
 body.pwa-mode .efm-extras { display: none !important; }
-body.pwa-mode .phone { max-width: 100% !important; }
+body.pwa-mode .phone { max-width: 100% !important; padding-left: 12px; padding-right: 12px; }
+body.pwa-mode header { padding-top: 8px; padding-bottom: 4px; }
+body.pwa-mode header h1 span { font-size: 2.25rem !important; }
+body.pwa-mode footer { padding-top: 8px; }
 
 /* Install banner — appears in normal web mode when the browser fires
    beforeinstallprompt. Hidden by default; nowplaying.ts toggles it. */
