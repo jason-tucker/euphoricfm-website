@@ -5,6 +5,18 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.5.2] — 2026-05-29
+
+Split the combined `.fm` + `.gg` tickets block into two independent host
+blocks (each importing a shared `(tickets-block)` Caddy snippet so they
+don't drift). Provisioning a single cert with both as SANs was failing in
+v0.5.1 because `tickets.euphoric.fm` currently resolves to Cloudflare's
+edge (cloudflared tunnel), so LE's HTTP-01 challenge for `.fm` never reaches
+this Caddy — and a combined cert refuses to issue if any SAN fails.
+
+`info.euphoric.fm` is unaffected — its server block is separate at the top
+of the Caddyfile and was not touched.
+
 ## [0.5.1] — 2026-05-29
 
 This Caddy now also serves `tickets.euphoric.gg` — a second hostname for the
