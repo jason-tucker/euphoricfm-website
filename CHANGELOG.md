@@ -5,6 +5,20 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.4.1] — 2026-05-29
+
+Custom in-game phone CEF iframe STILL wouldn't load after 0.4.0 even with
+Cloudflare fully out of the path. Two TLS-layer fixes most likely to
+matter for older / restrictive CEF builds:
+
+- Force RSA cert (`tls { key_type rsa2048 }`). Was defaulting to ECDSA,
+  which chains via the newer ISRG Root X2 (2020). RSA chains via R3/R10/R11
+  → ISRG Root X1, universally trusted since ~2017. Some CEF CA bundles
+  may not have X2 and silently fail TLS handshake on ECDSA chains.
+- Disable HTTP/3 advertisement (`servers { protocols h1 h2 }`). Caddy was
+  advertising HTTP/3 via `alt-svc: h3=":443"`. CEF builds that try QUIC
+  and never fall back to HTTP/2 just hang.
+
 ## [0.4.0] — 2026-05-29
 
 Major: dropped Cloudflare proxy, Caddy now binds public 80/443 directly with
