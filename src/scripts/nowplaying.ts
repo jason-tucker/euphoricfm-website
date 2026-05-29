@@ -111,7 +111,7 @@ declare global {
   const applyRecent = (history: AzuraNowPlayingEntry[]) => {
     if (!elRecent) return;
     const nowSec = Date.now() / 1000;
-    const rows = history.slice(0, 8).map((h) => {
+    const rows = history.slice(0, 5).map((h) => {
       // "X minutes ago" should be relative to when the track *ended*, not
       // when it started. Each history entry's end = played_at + duration.
       const endedAt = (h.played_at || 0) + (h.duration || 0);

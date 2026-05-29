@@ -16,18 +16,18 @@ import Footer from '../components/Footer.astro';
   <div class="phone">
     <Header />
 
-    <!-- On phone+tablet: stack vertically. On lg+: 2-col hero (player + sticky
-         Recently Played sidebar), sized so the whole hero + actions stay above
-         the fold on a typical 1080p desktop. In PWA standalone mode the
-         CSS in global.css hides .efm-extras so only the player renders. -->
-    <div class="lg:grid lg:grid-cols-12 lg:gap-4 lg:items-start">
-      <div class="lg:col-span-8 lg:space-y-2">
+    <!-- Fully fluid hero. .efm-hero in global.css collapses to one column
+         on narrow viewports (in-game phone) and grows to player + sidebar
+         the moment there's enough room — no breakpoint jump, gap and padding
+         interpolate via clamp(). -->
+    <div class="efm-hero">
+      <div>
         <PlayerCard />
         <div class="efm-extras">
           <ActionRow />
         </div>
       </div>
-      <aside class="efm-extras lg:col-span-4 lg:sticky lg:top-4">
+      <aside class="efm-extras">
         <RecentlyPlayed />
       </aside>
     </div>

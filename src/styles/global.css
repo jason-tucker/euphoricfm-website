@@ -70,18 +70,41 @@
 }
 
 @layer components {
-  /* Frame container — adapts from in-game phone (360px) all the way up to
-     desktop. Phone stays primary, larger viewports get more breathing room. */
+  /* Frame container — 100% fluid. No discrete max-width breakpoints; padding
+     interpolates smoothly via clamp() so the layout grows/shrinks with the
+     viewport without any sudden jumps. Looks right from a 320px in-game
+     phone iframe all the way to a 4K monitor. */
   .phone {
-    @apply mx-auto w-full max-w-phone px-4 sm:max-w-md md:max-w-2xl lg:max-w-frame lg:px-8;
+    width: 100%;
+    max-width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: clamp(0.5rem, 2vw, 2rem);
+    padding-right: clamp(0.5rem, 2vw, 2rem);
   }
   .section {
-    @apply py-6 lg:py-4;
+    padding-top: clamp(0.75rem, 1.5vw, 1.5rem);
+    padding-bottom: clamp(0.75rem, 1.5vw, 1.5rem);
   }
   .card {
-    @apply rounded-2xl border border-cream/10 bg-white/[0.03] p-4 lg:p-4 lg:rounded-2xl;
+    @apply rounded-2xl border border-cream/10 bg-white/[0.03];
+    padding: clamp(0.75rem, 1.5vw, 1.25rem);
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
+  }
+  /* Fluid hero grid — single column when narrow, splits to player + sidebar
+     when there's room. auto-fit + minmax means no breakpoint jump; the
+     second column appears the moment its minmax floor fits. */
+  .efm-hero {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: clamp(0.5rem, 1.5vw, 1.25rem);
+    align-items: start;
+  }
+  @media (min-width: 720px) {
+    .efm-hero {
+      grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr);
+    }
   }
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold min-h-[48px] transition-transform active:scale-[0.98];

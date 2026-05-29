@@ -2,10 +2,10 @@
 import { site } from '../site.config';
 ---
 
-<header class="pt-4 pb-2 text-center lg:pt-5 lg:pb-3">
+<header class="text-center" style="padding-top: clamp(0.5rem, 1.5vw, 1.25rem); padding-bottom: clamp(0.25rem, 1vw, 0.75rem);">
   <h1 class="leading-none">
-    <span class="font-euphoric text-sunburst text-5xl md:text-5xl lg:text-5xl align-middle">Euphoric</span><span
-      class="font-fm text-ruby text-5xl md:text-5xl lg:text-5xl align-middle ml-1">FM</span>
+    <span class="font-euphoric text-sunburst align-middle" style="font-size: clamp(2.25rem, 6vw, 3.5rem);">Euphoric</span><span
+      class="font-fm text-ruby align-middle ml-1" style="font-size: clamp(2.25rem, 6vw, 3.5rem);">FM</span>
   </h1>
-  <p class="mt-1 text-[11px] uppercase tracking-[0.25em] text-cream/55">{site.tagline}</p>
+  <p class="mt-1 uppercase text-cream/55" style="font-size: clamp(0.625rem, 1vw, 0.75rem); letter-spacing: 0.25em;">{site.tagline}</p>
 </header>

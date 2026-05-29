@@ -5,6 +5,28 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.4.3] — 2026-05-29
+
+Fully fluid layout — no discrete Tailwind breakpoint jumps anywhere. The
+site grows and shrinks smoothly with the viewport so it looks right from a
+~320px in-game phone iframe up to a 4K monitor, no awkward gaps at the
+in-between widths Tailwind's `lg:` etc. left behind.
+
+- `.phone`: dropped fixed max-widths (`max-w-phone`/`sm:max-w-md`/`md:`/`lg:`).
+  Now `width: 100%` + `padding: clamp(0.5rem, 2vw, 2rem)` so the frame
+  always fills the available width with fluid breathing room.
+- New `.efm-hero` grid for the hero layout: single column until 720px viewport,
+  then `minmax(0, 2fr) minmax(16rem, 1fr)` so the Recently Played sidebar
+  appears once there's actual room — no breakpoint cliff.
+- Wordmark, card padding, section padding, album art size, track
+  title/artist/album fonts, progress bar height, transport-row gap + play
+  button + volume slider width, times row font — all switched to clamp()
+  with sensible min/preferred(vw)/max so they interpolate smoothly.
+- Action row: `grid-cols-2 lg:grid-cols-4` replaced with auto-fit
+  `repeat(auto-fit, minmax(min(100%, 8rem), 1fr))` so buttons reflow naturally.
+- Recently Played list capped at 5 songs (was 8) so the sidebar fits in the
+  smaller fluid grid without scrolling on most screens.
+
 ## [0.4.2] — 2026-05-29
 
 - Moved the play button off the album art (user feedback: didn't like the
