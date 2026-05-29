@@ -5,6 +5,19 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.5.0] — 2026-05-29
+
+This Caddy now reverse-proxies a second hostname: `tickets.euphoric.fm` is
+the entry point for the new **euphoric-tickets-web** app. The static
+`info.euphoric.fm` site is unchanged.
+
+- Caddyfile: new server block for `tickets.euphoric.fm` with the same TLS,
+  HSTS, and iframe-safe CSP defaults as the apex. Reverse-proxies to
+  `tickets-web:3000` over the shared `efm-public-net` Docker bridge.
+- docker-compose: joined `efm-public-net` (external) so Caddy can resolve
+  the `tickets-web` alias defined in the euphoric-tickets-web stack.
+- One-time host setup before deploying: `docker network create efm-public-net`.
+
 ## [0.4.3] — 2026-05-29
 
 Fully fluid layout — no discrete Tailwind breakpoint jumps anywhere. The

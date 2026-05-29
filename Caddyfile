@@ -135,3 +135,46 @@
     level INFO
   }
 }
+
+# ---------------------------------------------------------------------------
+# Tickets — tickets.euphoric.fm — reverse-proxy to the euphoric-tickets-web
+# Next.js container. The two stacks share the `efm-public-net` external
+# Docker network; the target alias `tickets-web:3000` is defined in the
+# euphoric-tickets-web docker-compose.
+#
+# Same TLS + iframe-safe defaults as the apex (in-game phone CEF embed).
+# ---------------------------------------------------------------------------
+{$TICKETS_HOSTNAME:tickets.euphoric.fm} {
+  tls {
+    key_type rsa2048
+  }
+  encode gzip zstd
+
+  header {
+    Strict-Transport-Security "max-age=31536000"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()"
+    # Iframe-safe for the in-game phone — match info.euphoric.fm.
+    Content-Security-Policy "frame-ancestors *"
+    -X-Frame-Options
+    -Server
+  }
+
+  reverse_proxy tickets-web:3000 {
+    header_up X-Real-IP {remote_host}
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto {scheme}
+    header_up X-Forwarded-Host {host}
+    # Next.js streams + websocket /_next/webpack-hmr in dev; in prod we still
+    # want flush_interval=1ms so SSR-streamed components reach the browser
+    # quickly.
+    flush_interval -1
+  }
+
+  log {
+    output stdout
+    format json
+    level INFO
+  }
+}

@@ -51,6 +51,11 @@ services:
       - caddy_config:/config
     labels:
       com.centurylinklabs.watchtower.enable: "true"
+    networks:
+      # Default network for healthchecks; efm-public-net is the shared bridge
+      # the Caddy uses to reverse_proxy to euphoric-tickets-web (tickets-web:3000).
+      default: {}
+      efm-public-net: {}
     healthcheck:
       # Hit Caddy's own loopback on 80 — succeeds even before LE cert is
       # provisioned (Caddy serves http→https redirect on 80 in the meantime).
@@ -85,6 +90,13 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
+
+networks:
+  # Shared bridge so this Caddy can reverse_proxy to the euphoric-tickets-web
+  # container (`tickets-web:3000`). Create once on the host:
+  #   docker network create efm-public-net
+  efm-public-net:
+    external: true
 
 volumes:
   caddy_data:
