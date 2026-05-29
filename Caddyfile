@@ -137,16 +137,22 @@
 }
 
 # ---------------------------------------------------------------------------
-# Shared tickets reverse-proxy block. Both .fm and .gg use the SAME body —
-# kept as a snippet so the two host blocks below don't drift.
+# tickets.euphoric.gg — direct DNS A record → VPS IP → this Caddy →
+# tickets-web:3000 on efm-public-net.
 #
-# Hostnames are split into separate server blocks (not one block with two
-# SANs) on purpose: ACME challenges are per-hostname. If `.fm` currently
-# resolves to Cloudflare's edge (cloudflared tunnel) the HTTP-01 challenge
-# fails — and a combined cert would refuse to issue, breaking `.gg` too.
-# Independent blocks → independent certs → independent failure modes.
+# `tickets.euphoric.fm` is intentionally NOT served here — it goes through
+# the existing cloudflared tunnel which terminates TLS at Cloudflare's edge
+# and forwards to 127.0.0.1:6095 directly. No Caddy block needed (and
+# adding one would just spam logs with failing ACME challenges since
+# .fm DNS doesn't resolve to this VPS).
+#
+# Out-of-band setup required for `.gg`:
+#   1. DNS A record `tickets.euphoric.gg → <VPS IP>`, Cloudflare proxy OFF.
+#      (CEF iframe constraint, same as info.euphoric.fm.)
+#   2. `https://tickets.euphoric.gg/api/auth/callback/discord` registered on
+#      the Discord application's OAuth2 → Redirects panel.
 # ---------------------------------------------------------------------------
-(tickets-block) {
+{$TICKETS_GG_HOSTNAME:tickets.euphoric.gg} {
   tls {
     key_type rsa2048
   }
@@ -176,21 +182,4 @@
     format json
     level INFO
   }
-}
-
-# tickets.euphoric.fm — cloudflared-tunneled today; this Caddy is a fallback
-# / direct-IP path. ACME HTTP-01 will only succeed for the SAN when DNS for
-# .fm resolves to this VPS (it resolves to Cloudflare today, so cert
-# provisioning here is expected to fail until DNS flips or we wire DNS-01).
-{$TICKETS_HOSTNAME:tickets.euphoric.fm} {
-  import tickets-block
-}
-
-# tickets.euphoric.gg — direct DNS A record → VPS IP → this Caddy.
-# Needs:
-#   1. DNS A record `tickets.euphoric.gg → <VPS IP>`, Cloudflare proxy OFF.
-#   2. `https://tickets.euphoric.gg/api/auth/callback/discord` registered on
-#      the Discord application's OAuth2 → Redirects panel.
-{$TICKETS_GG_HOSTNAME:tickets.euphoric.gg} {
-  import tickets-block
 }

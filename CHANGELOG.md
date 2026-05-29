@@ -5,6 +5,22 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.5.3] — 2026-05-29
+
+Removed the `tickets.euphoric.fm` Caddy block. `.fm` is served by the
+existing cloudflared tunnel (terminates TLS at Cloudflare's edge, forwards
+to `127.0.0.1:6095` directly) — no need for this Caddy to also try. Having
+the block here just spammed logs with failing ACME HTTP-01 challenges
+(DNS for `.fm` resolves to Cloudflare, not this VPS, so the challenge
+can never succeed) and risked eating into the LE account-level rate limits
+that `info.euphoric.fm` shares.
+
+`tickets.euphoric.gg` block kept — it's the direct-DNS path and works
+once the A record points at this VPS.
+
+`info.euphoric.fm` is unchanged — its server block at the top of the
+Caddyfile is independent of either tickets path.
+
 ## [0.5.2] — 2026-05-29
 
 Split the combined `.fm` + `.gg` tickets block into two independent host
