@@ -21,6 +21,11 @@ services:
     environment:
       # Hostname Caddy serves (and provisions a Let's Encrypt cert for).
       SITE_HOSTNAME: ${SITE_HOSTNAME:-info.euphoric.fm}
+      # Tickets hostnames — both the cloudflared-fronted .fm and the
+      # direct-DNS .gg get served by the same reverse-proxy block in
+      # Caddyfile. Either can be overridden via .env on the VPS.
+      TICKETS_HOSTNAME: ${TICKETS_HOSTNAME:-tickets.euphoric.fm}
+      TICKETS_GG_HOSTNAME: ${TICKETS_GG_HOSTNAME:-tickets.euphoric.gg}
       # Webhook URLs are injected at runtime by Caddy templating
       # /efm-runtime-config.js from these env vars. They live in .env on the
       # host; editing them is `docker compose up -d`, no rebuild needed.

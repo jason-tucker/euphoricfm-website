@@ -5,6 +5,28 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.5.1] — 2026-05-29
+
+This Caddy now also serves `tickets.euphoric.gg` — a second hostname for the
+euphoric-tickets-web app, alongside the existing `tickets.euphoric.fm`.
+`.fm` continues to be reachable via the cloudflared tunnel; `.gg` is direct
+DNS A record → VPS IP → this Caddy.
+
+- Caddyfile: the existing `tickets.euphoric.fm` server block now matches BOTH
+  `tickets.euphoric.fm` AND `tickets.euphoric.gg` (one block, both SANs on
+  the same auto-provisioned Let's Encrypt cert). Same TLS + iframe-safe
+  headers + reverse-proxy to `tickets-web:3000` on `efm-public-net`.
+- docker-compose.yml: new `TICKETS_HOSTNAME` and `TICKETS_GG_HOSTNAME` env
+  passthroughs so either hostname can be overridden via `.env` on the VPS
+  without rebuilding.
+
+**Outside this repo you still need:**
+1. DNS A record `tickets.euphoric.gg → <VPS IP>`, Cloudflare proxy OFF
+   (the in-game phone CEF iframe can't load Cloudflare-fronted content).
+2. `https://tickets.euphoric.gg/api/auth/callback/discord` added to the
+   Discord application's OAuth2 → Redirects panel so OAuth completes when
+   users sign in via the `.gg` hostname.
+
 ## [0.5.0] — 2026-05-29
 
 This Caddy now reverse-proxies a second hostname: `tickets.euphoric.fm` is

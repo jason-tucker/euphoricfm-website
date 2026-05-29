@@ -137,14 +137,25 @@
 }
 
 # ---------------------------------------------------------------------------
-# Tickets — tickets.euphoric.fm — reverse-proxy to the euphoric-tickets-web
-# Next.js container. The two stacks share the `efm-public-net` external
-# Docker network; the target alias `tickets-web:3000` is defined in the
-# euphoric-tickets-web docker-compose.
+# Tickets — both .fm (cloudflared-tunneled, via this Caddy when direct) AND
+# .gg (direct DNS A → VPS IP → this Caddy). Both hostnames reverse-proxy to
+# the same euphoric-tickets-web Next.js container. The two stacks share the
+# `efm-public-net` external Docker network; the target alias `tickets-web:3000`
+# is defined in the euphoric-tickets-web docker-compose.
 #
 # Same TLS + iframe-safe defaults as the apex (in-game phone CEF embed).
+# Both hostnames listed up front so Caddy provisions ONE cert with both SANs;
+# the body below applies to all matched hosts.
+#
+# NOTE: For `.gg` to actually serve traffic you need TWO things on top of
+# this Caddy block:
+#   1. A DNS A record `tickets.euphoric.gg → <VPS IP>` (NOT Cloudflare-proxied —
+#      the in-game phone CEF iframe can't load Cloudflare-fronted content).
+#   2. `https://tickets.euphoric.gg/api/auth/callback/discord` registered on
+#      the Discord application's OAuth2 → Redirects panel so OAuth completes
+#      when users sign in via the .gg hostname.
 # ---------------------------------------------------------------------------
-{$TICKETS_HOSTNAME:tickets.euphoric.fm} {
+{$TICKETS_HOSTNAME:tickets.euphoric.fm}, {$TICKETS_GG_HOSTNAME:tickets.euphoric.gg} {
   tls {
     key_type rsa2048
   }
