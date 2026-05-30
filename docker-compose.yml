@@ -9,7 +9,12 @@
 # CI pushes one — push to main → live in ~60-90s.
 
 services:
-  web:
+  # Service renamed `web` → `efm-web` so this stack and `euphoric-tickets-web`
+  # don't both auto-claim the unqualified `web` alias on shared efm-public-net.
+  # Latent footgun otherwise — any future container on this net resolving plain
+  # `web` would round-robin between two backends. Same failure shape as the
+  # `db` collision on botpanel-net that bit otterbot's `/oc` in v0.10.3.
+  efm-web:
     image: ${IMAGE:-ghcr.io/jason-tucker/euphoricfm-website:latest}
     build:
       context: .

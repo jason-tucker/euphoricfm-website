@@ -5,6 +5,16 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.5.5] — 2026-05-30 — Fix "Request a Song" silently failing with "Network error" toast
+
+### Fixed
+- **"Request a Song" modal now actually works.** AzuraCast's `POST /api/station/<id>/request/<songId>` returns its reply without `Access-Control-Allow-Origin` (OPTIONS preflight has it; the actual POST and the 500 "already requested" error responses don't). The cross-origin POST from `info.euphoric.fm` → `euphoric.fm` was reaching AzuraCast and queueing the song, but the browser blocked JS from reading the reply, so `fetch()` rejected and the modal flashed "Network error submitting request." every time — making it look broken when it half-worked. Fix: reverse-proxy `/api/*` through this Caddy to `https://euphoric.fm` (Host header rewritten) so the POST is same-origin; client now strips any host from `request_url` and POSTs to the relative path. The frequent now-playing/library GETs DO return ACAO and continue to call `euphoric.fm` directly, so this only adds VPS traffic for the rare request submissions.
+
+## [0.5.4] — 2026-05-30 — Rename compose service `web` → `efm-web` to clear shared-network alias collision
+
+### Changed
+- **Compose service renamed `web` → `efm-web`.** Both this stack and `euphoric-tickets-web` previously auto-claimed the unqualified `web` alias on the shared `efm-public-net` (docker-compose adds the service-name as a network alias automatically). No internal consumer resolved plain `web` today (the Caddy here reverse-proxies to `tickets-web:3000`, and `efm-web` is reached by the host over port bindings, not the docker network), so this was a latent footgun — but anything new that joined the network and resolved `web` would round-robin between two backends. Same failure shape as the `db` collision that broke otterbot's `/oc` (28P01 auth fails) earlier today. After this commit the auto-alias on `efm-public-net` is `efm-web` — unique. Tickets-web's compose is renaming its own service `web` → `tickets-web` in lockstep. Container name changes from `euphoricfm-website-web-1` → `euphoricfm-website-efm-web-1`; brief downtime on `info.euphoric.fm` while `docker compose up -d` recreates it; Let's Encrypt cert volume is preserved.
+
 ## [0.5.3] — 2026-05-29
 
 Removed the `tickets.euphoric.fm` Caddy block. `.fm` is served by the
