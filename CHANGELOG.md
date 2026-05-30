@@ -5,6 +5,11 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.5.6] — 2026-05-30 — Actually wire up the 0.5.5 "Request a Song" fix
+
+### Fixed
+- **0.5.5 shipped the CHANGELOG entry and version bump but not the code change.** The `Caddyfile` `/api/*` proxy block and the `RequestModal.astro` same-origin POST rewrite never landed in 9b7ddce — only the docs/version did, so prod kept exhibiting the original "Network error submitting request." behaviour despite the footer reading `v0.5.5`. This commit lands the actual code described in the 0.5.5 entry.
+
 ## [0.5.5] — 2026-05-30 — Fix "Request a Song" silently failing with "Network error" toast
 
 ### Fixed

@@ -94,6 +94,25 @@
     respond `(function(){window.__EFM_CONFIG__=window.__EFM_CONFIG__||{};window.__EFM_CONFIG__.discord={requestWebhook:"{$PUBLIC_DISCORD_REQUEST_WEBHOOK}",contactWebhook:"{$PUBLIC_DISCORD_CONTACT_WEBHOOK}"};})();`
   }
 
+  # ---- AzuraCast request-submit proxy -----------------------------------
+  # AzuraCast's `POST /api/station/<id>/request/<songId>` returns its reply
+  # WITHOUT an `Access-Control-Allow-Origin` header (the OPTIONS preflight
+  # has one, the actual POST does not — and the 500 "already requested"
+  # error responses also don't). Cross-origin POSTs from this site land
+  # server-side but the browser blocks JS from reading the reply, so
+  # `fetch()` rejects and the modal shows "Network error submitting
+  # request." even when the song actually got queued.
+  #
+  # Fix: reverse-proxy `/api/*` to euphoric.fm so the request modal POSTs
+  # same-origin. The frequent now-playing/library GETs DO return ACAO and
+  # keep going to euphoric.fm directly (apiBase in site.config.ts), so this
+  # only sees the rare request-submit traffic.
+  handle /api/* {
+    reverse_proxy https://euphoric.fm {
+      header_up Host euphoric.fm
+    }
+  }
+
   # ---- Static file serving ----------------------------------------------
   file_server
 

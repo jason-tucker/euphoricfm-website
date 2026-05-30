@@ -94,9 +94,15 @@ import { site } from '../site.config';
 
     const submitRequest = async (requestUrl) => {
       try {
-        const apiOrigin = new URL(apiBase).origin;
-        const fullUrl = /^https?:\/\//.test(requestUrl) ? requestUrl : apiOrigin + requestUrl;
-        const r = await fetch(fullUrl, { method: 'POST', cache: 'no-store' });
+        // POST same-origin through the Caddy /api/* proxy. AzuraCast doesn't
+        // set Access-Control-Allow-Origin on the actual POST reply, so a
+        // direct cross-origin POST submits server-side but the browser
+        // blocks JS from reading the response and the fetch rejects.
+        let path = requestUrl;
+        if (/^https?:\/\//.test(path)) {
+          try { path = new URL(path).pathname; } catch {}
+        }
+        const r = await fetch(path, { method: 'POST', cache: 'no-store' });
         const text = await r.text();
         let body = null; try { body = JSON.parse(text); } catch {}
         if (r.ok && body && body.success !== false) {
