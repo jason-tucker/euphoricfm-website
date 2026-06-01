@@ -114,10 +114,12 @@
      vertical stack and the cards take their natural content height.
      In 2-col mode:
        - .efm-sidebar fills the row height (player + action buttons combined)
-       - each .efm-sidebar-section gets an equal flex share
-       - the .efm-sidebar-card stretches inside its section
-       - .efm-sidebar-scroll is the inner UL that scrolls when content
-         overflows its share
+       - .efm-sidebar-section--fill (Recently Played) grabs ALL remaining
+         space and scrolls when its list overflows that share
+       - .efm-sidebar-section--natural (Your Requests) sizes to content, so
+         a 2-entry pending list doesn't leave a fat blank rectangle below
+         it — Recently Played absorbs the unused space instead. A 40% cap
+         keeps a long pending list from pushing Recently Played off-screen.
      The chain of `min-height: 0` is mandatory: without it flex children
      refuse to shrink below content-size and the scroll never engages. */
   .efm-sidebar {
@@ -131,13 +133,22 @@
       height: 100%;
     }
     .efm-sidebar-section {
-      flex: 1 1 0;
       min-height: 0;
       display: flex;
       flex-direction: column;
       /* The `pt-2` Tailwind class in markup gives narrow-layout breathing
          room; flex-gap on `.efm-sidebar` already handles spacing here. */
       padding-top: 0;
+    }
+    /* Recently Played: take all the slack. */
+    .efm-sidebar-section--fill {
+      flex: 1 1 0;
+    }
+    /* Your Requests: size to its own content, capped at 40% of the sidebar
+       so 10 pending entries can't dominate the column. */
+    .efm-sidebar-section--natural {
+      flex: 0 1 auto;
+      max-height: 40%;
     }
     .efm-sidebar-card {
       flex: 1 1 0;
@@ -150,6 +161,37 @@
       min-height: 0;
       overflow-y: auto;
     }
+  }
+
+  /* Themed scrollbar for any sidebar list that overflows its share — both
+     for default Chrome/Edge (webkit) and Firefox. Without this, the browser
+     paints its default chrome which clashes with the rest of the UI.
+     Color tokens match the brand: midnight track + sunburst thumb. */
+  .efm-sidebar-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(254 177 57 / 0.55) rgb(41 52 98 / 0.35);
+  }
+  .efm-sidebar-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .efm-sidebar-scroll::-webkit-scrollbar-track {
+    background: rgb(41 52 98 / 0.25);
+    border-radius: 9999px;
+    margin: 4px 0;
+  }
+  .efm-sidebar-scroll::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, rgb(254 177 57 / 0.7), rgb(214 28 78 / 0.65));
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  .efm-sidebar-scroll::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgb(254 177 57 / 0.95), rgb(214 28 78 / 0.85));
+    background-clip: padding-box;
+  }
+  .efm-sidebar-scroll::-webkit-scrollbar-corner {
+    background: transparent;
   }
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold min-h-[48px] transition-transform active:scale-[0.98];

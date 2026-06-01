@@ -94,6 +94,15 @@
     respond `(function(){window.__EFM_CONFIG__=window.__EFM_CONFIG__||{};window.__EFM_CONFIG__.discord={requestWebhook:"{$PUBLIC_DISCORD_REQUEST_WEBHOOK}",contactWebhook:"{$PUBLIC_DISCORD_CONTACT_WEBHOOK}"};})();`
   }
 
+  # ---- Shared pending-requests API --------------------------------------
+  # Tiny Node service in the `efm-requests` container holds the cross-visitor
+  # pending-requests list (v0.6.0 was per-browser localStorage, this is the
+  # shared version). Reachable on the default compose network. See
+  # server/index.mjs for the endpoint shape.
+  handle /requests/* {
+    reverse_proxy efm-requests:3000
+  }
+
   # ---- AzuraCast request-submit proxy -----------------------------------
   # AzuraCast's `POST /api/station/<id>/request/<songId>` returns its reply
   # WITHOUT an `Access-Control-Allow-Origin` header (the OPTIONS preflight

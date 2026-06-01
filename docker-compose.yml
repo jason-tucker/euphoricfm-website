@@ -80,6 +80,45 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # efm-requests — tiny shared pending-requests store (see server/index.mjs).
+  # Caddy reverse-proxies /requests/* on info.euphoric.fm to this container so
+  # every visitor sees every pending request (vs. the per-browser localStorage
+  # state from v0.6.0). Reachable from efm-web on the default compose network
+  # at `efm-requests:3000`. No host port binding — internal only.
+  efm-requests:
+    image: ${REQUESTS_IMAGE:-ghcr.io/jason-tucker/euphoricfm-website-requests:latest}
+    build:
+      context: ./server
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      STORE_PATH: /data/pending.json
+      # Override at runtime to point at a different AzuraCast instance for
+      # the pruning poll. Default matches the public station shortcode.
+      NOWPLAYING_URL: ${NOWPLAYING_URL:-https://euphoric.fm/api/nowplaying/euphoricfm}
+    volumes:
+      - efm_requests_data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "--tries=1", "--timeout=2", "http://127.0.0.1:3000/requests/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   watchtower:
     image: nickfedor/watchtower:latest
     restart: unless-stopped
@@ -111,3 +150,6 @@ networks:
 volumes:
   caddy_data:
   caddy_config:
+  # Persistence for the pending-requests JSON store. Surviving redeploys
+  # means a Watchtower restart doesn't wipe everyone's in-flight requests.
+  efm_requests_data:

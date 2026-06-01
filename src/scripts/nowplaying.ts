@@ -63,6 +63,9 @@ declare global {
   const elPendingSection = $('req-pending-section');
   const elPendingList = $('req-pending-list');
   const elPendingCount = $('req-pending-count');
+  // REQUESTED badges — toggled from `is_request` on each entry.
+  const elNpRequested = $('np-requested');
+  const elUpNextRequested = $('up-next-requested');
 
   // Mutable state for the RAF loop.
   let lastShId = 0;
@@ -91,6 +94,7 @@ declare global {
     if (elTitle) elTitle.textContent = song.title || song.text || 'Unknown track';
     if (elArtist) elArtist.textContent = song.artist || '—';
     if (elAlbum) elAlbum.textContent = song.album || '';
+    if (elNpRequested) elNpRequested.classList.toggle('hidden', !np.is_request);
     playedAt = (np.played_at || 0) * 1000;
     duration = np.duration || 0;
   };
@@ -102,28 +106,24 @@ declare global {
     if (!next || !next.song || !(next.song.title || next.song.text)) {
       upNextReady = false;
       elUpNext.classList.remove('is-open');
+      if (elUpNextRequested) elUpNextRequested.classList.add('hidden');
       return;
     }
     const song = next.song;
     if (elUpNextTitle) elUpNextTitle.textContent = song.title || song.text || '';
     if (elUpNextArtist) elUpNextArtist.textContent = song.artist || '';
     if (elUpNextArt && song.art) elUpNextArt.src = song.art;
+    if (elUpNextRequested) elUpNextRequested.classList.toggle('hidden', !next.is_request);
     upNextReady = true;
     // Don't add .is-open here — tick() decides based on remaining seconds.
   };
 
   // ---- Pending requests (your-requests sidebar card) ------------------
   //
-  // Persisted by RequestModal.astro on successful POST. We render them here
-  // because this script already runs the polling loop and has access to the
-  // now-playing + history payload needed to prune entries that have aired.
-  //
-  // Shape: localStorage["efm:pendingRequests"] = JSON([
-  //   { id, title, artist, art, ts }, ...
-  // ])
-  const PENDING_KEY = 'efm:pendingRequests';
-  const PENDING_TTL_MS = 6 * 60 * 60 * 1000;
-
+  // Shared across all visitors via the `efm-requests` Node service Caddy
+  // reverse-proxies at /requests/* (see server/index.mjs + Caddyfile). The
+  // service owns the canonical list, the 6h TTL, dedupe and the 50-entry
+  // cap; we just fetch + render here. v0.6.0's localStorage state is gone.
   interface PendingRequest {
     id: string;
     title: string;
@@ -132,34 +132,18 @@ declare global {
     ts: number;
   }
 
-  const readPending = (): PendingRequest[] => {
-    try {
-      const raw = localStorage.getItem(PENDING_KEY);
-      if (!raw) return [];
-      const arr = JSON.parse(raw);
-      return Array.isArray(arr) ? arr : [];
-    } catch { return []; }
-  };
-  const writePending = (arr: PendingRequest[]) => {
-    try { localStorage.setItem(PENDING_KEY, JSON.stringify(arr)); } catch {}
-  };
+  let pendingCache: PendingRequest[] = [];
 
-  const prunePending = (
-    np: AzuraNowPlayingEntry | undefined,
-    history: AzuraNowPlayingEntry[],
-  ): PendingRequest[] => {
-    const now = Date.now();
-    const playedIds = new Set<string>();
-    if (np?.song?.id) playedIds.add(np.song.id);
-    for (const h of history) {
-      if (h?.song?.id) playedIds.add(h.song.id);
+  const fetchPending = async (): Promise<PendingRequest[]> => {
+    try {
+      const r = await fetch('/requests/pending', { cache: 'no-store' });
+      if (!r.ok) return pendingCache;
+      const data = await r.json();
+      return Array.isArray(data) ? (data as PendingRequest[]) : [];
+    } catch (err) {
+      console.warn('[efm] /requests/pending fetch failed', err);
+      return pendingCache;
     }
-    // Keep entries that:
-    //   - haven't aired yet (id not in now_playing or song_history)
-    //   - aren't older than the TTL (gives up on rejected/lost requests)
-    return readPending().filter(
-      (p) => p && p.id && !playedIds.has(p.id) && now - (p.ts || 0) < PENDING_TTL_MS,
-    );
   };
 
   const fmtAgo = (sec: number) => {
@@ -199,20 +183,15 @@ declare global {
     elPendingList.innerHTML = rows.join('');
   };
 
-  const refreshPending = (
-    np?: AzuraNowPlayingEntry,
-    history: AzuraNowPlayingEntry[] = [],
-  ) => {
-    const before = readPending();
-    const after = prunePending(np, history);
-    if (after.length !== before.length) writePending(after);
-    renderPending(after);
+  const refreshPending = async () => {
+    pendingCache = await fetchPending();
+    renderPending(pendingCache);
   };
 
-  // Re-render right after RequestModal pushes a new entry (otherwise the
-  // sidebar wouldn't update until the next 5s poll).
+  // Re-render right after RequestModal POSTs a new entry — without this the
+  // sidebar wouldn't update until the next 5s poll.
   document.addEventListener('efm:pending-changed', () => {
-    renderPending(readPending());
+    refreshPending();
   });
 
   const applyRecent = (history: AzuraNowPlayingEntry[]) => {
@@ -276,7 +255,9 @@ declare global {
       }
       applyRecent(data.song_history || []);
       applyUpNext(data.playing_next || null);
-      refreshPending(data.now_playing, data.song_history || []);
+      // Don't await — pending-list latency shouldn't gate the now-playing
+      // paint. The fetch races the next poll harmlessly if it's slow.
+      refreshPending();
     } catch (err) {
       console.warn('[efm] refresh failed', err);
     }
@@ -367,10 +348,7 @@ declare global {
   }
 
   // Boot.
-  // Render pending requests synchronously from localStorage so the sidebar
-  // doesn't flash empty for one poll-cycle on cold load. The first refresh()
-  // will follow with pruning against the freshly-fetched playback state.
-  renderPending(readPending());
+  refreshPending();
   refresh();
   startPolling();
   requestAnimationFrame(tick);

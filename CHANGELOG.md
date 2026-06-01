@@ -5,6 +5,21 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.7.0] — 2026-06-01 — Shared Your-Requests + player layout overhaul + REQUESTED badges + themed scrollbar
+
+### Added
+- **Shared pending requests** — new `efm-requests` Node service (`server/index.mjs`, ~140 lines, zero deps, node:http + global fetch) Caddy reverse-proxies at `/requests/*`. Replaces v0.6.0's per-browser localStorage so every visitor sees every pending request. Endpoints: `GET /requests/pending`, `POST /requests/track`, `GET /requests/health`. Server polls `/api/nowplaying/euphoricfm` every 30s and drops entries whose `song.id` appears in `now_playing` or `song_history`; 6h TTL + 50-entry cap as backstops. State persists in `/data/pending.json` (named volume `efm_requests_data`) so a Watchtower restart doesn't wipe the list.
+- **REQUESTED badge.** When `now_playing.is_request === true`, a sunburst pill renders next to the LIVE/Now Playing chips. Same badge on the Up Next reveal driven by `playing_next.is_request`. Both toggle on every poll.
+- New CI job `build-requests` builds + pushes `ghcr.io/jason-tucker/euphoricfm-website-requests:latest` in parallel with the existing site image (separate GHA cache scope so layer caches don't collide). Watchtower picks up both on each push to `main`.
+
+### Changed
+- **Player layout overhaul.** Removed the entire "Stream / Streaming live" transport row beneath the progress bar — the red/pink LIVE pill above already signals stream state, the extra label was redundant. Play/pause button now stacks above the volume slider in the top-right of the player card (compact transport column with `flex flex-col items-end`, `width: clamp(3rem, 8vw, 5rem)`). Volume icon dropped — the slider sits right under the play button and reads as a transport control without it.
+- **Sidebar reflow — no blank space on Your Requests.** Old layout gave each sidebar card an equal `flex: 1 1 0` share, so a sparsely-populated Your Requests left a fat blank rectangle below it. Now Your Requests is `.efm-sidebar-section--natural` (`flex: 0 1 auto; max-height: 40%`) — it sizes to content with a 40% cap so a full pending list can't dominate. Recently Played is `.efm-sidebar-section--fill` (`flex: 1 1 0`) and absorbs whatever space Your Requests doesn't claim.
+- **Themed scrollbar.** New `.efm-sidebar-scroll` rules set `scrollbar-color`/`scrollbar-width` for Firefox and `::-webkit-scrollbar*` for Chrome/Edge. Track is translucent midnight; thumb is the sunburst→ruby gradient with a `background-clip: padding-box` 2px transparent border so it doesn't hug the track edges. Replaces the default chrome scrollbar that looked jarring against the rest of the UI.
+
+### Migration
+- One-time on the VPS after this image lands: `docker compose up -d` (not just `restart`) to bring up the new `efm-requests` container and the `efm_requests_data` volume. Watchtower handles the rolling updates after that. Per [[feedback_docker_env_propagation]], `restart` does NOT add a new service from compose — only `up -d` does. The GHCR package `ghcr.io/jason-tucker/euphoricfm-website-requests` will need its visibility flipped to public the first time CI publishes it.
+
 ## [0.6.0] — 2026-05-30 — Your-Requests sidebar card + dynamic-height sidebar split
 
 ### Added

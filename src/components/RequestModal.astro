@@ -102,41 +102,32 @@ import { site } from '../site.config';
       setTimeout(() => toast.classList.add('hidden'), 4000);
     };
 
-    const PENDING_KEY = 'efm:pendingRequests';
-    const PENDING_TTL_MS = 6 * 60 * 60 * 1000; // 6h safety: drop stragglers
-    const PENDING_MAX = 10;
-
-    const readPending = () => {
-      try {
-        const raw = localStorage.getItem(PENDING_KEY);
-        if (!raw) return [];
-        const arr = JSON.parse(raw);
-        return Array.isArray(arr) ? arr : [];
-      } catch { return []; }
-    };
-    const writePending = (arr) => {
-      try { localStorage.setItem(PENDING_KEY, JSON.stringify(arr)); } catch {}
-      // Notify the sidebar renderer (nowplaying.ts) to re-paint immediately
-      // — otherwise the new entry doesn't appear until the next 5s poll.
-      document.dispatchEvent(new CustomEvent('efm:pending-changed'));
-    };
-    const pushPending = (song) => {
+    // Notify the shared pending-requests backend so every visitor sees this
+    // request in their sidebar (not just this browser, as in v0.6.0). The
+    // service is reverse-proxied at /requests/* by Caddy and owns its own
+    // 6h TTL + dedupe + max-50 cap, so we don't reproduce that logic here.
+    // Fire-and-forget — a failed track call doesn't undo the AzuraCast
+    // request itself, the song still queues server-side at AzuraCast.
+    const trackPending = async (song) => {
       if (!song || !song.id) return;
-      const now = Date.now();
-      const existing = readPending().filter(
-        (p) => p && p.id !== song.id && now - (p.ts || 0) < PENDING_TTL_MS,
-      );
-      existing.push({
-        id: song.id,
-        title: song.title,
-        artist: song.artist,
-        art: song.art,
-        ts: now,
-      });
-      // Bound the list so localStorage can't grow unbounded if AzuraCast
-      // rejects requests silently for a long stretch.
-      while (existing.length > PENDING_MAX) existing.shift();
-      writePending(existing);
+      try {
+        await fetch('/requests/track', {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: song.id,
+            title: song.title || '',
+            artist: song.artist || '',
+            art: song.art || '',
+          }),
+        });
+        // Nudge nowplaying.ts to re-paint immediately rather than waiting
+        // up to a full poll cycle for the new entry to appear.
+        document.dispatchEvent(new CustomEvent('efm:pending-changed'));
+      } catch (err) {
+        console.warn('[efm] /requests/track failed', err);
+      }
     };
 
     const submitRequest = async (requestUrl, song) => {
@@ -154,7 +145,7 @@ import { site } from '../site.config';
         let body = null; try { body = JSON.parse(text); } catch {}
         if (r.ok && body && body.success !== false) {
           showToast('Request submitted! It will play soon.', 'ok');
-          pushPending(song);
+          trackPending(song);
         } else {
           const msg = (body && (body.formatted_message || body.message)) || `Couldn't submit request (HTTP ${r.status}).`;
           showToast(msg, 'error');

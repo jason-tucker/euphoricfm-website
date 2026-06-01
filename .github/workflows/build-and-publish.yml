@@ -77,5 +77,40 @@ jobs:
           build-args: |
             PUBLIC_GIT_SHA=${{ github.sha }}
             PUBLIC_BUILD_TIME=${{ github.event.head_commit.timestamp || github.run_started_at }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=site
+          cache-to: type=gha,mode=max,scope=site
+
+  # Independent image for the tiny shared pending-requests Node service in
+  # server/. No shared deps with the site build above, so the two jobs run
+  # in parallel; separate GHA cache scope keeps the layers from colliding.
+  build-requests:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/euphoricfm-website-requests
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=semver,pattern={{version}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./server
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=requests
+          cache-to: type=gha,mode=max,scope=requests
