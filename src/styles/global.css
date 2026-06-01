@@ -94,16 +94,61 @@
   }
   /* Fluid hero grid — single column when narrow, splits to player + sidebar
      when there's room. auto-fit + minmax means no breakpoint jump; the
-     second column appears the moment its minmax floor fits. */
+     second column appears the moment its minmax floor fits.
+     `align-items` is left default (stretch) so the sidebar matches the
+     height of the player+buttons column in 2-col mode — that drives the
+     Recently Played + Your Requests dynamic split (see .efm-sidebar below). */
   .efm-hero {
     display: grid;
     grid-template-columns: 1fr;
     gap: clamp(0.5rem, 1.5vw, 1.25rem);
-    align-items: start;
   }
   @media (min-width: 720px) {
     .efm-hero {
       grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr);
+    }
+  }
+
+  /* Sidebar dynamic sizing — only kicks in at the 720px breakpoint where
+     `.efm-hero` is 2-col. On narrow viewports the sidebar is a normal
+     vertical stack and the cards take their natural content height.
+     In 2-col mode:
+       - .efm-sidebar fills the row height (player + action buttons combined)
+       - each .efm-sidebar-section gets an equal flex share
+       - the .efm-sidebar-card stretches inside its section
+       - .efm-sidebar-scroll is the inner UL that scrolls when content
+         overflows its share
+     The chain of `min-height: 0` is mandatory: without it flex children
+     refuse to shrink below content-size and the scroll never engages. */
+  .efm-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(0.5rem, 1.5vw, 1.25rem);
+  }
+  @media (min-width: 720px) {
+    .efm-sidebar {
+      min-height: 0;
+      height: 100%;
+    }
+    .efm-sidebar-section {
+      flex: 1 1 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      /* The `pt-2` Tailwind class in markup gives narrow-layout breathing
+         room; flex-gap on `.efm-sidebar` already handles spacing here. */
+      padding-top: 0;
+    }
+    .efm-sidebar-card {
+      flex: 1 1 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .efm-sidebar-scroll {
+      flex: 1 1 0;
+      min-height: 0;
+      overflow-y: auto;
     }
   }
   .btn {

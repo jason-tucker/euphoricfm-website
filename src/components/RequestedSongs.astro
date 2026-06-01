@@ -1,0 +1,18 @@
+---
+// Your-requests card — lists songs THIS browser has requested that haven't
+// yet shown up in now_playing or song_history. AzuraCast's actual request
+// queue is behind auth, so this is a client-side localStorage list pruned
+// by nowplaying.ts on every poll (and on the next event after a fresh
+// submission). The card hides itself when there's nothing pending so it
+// doesn't take up sidebar real estate for free.
+---
+
+<section id="req-pending-section" class="hidden efm-sidebar-section">
+  <div class="card !py-3 efm-sidebar-card">
+    <div class="flex items-center justify-between mb-1 lg:mb-2 shrink-0">
+      <h2 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">Your Requests</h2>
+      <span id="req-pending-count" class="text-[10px] uppercase tracking-wider text-sunburst"></span>
+    </div>
+    <ul id="req-pending-list" class="divide-y divide-cream/5 efm-sidebar-scroll"></ul>
+  </div>
+</section>

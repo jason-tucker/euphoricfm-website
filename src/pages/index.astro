@@ -4,6 +4,7 @@ import Header from '../components/Header.astro';
 import PlayerCard from '../components/PlayerCard.astro';
 import ActionRow from '../components/ActionRow.astro';
 import RecentlyPlayed from '../components/RecentlyPlayed.astro';
+import RequestedSongs from '../components/RequestedSongs.astro';
 import About from '../components/About.astro';
 import RequestModal from '../components/RequestModal.astro';
 import SubmitSongModal from '../components/SubmitSongModal.astro';
@@ -27,8 +28,9 @@ import Footer from '../components/Footer.astro';
           <ActionRow />
         </div>
       </div>
-      <aside class="efm-extras">
+      <aside class="efm-extras efm-sidebar">
         <RecentlyPlayed />
+        <RequestedSongs />
       </aside>
     </div>
 

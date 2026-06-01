@@ -59,6 +59,10 @@ declare global {
   const elUpNextArt = $<HTMLImageElement>('up-next-art');
   const elUpNextTitle = $('up-next-title');
   const elUpNextArtist = $('up-next-artist');
+  // Pending-requests card (sibling of recently-played in the sidebar).
+  const elPendingSection = $('req-pending-section');
+  const elPendingList = $('req-pending-list');
+  const elPendingCount = $('req-pending-count');
 
   // Mutable state for the RAF loop.
   let lastShId = 0;
@@ -107,6 +111,109 @@ declare global {
     upNextReady = true;
     // Don't add .is-open here — tick() decides based on remaining seconds.
   };
+
+  // ---- Pending requests (your-requests sidebar card) ------------------
+  //
+  // Persisted by RequestModal.astro on successful POST. We render them here
+  // because this script already runs the polling loop and has access to the
+  // now-playing + history payload needed to prune entries that have aired.
+  //
+  // Shape: localStorage["efm:pendingRequests"] = JSON([
+  //   { id, title, artist, art, ts }, ...
+  // ])
+  const PENDING_KEY = 'efm:pendingRequests';
+  const PENDING_TTL_MS = 6 * 60 * 60 * 1000;
+
+  interface PendingRequest {
+    id: string;
+    title: string;
+    artist: string;
+    art: string;
+    ts: number;
+  }
+
+  const readPending = (): PendingRequest[] => {
+    try {
+      const raw = localStorage.getItem(PENDING_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch { return []; }
+  };
+  const writePending = (arr: PendingRequest[]) => {
+    try { localStorage.setItem(PENDING_KEY, JSON.stringify(arr)); } catch {}
+  };
+
+  const prunePending = (
+    np: AzuraNowPlayingEntry | undefined,
+    history: AzuraNowPlayingEntry[],
+  ): PendingRequest[] => {
+    const now = Date.now();
+    const playedIds = new Set<string>();
+    if (np?.song?.id) playedIds.add(np.song.id);
+    for (const h of history) {
+      if (h?.song?.id) playedIds.add(h.song.id);
+    }
+    // Keep entries that:
+    //   - haven't aired yet (id not in now_playing or song_history)
+    //   - aren't older than the TTL (gives up on rejected/lost requests)
+    return readPending().filter(
+      (p) => p && p.id && !playedIds.has(p.id) && now - (p.ts || 0) < PENDING_TTL_MS,
+    );
+  };
+
+  const fmtAgo = (sec: number) => {
+    if (sec < 60) return 'just now';
+    const m = Math.floor(sec / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    return `${h}h ago`;
+  };
+
+  const renderPending = (pending: PendingRequest[]) => {
+    if (!elPendingSection || !elPendingList) return;
+    if (!pending.length) {
+      elPendingSection.classList.add('hidden');
+      elPendingList.innerHTML = '';
+      if (elPendingCount) elPendingCount.textContent = '';
+      return;
+    }
+    elPendingSection.classList.remove('hidden');
+    if (elPendingCount) elPendingCount.textContent = String(pending.length);
+    const nowSec = Date.now() / 1000;
+    // Newest first — fresher submissions belong at the top.
+    const rows = [...pending].sort((a, b) => b.ts - a.ts).map((p) => {
+      const ago = Math.max(0, Math.floor(nowSec - p.ts / 1000));
+      const title = escape(p.title || 'Unknown');
+      const artist = escape(p.artist || '');
+      const art = p.art || '';
+      return `<li class="flex items-center gap-3 py-2 border-t border-cream/5 first:border-t-0">
+        <img src="${art}" alt="" class="w-10 h-10 rounded-md object-cover bg-cream/10 shrink-0" loading="lazy">
+        <div class="min-w-0 flex-1">
+          <div class="truncate text-sm font-semibold text-cream">${title}</div>
+          <div class="truncate text-xs text-cream/60">${artist}</div>
+        </div>
+        <div class="shrink-0 text-[10px] uppercase tracking-wider text-sunburst/80">${fmtAgo(ago)}</div>
+      </li>`;
+    });
+    elPendingList.innerHTML = rows.join('');
+  };
+
+  const refreshPending = (
+    np?: AzuraNowPlayingEntry,
+    history: AzuraNowPlayingEntry[] = [],
+  ) => {
+    const before = readPending();
+    const after = prunePending(np, history);
+    if (after.length !== before.length) writePending(after);
+    renderPending(after);
+  };
+
+  // Re-render right after RequestModal pushes a new entry (otherwise the
+  // sidebar wouldn't update until the next 5s poll).
+  document.addEventListener('efm:pending-changed', () => {
+    renderPending(readPending());
+  });
 
   const applyRecent = (history: AzuraNowPlayingEntry[]) => {
     if (!elRecent) return;
@@ -169,6 +276,7 @@ declare global {
       }
       applyRecent(data.song_history || []);
       applyUpNext(data.playing_next || null);
+      refreshPending(data.now_playing, data.song_history || []);
     } catch (err) {
       console.warn('[efm] refresh failed', err);
     }
@@ -259,6 +367,10 @@ declare global {
   }
 
   // Boot.
+  // Render pending requests synchronously from localStorage so the sidebar
+  // doesn't flash empty for one poll-cycle on cold load. The first refresh()
+  // will follow with pruning against the freshly-fetched playback state.
+  renderPending(readPending());
   refresh();
   startPolling();
   requestAnimationFrame(tick);

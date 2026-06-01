@@ -1,12 +1,15 @@
 ---
-// Empty list — populated by nowplaying.ts. On desktop this becomes a sticky
-// sidebar via the index.astro grid layout.
+// Empty list — populated by nowplaying.ts. In the 2-column hero layout this
+// becomes the top half of the sidebar; height is no longer capped at a hard
+// 520px — `.efm-sidebar`/`.efm-sidebar-section` (global.css) make the
+// sidebar stretch to match player+buttons and split between this card and
+// the Your-Requests card below.
 ---
 
-<section class="pt-2">
-  <div class="card !py-3 lg:max-h-[min(calc(100dvh-2rem),520px)] lg:overflow-y-auto">
-    <h2 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65 mb-1 lg:mb-2">Recently Played</h2>
-    <ul id="recent-list" class="divide-y divide-cream/5">
+<section class="efm-sidebar-section pt-2">
+  <div class="card !py-3 efm-sidebar-card">
+    <h2 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65 mb-1 lg:mb-2 shrink-0">Recently Played</h2>
+    <ul id="recent-list" class="divide-y divide-cream/5 efm-sidebar-scroll">
       <li class="py-2 text-xs text-cream/40">Loading recent tracks…</li>
     </ul>
   </div>

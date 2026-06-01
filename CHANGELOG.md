@@ -5,6 +5,17 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.6.0] — 2026-05-30 — Your-Requests sidebar card + dynamic-height sidebar split
+
+### Added
+- **"Your Requests" card in the sidebar.** When a request POST succeeds, `RequestModal.astro` persists the song (`id`, `title`, `artist`, `art`, `ts`) to `localStorage["efm:pendingRequests"]` and fires an `efm:pending-changed` event. `nowplaying.ts` renders that list in a new `RequestedSongs.astro` card below Recently Played, sorted newest-first, with relative-time chips ("just now", "5m ago", "1h ago"). The card hides itself entirely when the pending list is empty so the sidebar doesn't carry dead chrome.
+- **Pruning on every poll.** On each 5s `/api/nowplaying` poll, entries whose `song.id` appears in `now_playing.song.id` or `song_history[].song.id` get dropped (they aired). A 6-hour TTL also evicts stragglers — protects against requests that AzuraCast silently rejected. List is also capped at 10 entries on write so localStorage can't grow unbounded.
+- AzuraCast's actual request queue requires auth, so this is intentionally a per-browser/per-device view of *your* requests — there's no public "all pending requests" feed to mirror.
+
+### Changed
+- **Sidebar height now tracks player+buttons.** Removed `align-items: start` from `.efm-hero` so in the 2-col (≥720px) layout the right column stretches to match the left column's height. New `.efm-sidebar` / `.efm-sidebar-section` / `.efm-sidebar-card` / `.efm-sidebar-scroll` rules give each card an equal flex share of that height with the inner UL scrolling when content overflows. The old `lg:max-h-[min(calc(100dvh-2rem),520px)]` hard cap on Recently Played is gone — when Your Requests is hidden, Recently Played gets the whole sidebar; when it's visible, they split. Narrow/phone layout (one column) is unchanged: cards take their natural content height.
+- `RequestModal.astro` library buttons now carry `data-song-{id,title,artist,art}` so the click handler can hand a complete song record to `submitRequest()` for the pending-list write.
+
 ## [0.5.6] — 2026-05-30 — Actually wire up the 0.5.5 "Request a Song" fix
 
 ### Fixed

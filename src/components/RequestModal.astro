@@ -67,8 +67,18 @@ import { site } from '../site.config';
           const title = escapeHtml(s.title || s.text || 'Unknown');
           const artist = escapeHtml(s.artist || '');
           const art = s.art || '';
+          // Song id + metadata ride along as data-* so the click handler can
+          // hand the full record to submitRequest() — needed to track the
+          // pending request in localStorage and prune it once we see the
+          // same song.id in now_playing or song_history.
           return `<li>
-            <button type="button" data-request-url="${escapeHtml(it.request_url || '')}" class="w-full text-left flex items-center gap-3 py-2 hover:bg-cream/5 rounded-md px-1 transition-colors">
+            <button type="button"
+              data-request-url="${escapeHtml(it.request_url || '')}"
+              data-song-id="${escapeHtml(s.id || '')}"
+              data-song-title="${title}"
+              data-song-artist="${artist}"
+              data-song-art="${escapeHtml(art)}"
+              class="w-full text-left flex items-center gap-3 py-2 hover:bg-cream/5 rounded-md px-1 transition-colors">
               <img src="${art}" alt="" class="w-10 h-10 rounded-md object-cover bg-cream/10 shrink-0" loading="lazy">
               <div class="min-w-0 flex-1">
                 <div class="truncate text-sm font-semibold text-cream">${title}</div>
@@ -92,7 +102,44 @@ import { site } from '../site.config';
       setTimeout(() => toast.classList.add('hidden'), 4000);
     };
 
-    const submitRequest = async (requestUrl) => {
+    const PENDING_KEY = 'efm:pendingRequests';
+    const PENDING_TTL_MS = 6 * 60 * 60 * 1000; // 6h safety: drop stragglers
+    const PENDING_MAX = 10;
+
+    const readPending = () => {
+      try {
+        const raw = localStorage.getItem(PENDING_KEY);
+        if (!raw) return [];
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) ? arr : [];
+      } catch { return []; }
+    };
+    const writePending = (arr) => {
+      try { localStorage.setItem(PENDING_KEY, JSON.stringify(arr)); } catch {}
+      // Notify the sidebar renderer (nowplaying.ts) to re-paint immediately
+      // — otherwise the new entry doesn't appear until the next 5s poll.
+      document.dispatchEvent(new CustomEvent('efm:pending-changed'));
+    };
+    const pushPending = (song) => {
+      if (!song || !song.id) return;
+      const now = Date.now();
+      const existing = readPending().filter(
+        (p) => p && p.id !== song.id && now - (p.ts || 0) < PENDING_TTL_MS,
+      );
+      existing.push({
+        id: song.id,
+        title: song.title,
+        artist: song.artist,
+        art: song.art,
+        ts: now,
+      });
+      // Bound the list so localStorage can't grow unbounded if AzuraCast
+      // rejects requests silently for a long stretch.
+      while (existing.length > PENDING_MAX) existing.shift();
+      writePending(existing);
+    };
+
+    const submitRequest = async (requestUrl, song) => {
       try {
         // POST same-origin through the Caddy /api/* proxy. AzuraCast doesn't
         // set Access-Control-Allow-Origin on the actual POST reply, so a
@@ -107,6 +154,7 @@ import { site } from '../site.config';
         let body = null; try { body = JSON.parse(text); } catch {}
         if (r.ok && body && body.success !== false) {
           showToast('Request submitted! It will play soon.', 'ok');
+          pushPending(song);
         } else {
           const msg = (body && (body.formatted_message || body.message)) || `Couldn't submit request (HTTP ${r.status}).`;
           showToast(msg, 'error');
@@ -127,7 +175,13 @@ import { site } from '../site.config';
       const btn = e.target.closest('button[data-request-url]');
       if (!btn) return;
       const url = btn.getAttribute('data-request-url');
-      if (url) submitRequest(url);
+      const song = {
+        id: btn.getAttribute('data-song-id') || '',
+        title: btn.getAttribute('data-song-title') || '',
+        artist: btn.getAttribute('data-song-artist') || '',
+        art: btn.getAttribute('data-song-art') || '',
+      };
+      if (url) submitRequest(url, song);
     });
 
     // Open hook — load initial library when opened.
