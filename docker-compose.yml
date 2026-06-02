@@ -67,9 +67,13 @@ services:
       default: {}
       efm-public-net: {}
     healthcheck:
-      # Hit Caddy's own loopback on 80 — succeeds even before LE cert is
-      # provisioned (Caddy serves http→https redirect on 80 in the meantime).
-      test: ["CMD", "wget", "-q", "--spider", "--tries=1", "--timeout=3", "http://127.0.0.1:80/"]
+      # Hit Caddy's own loopback on 80 with curl (no -L), so the 308 → HTTPS
+      # redirect counts as success without curl trying to follow it into a
+      # TLS handshake on 127.0.0.1 (no cert there → SSL alert 80 → wget
+      # exit 1, container marked unhealthy even though Caddy is fine).
+      # `-f` doesn't trigger on 3xx, only 4xx/5xx, so 308 returns exit 0.
+      # busybox wget here doesn't support --max-redirect; curl is the fix.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "--max-time", "3", "http://127.0.0.1:80/"]
       interval: 30s
       timeout: 5s
       retries: 3

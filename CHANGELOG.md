@@ -5,6 +5,11 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.7.1] — 2026-06-01 — Fix efm-web healthcheck false-unhealthy from TLS-on-loopback
+
+### Fixed
+- **`efm-web` no longer reports unhealthy while the site is fine.** The compose healthcheck was `wget --spider http://127.0.0.1:80/`; busybox wget follows the 308 → `https://127.0.0.1/` and dies on `SSL alert number 80` (Caddy has no cert matching `127.0.0.1`). Site itself was always serving 200 — `docker ps` just lied about it. Swapped to `curl -fsS -o /dev/null --max-time 3 http://127.0.0.1:80/`: without `-L` curl doesn't follow the redirect, `-f` doesn't fail on 3xx, so the 308 from Caddy returns exit 0. busybox wget doesn't support `--max-redirect=0` so curl was the cleanest path. Both curl and busybox wget+nc are already in the `caddy:2-alpine` image, no Dockerfile change needed.
+
 ## [0.7.0] — 2026-06-01 — Shared Your-Requests + player layout overhaul + REQUESTED badges + themed scrollbar
 
 ### Added
