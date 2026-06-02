@@ -50,6 +50,21 @@
     background-image: radial-gradient(70% 40% at 30% -10%, rgba(41, 52, 98, 0.65), transparent 60%),
                       radial-gradient(60% 40% at 90% 10%, rgba(214, 28, 78, 0.40), transparent 55%),
                       radial-gradient(80% 60% at 50% 110%, rgba(254, 177, 57, 0.25), transparent 60%);
+    /* Music-reactive drift. PlayerCard.astro publishes --efm-bass/-mid/-high/
+       -energy (0..1) on :root every RAF frame while audio is playing; each
+       gradient layer here gets its own background-position derived from one
+       of those bands so the three light pools drift independently to the
+       beat. Output range is ±half the multiplier (so 24px * (var-0.5) is
+       -12px..+12px). 80ms linear transition matches the PlayerCard halo /
+       bar shimmer cadence — fast enough to feel responsive, slow enough to
+       round off jagged FFT spikes. Vars default to 0 when audio is paused
+       (the tick loop unsets them), which puts every layer at 0/0 — i.e.
+       exactly the look the page had before this rule existed. */
+    background-position:
+      calc((var(--efm-bass, 0) - 0.5) * 28px) calc((var(--efm-mid, 0) - 0.5) * 22px),
+      calc((var(--efm-high, 0) - 0.5) * 22px) calc((var(--efm-energy, 0) - 0.5) * 24px),
+      calc((var(--efm-mid, 0) - 0.5) * 26px) calc((var(--efm-bass, 0) - 0.5) * 30px);
+    transition: background-position 80ms linear;
   }
   @supports (color: color-mix(in oklch, red, blue)) {
     body {
@@ -95,13 +110,17 @@
   /* Fluid hero grid — single column when narrow, splits to player + sidebar
      when there's room. auto-fit + minmax means no breakpoint jump; the
      second column appears the moment its minmax floor fits.
-     `align-items` is left default (stretch) so the sidebar matches the
-     height of the player+buttons column in 2-col mode — that drives the
-     Recently Played + Your Requests dynamic split (see .efm-sidebar below). */
+     `align-items: start` lets the left and right columns be independent
+     heights — the sidebar isn't forced to match the (now-shorter, since
+     0.7.0 removed the Stream row) player+buttons column. That was the
+     root cause of the 0.6.0/0.7.0 Your-Requests cutoff: tying the sidebar
+     to a 240-280px row left a 40%-of-that cap on Your Requests with
+     barely room for a single entry. */
   .efm-hero {
     display: grid;
     grid-template-columns: 1fr;
     gap: clamp(0.5rem, 1.5vw, 1.25rem);
+    align-items: start;
   }
   @media (min-width: 720px) {
     .efm-hero {
@@ -109,58 +128,30 @@
     }
   }
 
-  /* Sidebar dynamic sizing — only kicks in at the 720px breakpoint where
-     `.efm-hero` is 2-col. On narrow viewports the sidebar is a normal
-     vertical stack and the cards take their natural content height.
-     In 2-col mode:
-       - .efm-sidebar fills the row height (player + action buttons combined)
-       - .efm-sidebar-section--fill (Recently Played) grabs ALL remaining
-         space and scrolls when its list overflows that share
-       - .efm-sidebar-section--natural (Your Requests) sizes to content, so
-         a 2-entry pending list doesn't leave a fat blank rectangle below
-         it — Recently Played absorbs the unused space instead. A 40% cap
-         keeps a long pending list from pushing Recently Played off-screen.
-     The chain of `min-height: 0` is mandatory: without it flex children
-     refuse to shrink below content-size and the scroll never engages. */
+  /* Sidebar layout — content-sized cards with an internal scroll cap.
+     Each card grows to fit its data; nothing is forced to share a fixed
+     budget. A 22rem cap on the inner UL keeps a long list (e.g. 30
+     pending requests, or full history) from running past a reasonable
+     panel height — the themed scrollbar (below) takes over from there.
+     Same on phone and widescreen — no breakpoint-specific overrides
+     because content-sizing is already the right behaviour everywhere. */
   .efm-sidebar {
     display: flex;
     flex-direction: column;
     gap: clamp(0.5rem, 1.5vw, 1.25rem);
   }
-  @media (min-width: 720px) {
-    .efm-sidebar {
-      min-height: 0;
-      height: 100%;
-    }
-    .efm-sidebar-section {
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-      /* The `pt-2` Tailwind class in markup gives narrow-layout breathing
-         room; flex-gap on `.efm-sidebar` already handles spacing here. */
-      padding-top: 0;
-    }
-    /* Recently Played: take all the slack. */
-    .efm-sidebar-section--fill {
-      flex: 1 1 0;
-    }
-    /* Your Requests: size to its own content, capped at 40% of the sidebar
-       so 10 pending entries can't dominate the column. */
-    .efm-sidebar-section--natural {
-      flex: 0 1 auto;
-      max-height: 40%;
-    }
-    .efm-sidebar-card {
-      flex: 1 1 0;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-    }
-    .efm-sidebar-scroll {
-      flex: 1 1 0;
-      min-height: 0;
-      overflow-y: auto;
-    }
+  .efm-sidebar-section {
+    display: flex;
+    flex-direction: column;
+  }
+  .efm-sidebar-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .efm-sidebar-scroll {
+    max-height: 22rem;
+    overflow-y: auto;
   }
 
   /* Themed scrollbar for any sidebar list that overflows its share — both

@@ -5,6 +5,14 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.7.2] — 2026-06-01 — Fix widescreen Your-Requests cutoff + music-reactive background drift
+
+### Fixed
+- **Your Requests no longer gets cut off on widescreen.** Root cause: 0.6.0/0.7.0 tied the sidebar height to the player+buttons column via `align-items: stretch` + `height: 100%`, then split that space with Your Requests capped at 40%. After 0.7.0 removed the Stream/transport row the player column shrank to ~240–280px, so the 40% cap left ~100px for Your Requests — not even enough for a single entry's card chrome. Switched to **content-sized cards** instead: each card sizes to its own data, and a `max-height: 22rem` cap on the inner UL (with the themed scrollbar) handles overflow when a list is long. `.efm-hero` gets `align-items: start` so left and right columns are independent heights — no forced equal-row stretch. Dropped the `.efm-sidebar-section--fill` / `.efm-sidebar-section--natural` modifiers — same behaviour everywhere now. Mobile is unchanged (was always content-sized).
+
+### Added
+- **Music-reactive background drift.** `body` background gets a fluid `background-position` derived from the `--efm-bass` / `--efm-mid` / `--efm-high` / `--efm-energy` vars PlayerCard already publishes on `:root` every RAF frame. Each of the three radial-gradient layers drifts on its own axis pair (one driven by bass+mid, one by high+energy, one by mid+bass), giving the impression that the three light pools breathe independently with the track. Output range is ±half the multiplier so center-of-rest is (0,0) and audio-paused state (vars=0) lands exactly on the pre-0.7.2 look — zero risk of an idle page looking different. 80ms linear transition matches the existing player-card halo / progress-bar shimmer cadence. The site-wide `prefers-reduced-motion: reduce` rule already kills the transition, so no extra opt-out needed.
+
 ## [0.7.1] — 2026-06-01 — Fix efm-web healthcheck false-unhealthy from TLS-on-loopback
 
 ### Fixed
