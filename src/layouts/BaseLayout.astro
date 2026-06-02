@@ -48,6 +48,16 @@ const clientConfig = {
     <link rel="canonical" href={Astro.url.toString()} />
   </head>
   <body class="overflow-x-hidden">
+    <!-- Fluid music-reactive backdrop. Three big blurred colour blobs that
+         drift continuously (CSS keyframe orbits) so the background is alive at
+         rest, and swell / shove / brighten to the beat via the --efm-* vars
+         PlayerCard publishes on :root. Purely decorative: aria-hidden +
+         pointer-events:none, pinned behind #main. See .efm-blob in global.css. -->
+    <div class="efm-bg" aria-hidden="true">
+      <div class="efm-orbit efm-orbit--blue"><div class="efm-blob efm-blob--blue"></div></div>
+      <div class="efm-orbit efm-orbit--pink"><div class="efm-blob efm-blob--pink"></div></div>
+      <div class="efm-orbit efm-orbit--gold"><div class="efm-blob efm-blob--gold"></div></div>
+    </div>
     <!-- Caddy renders /runtime-config.js from env vars at request time so
          webhook URLs aren't baked into the static bundle. Loaded first so the
          modals' inline scripts (later in body) can read window.__EFM_CONFIG__.discord. -->
@@ -55,7 +65,8 @@ const clientConfig = {
     <script is:inline define:vars={{ clientConfig }}>
       window.__EFM_CONFIG__ = Object.assign(window.__EFM_CONFIG__ || {}, clientConfig);
     </script>
-    <main id="main"><slot /></main>
+    <!-- relative + z-index keeps all content painting above the .efm-bg blobs. -->
+    <main id="main" class="relative z-[1]"><slot /></main>
 
     <script>
       import '../scripts/nowplaying.ts';

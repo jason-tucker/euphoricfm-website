@@ -50,21 +50,13 @@
     background-image: radial-gradient(70% 40% at 30% -10%, rgba(41, 52, 98, 0.65), transparent 60%),
                       radial-gradient(60% 40% at 90% 10%, rgba(214, 28, 78, 0.40), transparent 55%),
                       radial-gradient(80% 60% at 50% 110%, rgba(254, 177, 57, 0.25), transparent 60%);
-    /* Music-reactive drift. PlayerCard.astro publishes --efm-bass/-mid/-high/
-       -energy (0..1) on :root every RAF frame while audio is playing; each
-       gradient layer here gets its own background-position derived from one
-       of those bands so the three light pools drift independently to the
-       beat. Output range is ±half the multiplier (so 24px * (var-0.5) is
-       -12px..+12px). 80ms linear transition matches the PlayerCard halo /
-       bar shimmer cadence — fast enough to feel responsive, slow enough to
-       round off jagged FFT spikes. Vars default to 0 when audio is paused
-       (the tick loop unsets them), which puts every layer at 0/0 — i.e.
-       exactly the look the page had before this rule existed. */
-    background-position:
-      calc((var(--efm-bass, 0) - 0.5) * 28px) calc((var(--efm-mid, 0) - 0.5) * 22px),
-      calc((var(--efm-high, 0) - 0.5) * 22px) calc((var(--efm-energy, 0) - 0.5) * 24px),
-      calc((var(--efm-mid, 0) - 0.5) * 26px) calc((var(--efm-bass, 0) - 0.5) * 30px);
-    transition: background-position 80ms linear;
+    /* This static gradient is just the base ambience. The *fluid* music
+       reaction is now a layer of real blurred-circle elements (.efm-bg,
+       injected by BaseLayout) — see the .efm-blob block lower in this file.
+       The old approach drove background-position on these huge corner
+       gradients, which is imperceptible: shifting a 70%-of-viewport wash by
+       a few px does nothing you can see. Discrete blob elements with GPU
+       transforms move and pulse visibly instead. */
   }
   @supports (color: color-mix(in oklch, red, blue)) {
     body {
@@ -335,6 +327,96 @@ body {
     transform: translateY(-1px);
     filter: brightness(1.06);
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * Fluid music-reactive background — three big blurred colour blobs.
+ *
+ * Markup (BaseLayout): .efm-bg > .efm-orbit > .efm-blob, ×3.
+ *
+ * Two nested elements per blob, so two independent transforms compose:
+ *   .efm-orbit  — slow continuous CSS-keyframe drift (the "fluid" part).
+ *                 Always running, even with audio paused, so the backdrop is
+ *                 alive at rest. GPU-composited translate → smooth + cheap.
+ *   .efm-blob   — the reactive part: a per-frame transform driven by the
+ *                 --efm-* vars (translate shove + scale swell) layered on top
+ *                 of the orbit, plus an energy-driven opacity pulse.
+ *
+ * Why this replaces the old background-position drift: moving a viewport-sized
+ * radial gradient by a few px is invisible. A discrete, heavily-blurred circle
+ * that scales 1→1.45 and shoves ±20px on the beat is not.
+ * ------------------------------------------------------------------------- */
+.efm-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* Behind content but above body's base gradient. contain:strict keeps the
+     blurred blobs from triggering layout/scroll work on the rest of the page. */
+  contain: strict;
+}
+.efm-orbit {
+  position: absolute;
+  will-change: transform;
+}
+.efm-orbit--blue { top: -14%; left: -10%; animation: efm-drift-a 26s ease-in-out infinite; }
+.efm-orbit--pink { top: -8%;  right: -14%; animation: efm-drift-b 32s ease-in-out infinite; animation-delay: -6s; }
+.efm-orbit--gold { bottom: -20%; left: 28%; animation: efm-drift-c 38s ease-in-out infinite; animation-delay: -12s; }
+
+.efm-blob {
+  width: clamp(280px, 58vw, 680px);
+  height: clamp(280px, 58vw, 680px);
+  border-radius: 50%;
+  /* Heavy blur is what makes it read as a soft light pool rather than a disc. */
+  filter: blur(64px);
+  will-change: transform, opacity;
+  /* Reactive transform — translate shove (band-dependent, recentred on ~0.3
+     so quiet ≈ no shove) + scale swell. transition smooths the 60fps RAF
+     writes so jagged FFT spikes don't strobe. Defaults (vars=0) → identity. */
+  transform: translate3d(
+      calc((var(--efm-mid, 0) - 0.3) * 36px),
+      calc((var(--efm-bass, 0) - 0.3) * 36px),
+      0)
+    scale(calc(1 + var(--efm-bass, 0) * 0.45));
+  opacity: calc(0.42 + var(--efm-energy, 0) * 0.34);
+  transition: transform 90ms linear, opacity 120ms linear;
+}
+.efm-blob--blue { background: radial-gradient(circle at 50% 50%, rgba(41, 52, 98, 0.95), transparent 70%); }
+.efm-blob--pink {
+  background: radial-gradient(circle at 50% 50%, rgba(214, 28, 78, 0.80), transparent 70%);
+  /* pink leans on highs/energy instead of bass for its shove + swell. */
+  transform: translate3d(
+      calc((var(--efm-high, 0) - 0.3) * 36px),
+      calc((var(--efm-energy, 0) - 0.3) * 36px),
+      0)
+    scale(calc(1 + var(--efm-energy, 0) * 0.5));
+}
+.efm-blob--gold {
+  background: radial-gradient(circle at 50% 50%, rgba(254, 177, 57, 0.70), transparent 70%);
+  transform: translate3d(
+      calc((var(--efm-bass, 0) - 0.3) * 36px),
+      calc((var(--efm-mid, 0) - 0.3) * 36px),
+      0)
+    scale(calc(1 + var(--efm-mid, 0) * 0.4));
+}
+
+/* Slow orbital drifts. Big amplitudes (vw/vh) so the motion is obvious; each
+   blob gets its own path + offset so they never visibly sync up. */
+@keyframes efm-drift-a {
+  0%, 100% { transform: translate(0, 0); }
+  33%      { transform: translate(12vw, 8vh); }
+  66%      { transform: translate(-6vw, 16vh); }
+}
+@keyframes efm-drift-b {
+  0%, 100% { transform: translate(0, 0); }
+  30%      { transform: translate(-14vw, 10vh); }
+  70%      { transform: translate(-4vw, -8vh); }
+}
+@keyframes efm-drift-c {
+  0%, 100% { transform: translate(0, 0); }
+  40%      { transform: translate(10vw, -10vh); }
+  75%      { transform: translate(-12vw, 4vh); }
 }
 
 /* Respect reduced motion. */

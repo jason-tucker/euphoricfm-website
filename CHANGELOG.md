@@ -5,6 +5,15 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.7.3] — 2026-06-02 — Replace invisible gradient drift with real fluid music-reactive blobs
+
+### Changed
+- **The music-reactive background is now actually visible and fluid.** 0.7.2 animated `background-position` on three viewport-sized radial gradients baked into `body`. Shifting a 70%-of-viewport soft wash by ±12px is imperceptible — the page tint barely nudged, which read as "nothing happens." Replaced the whole approach with **three real blurred-circle elements** (`.efm-bg` > `.efm-orbit` > `.efm-blob`, injected by `BaseLayout`):
+  - Each blob is a heavily-blurred (`blur(64px)`) brand-colour radial disc that **drifts continuously** via a slow GPU `transform` keyframe orbit (26–38s, offset so they never sync), so the backdrop is fluidly alive even with audio paused.
+  - On top of the orbit, each blob takes a **per-frame reactive `transform`** from the `--efm-*` vars: a band-driven translate shove (±~25px) plus a `scale(1 → ~1.5)` swell, and an `--efm-energy`-driven opacity pulse (0.42 → 0.76). Blue rides bass, pink rides highs/energy, gold rides mids. `transform`/`opacity` are GPU-composited, so the motion is large and smooth where `background-position` was not.
+  - `.efm-bg` is `position: fixed; z-index: 0; pointer-events: none; contain: strict`; `#main` is bumped to `z-index: 1` so all content paints above. `body`'s static base gradient is kept as the at-rest ambience.
+- The site-wide `prefers-reduced-motion: reduce` rule already zeroes the orbit animations and reactive transitions, so no extra opt-out was needed.
+
 ## [0.7.2] — 2026-06-01 — Fix widescreen Your-Requests cutoff + music-reactive background drift
 
 ### Fixed
