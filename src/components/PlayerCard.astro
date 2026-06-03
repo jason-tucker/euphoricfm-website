@@ -221,6 +221,9 @@ import { site } from '../site.config';
     };
 
     const startReact = async () => {
+      // Effects toggle (effects.ts) can disable all visual reactivity while the
+      // music keeps playing. window.__efmFx is the live flag.
+      if (window.__efmFx && !window.__efmFx.on) return;
       const ok = await setupAnalyser();
       if (!ok) return;
       cancelAnimationFrame(rafId);
@@ -270,6 +273,14 @@ import { site } from '../site.config';
     });
     audio.addEventListener('ended', () => { setPlayingUI(false); stopReact(); });
     audio.addEventListener('error', () => { setPlayingUI(false); stopReact(); });
+
+    // Effects toggle flipped (effects.ts): stop writing FFT vars when off, and
+    // resume if it's turned back on mid-playback. Music itself is unaffected.
+    document.addEventListener('efm:fx-change', (e) => {
+      const on = e.detail && e.detail.on;
+      if (!on) stopReact();
+      else if (playing) startReact();
+    });
 
     // Bridge for Media Session API in nowplaying.ts.
     window.__efmAudio = {

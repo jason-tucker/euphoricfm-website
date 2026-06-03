@@ -251,20 +251,40 @@
   --efm-mid: 0;
   --efm-high: 0;
   --efm-energy: 0;
+  /* "Honey float" spring offset (px), written by effects.ts every frame from
+     pointer + window-move. Defaults to 0 so nothing moves until the spring
+     loop runs (and it never runs when effects are off). */
+  --efm-float-x: 0px;
+  --efm-float-y: 0px;
+  /* --efm-theme-dom / -accent / -mute are deliberately NOT declared here:
+     effects.ts sets them from the album art, and every consumer uses
+     var(--efm-theme-*, <brand>) so an unset value falls back to brand. */
 }
 
-/* --- Player card: bass-driven halo (the main visual reaction). ---------- */
+/* --- Player card: bass-driven halo + album-themed border. --------------- */
+/* The card carries a SHALLOW honey-float (smallest --efm-card-depth) so the
+   primary UI feels the most "anchored" — chains to the floor. Its translate is
+   intentionally OUT of the transition list: the spring RAF already produces
+   smooth values, so a transition would just add lag. The border + halo colour
+   come from the album art (var fallback → brand), and those DO transition so
+   they cross-fade on track change. */
 #np-card {
+  transform: translate3d(
+      calc(var(--efm-float-x, 0px) * var(--efm-card-depth, 0.5)),
+      calc(var(--efm-float-y, 0px) * var(--efm-card-depth, 0.5)),
+      0);
+  border-color: var(--efm-theme-dom, rgba(255, 255, 255, 0.1));
   box-shadow:
     0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
     rgba(254, 177, 57, calc(var(--efm-bass) * 0.55));
-  transition: box-shadow 80ms linear;
+  transition: border-color 400ms ease, box-shadow 80ms linear;
+  will-change: transform;
 }
 @supports (color: color-mix(in oklch, red, blue)) {
   #np-card {
     box-shadow:
       0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
-      color-mix(in oklch, #FEB139 calc(var(--efm-bass) * 55%), transparent);
+      color-mix(in oklch, var(--efm-theme-accent, #FEB139) calc(var(--efm-bass) * 55%), transparent);
   }
 }
 
@@ -276,15 +296,27 @@
   will-change: transform, filter;
 }
 
-/* --- Play button: glow with bass when playing. -------------------------- */
+/* --- Play button: glow with bass when playing (album-themed). ----------- */
 #np-card.is-playing #efm-play {
   box-shadow: 0 0 calc(var(--efm-bass) * 22px) calc(var(--efm-bass) * 4px)
     rgba(254, 177, 57, calc(0.35 + var(--efm-bass) * 0.5));
   transition: box-shadow 80ms linear;
 }
+@supports (color: color-mix(in oklch, red, blue)) {
+  #np-card.is-playing #efm-play {
+    box-shadow: 0 0 calc(var(--efm-bass) * 22px) calc(var(--efm-bass) * 4px)
+      color-mix(in oklch, var(--efm-theme-accent, #FEB139) calc((0.35 + var(--efm-bass) * 0.5) * 100%), transparent);
+  }
+}
 
-/* --- Progress bar: mid-frequency shimmer (subtle horizontal gleam). ----- */
+/* --- Progress bar: album-themed fill + mid-frequency shimmer. ------------ */
+/* The fill gradient retints dom→accent (brand sunburst→lemon fallback). A
+   gradient can't CSS-transition, so it snaps on track change — masked by the
+   bar's existing 300ms width animation and how brief the bar is. */
 #np-bar {
+  background: linear-gradient(to right,
+    var(--efm-theme-dom, #feb139),
+    var(--efm-theme-accent, #fff80a));
   box-shadow:
     0 0 calc(var(--efm-mid) * 18px) calc(var(--efm-mid) * 2px)
     rgba(254, 177, 57, calc(0.35 + var(--efm-mid) * 0.45));
@@ -300,12 +332,20 @@
 
 /* --- Site-wide subtle reactions (kept "a lil"). ------------------------- */
 
-/* Header wordmark: tiny bass-driven scale + drop-shadow brightness. */
+/* Header wordmark: DEEPEST honey-float (most movement — it's decorative) plus
+   the tiny bass-driven scale. Float translate and audio scale compose in one
+   transform via calc(). Float is left out of the transition (RAF-smoothed);
+   only the text-shadow transitions. */
 header h1 span {
   display: inline-block;
-  transform: scale(calc(1 + var(--efm-bass) * 0.015));
+  transform:
+    translate3d(
+      calc(var(--efm-float-x, 0px) * var(--efm-wm-depth, 1.4)),
+      calc(var(--efm-float-y, 0px) * var(--efm-wm-depth, 1.4)),
+      0)
+    scale(calc(1 + var(--efm-bass) * 0.015));
   text-shadow: 0 0 calc(var(--efm-bass) * 12px) rgba(254, 177, 57, calc(var(--efm-bass) * 0.5));
-  transition: transform 80ms linear, text-shadow 80ms linear;
+  transition: text-shadow 80ms linear;
 }
 
 /* Body background gradient — overall energy brightens it slightly so the
@@ -364,6 +404,20 @@ body {
 .efm-orbit--pink { top: -8%;  right: -14%; animation: efm-drift-b 32s ease-in-out infinite; animation-delay: -6s; }
 .efm-orbit--gold { bottom: -20%; left: 28%; animation: efm-drift-c 38s ease-in-out infinite; animation-delay: -12s; }
 
+/* Honey-float layer — sits BETWEEN .efm-orbit (continuous keyframe drift) and
+   .efm-blob (audio reaction), so three independent transforms compose without
+   clobbering. Carries the pointer/window spring offset (written on :root by
+   effects.ts) scaled by a per-element --efm-depth set inline in the markup, so
+   each blob floats a different amount → parallax depth. No transition: the
+   spring RAF already smooths the motion. */
+.efm-float {
+  transform: translate3d(
+      calc(var(--efm-float-x, 0px) * var(--efm-depth, 1)),
+      calc(var(--efm-float-y, 0px) * var(--efm-depth, 1)),
+      0);
+  will-change: transform;
+}
+
 .efm-blob {
   width: clamp(280px, 58vw, 680px);
   height: clamp(280px, 58vw, 680px);
@@ -382,9 +436,14 @@ body {
   opacity: calc(0.42 + var(--efm-energy, 0) * 0.34);
   transition: transform 90ms linear, opacity 120ms linear;
 }
-.efm-blob--blue { background: radial-gradient(circle at 50% 50%, rgba(41, 52, 98, 0.95), transparent 70%); }
+/* The three blobs retint to the album art (dominant / accent / muted swatch),
+   each falling back to its original brand colour when no art theme is set
+   (effects off, extraction failed, or pre-first-track). Gradients can't
+   CSS-transition, so the colour snaps on track change — invisible under
+   blur(64px) + the slow drift. */
+.efm-blob--blue { background: radial-gradient(circle at 50% 50%, var(--efm-theme-dom, rgba(41, 52, 98, 0.95)), transparent 70%); }
 .efm-blob--pink {
-  background: radial-gradient(circle at 50% 50%, rgba(214, 28, 78, 0.80), transparent 70%);
+  background: radial-gradient(circle at 50% 50%, var(--efm-theme-accent, rgba(214, 28, 78, 0.80)), transparent 70%);
   /* pink leans on highs/energy instead of bass for its shove + swell. */
   transform: translate3d(
       calc((var(--efm-high, 0) - 0.3) * 36px),
@@ -393,7 +452,7 @@ body {
     scale(calc(1 + var(--efm-energy, 0) * 0.5));
 }
 .efm-blob--gold {
-  background: radial-gradient(circle at 50% 50%, rgba(254, 177, 57, 0.70), transparent 70%);
+  background: radial-gradient(circle at 50% 50%, var(--efm-theme-mute, rgba(254, 177, 57, 0.70)), transparent 70%);
   transform: translate3d(
       calc((var(--efm-bass, 0) - 0.3) * 36px),
       calc((var(--efm-mid, 0) - 0.3) * 36px),
@@ -418,6 +477,31 @@ body {
   40%      { transform: translate(10vw, -10vh); }
   75%      { transform: translate(-12vw, 4vh); }
 }
+
+/* ---------------------------------------------------------------------------
+ * Effects OFF — the master kill switch.
+ *
+ * effects.ts toggles `html.efm-fx-off` (and a synchronous head script in
+ * BaseLayout sets it before first paint so there's no flash). This forces the
+ * whole page to its clean static brand look in CSS alone — independent of when
+ * the JS loops actually stop. JS gating then reclaims the CPU. The audio/float
+ * vars are pinned to 0 so every reactive rule collapses to its rest state;
+ * effects.ts additionally REMOVES the --efm-theme-* vars when off, so themed
+ * rules fall back to brand via their var() fallbacks.
+ * ------------------------------------------------------------------------- */
+html.efm-fx-off {
+  --efm-bass: 0;
+  --efm-mid: 0;
+  --efm-high: 0;
+  --efm-energy: 0;
+  --efm-float-x: 0px;
+  --efm-float-y: 0px;
+}
+html.efm-fx-off #np-card,
+html.efm-fx-off .efm-float,
+html.efm-fx-off header h1 span { transform: none; }
+html.efm-fx-off .efm-orbit { animation: none; }
+html.efm-fx-off body { filter: none; }
 
 /* Respect reduced motion. */
 @media (prefers-reduced-motion: reduce) {

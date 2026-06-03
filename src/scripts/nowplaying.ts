@@ -85,11 +85,28 @@ declare global {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
+  // Rewrite euphoric.fm album-art URLs to our own origin (/efm-art/...) so the
+  // effects module can read the image onto a <canvas> for colour extraction
+  // without tainting it — Caddy reverse-proxies /efm-art/* back to euphoric.fm.
+  // data: URIs and anything already same-origin pass through untouched.
+  const toSameOriginArt = (raw: string): string => {
+    try {
+      const u = new URL(raw, location.href);
+      return u.origin === 'https://euphoric.fm' ? '/efm-art' + u.pathname + u.search : raw;
+    } catch {
+      return raw;
+    }
+  };
+
   const applyNowPlaying = (np: AzuraNowPlayingEntry) => {
     const song = np.song;
     if (elArt && song.art) {
-      elArt.src = song.art;
+      const artUrl = toSameOriginArt(song.art);
+      elArt.src = artUrl;
       elArt.alt = `${song.title} — ${song.artist}`;
+      // Announce the (same-origin) art URL so effects.ts can extract its
+      // palette. It dedupes by URL, so firing every poll is harmless.
+      document.dispatchEvent(new CustomEvent('efm:track-art', { detail: { url: artUrl } }));
     }
     if (elTitle) elTitle.textContent = song.title || song.text || 'Unknown track';
     if (elArtist) elArtist.textContent = song.artist || '—';
@@ -112,7 +129,7 @@ declare global {
     const song = next.song;
     if (elUpNextTitle) elUpNextTitle.textContent = song.title || song.text || '';
     if (elUpNextArtist) elUpNextArtist.textContent = song.artist || '';
-    if (elUpNextArt && song.art) elUpNextArt.src = song.art;
+    if (elUpNextArt && song.art) elUpNextArt.src = toSameOriginArt(song.art);
     if (elUpNextRequested) elUpNextRequested.classList.toggle('hidden', !next.is_request);
     upNextReady = true;
     // Don't add .is-open here — tick() decides based on remaining seconds.

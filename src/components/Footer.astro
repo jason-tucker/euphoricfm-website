@@ -5,10 +5,78 @@ const releaseUrl = `https://github.com/jason-tucker/euphoricfm-website/releases/
 ---
 
 <footer class="py-6 mt-4 text-center text-[10px] lg:text-xs text-cream/45">
-  <div>&copy; {year} EuphoricFM</div>
+  <!-- Effects master switch. Wired by effects.ts, which also sets the correct
+       aria-checked on load (it lives in client localStorage, so we can't render
+       the true state server-side — it self-corrects right after hydration). -->
+  <div class="flex justify-center">
+    <button
+      id="efm-fx-toggle"
+      type="button"
+      role="switch"
+      aria-checked="true"
+      aria-label="Toggle visual effects"
+      class="efm-fx-toggle"
+    >
+      <span class="efm-fx-track"><span class="efm-fx-thumb"></span></span>
+      <span>Effects</span>
+    </button>
+  </div>
+  <div class="mt-1">&copy; {year} EuphoricFM</div>
   <div class="mt-1">
     <a href={releaseUrl} target="_blank" rel="noopener" class="hover:text-cream/70 underline-offset-2 hover:underline">
       v{VERSION} · {SHORT_SHA}
     </a>
   </div>
 </footer>
+
+<style>
+  .efm-fx-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 48px;          /* tap target (CLAUDE rule 6) */
+    padding: 0 0.5rem;
+    border-radius: 9999px;
+    color: inherit;
+    font: inherit;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 200ms ease;
+  }
+  @media (hover: hover) {
+    .efm-fx-toggle:hover { color: rgb(255 255 255 / 0.7); }
+  }
+  .efm-fx-track {
+    position: relative;
+    width: 32px;
+    height: 18px;
+    border-radius: 9999px;
+    background: rgb(255 255 255 / 0.15);
+    transition: background 200ms ease;
+    flex-shrink: 0;
+  }
+  .efm-fx-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 9999px;
+    background: rgb(255 255 255 / 0.55);
+    transition: transform 200ms ease, background 200ms ease;
+  }
+  /* ON state — brand-coloured track + thumb slid right. */
+  .efm-fx-toggle[aria-checked='true'] .efm-fx-track {
+    background: linear-gradient(to right, #feb139, #d61c4e);
+  }
+  .efm-fx-toggle[aria-checked='true'] .efm-fx-thumb {
+    transform: translateX(14px);
+    background: #0a0a0a;
+  }
+  .efm-fx-toggle:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(254, 177, 57, 0.6);
+  }
+</style>

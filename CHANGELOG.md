@@ -5,7 +5,19 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
-## [0.7.3] — 2026-06-02 — Replace invisible gradient drift with real fluid music-reactive blobs
+## [0.8.0] — 2026-06-02 — Album-art theming, "honey float" physics, Effects toggle + "Requested Songs" rename
+
+### Added
+- **Album-art colour theming.** The player card (border, bass halo, play-button glow, progress-bar fill) **and the three floating background blobs** now retint to the current track's album art instead of the fixed brand palette. A tiny hand-written sampler (no library) downscales the art to a 24×24 canvas and derives a dominant / accent / muted swatch, published as `--efm-theme-dom/-accent/-mute` on `:root`. Every themed rule uses `var(--efm-theme-*, <brand>)`, so it falls back to brand colours on extraction failure, first paint, or when effects are off. Solid-colour cues (card border, halos) cross-fade on track change; gradient fills (bar, blobs) snap but are masked by blur/brevity.
+  - Album art is cross-origin (`euphoric.fm`), which would taint the canvas. New Caddy `handle_path /efm-art/*` reverse-proxies art through our own origin (mirrors the existing `/api/*` proxy) so the read is clean; `nowplaying.ts` rewrites `song.art` → `/efm-art/...` and dispatches an `efm:track-art` event the theming module consumes.
+- **"Honey float" spring physics.** The player card, background blobs, and header wordmark gently rubberband — as if suspended in honey on a couple feet of chain. A single shared spring RAF loop (slightly under-damped, hard ±9px clamp) is perturbed by pointer position and by the browser **window being physically moved** on desktop, and springs back. Per-element depth multipliers create parallax (card floats least, wordmark most). Inside the in-game phone iframe there's no hover/window-move, so it rests at 0 — graceful no-op; theming + audio reactivity still work there. Composed via a new `.efm-float` wrapper layer so orbit drift ⊕ float ⊕ audio reaction never clobber each other.
+- **"Effects" master toggle** in the footer. One switch turns audio reactivity, float, blob motion, and album theming on/off; persisted in `localStorage` and applied before first paint (no flash) via a synchronous `<head>` script that sets `html.efm-fx-off`. Defaults **off** under `prefers-reduced-motion` unless the user has explicitly chosen. When off, the page settles to a clean static brand look (CSS-enforced) and the loops stop to reclaim CPU.
+
+### Changed
+- **Renamed the sidebar "Your Requests" card to "Requested Songs."** The label is rendered server-side, so it now reads the same on every device/browser (it was never per-browser).
+
+### Notes
+- New client module `src/scripts/effects.ts` owns the spring loop, toggle state, colour extractor, and the `window.__efmFx` bridge PlayerCard reads to gate its FFT writes (music keeps playing when visuals are off). No new npm dependencies.
 
 ### Changed
 - **The music-reactive background is now actually visible and fluid.** 0.7.2 animated `background-position` on three viewport-sized radial gradients baked into `body`. Shifting a 70%-of-viewport soft wash by ±12px is imperceptible — the page tint barely nudged, which read as "nothing happens." Replaced the whole approach with **three real blurred-circle elements** (`.efm-bg` > `.efm-orbit` > `.efm-blob`, injected by `BaseLayout`):

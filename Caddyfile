@@ -103,6 +103,24 @@
     reverse_proxy efm-requests:3000
   }
 
+  # ---- Album-art same-origin proxy --------------------------------------
+  # Album art comes from euphoric.fm (cross-origin to info.euphoric.fm). To
+  # extract the dominant colour from the current track's art we read it onto a
+  # <canvas>, but a cross-origin image taints the canvas and blocks
+  # getImageData(). Routing art through our own origin makes the canvas read
+  # clean. `handle_path` strips the /efm-art prefix, so /efm-art/api/station/1/
+  # art/<hash> proxies to https://euphoric.fm/api/station/1/art/<hash>.
+  # Streaming proxy — nothing is written to the read-only container FS; the
+  # Cache-Control header is just a browser hint. ACAO is belt-and-suspenders
+  # (the read is same-origin already).
+  handle_path /efm-art/* {
+    reverse_proxy https://euphoric.fm {
+      header_up Host euphoric.fm
+    }
+    header Access-Control-Allow-Origin "*"
+    header Cache-Control "public, max-age=300"
+  }
+
   # ---- AzuraCast request-submit proxy -----------------------------------
   # AzuraCast's `POST /api/station/<id>/request/<songId>` returns its reply
   # WITHOUT an `Access-Control-Allow-Origin` header (the OPTIONS preflight
