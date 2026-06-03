@@ -5,6 +5,11 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.8.1] — 2026-06-02 — Fix album-art proxy redirect (0.8.0 broke the now-playing image)
+
+### Fixed
+- **Now-playing album art is no longer broken by the same-origin proxy.** 0.8.0 rewrote `song.art` to `/efm-art/...`, but AzuraCast's `/api/station/<id>/art/<hash>` endpoint 302-redirects to a **relative** `/static/uploads/<file>` path. The browser resolved that against our origin (`info.euphoric.fm/static/...`), which hit `file_server` and 404'd — so the player's main image vanished. Added a `handle /static/*` reverse-proxy to euphoric.fm so the whole redirect chain stays same-origin (we serve no `/static` assets ourselves, so mirroring AzuraCast's is safe). Also dropped the `Access-Control-Allow-Origin` header from the art proxy: euphoric.fm sends none, the read is same-origin now (so none is needed), and Caddy was emitting it twice — a `*, *` value some browsers reject.
+
 ## [0.8.0] — 2026-06-02 — Album-art theming, "honey float" physics, Effects toggle + "Requested Songs" rename
 
 ### Added
