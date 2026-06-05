@@ -5,6 +5,12 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.8.2] — 2026-06-04 — Restructure README to the shared section template
+
+### Changed
+- **README reorganised into the shared cross-repo structure** (Overview, Architecture, Stack, Quick start, Configuration, Usage / Integrations, Deployment, Conventions, License). Same accurate content, predictable order. Corrected the stale "Cloudflare Tunnel is the only public ingress" line — since 0.4.0 Caddy binds the host's public `0.0.0.0:80`/`443` directly with Let's Encrypt and **no Cloudflare proxy** (the account-wide exception, for the in-game phone CEF iframe). Documented the AzuraCast specifics (`request_url` over a hardcoded station id; `sh_id`/`played_at`/`duration` client-side progress), the iframe/CEF constraints, the Discord-webhook embed shape, the same-origin `/api`·`/efm-art`·`/static`·`/requests` proxies, and the container hardening.
+- **Added a `description` to `package.json`** (it had none).
+
 ## [0.8.1] — 2026-06-02 — Fix album-art proxy redirect (0.8.0 broke the now-playing image)
 
 ### Fixed
