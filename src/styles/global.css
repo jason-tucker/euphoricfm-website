@@ -503,6 +503,37 @@ html.efm-fx-off header h1 span { transform: none; }
 html.efm-fx-off .efm-orbit { animation: none; }
 html.efm-fx-off body { filter: none; }
 
+/* ---------------------------------------------------------------------------
+ * FiveM in-game phone (CEF) — blur/filter safe mode.
+ *
+ * The in-game phone — this project's PRIMARY use case — embeds the site in an
+ * outdated CEF whose compositor can't render CSS blur/filter like a normal
+ * browser does. Three things blank or black it out:
+ *   - a `filter` on <body> pushes the whole document through a filter pass the
+ *     software compositor drops → the ENTIRE page renders blank;
+ *   - `backdrop-filter` has no gameview behind the iframe to sample, so it
+ *     paints solid black rectangles over the cards;
+ *   - three fixed `filter: blur(64px)` blobs are both of the above plus very
+ *     expensive — this is the layer that regressed the phone in 0.7.3/0.8.0.
+ *
+ * A synchronous <head> script (BaseLayout) detects FiveM's "CitizenFX" user
+ * agent and adds `efm-cef` BEFORE first paint. Here we strip ONLY the
+ * blur/filter compositing and fall back to the body's static radial-gradient
+ * ambience (plain CSS — renders fine in CEF). Layout, colours, and the
+ * box-shadow/transform audio reactions are all left intact, and normal
+ * browsers never match this block so they're completely unaffected.
+ * ------------------------------------------------------------------------- */
+html.efm-cef .efm-bg { display: none; }   /* drop the blur(64px) blob layer entirely */
+html.efm-cef body { filter: none; }       /* no whole-page filter pass → no blank frame */
+html.efm-cef #np-art { filter: none; }
+html.efm-cef .card {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  /* The frosted look came from backdrop-blur over the blobs; without it a
+     3%-opacity card all but vanishes, so give it a faintly solid panel fill. */
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
 /* Respect reduced motion. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
