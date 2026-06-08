@@ -46,17 +46,33 @@ const clientConfig = {
     <meta property="og:url" content={Astro.url.toString()} />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="canonical" href={Astro.url.toString()} />
-    <!-- Effects on/off, resolved BEFORE first paint so there's no flash of
-         effects settling. Mirrors effects.ts's logic: explicit localStorage
-         choice wins; otherwise default off under reduced-motion, on elsewhere.
-         Sets `html.efm-fx-off` which CSS uses to force the static brand look. -->
+    <!-- Pre-paint environment setup, resolved BEFORE first paint so nothing
+         flashes or blanks. Two independent decisions:
+
+         1. FiveM in-game phone (CEF) safe mode. The phone embeds this site in an
+            outdated CEF whose compositor can't render CSS blur/filter: a
+            `filter` on <body> drops the whole frame (blank page) and
+            `backdrop-filter` paints black rectangles (no gameview behind the
+            iframe to sample). FiveM's NUI core stamps "CitizenFX" into the user
+            agent (NUIInitialize.cpp), so detect that and add `html.efm-cef`,
+            which the stylesheet uses to swap the heavy blur/filter layers for
+            plain, CEF-safe equivalents. This is what blanked the phone after the
+            0.7.3/0.8.0 effects landed.
+
+         2. Effects on/off. Mirrors effects.ts's logic: explicit localStorage
+            choice wins; otherwise default off under reduced-motion, on elsewhere.
+            Sets `html.efm-fx-off` which CSS uses to force the static brand look. -->
     <script is:inline>
       (function () {
+        var el = document.documentElement;
+        try {
+          if (/CitizenFX/i.test(navigator.userAgent)) el.classList.add('efm-cef');
+        } catch (e) { /* navigator unavailable → assume a normal browser */ }
         try {
           var s = localStorage.getItem('efm-fx');
           var rm = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
           var on = s ? s === 'on' : !rm;
-          if (!on) document.documentElement.classList.add('efm-fx-off');
+          if (!on) el.classList.add('efm-fx-off');
         } catch (e) { /* storage blocked → default on */ }
       })();
     </script>

@@ -5,6 +5,14 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.8.3] — 2026-06-07 — Fix blank in-game phone (CEF) by disabling blur/filter effects it can't render
+
+### Fixed
+- **The site no longer renders blank inside the FiveM in-game phone.** The phone — this project's primary use case — embeds the page in an outdated CEF whose compositor can't render CSS blur/filter the way a normal browser does, which is exactly what 0.7.3/0.8.0 reintroduced: `body { filter: brightness() }` (a whole-page filter pass the software compositor drops → the entire page paints blank), `.card { backdrop-filter: blur() }` (no gameview behind the iframe to sample → solid black rectangles), and three fixed `filter: blur(64px)` background blobs (both of the above, plus very expensive). The page last first-painted cleanly in CEF at 0.3.8 when it was stripped of effects like these. Confirmed by FiveM's own NUI behaviour — see [citizenfx/fivem#3843](https://github.com/citizenfx/fivem/issues/3843).
+  - A synchronous `<head>` script in `BaseLayout.astro` now detects FiveM's CEF before first paint via the `CitizenFX` token its NUI core stamps into the user agent ([NUIInitialize.cpp](https://github.com/citizenfx/fivem)) and adds `html.efm-cef`. New CSS under that class strips **only** the blur/filter compositing — it hides the `.efm-bg` blob layer (falling back to the body's static radial-gradient ambience, which is plain CSS and renders fine), drops the `<body>` filter, and removes `backdrop-filter` from `.card` (with a faintly solid panel fill so the cards still read). Layout, colours, and the box-shadow/transform audio reactions are untouched.
+  - Normal browsers never match `html.efm-cef`, so the full desktop effects (fluid blurred blobs, frosted cards, body brightness pulse) are completely unaffected.
+- **`/cef-test.html` now echoes the user agent and whether `CitizenFX` was detected**, so the in-game phone can confirm both that the iframe reached the site and that blur/filter safe mode will engage.
+
 ## [0.8.2] — 2026-06-04 — Restructure README to the shared section template
 
 ### Changed
