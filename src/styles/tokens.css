@@ -1,0 +1,46 @@
+/* ===========================================================================
+ * EuphoricFM colour tokens — the single source of truth for every colour.
+ *
+ * Nothing else should hardcode a hex/rgb literal. Components use the Tailwind
+ * utilities (text-sunburst, bg-ruby/20, …) which resolve to the channel vars
+ * below; bespoke CSS uses rgb(var(--efm-*-rgb) / <alpha>).
+ *
+ * Two layers:
+ *   1. Brand anchors — the fixed EuphoricFM palette, stored as *space-separated
+ *      RGB channels* so both Tailwind's `<alpha-value>` modifier (bg-ruby/20)
+ *      and bespoke `rgb(var(--x) / a)` work off the same numbers.
+ *   2. Semantic roles — surface / line / text / accent / live, expressed in
+ *      terms of the anchors so intent is named once and reused.
+ *
+ * The DYNAMIC album-art theme (--efm-theme-dom / -accent / -mute) is NOT set
+ * here: effects.ts publishes it per track, and *always* passes it through the
+ * OKLCH "safe-gamut" sanitiser (clamped chroma + lightness → no neon, no
+ * near-black/white, guaranteed contrast on the surface; an analogous triad so
+ * the three can't clash with each other; a brand-cohesion blend so the whole
+ * palette stays in EuphoricFM's gold orbit). Every consumer reads
+ * `var(--efm-theme-*, <brand fallback>)`, so an unset/cleared value is brand.
+ * ======================================================================== */
+:root {
+  /* --- Brand anchors (RGB channels) ------------------------------------- */
+  --efm-ink-rgb: 10 10 10;        /* #0a0a0a  page surface (near-black)      */
+  --efm-cream-rgb: 255 255 255;   /* #ffffff  text + lines (always via alpha)*/
+  --efm-midnight-rgb: 41 52 98;   /* #293462  deep brand blue                */
+  --efm-ruby-rgb: 214 28 78;      /* #d61c4e  brand red — "FM", LIVE         */
+  --efm-sunburst-rgb: 254 177 57; /* #feb139  brand gold — "Euphoric", accent*/
+
+  /* Retuned from the old neon "lemon" #fff80a (255 248 10). That green-yellow
+     clashed against the warm gold wherever the two sat adjacent (progress bar,
+     button + toggle gradients). #ffd23e is the same warm family as sunburst,
+     one step brighter — a smooth amber ramp instead of an orange→neon jump. */
+  --efm-gold-rgb: 255 210 62;     /* #ffd23e  warm highlight gold            */
+
+  /* --- Semantic roles (full colours, for bespoke CSS) ------------------- */
+  --efm-surface: rgb(var(--efm-ink-rgb));
+  --efm-surface-card: rgb(var(--efm-cream-rgb) / 0.03);
+  --efm-line: rgb(var(--efm-cream-rgb) / 0.10);
+  --efm-text: rgb(var(--efm-cream-rgb));
+  --efm-text-muted: rgb(var(--efm-cream-rgb) / 0.70);
+  --efm-accent: rgb(var(--efm-sunburst-rgb));        /* primary accent  */
+  --efm-accent-bright: rgb(var(--efm-gold-rgb));     /* highlight        */
+  --efm-live: rgb(var(--efm-ruby-rgb));              /* live / danger    */
+}
