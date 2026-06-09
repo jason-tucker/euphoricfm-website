@@ -5,6 +5,20 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.9.0] — 2026-06-09 — Colour-system overhaul + anti-clash safeguards
+
+### Added
+- **OKLCH "safe-gamut" sanitiser for album-art theming.** Album art is arbitrary, so the old extractor could publish a neon, near-black, near-white, or brand-fighting tint straight to `--efm-theme-*` — the root cause of colours occasionally clashing / over-contrasting. The new `effects.ts` pipeline works in OKLCH (perceptually uniform): it clamps chroma into a safe band (`0.05–0.15` → never washed-out, never neon) and lightness into `0.52–0.70` (always legible on the `#0a0a0a` surface, never a white-out), derives an **analogous dom/accent/mute triad from a single seed** so the three theme colours can never clash with *each other*, gamut-maps by scaling chroma down (not hard-clipping a channel, which would shift hue and undo the clamp), and blends each 12% toward the brand gold so a cool/odd cover can't drag the page out of EuphoricFM's warm orbit. Near-grayscale art (OKLCH chroma < 0.03) is left untinted → brand fallback. Verified headless across neon / near-black / near-white / grayscale / blue / pink / teal seeds: every output lands in-band and clears ≥3:1 contrast on the surface.
+- **Centralised colour tokens (`src/styles/tokens.css`)** — the single source of truth for the whole palette. Brand anchors are stored as space-separated RGB channels so Tailwind's `/alpha` modifiers (`bg-ruby/20`, `text-cream/60`) and bespoke `rgb(var(--x) / a)` both read the same numbers, plus named semantic roles (surface / line / text / accent / live). Tailwind `colors` now resolve to these vars; no component hardcodes a hex any more (the lone exception — the `<html>` hard-fallback `#0a0a0a` — is intentionally a literal so the ultimate paint-guard never depends on a custom property having loaded).
+
+### Changed
+- **Retuned the neon "lemon" `#fff80a` → warm gold `#ffd23e`.** The old lemon's green-yellow cast clashed against the warm sunburst wherever the two sat adjacent (progress bar, button + toggle gradients); the new gold is the same family as sunburst, one step brighter — a smooth amber ramp instead of an orange→neon jump. `lemon` is kept as a Tailwind alias mapping to the gold, so existing `to-lemon` usages updated with zero churn.
+- **Multi-hue brand gradients now interpolate `in oklch`** (with an sRGB `@supports` fallback for CEF / older browsers): the navy→red "Business AD" button and the album-themed progress-bar fill no longer dip through a muddy grey-brown midpoint.
+- **Every brand colour literal across `global.css`, `Footer.astro`, and `PlayerCard.astro` now references the tokens** (aurora wash, themed scrollbar, now-playing flash, card halo / play-button glow, LIVE-dot twinkle, blob fallbacks, CEF panel fill, range slider, effects toggle). The careful CEF / `@supports` / `prefers-reduced-motion` fallback structure is unchanged — only the colour values were centralised.
+
+### Notes
+- No new dependencies; the OKLCH maths (~70 lines) is hand-written in `effects.ts`. All theme rules still read `var(--efm-theme-*, <brand>)`, so the effects-off look and the in-game-phone CEF path are unaffected. Safe-band constants (`BRAND_COHESION`, `C_MIN/MAX`, `L_MIN/MAX`, `SEED_GRAY_C`) are named at the top of the sanitiser for easy tuning.
+
 ## [0.8.3] — 2026-06-07 — Fix blank in-game phone (CEF) by disabling blur/filter effects it can't render
 
 ### Fixed
