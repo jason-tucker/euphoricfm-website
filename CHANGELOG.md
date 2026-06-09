@@ -38,8 +38,8 @@ can always tell which build is live.
   50-entry cap, body-size limits, prune, and the HTTP endpoints. `index.mjs` was
   refactored to a side-effect-free factory (`createStore`) so it imports cleanly
   under test.
-- **CI security scanning** (`.github/workflows/security.yml`): CodeQL,
-  dependency review, a gitleaks secret scan, the server test suite, a
+- **CI security scanning** (`.github/workflows/security.yml`): CodeQL, a
+  gitleaks secret scan, the server test suite, a
   `pnpm audit --audit-level=high` gate, and a `caddy validate` check. Added
   `.github/dependabot.yml` (npm + github-actions) to keep dependencies and
   action versions patched, and added `--ignore-scripts` to the build install

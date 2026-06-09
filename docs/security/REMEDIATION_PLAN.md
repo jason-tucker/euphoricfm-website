@@ -14,7 +14,7 @@ existing app behaviour.
 | 3 | F3 No rate limit | Per-IP fixed-window limiter (20/min) + real client IP via Caddy XFF | `server/index.mjs`, `Caddyfile` | test #11 |
 | 4 | F2 Secondary XSS sinks | Escape AzuraCast-sourced `art` | `nowplaying.ts`, `RequestModal.astro` | build pass |
 | 5 | F7 Weak CSP | Behaviour-compatible CSP allow-list | `Caddyfile` | `caddy validate` (CI) + origin trace |
-| 6 | F5 No CI security gates | CodeQL + gitleaks + dependency-review + `pnpm audit` + tests + `caddy validate`; `--ignore-scripts` | `.github/workflows/security.yml`, `build-and-publish.yml` | workflow runs on PR |
+| 6 | F5 No CI security gates | CodeQL + gitleaks + `pnpm audit` + tests + `caddy validate`; `--ignore-scripts` | `.github/workflows/security.yml`, `build-and-publish.yml` | workflow runs on PR |
 | 7 | F6 Mutable action tags | Dependabot (npm + github-actions) | `.github/dependabot.yml` | — |
 | 8 | F10 No graceful shutdown | SIGTERM/SIGINT flush + close | `server/index.mjs` | manual |
 | 9 | F11/F12 Body accounting + control chars | Byte-accurate limit + `sanitizeText` | `server/index.mjs` | tests #10, #3 |

@@ -68,20 +68,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # full history so historically-committed secrets are caught
+          fetch-depth: 0 # full history available; on PRs gitleaks scans the PR commits
       - uses: gitleaks/gitleaks-action@v2
         env:
+          # Required by gitleaks-action v2 to scan pull requests via the API.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
 
-  # ---- Dependency review on PRs (blocks adding vulnerable/odd-license deps) -
-  dependency-review:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: high
+  # NOTE: actions/dependency-review-action needs the repo's Dependency Graph
+  # feature enabled (Settings → Security → Dependency graph) and errors out
+  # otherwise. Dependency-vuln risk is already gated by the `audit` job
+  # (pnpm audit --audit-level=high) + Dependabot, so dependency-review is left
+  # out until Dependency Graph is enabled — re-add it then for license/PR gating.
 
   # ---- Caddyfile validation (catches a broken proxy/CSP config pre-deploy) --
   caddy-validate:

@@ -31,8 +31,9 @@ A `pnpm audit --audit-level=high` gate now runs in CI (`security.yml`).
 ## Licenses
 Spot-check of the resolved tree shows permissive licenses only
 (MIT / Apache-2.0 / BSD-2/3-Clause / BlueOak-1.0.0 / ISC). No GPL/AGPL/copyleft
-or "unlicensed" packages surfaced. `dependency-review-action` (PR gate) will flag
-any future addition with a disallowed license or known vuln.
+or "unlicensed" packages surfaced. `pnpm audit --audit-level=high` (CI gate) + Dependabot catch any future
+addition with a known vuln; `dependency-review-action` can be re-added for
+license/PR gating once the repo's Dependency Graph feature is enabled.
 
 ## Lifecycle-script / postinstall risk
 - Dockerfile build already used `pnpm install --frozen-lockfile --ignore-scripts`.

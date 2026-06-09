@@ -24,8 +24,8 @@ section of the main `CHANGELOG.md`.
 - **First test suite** (`server/index.test.mjs`, 15 `node:test` cases) proving
   the XSS sanitiser, rate limiting, dedupe, cap, body limits, and prune.
 - **CI security scanning** (`.github/workflows/security.yml`): CodeQL, gitleaks
-  secret scan, dependency-review, `pnpm audit --audit-level=high`, server tests,
-  `caddy validate`.
+  secret scan, `pnpm audit --audit-level=high`, server tests, `caddy validate`.
+  (dependency-review is left out until the repo's Dependency Graph is enabled.)
 - **Dependabot** (`.github/dependabot.yml`) for npm + GitHub Actions.
 - **`--ignore-scripts`** on the CI build install (matches the Dockerfile).
 
