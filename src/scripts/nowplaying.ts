@@ -187,7 +187,10 @@ declare global {
       const ago = Math.max(0, Math.floor(nowSec - p.ts / 1000));
       const title = escape(p.title || 'Unknown');
       const artist = escape(p.artist || '');
-      const art = p.art || '';
+      // `art` comes from the public, unauthenticated /requests/track endpoint,
+      // so it is attacker-controlled — escape it before it lands in src="…"
+      // or an attribute breakout (art = `x" onerror="…`) becomes stored XSS.
+      const art = escape(p.art || '');
       return `<li class="flex items-center gap-3 py-2 border-t border-cream/5 first:border-t-0">
         <img src="${art}" alt="" class="w-10 h-10 rounded-md object-cover bg-cream/10 shrink-0" loading="lazy">
         <div class="min-w-0 flex-1">
@@ -220,7 +223,8 @@ declare global {
       const endedAt = (h.played_at || 0) + (h.duration || 0);
       const ago = Math.max(0, Math.floor((nowSec - endedAt) / 60));
       const agoText = ago === 0 ? 'just ended' : `${ago}m ago`;
-      const art = h.song.art || '';
+      // Escape the art URL too — it is interpolated straight into src="…".
+      const art = escape(h.song.art || '');
       const title = escape(h.song.title || h.song.text || '');
       const artist = escape(h.song.artist || '');
       return `<li class="flex items-center gap-3 py-2 border-t border-cream/5 first:border-t-0">
