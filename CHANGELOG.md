@@ -5,6 +5,46 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.10.0] — 2026-06-09 — Security hardening pass (stored-XSS fix, request-API hardening, CI scanning)
+
+### Security
+- **Fixed a stored XSS reachable by any anonymous visitor.** The shared
+  pending-requests service (`server/index.mjs`, public + unauthenticated via
+  Caddy `/requests/*`) stored the `art` field verbatim, and `nowplaying.ts`
+  interpolated it **unescaped** into `<img src="${art}">` in the "Requested
+  Songs" sidebar rendered to *every* visitor. With no `script-src` CSP, a
+  payload like `art = 'x" onerror="…'` executed in every browser. Fixed on both
+  sides (defence in depth): the client now HTML-escapes `art` everywhere it is
+  interpolated (`nowplaying.ts` `renderPending`/`applyRecent`, `RequestModal`
+  search results), and the server `sanitizeArt()` collapses anything that isn't
+  a plain `http(s)`/root-relative URL to `''`. (CWE-79.)
+- **Hardened the public `/requests/track` write endpoint.** Per-client-IP
+  fixed-window rate limiting (20/min, `429` past the cap), control-char
+  stripping on the free-text fields, byte-accurate body-size enforcement, and a
+  graceful `SIGTERM`/`SIGINT` shutdown that flushes the store. Client IP is read
+  from the `X-Forwarded-For` Caddy sets to the real `{remote_host}` (the service
+  has no host-port binding, so the header is trustworthy). (CWE-770.)
+- **Added a behaviour-compatible Content-Security-Policy** to the
+  `info.euphoric.fm` site (was `frame-ancestors *` only): `default-src 'self'`,
+  `script-src`/`style-src 'self' 'unsafe-inline'` (the page is inline-script
+  heavy), `img-src 'self' data: https://euphoric.fm`, `connect-src 'self'
+  https://euphoric.fm https://discord.com`, `media-src https://euphoric.fm`,
+  `object-src 'none'`, `base-uri 'self'`, `frame-ancestors *` (iframe embedding
+  is required). Reduces XSS/exfil blast radius without changing app behaviour.
+
+### Added
+- **First test suite (`server/index.test.mjs`, `pnpm test`).** 15 `node:test`
+  cases (zero deps) covering the XSS sanitiser, rate limiting, dedupe, the
+  50-entry cap, body-size limits, prune, and the HTTP endpoints. `index.mjs` was
+  refactored to a side-effect-free factory (`createStore`) so it imports cleanly
+  under test.
+- **CI security scanning** (`.github/workflows/security.yml`): CodeQL, a
+  gitleaks secret scan, the server test suite, a
+  `pnpm audit --audit-level=high` gate, and a `caddy validate` check. Added
+  `.github/dependabot.yml` (npm + github-actions) to keep dependencies and
+  action versions patched, and added `--ignore-scripts` to the build install
+  (matching the Dockerfile) so a malicious lifecycle script can't run in CI.
+
 ## [0.9.0] — 2026-06-09 — Colour-system overhaul + anti-clash safeguards
 
 ### Added

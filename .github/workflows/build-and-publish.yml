@@ -31,7 +31,9 @@ jobs:
           node-version: '24'
           cache: 'pnpm'
 
-      - run: pnpm install --frozen-lockfile
+      # --ignore-scripts: don't run dependency lifecycle scripts in CI (matches
+      # the Dockerfile build) so a malicious postinstall can't execute here.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Astro check (typecheck)
         run: pnpm exec astro check

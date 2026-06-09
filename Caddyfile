@@ -67,8 +67,19 @@
     # narrows blast radius of any future supply-chain / XSS bug.
     Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()"
 
-    # Allow embedding from anywhere — required for the in-game phone iframe.
-    Content-Security-Policy "frame-ancestors *"
+    # Content-Security-Policy. `frame-ancestors *` keeps the in-game phone
+    # iframe working (DO NOT tighten — embedding is required). The rest is
+    # defence-in-depth that narrows XSS/exfil blast radius without changing app
+    # behaviour, so every origin the app legitimately talks to is allow-listed:
+    #   img-src    : same-origin art (/efm-art), data: placeholder, raw
+    #                euphoric.fm art used by the Media Session API.
+    #   connect-src: euphoric.fm (now-playing + library fetches) + discord.com
+    #                (webhook POSTs) + self (/requests, /api proxies).
+    #   media-src  : the euphoric.fm audio stream.
+    # script-src/style-src keep 'unsafe-inline' because the page is inline-script
+    # heavy (no nonces); the stored-XSS fix is the server+client escaping, this
+    # is a second layer. object-src/base-uri lock down plugin + <base> injection.
+    Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://euphoric.fm; font-src 'self'; connect-src 'self' https://euphoric.fm https://discord.com; media-src https://euphoric.fm; object-src 'none'; base-uri 'self'; form-action 'self'; worker-src 'self'; frame-ancestors *"
 
     # Remove default X-Frame-Options so it doesn't conflict with frame-ancestors.
     -X-Frame-Options
@@ -100,7 +111,12 @@
   # shared version). Reachable on the default compose network. See
   # server/index.mjs for the endpoint shape.
   handle /requests/* {
-    reverse_proxy efm-requests:3000
+    reverse_proxy efm-requests:3000 {
+      # Pass the real visitor IP so efm-requests' per-IP rate limiter works.
+      # Safe to trust: efm-requests has no host port binding and is only
+      # reachable through this Caddy, so no external client can forge it.
+      header_up X-Forwarded-For {remote_host}
+    }
   }
 
   # ---- Album-art same-origin proxy --------------------------------------
