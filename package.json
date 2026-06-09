@@ -2,7 +2,7 @@
   "name": "euphoricfm-website",
   "description": "In-game phone site for EuphoricFM — a GTA5 RP pop radio station. Astro static site embedded in a FiveM CEF iframe at info.euphoric.fm, with live AzuraCast now-playing, song requests, and Discord-webhook forms.",
   "type": "module",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "engines": {
     "node": ">=22.12.0"
   },

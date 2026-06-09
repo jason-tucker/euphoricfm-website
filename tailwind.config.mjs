@@ -3,13 +3,19 @@ export default {
   content: ['./src/**/*.{astro,html,js,jsx,md,mdx,ts,tsx}'],
   theme: {
     extend: {
+      // Colours resolve to the channel vars in src/styles/tokens.css (the single
+      // source of truth), so every `/alpha` modifier (bg-ruby/20, text-cream/60)
+      // keeps working while the actual values live in one place.
       colors: {
-        ink: '#0a0a0a',
-        cream: '#ffffff',
-        midnight: '#293462',
-        ruby: '#d61c4e',
-        sunburst: '#feb139',
-        lemon: '#fff80a',
+        ink: 'rgb(var(--efm-ink-rgb) / <alpha-value>)',
+        cream: 'rgb(var(--efm-cream-rgb) / <alpha-value>)',
+        midnight: 'rgb(var(--efm-midnight-rgb) / <alpha-value>)',
+        ruby: 'rgb(var(--efm-ruby-rgb) / <alpha-value>)',
+        sunburst: 'rgb(var(--efm-sunburst-rgb) / <alpha-value>)',
+        gold: 'rgb(var(--efm-gold-rgb) / <alpha-value>)',
+        // Legacy alias — `lemon` now maps to the retuned warm gold so existing
+        // `to-lemon` gradients become a smooth amber ramp with no code churn.
+        lemon: 'rgb(var(--efm-gold-rgb) / <alpha-value>)',
       },
       fontFamily: {
         body: ['"Inter"', 'system-ui', 'sans-serif'],
@@ -33,7 +39,7 @@ export default {
       },
       backgroundImage: {
         'efm-aurora':
-          'radial-gradient(60% 60% at 18% 10%, color-mix(in oklch, #FEB139 35%, transparent), transparent 60%), radial-gradient(50% 50% at 95% 25%, color-mix(in oklch, #D61C4E 35%, transparent), transparent 60%), radial-gradient(60% 60% at 50% 100%, color-mix(in oklch, #293462 70%, transparent), transparent 70%)',
+          'radial-gradient(60% 60% at 18% 10%, color-mix(in oklch, rgb(var(--efm-sunburst-rgb)) 35%, transparent), transparent 60%), radial-gradient(50% 50% at 95% 25%, color-mix(in oklch, rgb(var(--efm-ruby-rgb)) 35%, transparent), transparent 60%), radial-gradient(60% 60% at 50% 100%, color-mix(in oklch, rgb(var(--efm-midnight-rgb)) 70%, transparent), transparent 70%)',
       },
     },
   },
