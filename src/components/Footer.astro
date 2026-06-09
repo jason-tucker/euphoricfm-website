@@ -46,14 +46,14 @@ const releaseUrl = `https://github.com/jason-tucker/euphoricfm-website/releases/
     transition: color 200ms ease;
   }
   @media (hover: hover) {
-    .efm-fx-toggle:hover { color: rgb(255 255 255 / 0.7); }
+    .efm-fx-toggle:hover { color: rgb(var(--efm-cream-rgb) / 0.7); }
   }
   .efm-fx-track {
     position: relative;
     width: 32px;
     height: 18px;
     border-radius: 9999px;
-    background: rgb(255 255 255 / 0.15);
+    background: rgb(var(--efm-cream-rgb) / 0.15);
     transition: background 200ms ease;
     flex-shrink: 0;
   }
@@ -64,19 +64,19 @@ const releaseUrl = `https://github.com/jason-tucker/euphoricfm-website/releases/
     width: 14px;
     height: 14px;
     border-radius: 9999px;
-    background: rgb(255 255 255 / 0.55);
+    background: rgb(var(--efm-cream-rgb) / 0.55);
     transition: transform 200ms ease, background 200ms ease;
   }
   /* ON state — brand-coloured track + thumb slid right. */
   .efm-fx-toggle[aria-checked='true'] .efm-fx-track {
-    background: linear-gradient(to right, #feb139, #d61c4e);
+    background: linear-gradient(to right, rgb(var(--efm-sunburst-rgb)), rgb(var(--efm-ruby-rgb)));
   }
   .efm-fx-toggle[aria-checked='true'] .efm-fx-thumb {
     transform: translateX(14px);
-    background: #0a0a0a;
+    background: rgb(var(--efm-ink-rgb));
   }
   .efm-fx-toggle:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px rgba(254, 177, 57, 0.6);
+    box-shadow: 0 0 0 2px rgb(var(--efm-sunburst-rgb) / 0.6);
   }
 </style>

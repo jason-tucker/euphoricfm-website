@@ -30,7 +30,9 @@
     /* Explicit solid base on html so even if body declarations fail to apply
        (older CEF, weird iframe sizing), we never get a black void. The
        in-game phone iframe sometimes computes 0px viewport height and never
-       paints body, so html paints the base color. */
+       paints body, so html paints the base color. Intentionally a literal that
+       mirrors --efm-ink-rgb (10 10 10): this ultimate fallback must never
+       depend on a custom property having loaded. */
     background-color: #0a0a0a;
   }
   body {
@@ -47,9 +49,9 @@
        background-attachment: fixed was removed because CEF iframes don't
        have their own scroll viewport and the fixed-attached layer can fail
        to paint, leaving the entire body black. */
-    background-image: radial-gradient(70% 40% at 30% -10%, rgba(41, 52, 98, 0.65), transparent 60%),
-                      radial-gradient(60% 40% at 90% 10%, rgba(214, 28, 78, 0.40), transparent 55%),
-                      radial-gradient(80% 60% at 50% 110%, rgba(254, 177, 57, 0.25), transparent 60%);
+    background-image: radial-gradient(70% 40% at 30% -10%, rgb(var(--efm-midnight-rgb) / 0.65), transparent 60%),
+                      radial-gradient(60% 40% at 90% 10%, rgb(var(--efm-ruby-rgb) / 0.40), transparent 55%),
+                      radial-gradient(80% 60% at 50% 110%, rgb(var(--efm-sunburst-rgb) / 0.25), transparent 60%);
     /* This static gradient is just the base ambience. The *fluid* music
        reaction is now a layer of real blurred-circle elements (.efm-bg,
        injected by BaseLayout) — see the .efm-blob block lower in this file.
@@ -60,9 +62,9 @@
   }
   @supports (color: color-mix(in oklch, red, blue)) {
     body {
-      background-image: radial-gradient(70% 40% at 30% -10%, color-mix(in oklch, #293462 65%, transparent), transparent 60%),
-                        radial-gradient(60% 40% at 90% 10%, color-mix(in oklch, #D61C4E 40%, transparent), transparent 55%),
-                        radial-gradient(80% 60% at 50% 110%, color-mix(in oklch, #FEB139 25%, transparent), transparent 60%);
+      background-image: radial-gradient(70% 40% at 30% -10%, color-mix(in oklch, rgb(var(--efm-midnight-rgb)) 65%, transparent), transparent 60%),
+                        radial-gradient(60% 40% at 90% 10%, color-mix(in oklch, rgb(var(--efm-ruby-rgb)) 40%, transparent), transparent 55%),
+                        radial-gradient(80% 60% at 50% 110%, color-mix(in oklch, rgb(var(--efm-sunburst-rgb)) 25%, transparent), transparent 60%);
     }
   }
   a:focus-visible, button:focus-visible {
@@ -152,25 +154,25 @@
      Color tokens match the brand: midnight track + sunburst thumb. */
   .efm-sidebar-scroll {
     scrollbar-width: thin;
-    scrollbar-color: rgb(254 177 57 / 0.55) rgb(41 52 98 / 0.35);
+    scrollbar-color: rgb(var(--efm-sunburst-rgb) / 0.55) rgb(var(--efm-midnight-rgb) / 0.35);
   }
   .efm-sidebar-scroll::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
   .efm-sidebar-scroll::-webkit-scrollbar-track {
-    background: rgb(41 52 98 / 0.25);
+    background: rgb(var(--efm-midnight-rgb) / 0.25);
     border-radius: 9999px;
     margin: 4px 0;
   }
   .efm-sidebar-scroll::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, rgb(254 177 57 / 0.7), rgb(214 28 78 / 0.65));
+    background: linear-gradient(180deg, rgb(var(--efm-sunburst-rgb) / 0.7), rgb(var(--efm-ruby-rgb) / 0.65));
     border-radius: 9999px;
     border: 2px solid transparent;
     background-clip: padding-box;
   }
   .efm-sidebar-scroll::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(180deg, rgb(254 177 57 / 0.95), rgb(214 28 78 / 0.85));
+    background: linear-gradient(180deg, rgb(var(--efm-sunburst-rgb) / 0.95), rgb(var(--efm-ruby-rgb) / 0.85));
     background-clip: padding-box;
   }
   .efm-sidebar-scroll::-webkit-scrollbar-corner {
@@ -180,7 +182,7 @@
     @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold min-h-[48px] transition-transform active:scale-[0.98];
   }
   .btn-sunburst {
-    @apply text-ink bg-gradient-to-br from-sunburst to-lemon;
+    @apply text-ink bg-gradient-to-br from-sunburst to-gold;
   }
   .btn-midnight {
     @apply text-cream bg-midnight;
@@ -188,8 +190,17 @@
   .btn-ruby {
     @apply text-cream bg-ruby;
   }
+  /* Navy→red. sRGB interpolates this span through a muddy grey-brown midpoint;
+     OKLCH (where supported) keeps the middle a clean brand violet. CEF + older
+     browsers fall back to the plain sRGB gradient. */
   .btn-mixed {
-    @apply text-cream bg-gradient-to-br from-midnight to-ruby;
+    @apply text-cream;
+    background-image: linear-gradient(to bottom right, rgb(var(--efm-midnight-rgb)), rgb(var(--efm-ruby-rgb)));
+  }
+  @supports (background: linear-gradient(in oklch, red, blue)) {
+    .btn-mixed {
+      background-image: linear-gradient(to bottom right in oklch, rgb(var(--efm-midnight-rgb)), rgb(var(--efm-ruby-rgb)));
+    }
   }
   .input {
     @apply w-full rounded-xl border border-cream/15 bg-cream/[0.06] px-3 py-2 text-sm text-cream placeholder:text-cream/40 focus:outline-none focus:border-sunburst/60;
@@ -204,9 +215,9 @@
 }
 
 @keyframes np-flash {
-  0%   { box-shadow: 0 0 0 0 rgba(254, 177, 57, 0.55); }
-  60%  { box-shadow: 0 0 0 12px rgba(254, 177, 57, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(254, 177, 57, 0); }
+  0%   { box-shadow: 0 0 0 0 rgb(var(--efm-sunburst-rgb) / 0.55); }
+  60%  { box-shadow: 0 0 0 12px rgb(var(--efm-sunburst-rgb) / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(var(--efm-sunburst-rgb) / 0); }
 }
 
 /* View Transitions API — name the now-playing card so the browser can
@@ -257,8 +268,10 @@
   --efm-float-x: 0px;
   --efm-float-y: 0px;
   /* --efm-theme-dom / -accent / -mute are deliberately NOT declared here:
-     effects.ts sets them from the album art, and every consumer uses
-     var(--efm-theme-*, <brand>) so an unset value falls back to brand. */
+     effects.ts sets them from the album art — but only after the OKLCH
+     safe-gamut sanitiser clamps chroma + lightness, derives an analogous
+     (never-clashing) triad, and blends toward brand. Every consumer uses
+     var(--efm-theme-*, <brand>) so an unset/cleared value falls back to brand. */
 }
 
 /* --- Player card: bass-driven halo + album-themed border. --------------- */
@@ -273,10 +286,10 @@
       calc(var(--efm-float-x, 0px) * var(--efm-card-depth, 0.5)),
       calc(var(--efm-float-y, 0px) * var(--efm-card-depth, 0.5)),
       0);
-  border-color: var(--efm-theme-dom, rgba(255, 255, 255, 0.1));
+  border-color: var(--efm-theme-dom, rgb(var(--efm-cream-rgb) / 0.1));
   box-shadow:
     0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
-    rgba(254, 177, 57, calc(var(--efm-bass) * 0.55));
+    rgb(var(--efm-sunburst-rgb) / calc(var(--efm-bass) * 0.55));
   transition: border-color 400ms ease, box-shadow 80ms linear;
   will-change: transform;
 }
@@ -284,7 +297,7 @@
   #np-card {
     box-shadow:
       0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
-      color-mix(in oklch, var(--efm-theme-accent, #FEB139) calc(var(--efm-bass) * 55%), transparent);
+      color-mix(in oklch, var(--efm-theme-accent, rgb(var(--efm-sunburst-rgb))) calc(var(--efm-bass) * 55%), transparent);
   }
 }
 
@@ -299,33 +312,44 @@
 /* --- Play button: glow with bass when playing (album-themed). ----------- */
 #np-card.is-playing #efm-play {
   box-shadow: 0 0 calc(var(--efm-bass) * 22px) calc(var(--efm-bass) * 4px)
-    rgba(254, 177, 57, calc(0.35 + var(--efm-bass) * 0.5));
+    rgb(var(--efm-sunburst-rgb) / calc(0.35 + var(--efm-bass) * 0.5));
   transition: box-shadow 80ms linear;
 }
 @supports (color: color-mix(in oklch, red, blue)) {
   #np-card.is-playing #efm-play {
     box-shadow: 0 0 calc(var(--efm-bass) * 22px) calc(var(--efm-bass) * 4px)
-      color-mix(in oklch, var(--efm-theme-accent, #FEB139) calc((0.35 + var(--efm-bass) * 0.5) * 100%), transparent);
+      color-mix(in oklch, var(--efm-theme-accent, rgb(var(--efm-sunburst-rgb))) calc((0.35 + var(--efm-bass) * 0.5) * 100%), transparent);
   }
 }
 
 /* --- Progress bar: album-themed fill + mid-frequency shimmer. ------------ */
-/* The fill gradient retints dom→accent (brand sunburst→lemon fallback). A
+/* The fill gradient retints dom→accent (brand sunburst→gold fallback), now
+   interpolated in OKLCH so the span never dips through a muddy midpoint. A
    gradient can't CSS-transition, so it snaps on track change — masked by the
    bar's existing 300ms width animation and how brief the bar is. */
 #np-bar {
   background: linear-gradient(to right,
-    var(--efm-theme-dom, #feb139),
-    var(--efm-theme-accent, #fff80a));
+    var(--efm-theme-dom, rgb(var(--efm-sunburst-rgb))),
+    var(--efm-theme-accent, rgb(var(--efm-gold-rgb))));
   box-shadow:
     0 0 calc(var(--efm-mid) * 18px) calc(var(--efm-mid) * 2px)
-    rgba(254, 177, 57, calc(0.35 + var(--efm-mid) * 0.45));
+    rgb(var(--efm-sunburst-rgb) / calc(0.35 + var(--efm-mid) * 0.45));
   transition: box-shadow 80ms linear;
+}
+/* Interpolate the dom→accent fill in OKLCH where supported: even when a track's
+   sanitised theme spans two hues, the gradient stays smooth instead of dipping
+   through a muddy sRGB midpoint. CEF/older browsers keep the sRGB fill above. */
+@supports (background: linear-gradient(in oklch, red, blue)) {
+  #np-bar {
+    background: linear-gradient(to right in oklch,
+      var(--efm-theme-dom, rgb(var(--efm-sunburst-rgb))),
+      var(--efm-theme-accent, rgb(var(--efm-gold-rgb))));
+  }
 }
 
 /* --- LIVE dot: high-frequency twinkle. ---------------------------------- */
 #np-live-dot {
-  box-shadow: 0 0 calc(var(--efm-high) * 10px) rgba(214, 28, 78, calc(0.4 + var(--efm-high) * 0.6));
+  box-shadow: 0 0 calc(var(--efm-high) * 10px) rgb(var(--efm-ruby-rgb) / calc(0.4 + var(--efm-high) * 0.6));
   transform: scale(calc(1 + var(--efm-high) * 0.4));
   transition: box-shadow 80ms linear, transform 80ms linear;
 }
@@ -344,7 +368,7 @@ header h1 span {
       calc(var(--efm-float-y, 0px) * var(--efm-wm-depth, 1.4)),
       0)
     scale(calc(1 + var(--efm-bass) * 0.015));
-  text-shadow: 0 0 calc(var(--efm-bass) * 12px) rgba(254, 177, 57, calc(var(--efm-bass) * 0.5));
+  text-shadow: 0 0 calc(var(--efm-bass) * 12px) rgb(var(--efm-sunburst-rgb) / calc(var(--efm-bass) * 0.5));
   transition: text-shadow 80ms linear;
 }
 
@@ -441,9 +465,9 @@ body {
    (effects off, extraction failed, or pre-first-track). Gradients can't
    CSS-transition, so the colour snaps on track change — invisible under
    blur(64px) + the slow drift. */
-.efm-blob--blue { background: radial-gradient(circle at 50% 50%, var(--efm-theme-dom, rgba(41, 52, 98, 0.95)), transparent 70%); }
+.efm-blob--blue { background: radial-gradient(circle at 50% 50%, var(--efm-theme-dom, rgb(var(--efm-midnight-rgb) / 0.95)), transparent 70%); }
 .efm-blob--pink {
-  background: radial-gradient(circle at 50% 50%, var(--efm-theme-accent, rgba(214, 28, 78, 0.80)), transparent 70%);
+  background: radial-gradient(circle at 50% 50%, var(--efm-theme-accent, rgb(var(--efm-ruby-rgb) / 0.80)), transparent 70%);
   /* pink leans on highs/energy instead of bass for its shove + swell. */
   transform: translate3d(
       calc((var(--efm-high, 0) - 0.3) * 36px),
@@ -452,7 +476,7 @@ body {
     scale(calc(1 + var(--efm-energy, 0) * 0.5));
 }
 .efm-blob--gold {
-  background: radial-gradient(circle at 50% 50%, var(--efm-theme-mute, rgba(254, 177, 57, 0.70)), transparent 70%);
+  background: radial-gradient(circle at 50% 50%, var(--efm-theme-mute, rgb(var(--efm-sunburst-rgb) / 0.70)), transparent 70%);
   transform: translate3d(
       calc((var(--efm-bass, 0) - 0.3) * 36px),
       calc((var(--efm-mid, 0) - 0.3) * 36px),
@@ -531,7 +555,7 @@ html.efm-cef .card {
   -webkit-backdrop-filter: none;
   /* The frosted look came from backdrop-blur over the blobs; without it a
      3%-opacity card all but vanishes, so give it a faintly solid panel fill. */
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: rgb(var(--efm-cream-rgb) / 0.05);
 }
 
 /* Respect reduced motion. */
