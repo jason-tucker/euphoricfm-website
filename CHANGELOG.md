@@ -5,6 +5,20 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.10.1] — 2026-06-10 — Any URL path now serves the landing page (in-game phone URL-suffix safety)
+
+### Fixed
+- **Unknown paths fall back to the landing page instead of 404.** The in-game
+  phone hardcodes a single URL and may append suffixes we don't control (e.g. a
+  `?mobile=true` flag — always harmless — but also potentially a *path* suffix
+  like `/mobile`, which used to hit the custom 404 page). The Caddyfile's
+  static-file serving now lives in a catch-all `handle` with
+  `try_files {path} {path}/ /index.html`, so any path that isn't a real built
+  file serves `index.html` — whatever the phone appends after `info.euphoric.fm`,
+  the site renders. Real files (`/cef-test.html`, `/_astro/*`, `/fonts/*`,
+  `/sw.js`) and the proxied prefixes (`/api/*`, `/requests/*`, `/efm-art/*`,
+  `/static/*`, `/efm-runtime-config.js`) are matched first and unaffected.
+
 ## [0.10.0] — 2026-06-09 — Security hardening pass (stored-XSS fix, request-API hardening, CI scanning)
 
 ### Security

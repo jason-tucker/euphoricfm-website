@@ -168,8 +168,18 @@
     }
   }
 
-  # ---- Static file serving ----------------------------------------------
-  file_server
+  # ---- Static file serving + landing-page fallback -----------------------
+  # The in-game phone hardcodes a single URL and may append suffixes we don't
+  # control. Query strings were always harmless, but a PATH suffix (e.g.
+  # /mobile) used to hit the 404 page. There are no other pages, so any path
+  # that isn't a real built file (or one of the proxied prefixes above) now
+  # serves the landing page — whatever gets appended, the phone renders the
+  # site. Real files (/cef-test.html, /_astro/*, /fonts/*, sw.js) still win
+  # because try_files checks the actual path first.
+  handle {
+    try_files {path} {path}/ /index.html
+    file_server
+  }
 
   # Fingerprinted Astro assets — cache forever.
   @astroAssets path /_astro/*
