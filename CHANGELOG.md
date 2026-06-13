@@ -5,6 +5,20 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.10.2] — 2026-06-13 — CLAUDE.md: agent usage policy, ingress corrections, sidecar docs, build commands
+
+### Changed
+- **Added `## Agent usage` section to CLAUDE.md** with the standard agent-delegation policy (Haiku for lookups, Sonnet for coding, Opus for planning) and delegation guidelines.
+- **Corrected the Cloudflare/cloudflared ingress description** in the Stack and Deployment sections: replaced stale "cloudflared on the host (remote-managed tunnel) for public ingress" text with the accurate statement that Caddy 2 binds 0.0.0.0:80+443 directly and terminates TLS via Let's Encrypt — no cloudflared, no Cloudflare proxy (Rule 4 was always correct; Stack and Deployment were stale).
+- **Fixed Rule 7** to accurately state that webhook URLs are runtime env-injected by Caddy (not stored in `src/site.config.ts`). `site.config.ts` holds editable copy (about text, station name, AD info, `discord.avatarUrl`); webhook URLs live in `.env` and are templated into `/efm-runtime-config.js` at request time. Also updated the `## Discord webhooks` section to match.
+- **Documented the `efm-requests` Node sidecar** in the Architecture tree: `server/index.mjs` (pending song-request queue), `server/index.test.mjs` (test suite), `server/Dockerfile` (separate GHCR image), and the parallel `build-requests` CI job.
+- **Added `src/scripts/effects.ts`** to the Architecture tree (music-reactive effects: spring physics, album-art OKLCH theming, effects master toggle — imported in BaseLayout alongside `nowplaying.ts`).
+- **Added `src/styles/tokens.css`** to the Architecture tree (centralised CSS colour tokens).
+- **Added cross-repo operational dependency note**: the Caddyfile's second virtual host (`tickets.euphoric.gg`) reverse-proxies to `tickets-web:3000` on `efm-public-net` — the euphoric-tickets-web app.
+- **Added build/dev commands table**: `pnpm dev`, `pnpm build`, `pnpm preview`, `pnpm test`; noted that there is no `typecheck` script — type-checking is `pnpm exec astro check` (CI runs it with `continue-on-error: true`).
+
+v0.10.2 · 4c8a764
+
 ## [0.10.1] — 2026-06-10 — Any URL path now serves the landing page (in-game phone URL-suffix safety)
 
 ### Fixed
