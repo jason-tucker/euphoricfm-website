@@ -14,7 +14,7 @@
     "test": "node --test server/*.test.mjs"
   },
   "dependencies": {
-    "astro": "^6.3.8"
+    "astro": "^6.4.6"
   },
   "devDependencies": {
     "@astrojs/tailwind": "^6.0.2",
