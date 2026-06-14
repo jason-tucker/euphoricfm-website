@@ -1,6 +1,62 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+ * Tailwind v4 CSS-first config (ported from the old tailwind.config.mjs).
+ *
+ * Colours are defined as FULL rgb(var(--efm-*-rgb)) values — not bare channels
+ * — so v4's color-mix()-based alpha modifiers (bg-ruby/20, text-cream/85, …)
+ * keep working off the channel tokens in src/styles/tokens.css (the single
+ * source of truth). v4 generates e.g. `color-mix(in oklab, var(--color-ruby)
+ * 20%, transparent)` for `/20`, which needs a complete colour, hence rgb(...).
+ *
+ * `lemon` stays as a legacy alias mapping to the retuned warm gold so existing
+ * `to-lemon` gradients still resolve. maxWidth (max-w-phone/-frame),
+ * backgroundImage (bg-efm-aurora) and the soft-pulse animation have no v4
+ * @theme namespace, so they are defined as @utility / @keyframes below.
+ * ------------------------------------------------------------------------- */
+@theme {
+  /* Colours — resolve to the channel vars in src/styles/tokens.css. */
+  --color-ink: rgb(var(--efm-ink-rgb));
+  --color-cream: rgb(var(--efm-cream-rgb));
+  --color-midnight: rgb(var(--efm-midnight-rgb));
+  --color-ruby: rgb(var(--efm-ruby-rgb));
+  --color-sunburst: rgb(var(--efm-sunburst-rgb));
+  --color-gold: rgb(var(--efm-gold-rgb));
+  /* Legacy alias — `lemon` now maps to the retuned warm gold so existing
+     `to-lemon` gradients become a smooth amber ramp with no code churn. */
+  --color-lemon: rgb(var(--efm-gold-rgb));
+
+  /* Font families. */
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-euphoric: "Begaron", system-ui, sans-serif;
+  --font-fm: "Cortado Script", cursive;
+
+  /* Custom animation (keyframes defined as plain CSS below). */
+  --animate-soft-pulse: soft-pulse 2.8s ease-in-out infinite;
+}
+
+/* Custom keyframes — must live outside @theme as plain CSS. */
+@keyframes soft-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50%      { opacity: 1; transform: scale(1.04); }
+}
+
+/* Utilities v4 can't derive from @theme (no maxWidth → max-w-* mapping, no
+   backgroundImage theme namespace). Ported verbatim from the v3 config. */
+@utility max-w-phone {
+  max-width: 24rem;
+}
+@utility max-w-frame {
+  /* Desktop cap — keeps the hero from over-stretching on widescreens and the
+     whole above-the-fold layout fitting a 1080p viewport. */
+  max-width: 64rem;
+}
+@utility bg-efm-aurora {
+  background-image:
+    radial-gradient(60% 60% at 18% 10%, color-mix(in oklch, rgb(var(--efm-sunburst-rgb)) 35%, transparent), transparent 60%),
+    radial-gradient(50% 50% at 95% 25%, color-mix(in oklch, rgb(var(--efm-ruby-rgb)) 35%, transparent), transparent 60%),
+    radial-gradient(60% 60% at 50% 100%, color-mix(in oklch, rgb(var(--efm-midnight-rgb)) 70%, transparent), transparent 70%);
+}
 
 /* Begaron — used for the "Euphoric" word in the wordmark. */
 @font-face {
