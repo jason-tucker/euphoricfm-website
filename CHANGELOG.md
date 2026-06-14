@@ -5,6 +5,16 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.10.3] — 2026-06-14 — Bump Astro to 6.4.6; resolve esbuild advisory (GHSA-gv7w-rqvm-qjhr)
+
+### Changed
+- **Bumped `astro` 6.3.8 → 6.4.6** (npm-minor-patch group, Dependabot #7). Patch-level fixes only — `addAttribute` hardening against invalid attribute names, prerendered-error-page origin validation against `allowedDomains`, image HMR crash fix. Tailwind 3 unchanged, so no styling impact; `astro build` verified clean.
+
+### Security
+- **Resolved the high-severity `esbuild` advisory GHSA-gv7w-rqvm-qjhr** (missing binary integrity verification, vulnerable `>=0.17.0 <0.28.1`) that was failing the `audit` CI gate. Added a `pnpm.overrides` entry (`"esbuild@<0.28.1": ">=0.28.1"`) so the transitive `astro > esbuild` dependency resolves to the patched 0.28.1. The advisory pre-dated this PR (it also affected `main`); `pnpm audit --audit-level=high` now reports no known vulnerabilities.
+
+v0.10.3 · 4607b7e
+
 ## [0.10.2] — 2026-06-13 — CLAUDE.md: agent usage policy, ingress corrections, sidecar docs, build commands
 
 ### Changed
