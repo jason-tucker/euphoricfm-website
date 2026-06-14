@@ -5,6 +5,22 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.11.0] — 2026-06-14 — Migrate Tailwind CSS v3 → v4 (CSS-first config)
+
+### Changed
+- **Migrated Tailwind CSS from v3 to v4.** Replaced the JS-config + PostCSS plugin model with v4's CSS-first model and Vite plugin. No visual design change is intended — the compiled CSS is equivalent. **Not yet deployed: needs visual review on the live in-game CEF iframe before merge.**
+  - **`package.json`**: dropped `@astrojs/tailwind` and `tailwindcss@^3.x`; added `tailwindcss@^4.3.0` + `@tailwindcss/vite@^4.3.0` (devDependencies).
+  - **`astro.config.mjs`**: removed the `@astrojs/tailwind` integration; registered `@tailwindcss/vite` under `vite.plugins` (merged with the existing `vite.server.allowedHosts`).
+  - **`src/styles/global.css`**: swapped the three `@tailwind base/components/utilities` directives for a single `@import "tailwindcss";`, then ported the old `theme.extend` into a CSS-first `@theme` block — brand colours as full `rgb(var(--efm-*-rgb))` (so `color-mix()` alpha modifiers like `bg-ruby/20` keep resolving off the channel tokens in `tokens.css`), the `lemon`→gold legacy alias, the `body`/`euphoric`/`fm` font families, and the `soft-pulse` animation. The `soft-pulse` keyframes are plain CSS; `max-w-phone`, `max-w-frame`, and `bg-efm-aurora` (which v4 has no `@theme` namespace for) are `@utility` blocks.
+  - **`tailwind.config.mjs`**: deleted — v4 ignores it; everything it defined is ported into `global.css`.
+- **`tokens.css`, `site.config.ts`, the Caddyfile, and all iframe/CSP behaviour are untouched.** `frame-ancestors *` stays; no framebusting introduced.
+
+### Notes
+- v4 emits only the unprefixed `::placeholder` selector (the v3 build also emitted `::-moz-placeholder`); modern Chromium/CEF support unprefixed `::placeholder`, so the input placeholder styling is unchanged in practice.
+- The compiled CSS gzips slightly larger (~25%) than v3 because v4 ships its `@layer properties` `@property` polyfill. Verified locally: `astro build` passes clean, the `color-mix()` alpha modifiers, font utilities, the aurora gradient, and the custom max-width utilities all compile as expected; `pnpm test` (server sidecar) passes 15/15.
+
+v0.11.0 · f2b3219
+
 ## [0.10.3] — 2026-06-14 — Bump Astro to 6.4.6; resolve esbuild advisory (GHSA-gv7w-rqvm-qjhr)
 
 ### Changed
