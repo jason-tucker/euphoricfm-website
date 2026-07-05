@@ -90,6 +90,9 @@
        mirrors --efm-ink-rgb (10 10 10): this ultimate fallback must never
        depend on a custom property having loaded. */
     background-color: #0a0a0a;
+    /* Dark-first document: UA form controls (range slider, modal inputs),
+       scrollbars and the pre-CSS canvas render dark instead of light. */
+    color-scheme: dark;
   }
   body {
     @apply bg-ink text-cream font-body;
