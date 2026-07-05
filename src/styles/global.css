@@ -334,35 +334,48 @@
 /* The card carries a SHALLOW honey-float (smallest --efm-card-depth) so the
    primary UI feels the most "anchored" — chains to the floor. Its translate is
    intentionally OUT of the transition list: the spring RAF already produces
-   smooth values, so a transition would just add lag. The border + halo colour
-   come from the album art (var fallback → brand), and those DO transition so
-   they cross-fade on track change. */
+   smooth values, so a transition would just add lag. The border colour comes
+   from the album art (var fallback → brand) and DOES transition so it
+   cross-fades on track change. The bass halo lives on ::before below, with
+   fixed shadow geometry and only its opacity animating. */
 #np-card {
+  position: relative;
   transform: translate3d(
       calc(var(--efm-float-x, 0px) * var(--efm-card-depth, 0.5)),
       calc(var(--efm-float-y, 0px) * var(--efm-card-depth, 0.5)),
       0);
   border-color: var(--efm-theme-dom, rgb(var(--efm-cream-rgb) / 0.1));
-  box-shadow:
-    0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
-    rgb(var(--efm-sunburst-rgb) / calc(var(--efm-bass) * 0.55));
-  transition: border-color 400ms ease, box-shadow 80ms linear;
+  transition: border-color 400ms ease;
   will-change: transform;
 }
+/* Bass halo on a pseudo-element with FIXED shadow geometry; only opacity
+   animates. Opacity is GPU-composited, so the bloom no longer repaints a
+   large region every frame — the old animated blur/spread/offset shadow
+   also made the halo visibly travel downward on kicks. */
+#np-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 10px 42px 3px rgb(var(--efm-sunburst-rgb) / 0.55);
+  opacity: var(--efm-bass, 0);
+  transition: opacity 80ms linear;
+  will-change: opacity;
+}
 @supports (color: color-mix(in oklch, red, blue)) {
-  #np-card {
-    box-shadow:
-      0 calc(var(--efm-bass) * 30px) calc(var(--efm-bass) * 60px) calc(var(--efm-bass) * 4px)
-      color-mix(in oklch, var(--efm-theme-accent, rgb(var(--efm-sunburst-rgb))) calc(var(--efm-bass) * 55%), transparent);
+  #np-card::before {
+    box-shadow: 0 10px 42px 3px
+      color-mix(in oklch, var(--efm-theme-accent, rgb(var(--efm-sunburst-rgb))) 55%, transparent);
   }
 }
 
-/* --- Album art: subtle bass pulse + ring brighten. ---------------------- */
+/* --- Album art: subtle bass pulse. --------------------------------------- */
 #np-art {
   transform: scale(calc(1 + var(--efm-bass) * 0.03));
-  transition: transform 80ms linear, filter 120ms linear;
-  filter: brightness(calc(1 + var(--efm-energy) * 0.08));
-  will-change: transform, filter;
+  transition: transform 80ms linear;
+  will-change: transform;
 }
 
 /* --- Play button: glow with bass when playing (album-themed). ----------- */
@@ -412,27 +425,12 @@
 
 /* --- Site-wide subtle reactions (kept "a lil"). ------------------------- */
 
-/* Header wordmark: DEEPEST honey-float (most movement — it's decorative) plus
-   the tiny bass-driven scale. Float translate and audio scale compose in one
-   transform via calc(). Float is left out of the transition (RAF-smoothed);
-   only the text-shadow transitions. */
+/* Header wordmark: pinned — no honey-float, no bass scale (the moving
+   wordmark read as the whole page shifting). Keeps only the bass glow,
+   which brightens in place without moving anything. */
 header h1 span {
-  display: inline-block;
-  transform:
-    translate3d(
-      calc(var(--efm-float-x, 0px) * var(--efm-wm-depth, 1.4)),
-      calc(var(--efm-float-y, 0px) * var(--efm-wm-depth, 1.4)),
-      0)
-    scale(calc(1 + var(--efm-bass) * 0.015));
   text-shadow: 0 0 calc(var(--efm-bass) * 12px) rgb(var(--efm-sunburst-rgb) / calc(var(--efm-bass) * 0.5));
   transition: text-shadow 80ms linear;
-}
-
-/* Body background gradient — overall energy brightens it slightly so the
-   page feels alive without distracting. ~3% max brightness shift. */
-body {
-  filter: brightness(calc(1 + var(--efm-energy) * 0.03));
-  transition: filter 200ms linear;
 }
 
 /* Action row + recently-played cards lift with bass kicks. Very small. */
@@ -578,34 +576,37 @@ html.efm-fx-off {
   --efm-float-y: 0px;
 }
 html.efm-fx-off #np-card,
-html.efm-fx-off .efm-float,
-html.efm-fx-off header h1 span { transform: none; }
+html.efm-fx-off .efm-float { transform: none; }
 html.efm-fx-off .efm-orbit { animation: none; }
-html.efm-fx-off body { filter: none; }
 
 /* ---------------------------------------------------------------------------
  * FiveM in-game phone (CEF) — blur/filter safe mode.
  *
  * The in-game phone — this project's PRIMARY use case — embeds the site in an
  * outdated CEF whose compositor can't render CSS blur/filter like a normal
- * browser does. Three things blank or black it out:
- *   - a `filter` on <body> pushes the whole document through a filter pass the
- *     software compositor drops → the ENTIRE page renders blank;
+ * browser does. Two things blank or black it out:
  *   - `backdrop-filter` has no gameview behind the iframe to sample, so it
  *     paints solid black rectangles over the cards;
  *   - three fixed `filter: blur(64px)` blobs are both of the above plus very
  *     expensive — this is the layer that regressed the phone in 0.7.3/0.8.0.
  *
  * A synchronous <head> script (BaseLayout) detects FiveM's "CitizenFX" user
- * agent and adds `efm-cef` BEFORE first paint. Here we strip ONLY the
- * blur/filter compositing and fall back to the body's static radial-gradient
- * ambience (plain CSS — renders fine in CEF). Layout, colours, and the
+ * agent and adds `efm-cef` BEFORE first paint. The per-frame `body`/`#np-art`
+ * brightness filters that used to need a matching override here were removed
+ * site-wide for perf, so this block strips the blur/filter compositing that's
+ * still real — the blob layer and the card's backdrop-filter (plus a
+ * permanent body-filter guard), falling back to the body's static
+ * radial-gradient ambience
+ * (plain CSS — renders fine in CEF). Layout, colours, and the
  * box-shadow/transform audio reactions are all left intact, and normal
  * browsers never match this block so they're completely unaffected.
  * ------------------------------------------------------------------------- */
 html.efm-cef .efm-bg { display: none; }   /* drop the blur(64px) blob layer entirely */
-html.efm-cef body { filter: none; }       /* no whole-page filter pass → no blank frame */
-html.efm-cef #np-art { filter: none; }
+/* Permanent guard, kept even though no body filter exists today: a `filter`
+   on <body> pushes the whole document through a filter pass CEF's software
+   compositor drops → the ENTIRE page renders blank (this is what regressed
+   the phone in 0.7.3/0.8.0). If one ever sneaks back in, the phone survives. */
+html.efm-cef body { filter: none !important; }
 html.efm-cef .card {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;

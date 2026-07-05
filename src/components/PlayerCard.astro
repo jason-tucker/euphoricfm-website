@@ -7,7 +7,10 @@ import { site } from '../site.config';
      writes --efm-bass / --efm-mid / --efm-high / --efm-energy CSS variables
      on :root every frame so anything on the page can react to the music. -->
 <section class="pt-2">
-  <div id="np-card" class="card vt-np bg-midnight/40 border-midnight/40 overflow-hidden relative">
+  <!-- No overflow-hidden here: the bass halo lives on #np-card::before and its
+       box-shadow paints OUTSIDE the card box — an ancestor clip would erase it.
+       Children that need clipping (#np-up-next, the progress track) clip themselves. -->
+  <div id="np-card" class="card vt-np bg-midnight/40 border-midnight/40 relative">
 
     <!-- Top row: artwork + track info + transport stack. Layout:
            [art] [LIVE/Now Playing/title/artist/album] [PLAY button stacked over VOL slider]
