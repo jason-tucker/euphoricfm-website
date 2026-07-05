@@ -5,6 +5,17 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.11.1] — 2026-07-05 — Fix always-on REQUESTED badge; pin wordmark; GPU-cheap bloom; dark color-scheme
+
+### Fixed
+- **REQUESTED badge showed on every song.** Tailwind v4 emits `.inline-block` after `.hidden`, so on the two badge spans (which carried both classes) `inline-block` won the tie and the badge could never hide, regardless of `is_request`. Removed the redundant `inline-block` (both badges sit in flex rows, where flex-item blockification applies anyway); the `hidden` toggle in `nowplaying.ts` works again. Regression from the 0.11.0 Tailwind v3→v4 migration.
+- **Header wordmark no longer moves.** Removed the honey-float translate + bass scale from `header h1 span` — the deepest-parallax wordmark read as the whole page shifting. The bass text-shadow glow stays (brightens in place, no movement).
+- **Modals and the blob backdrop now anchor to the viewport.** The old `body { filter }` (even at brightness(1)) silently made `<body>` the containing block for every `position: fixed` element, so on a scrolled page the modal overlays measured against the document instead of the viewport. With the filter gone they center correctly — standards behaviour, and what CEF (which always had `filter: none`) already did.
+
+### Changed
+- **Bass bloom is now GPU-composited.** The now-playing card's halo moved to a `::before` pseudo-element with fixed shadow geometry and bass-driven *opacity*, replacing the animated blur/spread/offset box-shadow that repainted a large region every frame and made the halo visibly travel downward on kicks. The card's redundant `overflow-hidden` was dropped so the halo can paint outside the card box (everything inside that needs clipping — the up-next reveal, the progress track — clips itself). Also dropped the whole-page `body { filter: brightness() }` energy tint (full-document filter pass per tick) and the album art's per-frame `brightness()` filter (scale pulse kept). Together these were the main sources of slow/janky motion. The `html.efm-cef` `#np-art` filter override is gone (nothing to guard), but the CEF `body { filter: none !important }` guard stays permanently — a body filter is the exact failure that blanked the phone in 0.7.3/0.8.0.
+- **Dark-first document.** Declared `color-scheme: dark` (`<meta name="color-scheme" content="dark">` + `html { color-scheme: dark }`) so UA-rendered UI — form controls like the volume slider and modal inputs, scrollbars, the pre-CSS canvas — defaults to dark instead of light. No theme-color/PWA meta re-added (CEF first-paint safety).
+
 ## [0.11.0] — 2026-06-14 — Migrate Tailwind CSS v3 → v4 (CSS-first config)
 
 ### Changed
