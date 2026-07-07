@@ -43,7 +43,10 @@ src/
                               up-next + pending-requests + Media Session
   scripts/effects.ts          spring "honey float", music reactivity, album-art
                               colour theming, the footer Effects toggle
-  styles/global.css           Tailwind base + @font-face + component layer
+  styles/tokens.css           centralised CSS colour tokens — brand palette
+                              (RGB channels) + semantic surface/text/accent roles
+  styles/global.css           Tailwind v4 CSS-first @theme config + @font-face
+                              + component layer (colours resolve to tokens.css)
   components/
     Header.astro              wordmark (Begaron + Cortado Script)
     PlayerCard.astro          live player: now-playing, progress, play/volume,
@@ -59,6 +62,10 @@ src/
     BusinessAdModal.astro     static pricing + perks
     Footer.astro              copyright + Effects toggle + v<version> · <sha>
 public/fonts/                 Begaron + Cortado Script TTFs/WOFF2
+public/cef-test.html          plain-HTML no-JS diagnostic page for confirming
+                              the in-game CEF iframe can reach the origin
+public/sw.js                  service-worker killswitch (unregisters any SW
+                              from an older PWA-era build; no active SW today)
 server/                       efm-requests — tiny zero-dep Node service holding
                               the shared pending-requests list (own image)
 Dockerfile                    node:24-alpine build → caddy:2.x-alpine serve
@@ -82,7 +89,8 @@ to a clean static look inside the iframe or when the Effects toggle is off.
 
 Locked — don't swap these without a deliberate decision:
 
-- **Astro 6** static (no SSR) · **Tailwind 3** · **TypeScript strict**
+- **Astro 6** static (no SSR) · **Tailwind 4** (CSS-first `@theme` config, no
+  `tailwind.config.mjs`) · **TypeScript strict**
 - **Caddy 2** in front, serving the static build and terminating TLS
 - **Direct ingress** — Caddy binds the host's public 80/443 (no Cloudflare
   proxy; see [Deployment](#deployment))

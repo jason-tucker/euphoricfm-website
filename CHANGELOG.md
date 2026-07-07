@@ -5,6 +5,13 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.11.2] — 2026-07-06 — Docs pass: README catches up to Tailwind v4 + directory tree
+
+### Changed
+- **`README.md` Stack section corrected from "Tailwind 3" to "Tailwind 4"** (CSS-first `@theme` config, no `tailwind.config.mjs`) — stale since the 0.11.0 Tailwind v3→v4 migration.
+- **Architecture directory tree updated:** added `src/styles/tokens.css` (centralised colour tokens, previously missing from the README tree though already documented in `CLAUDE.md`), clarified `global.css`'s description to match its actual v4 `@theme` content, and added `public/cef-test.html` (the plain-HTML no-JS CEF-reachability diagnostic page) and `public/sw.js` (service-worker killswitch, not an active PWA worker).
+- Cross-checked the rest of `README.md` (AzuraCast integration details, `site.config.ts` fields, Caddy/Compose deployment description, `efm-requests` sidecar, `tickets.euphoric.gg` second vhost) against the current code — all still accurate, no further changes needed.
+
 ## [0.11.1] — 2026-07-05 — Fix always-on REQUESTED badge; pin wordmark; GPU-cheap bloom; dark color-scheme
 
 ### Fixed
