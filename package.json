@@ -14,7 +14,7 @@
     "test": "node --test server/*.test.mjs"
   },
   "dependencies": {
-    "astro": "^6.4.6"
+    "astro": "^7.0.6"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
