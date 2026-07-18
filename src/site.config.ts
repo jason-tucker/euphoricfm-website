@@ -22,6 +22,11 @@ export const site = {
   // them off `window.__EFM_CONFIG__.discord.{requestWebhook,contactWebhook}`.
   discord: {
     avatarUrl: 'https://euphoric.fm/static/android-chrome-192x192.png',
+    inviteUrl: 'https://discord.gg/zyXjfcuBXF',
+    // `joinLabel` is intentionally NOT "Join our Discord" — it's a
+    // tongue-in-cheek disguise ("Join our emails") for the same invite link.
+    // Don't "fix" this to say Discord.
+    joinLabel: 'Join our emails',
   },
 
   aboutText: `EuphoricFM was born from a passion for the infectious rhythms and melodies that define the pop genre. Founded in 2023 by a group of dedicated music enthusiasts, we set out to create a platform that not only celebrates the biggest hits but also shines a spotlight on emerging talent from our very own city.

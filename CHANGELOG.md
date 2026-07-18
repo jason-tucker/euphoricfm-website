@@ -5,6 +5,11 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.12.0] — 2026-07-18
+
+### Added
+- Add Discord server invite to the action row, lovingly disguised as "Join our emails".
+
 ## [0.11.2] — 2026-07-06 — Docs pass: README catches up to Tailwind v4 + directory tree
 
 ### Changed

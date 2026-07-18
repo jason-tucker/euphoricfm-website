@@ -1,7 +1,10 @@
 ---
-// Four-button action row: Request, Submit, Contact, Business AD.
+import { site } from '../site.config';
+// Five-button action row: Request, Submit, Contact, Business AD, Discord invite.
 // Click handlers dispatch CustomEvents that the modal components listen for.
 // Uses View Transitions API for smooth modal open if supported.
+// The Discord invite is a plain external link (no modal, no JS) — its label
+// is disguised as "Join our emails" (see site.config.ts).
 ---
 
 <section class="pt-2">
@@ -10,6 +13,7 @@
     <button type="button" id="open-submit" class="btn btn-midnight">Submit a song</button>
     <button type="button" id="open-contact" class="btn btn-ruby">Contact us</button>
     <button type="button" id="open-business" class="btn btn-mixed">Business AD</button>
+    <a href={site.discord.inviteUrl} target="_blank" rel="noopener" class="btn btn-midnight">{site.discord.joinLabel}</a>
   </div>
 </section>
 
