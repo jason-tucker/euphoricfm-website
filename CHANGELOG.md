@@ -5,6 +5,12 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.13.0] — 2026-08-01 — Untitled-live fallback + DJ picture
+
+### Added
+- **Untitled live sets now show the event, not a placeholder.** When a live source pushes no track metadata, AzuraCast fills the song fields with placeholders (streamer name, "Live Broadcast", the station name, empty strings). `isUntitledLive()` in `nowplaying.ts` detects those (after stripping stray `Artist - ` separators) and swaps the card's track block to event mode: the DJ name becomes the title, `liveEvents.label` the byline, the album line clears, and Media Session follows. It re-renders on live-mode flips and mid-event renames — not just on the next `sh_id` change — so entering/leaving the override never lags a poll.
+- **DJ picture.** Newer AzuraCast versions send the streamer account's uploaded artwork as `live.art` (typed optional in `azuracast.ts`). It renders as a 40px avatar in the Special Event banner (`#np-live-art`, hidden when absent), and during an untitled set it also replaces the main card artwork + Media Session artwork, flowing through the `/efm-art` same-origin rewrite so effects.ts can extract its palette and theme the page to the DJ's image.
+
 ## [0.12.0] — 2026-08-01 — Live streaming special-event mode
 
 ### Added
