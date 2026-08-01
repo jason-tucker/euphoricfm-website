@@ -77,6 +77,7 @@ declare global {
   // Live special-event UI (banner + pill internals + eyebrow label).
   const elLiveBanner = $('np-live-banner');
   const elLiveStreamer = $('np-live-streamer');
+  const elLiveArt = $<HTMLImageElement>('np-live-art');
   const elStatusText = $('np-status-text');
   const elLiveDot = $('np-live-dot');
   const elEyebrow = $('np-eyebrow');
@@ -95,6 +96,8 @@ declare global {
   let liveKnown = false;
   let broadcastStartMs = 0; // 0 = AzuraCast sent no broadcast_start
   let liveStreamer = '';
+  let liveRawName = ''; // streamer_name exactly as AzuraCast sends it (pre-fallback)
+  let liveArt = ''; // streamer-account artwork (live.art), same-origin rewritten
   let lastNp: AzuraNowPlayingEntry | null = null;
   const baseTitle = document.title;
   const eyebrowDefault = elEyebrow?.textContent || 'Now Playing';
@@ -134,19 +137,45 @@ declare global {
     }
   };
 
+  // A live source that pushes no metadata still yields a now_playing entry —
+  // AzuraCast fills the song fields with placeholders (the streamer name,
+  // "Live Broadcast", the station name, …). Detect those so the card shows
+  // the EVENT (DJ name + picture) instead of a bogus track title.
+  const isUntitledLive = (song: AzuraNowPlayingEntry['song']): boolean => {
+    if (!isLive) return false;
+    // Strip stray "Artist - " separators AzuraCast leaves when half is empty.
+    const norm = (s: string) => s.replace(/^[\s\-–—]+|[\s\-–—]+$/g, '').trim().toLowerCase();
+    const title = norm(song.title || song.text || '');
+    if (!title) return true;
+    return [
+      norm(liveStreamer),
+      norm(liveRawName),
+      norm(baseTitle),
+      'live broadcast',
+      'live',
+      'unknown',
+      'unknown track',
+      'untitled',
+    ].includes(title);
+  };
+
   const applyNowPlaying = (np: AzuraNowPlayingEntry) => {
     const song = np.song;
-    if (elArt && song.art) {
-      const artUrl = toSameOriginArt(song.art);
+    // Untitled live set: show the event, not the placeholder — DJ name as the
+    // title, the live label as the byline, and the DJ picture as the artwork.
+    const untitled = isUntitledLive(song);
+    const artRaw = untitled && liveArt ? liveArt : song.art;
+    if (elArt && artRaw) {
+      const artUrl = toSameOriginArt(artRaw);
       elArt.src = artUrl;
-      elArt.alt = `${song.title} — ${song.artist}`;
+      elArt.alt = untitled ? liveStreamer : `${song.title} — ${song.artist}`;
       // Announce the (same-origin) art URL so effects.ts can extract its
       // palette. It dedupes by URL, so firing every poll is harmless.
       document.dispatchEvent(new CustomEvent('efm:track-art', { detail: { url: artUrl } }));
     }
-    if (elTitle) elTitle.textContent = song.title || song.text || 'Unknown track';
-    if (elArtist) elArtist.textContent = song.artist || '—';
-    if (elAlbum) elAlbum.textContent = song.album || '';
+    if (elTitle) elTitle.textContent = untitled ? liveStreamer : song.title || song.text || 'Unknown track';
+    if (elArtist) elArtist.textContent = untitled ? liveCopy.label : song.artist || '—';
+    if (elAlbum) elAlbum.textContent = untitled ? '' : song.album || '';
     if (elNpRequested) elNpRequested.classList.toggle('hidden', !np.is_request);
     playedAt = (np.played_at || 0) * 1000;
     duration = np.duration || 0;
@@ -308,13 +337,22 @@ declare global {
   const applyLive = (live: AzuraNowPlayingResponse['live'] | undefined, online: boolean) => {
     const nowLive = !!(live && live.is_live) && online;
     const name = nowLive ? (live!.streamer_name || '').trim() || liveCopy.fallbackName : '';
+    const art = nowLive && live!.art ? toSameOriginArt(live!.art) : '';
     const changed = nowLive !== isLive || !liveKnown;
-    const renamed = nowLive && !changed && name !== liveStreamer;
+    const renamed = nowLive && !changed && (name !== liveStreamer || art !== liveArt);
     const wasKnown = liveKnown;
     liveKnown = true;
     isLive = nowLive;
     liveStreamer = name;
+    liveRawName = nowLive ? (live!.streamer_name || '').trim() : '';
+    liveArt = art;
     broadcastStartMs = nowLive && live!.broadcast_start ? live!.broadcast_start * 1000 : 0;
+
+    // DJ picture in the banner — only when the streamer account has one.
+    if (elLiveArt) {
+      if (liveArt && !elLiveArt.src.endsWith(liveArt)) elLiveArt.src = liveArt;
+      elLiveArt.classList.toggle('hidden', !liveArt);
+    }
 
     if (changed) {
       if (elCard) elCard.classList.toggle('np-live', isLive);
@@ -341,7 +379,12 @@ declare global {
       if (elLiveStreamer) elLiveStreamer.textContent = liveStreamer;
       document.title = `${liveCopy.elapsedPrefix}: ${liveStreamer} — ${baseTitle}`;
     }
-    if ((changed || renamed) && lastNp) updateMediaSession(lastNp);
+    if ((changed || renamed) && lastNp) {
+      // Re-render the track block under the new mode — the untitled-live
+      // override (and its exit) must not wait for the next sh_id change.
+      applyNowPlaying(lastNp);
+      updateMediaSession(lastNp);
+    }
   };
 
   const refresh = async () => {
@@ -451,10 +494,11 @@ declare global {
   const updateMediaSession = (np: AzuraNowPlayingEntry) => {
     if (!('mediaSession' in navigator)) return;
     const song = np.song;
+    const untitled = isUntitledLive(song);
     try {
-      const art = song.art || '';
+      const art = (untitled && liveArt ? liveArt : song.art) || '';
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: song.title || song.text || 'EuphoricFM',
+        title: untitled ? liveStreamer : song.title || song.text || 'EuphoricFM',
         // During a live event the DJ gets the credit — applyLive re-invokes
         // this on is_live flips and mid-event renames, so it restores too.
         artist: isLive ? `${liveCopy.elapsedPrefix}: ${liveStreamer}` : song.artist || 'EuphoricFM',

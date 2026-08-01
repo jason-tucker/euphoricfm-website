@@ -32,7 +32,14 @@ export interface AzuraNowPlayingEntry {
 export interface AzuraNowPlayingResponse {
   station: { id: number; name: string; shortcode: string; description: string };
   listeners: { current: number; unique: number; total: number };
-  live: { is_live: boolean; streamer_name: string; broadcast_start: number | null };
+  live: {
+    is_live: boolean;
+    streamer_name: string;
+    broadcast_start: number | null;
+    // Streamer-account artwork URL (upload it on the AzuraCast Streamers/DJs
+    // page). Absent on older AzuraCast versions / when no image is set.
+    art?: string | null;
+  };
   now_playing: AzuraNowPlayingEntry;
   playing_next: AzuraNowPlayingEntry | null;
   song_history: AzuraNowPlayingEntry[];

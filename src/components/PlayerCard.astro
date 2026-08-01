@@ -24,6 +24,9 @@ import { site } from '../site.config';
           <span class="absolute inset-0 rounded-full bg-ruby animate-soft-pulse"></span>
           <span class="relative rounded-full w-2.5 h-2.5 bg-ruby"></span>
         </span>
+        <!-- DJ picture — the streamer account's artwork (live.art). Shown by
+             nowplaying.ts only when AzuraCast sends one. -->
+        <img id="np-live-art" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E" alt="" class="hidden w-10 h-10 rounded-lg object-cover bg-cream/10 shrink-0 ring-1 ring-ruby/40" />
         <div class="min-w-0 flex-1">
           <div class="text-[10px] font-bold uppercase tracking-widest text-gold">{site.liveEvents.eyebrow}</div>
           <div id="np-live-streamer" class="truncate text-sm font-bold text-cream"></div>
