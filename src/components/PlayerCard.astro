@@ -12,6 +12,26 @@ import { site } from '../site.config';
        Children that need clipping (#np-up-next, the progress track) clip themselves. -->
   <div id="np-card" class="card vt-np bg-midnight/40 border-midnight/40 relative">
 
+    <!-- Special-event banner — slides open when a live DJ connects
+         (data.live.is_live from AzuraCast; live sets are always special events
+         for this station). Same max-height+opacity reveal as #np-up-next, so
+         it's CEF-safe. The streamer name is remote data: nowplaying.ts writes
+         it via textContent only. No margin on the wrapper — the inner mb-3 is
+         contained by overflow-hidden, so the collapsed state costs zero space. -->
+    <div id="np-live-banner" aria-hidden="true" class="overflow-hidden max-h-0 opacity-0 transition-[max-height,opacity] duration-500 ease-out">
+      <div class="mb-3 rounded-xl border border-ruby/40 bg-ruby/15 px-3 py-2.5 flex items-center gap-2.5">
+        <span class="relative flex w-2.5 h-2.5 shrink-0">
+          <span class="absolute inset-0 rounded-full bg-ruby animate-soft-pulse"></span>
+          <span class="relative rounded-full w-2.5 h-2.5 bg-ruby"></span>
+        </span>
+        <div class="min-w-0 flex-1">
+          <div class="text-[10px] font-bold uppercase tracking-widest text-gold">{site.liveEvents.eyebrow}</div>
+          <div id="np-live-streamer" class="truncate text-sm font-bold text-cream"></div>
+          <div class="truncate text-[11px] text-cream/70">{site.liveEvents.tagline}</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Top row: artwork + track info + transport stack. Layout:
            [art] [LIVE/Now Playing/title/artist/album] [PLAY button stacked over VOL slider]
          The separate "Stream / Streaming live" transport row beneath the
@@ -30,10 +50,15 @@ import { site } from '../site.config';
 
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2 mb-1 flex-wrap">
+          <!-- The label lives in its own span so nowplaying.ts can retext it
+               without wiping the dot (assigning textContent on the pill itself
+               destroyed #np-live-dot — the pre-0.12.0 bug). No `inline-block`
+               on the dot: it would out-specificity the `hidden` toggle under
+               Tailwind v4's utility order (same trap as the 0.11.1 badges). -->
           <span id="np-status" class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-ruby/20 text-ruby">
-            <span id="np-live-dot" class="inline-block w-1.5 h-1.5 rounded-full bg-ruby"></span>LIVE
+            <span id="np-live-dot" class="w-1.5 h-1.5 rounded-full bg-ruby"></span><span id="np-status-text">{site.liveEvents.idlePill}</span>
           </span>
-          <span class="text-[10px] uppercase tracking-widest text-cream/40">Now Playing</span>
+          <span id="np-eyebrow" class="text-[10px] uppercase tracking-widest text-cream/40">Now Playing</span>
           <!-- Shown by nowplaying.ts when now_playing.is_request === true. -->
           <span id="np-requested" class="hidden rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-sunburst/25 text-sunburst">REQUESTED</span>
         </div>
@@ -101,6 +126,12 @@ import { site } from '../site.config';
   /* Up-next reveal — driven by .is-open class on #np-up-next. */
   #np-up-next.is-open {
     max-height: 80px;
+    opacity: 1;
+  }
+
+  /* Special-event banner reveal — same mechanism, driven by nowplaying.ts. */
+  #np-live-banner.is-open {
+    max-height: 96px;
     opacity: 1;
   }
 

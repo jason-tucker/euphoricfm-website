@@ -19,6 +19,14 @@ interface EfmConfig {
   stationId: string;
   pollMs: number;
   mode: 'poll' | 'sse';
+  // Editable live-event copy (site.config.ts → BaseLayout clientConfig).
+  liveEvents: {
+    pill: string;
+    idlePill: string;
+    label: string;
+    fallbackName: string;
+    elapsedPrefix: string;
+  };
 }
 
 interface EfmAudioBridge {
@@ -66,12 +74,30 @@ declare global {
   // REQUESTED badges — toggled from `is_request` on each entry.
   const elNpRequested = $('np-requested');
   const elUpNextRequested = $('up-next-requested');
+  // Live special-event UI (banner + pill internals + eyebrow label).
+  const elLiveBanner = $('np-live-banner');
+  const elLiveStreamer = $('np-live-streamer');
+  const elStatusText = $('np-status-text');
+  const elLiveDot = $('np-live-dot');
+  const elEyebrow = $('np-eyebrow');
 
   // Mutable state for the RAF loop.
   let lastShId = 0;
   let playedAt = 0; // ms
   let duration = 0; // seconds
   let listeners = 0;
+
+  // Live special-event state. `liveKnown` stays false until the first poll
+  // response so loading into an in-progress event applies the live UI without
+  // replaying the transition flash.
+  const liveCopy = cfg.liveEvents;
+  let isLive = false;
+  let liveKnown = false;
+  let broadcastStartMs = 0; // 0 = AzuraCast sent no broadcast_start
+  let liveStreamer = '';
+  let lastNp: AzuraNowPlayingEntry | null = null;
+  const baseTitle = document.title;
+  const eyebrowDefault = elEyebrow?.textContent || 'Now Playing';
 
   // Up-next reveal threshold: slide in when this many seconds (or fewer) remain
   // on the current track. 40s sits in the sweet spot the user asked for (30–45s).
@@ -83,6 +109,16 @@ declare global {
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60);
     return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  // Broadcast elapsed — like fmtTime but grows an hours segment past 1h,
+  // since live sets routinely run longer than any single track.
+  const fmtElapsed = (sec: number) => {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const ss = Math.floor(sec % 60).toString().padStart(2, '0');
+    return h > 0 ? `${h}:${m.toString().padStart(2, '0')}:${ss}` : `${m}:${ss}`;
   };
 
   // Rewrite euphoric.fm album-art URLs to our own origin (/efm-art/...) so the
@@ -244,12 +280,68 @@ declare global {
       c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
     );
 
+  // Status pill — three states: OFFLINE, AUTO DJ (autopilot), ON AIR (live
+  // DJ). Only the #np-status-text child is retexted; assigning textContent on
+  // the pill itself is what used to wipe the #np-live-dot span every poll.
   const setOnline = (online: boolean) => {
     if (!elStatus) return;
-    elStatus.textContent = online ? 'LIVE' : 'OFFLINE';
-    elStatus.className = online
-      ? 'inline-block rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-ruby/20 text-ruby'
-      : 'inline-block rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-cream/10 text-cream/50';
+    if (elStatusText) {
+      elStatusText.textContent = !online ? 'OFFLINE' : isLive ? liveCopy.pill : liveCopy.idlePill;
+    }
+    const base =
+      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest';
+    elStatus.className = !online
+      ? `${base} bg-cream/10 text-cream/50`
+      : isLive
+        ? `${base} bg-ruby/90 text-cream animate-soft-pulse`
+        : `${base} bg-ruby/20 text-ruby`;
+    if (elLiveDot) elLiveDot.classList.toggle('hidden', !online);
+  };
+
+  // Live special-event state machine. Runs every poll; does real work only on
+  // an is_live flip (or streamer rename mid-event). Entering live: banner
+  // slides open, eyebrow swaps to the live label, .np-live on the card drives
+  // the CSS (indeterminate bar, cream dot), title + media session credit the
+  // DJ. Leaving: everything restores, including the times/bar the live branch
+  // of tick() owned. Both directions replay the np-flash — except on the very
+  // first poll, so loading mid-event doesn't flash.
+  const applyLive = (live: AzuraNowPlayingResponse['live'] | undefined, online: boolean) => {
+    const nowLive = !!(live && live.is_live) && online;
+    const name = nowLive ? (live!.streamer_name || '').trim() || liveCopy.fallbackName : '';
+    const changed = nowLive !== isLive || !liveKnown;
+    const renamed = nowLive && !changed && name !== liveStreamer;
+    const wasKnown = liveKnown;
+    liveKnown = true;
+    isLive = nowLive;
+    liveStreamer = name;
+    broadcastStartMs = nowLive && live!.broadcast_start ? live!.broadcast_start * 1000 : 0;
+
+    if (changed) {
+      if (elCard) elCard.classList.toggle('np-live', isLive);
+      if (elLiveBanner) {
+        elLiveBanner.classList.toggle('is-open', isLive);
+        elLiveBanner.setAttribute('aria-hidden', String(!isLive));
+      }
+      if (elEyebrow) elEyebrow.textContent = isLive ? liveCopy.label : eyebrowDefault;
+      if (!isLive) {
+        // The live branch of tick() owned these — reset so the normal branch
+        // repaints from clean state instead of leaving live text behind.
+        if (elBar) elBar.style.width = '0%';
+        if (elTimes) elTimes.textContent = '0:00 / 0:00';
+        document.title = baseTitle;
+      }
+      if (wasKnown && elCard) {
+        elCard.classList.remove('np-flash');
+        void elCard.offsetWidth;
+        elCard.classList.add('np-flash');
+      }
+    }
+    if (isLive && (changed || renamed)) {
+      // Streamer name is remote data — textContent only, never innerHTML.
+      if (elLiveStreamer) elLiveStreamer.textContent = liveStreamer;
+      document.title = `${liveCopy.elapsedPrefix}: ${liveStreamer} — ${baseTitle}`;
+    }
+    if ((changed || renamed) && lastNp) updateMediaSession(lastNp);
   };
 
   const refresh = async () => {
@@ -262,7 +354,11 @@ declare global {
       const np = data.now_playing;
       listeners = data.listeners?.current ?? 0;
       if (elListeners) elListeners.textContent = String(listeners);
-      setOnline(data.is_online !== false);
+      if (np) lastNp = np;
+      // applyLive first — setOnline and updateMediaSession read `isLive`.
+      const online = data.is_online !== false;
+      applyLive(data.live, online);
+      setOnline(online);
 
       if (np && np.sh_id !== lastShId) {
         applyNowPlaying(np);
@@ -289,7 +385,21 @@ declare global {
   // Next panel is also toggled here so the reveal lines up smoothly with the
   // progress bar rather than only on the 5-second poll cadence.
   const tick = () => {
-    if (duration > 0 && playedAt > 0) {
+    if (isLive) {
+      // Live event: the bar is a CSS indeterminate sweep (.np-live on the
+      // card), so only the elapsed readout updates here. broadcast_start can
+      // be null → just the bare prefix. Math.max guards a client clock that
+      // sits behind the server's broadcast_start.
+      if (elTimes) {
+        elTimes.textContent =
+          broadcastStartMs > 0
+            ? `${liveCopy.elapsedPrefix} · ${fmtElapsed(Math.max(0, (Date.now() - broadcastStartMs) / 1000))}`
+            : liveCopy.elapsedPrefix;
+      }
+      // playing_next is meaningless mid-broadcast — keep the panel shut.
+      // applyUpNext keeps priming content, so normal reveal resumes on exit.
+      if (elUpNext) elUpNext.classList.remove('is-open');
+    } else if (duration > 0 && playedAt > 0) {
       const elapsedSec = (Date.now() - playedAt) / 1000;
       const pct = Math.min(100, Math.max(0, (elapsedSec / duration) * 100));
       if (elBar) elBar.style.width = `${pct}%`;
@@ -345,7 +455,9 @@ declare global {
       const art = song.art || '';
       navigator.mediaSession.metadata = new MediaMetadata({
         title: song.title || song.text || 'EuphoricFM',
-        artist: song.artist || 'EuphoricFM',
+        // During a live event the DJ gets the credit — applyLive re-invokes
+        // this on is_live flips and mid-event renames, so it restores too.
+        artist: isLive ? `${liveCopy.elapsedPrefix}: ${liveStreamer}` : song.artist || 'EuphoricFM',
         album: song.album || 'EuphoricFM',
         artwork: art
           ? [

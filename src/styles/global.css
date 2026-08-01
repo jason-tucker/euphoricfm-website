@@ -419,6 +419,57 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * Live special-event mode — nowplaying.ts toggles .np-live on #np-card while
+ * AzuraCast reports live.is_live (a DJ connected; always a special event for
+ * this station).
+ *
+ * Track duration is meaningless mid-broadcast, so the position fill hides and
+ * the track runs an indeterminate ruby sweep instead. The sweep is a single
+ * ::after animating TRANSFORM only (GPU-composited, CEF-safe — no blur, no
+ * filter, no layout work), clipped by the track's existing overflow-hidden.
+ * ------------------------------------------------------------------------- */
+#np-card.np-live #np-bar { display: none; }
+#np-card.np-live #np-bar-track::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 34%;
+  border-radius: inherit;
+  background: linear-gradient(to right,
+    transparent,
+    rgb(var(--efm-ruby-rgb) / 0.9),
+    transparent);
+  animation: np-live-sweep 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: transform;
+}
+@keyframes np-live-sweep {
+  /* translateX % is relative to the ::after's own 34% width — 310% carries
+     its left edge past the full track width so it exits before looping. */
+  from { transform: translateX(-110%); }
+  to   { transform: translateX(310%); }
+}
+/* Effects off / reduced motion: swap the sweep for a static ruby fill so the
+   bar still reads "live" without any motion. (The global reduced-motion rule
+   alone would strand the sweep mid-track after one 0.001ms iteration.) */
+html.efm-fx-off #np-card.np-live #np-bar-track::after {
+  animation: none;
+  width: 100%;
+  background: rgb(var(--efm-ruby-rgb) / 0.55);
+}
+@media (prefers-reduced-motion: reduce) {
+  #np-card.np-live #np-bar-track::after {
+    animation: none !important;
+    width: 100%;
+    background: rgb(var(--efm-ruby-rgb) / 0.55);
+  }
+}
+/* The ON AIR pill's soft pulse (class set by nowplaying.ts) also settles when
+   effects are off; reduced-motion is already covered by the global rule. */
+html.efm-fx-off #np-status { animation: none; }
+/* On the solid-ruby ON AIR pill the ruby dot would vanish — flip it to cream. */
+#np-card.np-live #np-live-dot { background-color: rgb(var(--efm-cream-rgb)); }
+
 /* --- LIVE dot: high-frequency twinkle. ---------------------------------- */
 #np-live-dot {
   box-shadow: 0 0 calc(var(--efm-high) * 10px) rgb(var(--efm-ruby-rgb) / calc(0.4 + var(--efm-high) * 0.6));

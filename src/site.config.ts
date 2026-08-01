@@ -16,6 +16,20 @@ export const site = {
     pollMs: 5000,
   },
 
+  // Live DJ broadcasts are ALWAYS special events for this station, so the UI
+  // treats `live.is_live` from AzuraCast as a big deal (banner, ON AIR pill,
+  // indeterminate bar). Every string around that state is editable here.
+  // `fallbackName` covers a broadcast where AzuraCast reports no streamer name.
+  liveEvents: {
+    eyebrow: 'Special Event',
+    pill: 'ON AIR',
+    idlePill: 'AUTO DJ', // pill text when the stream runs on autopilot (no live DJ)
+    label: 'Live Broadcast', // replaces the "Now Playing" eyebrow during events
+    tagline: 'Live special event — happening right now on EuphoricFM.',
+    fallbackName: 'EuphoricFM Live',
+    elapsedPrefix: 'LIVE', // shown before broadcast elapsed in the times row
+  },
+
   // Webhook URLs are NEVER hardcoded or build-time inlined. They're served at
   // runtime by Caddy from `/runtime-config.js`, which templates them out of the
   // container's env vars (see Caddyfile + docker-compose.yml). The modals read
