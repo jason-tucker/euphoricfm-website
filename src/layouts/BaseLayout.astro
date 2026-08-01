@@ -17,12 +17,20 @@ const {
 
 const fullTitle = title === site.name ? title : `${title} — ${site.name}`;
 
-// Client-side config — only fields used by nowplaying.ts.
+// Client-side config — only fields used by nowplaying.ts. (liveEvents.eyebrow
+// and .tagline are rendered server-side in PlayerCard, so they stay out.)
 const clientConfig = {
   apiBase: site.azuracast.apiBase,
   stationId: site.azuracast.stationId,
   pollMs: site.realtime.pollMs,
   mode: site.realtime.mode,
+  liveEvents: {
+    pill: site.liveEvents.pill,
+    idlePill: site.liveEvents.idlePill,
+    label: site.liveEvents.label,
+    fallbackName: site.liveEvents.fallbackName,
+    elapsedPrefix: site.liveEvents.elapsedPrefix,
+  },
 };
 ---
 
