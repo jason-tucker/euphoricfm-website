@@ -5,6 +5,17 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.12.0] — 2026-08-01 — Live streaming special-event mode
+
+### Added
+- **Live DJ broadcasts now get the special-event treatment.** When AzuraCast reports `live.is_live`, the player card slides open a **Special Event banner** (pulsing dot, streamer name, editable tagline — same CEF-safe max-height/opacity reveal as Up Next), the status pill switches to **ON AIR** with a solid-ruby soft-pulse treatment, and the "Now Playing" eyebrow becomes "Live Broadcast". All copy (eyebrow, pills, label, tagline, fallback streamer name, elapsed prefix) is editable in `site.config.ts` `liveEvents`; the runtime fields flow to `nowplaying.ts` through `clientConfig`/`window.__EFM_CONFIG__`.
+- **The idle pill now reads AUTO DJ instead of LIVE.** "Live" wording is reserved for actual live broadcasts; autopilot rotation shows AUTO DJ (editable as `liveEvents.idlePill`).
+- **Indeterminate live progress bar.** Track duration is meaningless mid-broadcast, so `.np-live` on the card hides the position fill and runs a transform-only ruby sweep on the track (GPU-composited, CEF-safe). `html.efm-fx-off` and `prefers-reduced-motion` both swap the sweep for a static ruby fill — the global reduced-motion rule alone would strand the sweep mid-track. The times row shows broadcast elapsed off `broadcast_start` (`LIVE · 1:23:45`, hours segment past 1h; bare `LIVE` when AzuraCast sends no start), clamped against client clocks behind the server's.
+- **Live-aware chrome.** Up Next stays shut during a set (`playing_next` is meaningless with a DJ; normal ≤40s reveal resumes on exit), Media Session artist credits the DJ (`LIVE: <name>`, restored after), and `document.title` gets a live variant. Both is_live flips replay the card's `np-flash` — except on first poll, so loading mid-event doesn't flash. `is_online: false` overrides `is_live` (a dead stream is never "on air"). Streamer name renders via `textContent` only (remote data).
+
+### Fixed
+- **`#np-live-dot` no longer destroyed on the first poll.** `setOnline()` assigned `textContent` on the pill itself, wiping the dot span that `PlayerCard.astro` renders inside it — so the dot never survived past page load. The pill now has a dedicated `#np-status-text` child for the label; the dot is class-toggled (and hides while OFFLINE). Also pre-emptively dropped the dot's redundant `inline-block` so the `hidden` toggle can't lose the Tailwind v4 utility-order tie (the 0.11.1 badge bug).
+
 ## [0.11.2] — 2026-07-06 — Docs pass: README catches up to Tailwind v4 + directory tree
 
 ### Changed
