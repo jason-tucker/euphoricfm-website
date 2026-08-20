@@ -5,6 +5,11 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.16.1] — 2026-08-20 — Merge day-crossover events into one calendar entry
+
+### Fixed
+- **A booking that crosses midnight no longer shows as two events.** The events station's schedule API splits a cross-midnight booking into per-day rows (…–23:59, then 00:00–…); `events.ts` now merges contiguous rows of the same playlist (gap ≤ 5 minutes) into a single event spanning the full range before rendering. The ON AIR card shows the complete time span, and the post-midnight half can never appear as a duplicate "On the Calendar" row while the first half is broadcasting. Exact duplicate rows collapse through the same merge; genuinely separate sessions of the same playlist (hours apart, e.g. a daily slot) stay separate rows.
+
 ## [0.16.0] — 2026-08-20 — Live events calendar from the station schedule
 
 ### Added

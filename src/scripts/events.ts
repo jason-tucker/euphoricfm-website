@@ -74,6 +74,36 @@ const isValidEntry = (e: unknown): e is ScheduleEntry => {
   // `station.scheduleRows` (how many raw rows are fetched from the API).
   const CALENDAR_LIMIT = 5;
 
+  // A booking that crosses midnight comes back from the schedule API split
+  // into per-day rows (…–23:59, then 00:00–…). Rows of the SAME playlist
+  // whose gap is at most this many seconds are one event to a listener —
+  // merge them. 5 minutes comfortably covers the day-split seam without
+  // ever merging genuinely separate sessions hours apart.
+  const MERGE_GAP_SEC = 300;
+
+  // Collapse contiguous/overlapping same-id rows into single events spanning
+  // the full range (is_now survives from any merged part). Exact duplicate
+  // rows merge too (zero/negative gap). Output is sorted by start.
+  const mergeContiguous = (entries: ScheduleEntry[]): ScheduleEntry[] => {
+    const sorted = entries
+      .slice()
+      .sort((a, b) => (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : a.start_timestamp - b.start_timestamp));
+    const out: ScheduleEntry[] = [];
+    for (const e of sorted) {
+      const prev = out[out.length - 1];
+      if (prev && String(prev.id) === String(e.id) && e.start_timestamp - prev.end_timestamp <= MERGE_GAP_SEC) {
+        if (e.end_timestamp > prev.end_timestamp) {
+          prev.end_timestamp = e.end_timestamp;
+          prev.end = e.end;
+        }
+        if (e.is_now) prev.is_now = true;
+        continue;
+      }
+      out.push({ ...e });
+    }
+    return out.sort((a, b) => a.start_timestamp - b.start_timestamp);
+  };
+
   // ---- date/time formatting (station timezone, undefined locale — same
   // convention as stats.ts) --------------------------------------------------
 
@@ -127,8 +157,12 @@ const isValidEntry = (e: unknown): e is ScheduleEntry => {
 
   // ---- render ----------------------------------------------------------------
 
-  const render = (entries: ScheduleEntry[]) => {
+  const render = (rawEntries: ScheduleEntry[]) => {
     const nowSec = Date.now() / 1000;
+    // Merge FIRST: an on-air event whose second (post-midnight) half is still
+    // "upcoming" must read as one broadcast with the full time range — never
+    // an ON AIR card plus a duplicate calendar row.
+    const entries = mergeContiguous(rawEntries);
     const onAir = entries.find((e) => e.is_now === true && e.end_timestamp > nowSec) ?? null;
 
     elOffair!.classList.toggle('hidden', !!onAir);
