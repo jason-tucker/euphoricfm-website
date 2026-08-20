@@ -293,6 +293,31 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       },
     },
 
+    // Euphoric Events station (`event` shortcode) public schedule feed —
+    // unauthenticated, CORS-open (verified: access-control-allow-origin: *),
+    // same trust level as the main station's nowplaying poll. No API key, no
+    // Caddyfile change (connect-src already allows https://euphoric.fm).
+    // Read by scripts/events.ts to drive EventStatus.astro's on-air card +
+    // "On the Calendar" list — ignored entirely while status.current above is
+    // set (manual override wins; see events.ts's data-override bail).
+    station: {
+      apiBase: 'https://euphoric.fm/api',
+      stationId: 'event',
+      publicPlayerUrl: 'https://euphoric.fm/public/event',
+      timezone: 'America/New_York',
+      scheduleRows: 20,
+      pollMs: 60000,
+    },
+
+    // "On the Calendar" — the upcoming-events list under the status card,
+    // populated by events.ts from the schedule feed above.
+    calendar: {
+      title: 'On the Calendar',
+      listen: 'Listen Live',
+      today: 'Today',
+      tomorrow: 'Tomorrow',
+    },
+
     inquiry: {
       button: 'Send Inquiry',
       title: 'Plan an Event with Euphoric FM',

@@ -5,6 +5,14 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.16.0] — 2026-08-20 — Live events calendar from the station schedule
+
+### Added
+- **`EventStatus` is now live**, driven by the dedicated Euphoric Events AzuraCast station (shortcode `event`)'s public schedule endpoint (`GET /api/station/event/schedule` — unauthenticated, CORS-open, no Caddyfile change). New `src/scripts/events.ts` polls it every 60s (paused on `visibilitychange` hidden, same start/stop pattern as `nowplaying.ts`) and toggles between an ON AIR card (reusing the solid-ruby pulse pill styling) and the existing off-air empty state, both now rendered server-side with stable ids and `hidden`-toggled rather than an either/or template branch.
+- **"On the Calendar"** — a new list under the status card showing the next 5 upcoming schedule entries (event name left, right-aligned day + time, "Today"/"Tomorrow"/"Wed, Aug 26" via `Intl.DateTimeFormat` in the station's timezone), collapsing recurring-playlist duplicates and hiding entirely when nothing's upcoming.
+- **Manual override preserved.** `site.events.status.current` (still `null` by default) continues to render exactly as it did in 0.15.0 when set — `EventStatus.astro` stamps `data-override="1"` on `#evst-card` in that case and `events.ts` bails immediately, so config always wins over the live feed.
+- New `site.config.ts` `events.station` (apiBase, stationId, publicPlayerUrl, timezone, scheduleRows, pollMs) and `events.calendar` (title, listen, today, tomorrow) blocks — every new visible string is config-driven; schedule entry names are staff-authored in-universe data and render verbatim via `textContent`, same as track titles elsewhere on the site.
+
 ## [0.15.0] — 2026-08-20 — Euphoric FM Events page
 
 ### Added

@@ -1,18 +1,28 @@
 ---
-// /events page — "what's happening right now" card. `site.events.status.current`
-// is null today, so this always renders the off-air empty state below. The
-// ACTIVE branch is fully implemented and styled (status pill matching the
-// player's AUTO DJ/ON AIR pills, name/venue/times/description, optional
-// image, Listen button) so flipping `current` in site.config.ts lights it up
-// with no component changes. Every node a later runtime fetch would need to
-// hydrate carries a stable evst-* id. No backend, no polling here.
+// /events page — "what's happening right now" card. Two states exist in
+// parallel:
+//
+// 1. Manual override — `site.events.status.current` set in config. Renders
+//    exactly as before (status pill, name/venue/times/description, optional
+//    image, Listen button) and stamps `data-override="1"` on #evst-card so
+//    scripts/events.ts bails immediately on load — config always wins over
+//    the live feed below.
+// 2. Live feed (current === null, the default) — both the off-air empty
+//    state (#evst-offair, visible on first paint) and the on-air card
+//    (#evst-onair, hidden by default) render server-side here; events.ts
+//    polls the Euphoric Events station's public schedule and toggles
+//    between them, plus fills the "On the Calendar" list (#evst-calendar).
+//    A first-load fetch failure leaves the off-air state exactly as it
+//    renders below — progressive enhancement, no backend required to view
+//    the page.
 import { site } from '../site.config';
 const s = site.events.status;
+const cal = site.events.calendar;
 const current = s.current;
 ---
 
 <section class="section" aria-label={s.title}>
-  <div class="card" id="evst-card">
+  <div class="card" id="evst-card" data-override={current ? '1' : undefined}>
     <h2 class="text-base lg:text-xl font-bold tracking-wide text-sunburst">{s.title}</h2>
 
     {current ? (
@@ -30,15 +40,39 @@ const current = s.current;
         <a id="evst-listen" href={current.listenUrl || '/'} class="btn btn-sunburst mt-3 w-full">Listen</a>
       </div>
     ) : (
-      <div class="mt-3">
-        <span id="evst-pill" class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-cream/10 text-cream/50">
-          <span class="efm-eq" aria-hidden="true"><span></span><span></span><span></span></span>
-          <span id="evst-pill-text">{s.offAir.pill}</span>
-        </span>
-        <h3 id="evst-heading" class="mt-2 text-base font-bold text-cream">{s.offAir.heading}</h3>
-        <p id="evst-body" class="mt-1 text-sm text-cream/70 leading-relaxed">{s.offAir.body}</p>
-        <button type="button" id="evst-cta" class="btn btn-sunburst mt-3 w-full">{s.offAir.cta}</button>
-      </div>
+      <>
+        <div class="mt-3" id="evst-offair">
+          <span id="evst-pill" class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-cream/10 text-cream/50">
+            <span class="efm-eq" aria-hidden="true"><span></span><span></span><span></span></span>
+            <span id="evst-pill-text">{s.offAir.pill}</span>
+          </span>
+          <h3 id="evst-heading" class="mt-2 text-base font-bold text-cream">{s.offAir.heading}</h3>
+          <p id="evst-body" class="mt-1 text-sm text-cream/70 leading-relaxed">{s.offAir.body}</p>
+          <button type="button" id="evst-cta" class="btn btn-sunburst mt-3 w-full">{s.offAir.cta}</button>
+        </div>
+
+        <!-- Filled by events.ts on is_now === true. The pill needs no id —
+             its text never changes at runtime, only this block's `hidden`
+             toggle does — so it can't collide with #evst-offair's own
+             #evst-pill/#evst-pill-text (both blocks live in the DOM at
+             once now, only one ever visible). -->
+        <div class="mt-3 hidden" id="evst-onair">
+          <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-ruby/90 text-cream animate-soft-pulse">
+            {s.onAir.pill}
+          </span>
+          <h3 id="evst-on-name" class="mt-2 text-lg font-bold text-cream"></h3>
+          <p id="evst-on-times" class="mt-1 text-xs text-cream/50"></p>
+          <a id="evst-on-listen" href={site.events.station.publicPlayerUrl} class="btn btn-sunburst mt-3 w-full">{cal.listen}</a>
+        </div>
+
+        <!-- "On the Calendar" — stays hidden entirely when events.ts finds
+             zero upcoming entries; the off-air empty-state copy above
+             already covers that case. -->
+        <div class="mt-4 hidden" id="evst-calendar">
+          <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{cal.title}</h3>
+          <ul id="evst-calendar-list" class="mt-2"></ul>
+        </div>
+      </>
     )}
   </div>
 </section>
