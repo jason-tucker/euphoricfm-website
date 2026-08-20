@@ -75,16 +75,29 @@ src/
   scripts/nowplaying.ts        client-side polling + RAF progress bar
   scripts/effects.ts           music-reactive visual effects (spring physics, album-art theming,
                                OKLCH colour extractor, effects master toggle)
+  scripts/stats.ts              station stats section: fetch/render, hand-rolled SVG charts,
+                               top-tracks/top-artists drill-down (no chart libraries)
   lib/azuracast.ts             TS types + URL helpers
   lib/version.ts               version + sha for footer
+  lib/stats.ts                  TS types for the /stats/* payloads (kept in sync with server/stats.mjs)
   styles/tokens.css            centralised CSS colour tokens (brand palette + semantic roles)
-  components/*.astro
+  components/*.astro            includes Stats.astro (stats section skeleton, hydrated by
+                               scripts/stats.ts)
 public/
   fonts/                       Begaron (Euphoric) + Cortado Script (FM)
   favicon.svg
 server/                        efm-requests Node sidecar — shared pending song-request queue
-  index.mjs                    zero-dep HTTP service (pending list, rate limiting, pruning)
+                               PLUS full-time station stats aggregation/backfill (/stats/*)
+  index.mjs                    zero-dep HTTP service (pending list, rate limiting, pruning);
+                               wires in stats.mjs's handler ahead of its own 404 fallthrough
+  stats.mjs                     station stats: 30s listener sampling, watermarked play
+                               ingestion off the nowplaying poll, full-history backfill via
+                               AzuraCast's auth-only history API (AZURACAST_API_KEY, never
+                               exposed to clients), /stats/* endpoints (summary, listeners,
+                               track, artist, health)
   index.test.mjs               test suite (run with `pnpm test` via node:test)
+  stats.test.mjs                stats.mjs test suite (backfill idempotence, timezone bucketing,
+                               endpoints, XSS sanitisation, persistence)
   Dockerfile                   separate image: ghcr.io/jason-tucker/euphoricfm-website-requests
 Dockerfile                     multi-stage: pnpm build → caddy static
 Caddyfile                      iframe-safe CSP, runtime-config endpoint, reverse-proxy rules,
@@ -134,6 +147,13 @@ There is **no `typecheck` script** in `package.json`. Type-checking runs as `pnp
   (unix seconds), `duration`, and `elapsed`. Use `played_at` + `duration` for
   client-side progress interpolation, and `sh_id` for track-change detection.
 - Listener count is `listeners.current`. History is `song_history[]`.
+- The full history endpoint (`GET /api/station/<station>/history`) is **auth-only**
+  (403 without an `X-API-Key`) — full-time station stats therefore flow through
+  the `efm-requests` sidecar (`server/stats.mjs`), which holds
+  `AZURACAST_API_KEY` server-side and backfills history there; it degrades
+  gracefully to live-only accumulation with no key. The frontend never calls
+  AzuraCast's history endpoint directly — it consumes same-origin `/stats/*`
+  (Caddy reverse-proxies to `efm-requests:3000`, same pattern as `/requests/*`).
 
 ## Discord webhooks
 

@@ -5,6 +5,14 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.13.0] — 2026-08-20 — Full-time station stats area
+
+### Added
+- **New stats section at the bottom of the page** (below About, above Footer): interactive area graphs for listeners and plays, four KPI tiles (total plays, peak listeners, tracks played, requests played), rhythm charts (plays/listeners by hour-of-day and day-of-week), and clickable top-tracks/top-artists lists with drill-down detail (monthly plays chart, first/last played, top tracks per artist). Hand-rolled SVG charts (no libraries) with crosshair/tooltip and an accessible `<details>` table twin per chart. Stays hidden gracefully when `/stats/summary` is unreachable (e.g. `pnpm dev`, no sidecar).
+- **`server/stats.mjs`** — the `efm-requests` sidecar now also serves `/stats/*`: 30s listener-count sampling (5-min/1-hour ring buffers), watermarked live play ingestion off the existing nowplaying poll, and — when `AZURACAST_API_KEY` is set — full-history backfill from AzuraCast's auth-only history API back to `STATS_BACKFILL_START` (2023 by default), running in gentle ~15s-cadence windows with a frozen forward-region boundary so backfill and live ingestion can never double-count. A broken/unauthorized key degrades gracefully — live stats accumulate regardless after a few failed sync attempts, they just lack pre-boot history. State persists to `stats.json` (atomic tmp+rename writes) alongside the existing `pending.json`. Per-IP rate limiting mirrors the existing `/requests/*` limiter.
+- **Caddy `/stats/*` route** — reverse-proxies to `efm-requests:3000` with the same `X-Forwarded-For` passthrough as `/requests/*` (load-bearing for the sidecar's per-IP rate limit). No CSP change: `connect-src 'self'` already covers same-origin fetches.
+- **New env vars** (`.env` / `docker-compose.yml`): `AZURACAST_API_KEY` (enables backfill; empty = live-only accumulation, never sent to clients), `AZURACAST_API_BASE`, `STATION_ID`, `STATS_TZ` (station timezone for day/hour/month bucketing, default `America/New_York`), `STATS_BACKFILL_START`, and `STATS_BACKFILL_RESET` (set to any new value + `docker compose up -d` to wipe and re-backfill without volume surgery on the `read_only` container).
+
 ## [0.12.0] — 2026-08-01 — Live streaming special-event mode
 
 ### Added

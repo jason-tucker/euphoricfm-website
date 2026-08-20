@@ -16,6 +16,9 @@ leaving the phone:
   AzuraCast every 5 seconds.
 - **Song requests** — search the AzuraCast library and enqueue a request, with a
   shared "Requested Songs" list every visitor sees.
+- **Station stats** — a full stats area (below About) with interactive area
+  graphs, KPI tiles, rhythm charts, and clickable top-tracks/top-artists with
+  drill-down, covering the station's history back to 2023 where data permits.
 - **Submit a song / Contact us** — forms that post to Discord webhooks for
   artist submissions and general contact.
 - **Iframe-first** — explicitly embeddable from anywhere, no framebusting, no
@@ -28,7 +31,7 @@ tell which build is live.
 ## Architecture
 
 Static Astro build composed from a single page and a set of `.astro`
-components, hydrated by two client scripts.
+components, hydrated by client scripts.
 
 ```
 src/
@@ -43,6 +46,9 @@ src/
                               up-next + pending-requests + Media Session
   scripts/effects.ts          spring "honey float", music reactivity, album-art
                               colour theming, the footer Effects toggle
+  scripts/stats.ts            hand-rolled SVG charts + fetch/render for the
+                              stats section (/stats/* from the sidecar)
+  lib/stats.ts                TS types for the /stats/* payloads
   styles/tokens.css           centralised CSS colour tokens — brand palette
                               (RGB channels) + semantic surface/text/accent roles
   styles/global.css           Tailwind v4 CSS-first @theme config + @font-face
@@ -55,6 +61,8 @@ src/
     ActionRow.astro           four CTAs that dispatch efm:open-* events
     RecentlyPlayed.astro      list skeleton, hydrated by nowplaying.ts
     RequestedSongs.astro      shared pending-requests card, hydrated client-side
+    Stats.astro               station stats section skeleton, hydrated by
+                              scripts/stats.ts
     About.astro               "What is EuphoricFM?" blurb (aboutText)
     RequestModal.astro        AzuraCast library search + same-origin POST
     SubmitSongModal.astro     Discord webhook — artist song submission
@@ -67,7 +75,10 @@ public/cef-test.html          plain-HTML no-JS diagnostic page for confirming
 public/sw.js                  service-worker killswitch (unregisters any SW
                               from an older PWA-era build; no active SW today)
 server/                       efm-requests — tiny zero-dep Node service holding
-                              the shared pending-requests list (own image)
+                              the shared pending-requests list (own image);
+                              also aggregates + serves station stats
+                              (stats.mjs: /stats/* — listener sampling, play
+                              ingestion, full-history backfill)
 Dockerfile                    node:24-alpine build → caddy:2.x-alpine serve
 Caddyfile                     static + iframe-safe CSP + Let's Encrypt + proxies
 docker-compose.yml            efm-web + efm-requests + watchtower
@@ -136,6 +147,11 @@ webhook URL is ever baked into the static bundle. Set them in `.env` on the host
 | `PUBLIC_DISCORD_REQUEST_WEBHOOK` | "Submit a song" modal |
 | `PUBLIC_DISCORD_CONTACT_WEBHOOK` | "Contact us" modal |
 | `SITE_HOSTNAME` | hostname Caddy serves + provisions a Let's Encrypt cert for |
+| `AZURACAST_API_KEY` | `efm-requests`/stats.mjs — enables full-history backfill (empty = live-only accumulation, never exposed to clients) |
+| `AZURACAST_API_BASE`, `STATION_ID` | `efm-requests`/stats.mjs — AzuraCast instance + station shortcode for the history API |
+| `STATS_TZ` | `efm-requests`/stats.mjs — station timezone for day/hour/month bucketing (default `America/New_York`) |
+| `STATS_BACKFILL_START` | `efm-requests`/stats.mjs — earliest date to backfill (default `2023-01-01`) |
+| `STATS_BACKFILL_RESET` | `efm-requests`/stats.mjs — set to any new value + `docker compose up -d` to wipe and re-backfill |
 | `TICKETS_GG_HOSTNAME` | second reverse-proxied host (`tickets.euphoric.gg`) |
 
 To change a webhook without rebuilding the image, edit `.env` on the host and run
@@ -165,6 +181,11 @@ JSON for the station shortcode **`euphoricfm`**:
   theming would taint it. The client rewrites art URLs to the same-origin
   `/efm-art/*` proxy; the art endpoint 302-redirects to a relative `/static/...`
   path, which is why `/static/*` is proxied too (see Caddyfile).
+- **History is auth-only** — `GET /api/station/euphoricfm/history` 403s without
+  an API key, so full-time station stats don't come from the client at all.
+  `server/stats.mjs` holds `AZURACAST_API_KEY` server-side and backfills
+  history there; the frontend consumes same-origin `/stats/*` (reverse-proxied
+  by Caddy, see below), never AzuraCast directly.
 
 ### Iframe / CEF constraint
 
@@ -211,7 +232,8 @@ removes that layer. Notable consequences baked into the config:
 - TLS forces an **RSA cert** (`key_type rsa2048`) so the chain goes via ISRG
   Root X1, and **HTTP/3 is disabled** — some CEF builds hung negotiating QUIC.
 - Caddy also reverse-proxies the requests API (`/requests/*` →
-  `efm-requests:3000`), the request-submit + library (`/api/*`), and album art
+  `efm-requests:3000`), the station stats API (`/stats/*`, same target — see
+  `server/stats.mjs`), the request-submit + library (`/api/*`), and album art
   (`/efm-art/*`, `/static/*`) — all same-origin workarounds for CORS.
 - A second host block serves `tickets.euphoric.gg` → `tickets-web:3000` over the
   shared external `efm-public-net` bridge.

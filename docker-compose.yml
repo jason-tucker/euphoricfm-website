@@ -100,6 +100,22 @@ services:
       # Override at runtime to point at a different AzuraCast instance for
       # the pruning poll. Default matches the public station shortcode.
       NOWPLAYING_URL: ${NOWPLAYING_URL:-https://euphoric.fm/api/nowplaying/euphoricfm}
+      # ---- Station stats (server/stats.mjs) --------------------------------
+      # AzuraCast's history API is auth-only (403 without a key), so full-time
+      # backfill needs an admin API key with the station's reports/history
+      # permission. Without it, stats still accumulate live from the 30s
+      # nowplaying poll — graceful degradation, not a hard requirement.
+      AZURACAST_API_KEY: ${AZURACAST_API_KEY:-}
+      AZURACAST_API_BASE: ${AZURACAST_API_BASE:-https://euphoric.fm/api}
+      STATION_ID: ${STATION_ID:-euphoricfm}
+      STATS_STORE_PATH: /data/stats.json
+      STATS_TZ: ${STATS_TZ:-America/New_York}
+      STATS_BACKFILL_START: ${STATS_BACKFILL_START:-2023-01-01}
+      # The API key never reaches clients — /stats/* only ever serves
+      # aggregates. Set this to any new value + `docker compose up -d` to
+      # recover from a bad backfill without volume surgery (read_only fs):
+      # wipes play-derived stats.json fields but keeps listener sample data.
+      STATS_BACKFILL_RESET: ${STATS_BACKFILL_RESET:-}
     volumes:
       - efm_requests_data:/data
     security_opt:
