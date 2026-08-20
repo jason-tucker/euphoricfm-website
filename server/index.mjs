@@ -9,6 +9,8 @@
 //   GET  /requests/pending  -> JSON array of {id, title, artist, art, ts}
 //   POST /requests/track    -> body {id, title, artist, art} → 200 {ok:true}
 //   GET  /requests/health   -> 200 {ok:true, pending:n}
+//   GET  /stats/*           -> full-time station stats — see stats.mjs (its
+//                              own header documents the routes in full)
 //
 // Pruning runs every 30s: polls AzuraCast /api/nowplaying/<station> and
 // drops any pending entry whose `song.id` appears in now_playing.song.id or
@@ -30,9 +32,13 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { createStats } from './stats.mjs';
+
 export const TTL_MS = 6 * 60 * 60 * 1000;
 export const MAX_ENTRIES = 50;
 export const PRUNE_INTERVAL_MS = 30_000;
+export const STATS_TICK_INTERVAL_MS = 30_000;
+export const BACKFILL_STEP_INTERVAL_MS = 15_000;
 export const MAX_BODY_BYTES = 4096;
 // Fixed-window write rate limit, keyed on client IP (see clientIp()).
 export const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -237,17 +243,52 @@ export function createStore(opts = {}) {
 export function main() {
   const PORT = Number(process.env.PORT || 3000);
   const store = createStore();
-  const server = createServer(store.handler);
+  const stats = createStats({ sanitizeText, sanitizeArt });
+  // stats.handler returns false for anything that isn't a known GET /stats
+  // route, so store.handler's own 404 remains the terminal fallthrough.
+  // store.handler is async — fine to call without await here, matching its
+  // existing (pre-stats) usage as the raw createServer callback.
+  const server = createServer(async (req, res) => {
+    const handled = await stats.handler(req, res);
+    if (!handled) return store.handler(req, res);
+  });
 
   const interval = setInterval(() => store.prune(), PRUNE_INTERVAL_MS);
   store.prune();
 
-  // Graceful shutdown: flush the store and stop accepting connections so a
-  // Watchtower-driven redeploy doesn't drop in-flight writes or leak the timer.
+  const statsInterval = setInterval(() => stats.tick(), STATS_TICK_INTERVAL_MS);
+  stats.tick();
+
+  // Backfill drives itself with a self-rescheduling setTimeout chain (never
+  // a bare setInterval) so the next step is only scheduled once the previous
+  // one has fully settled — see the re-entrancy guard in stats.mjs. Only
+  // started when an API key is configured; with no key backfill is a no-op
+  // forever and there is nothing to schedule.
+  let backfillTimer = null;
+  if (process.env.AZURACAST_API_KEY) {
+    const scheduleBackfillStep = () => {
+      backfillTimer = setTimeout(async () => {
+        let more = true;
+        try {
+          more = await stats.backfillStep();
+        } catch (e) {
+          console.warn('[efm-stats] backfill step failed:', e.message);
+        }
+        if (more) scheduleBackfillStep();
+      }, BACKFILL_STEP_INTERVAL_MS);
+    };
+    scheduleBackfillStep();
+  }
+
+  // Graceful shutdown: flush both stores and stop accepting connections so a
+  // Watchtower-driven redeploy doesn't drop in-flight writes or leak timers.
   const shutdown = (sig) => {
     console.log(`[efm-requests] ${sig} — shutting down`);
     clearInterval(interval);
+    clearInterval(statsInterval);
+    if (backfillTimer) clearTimeout(backfillTimer);
     store.save();
+    stats.save();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 5000).unref();
   };
