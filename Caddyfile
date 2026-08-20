@@ -119,6 +119,22 @@
     }
   }
 
+  # ---- Full-time station stats API ---------------------------------------
+  # Same `efm-requests` container also serves aggregate station-history
+  # endpoints (server/stats.mjs): plays/listeners over time, top
+  # tracks/artists, drill-down detail. It ingests from the same 30s
+  # nowplaying poll and, when AZURACAST_API_KEY is set on the host, backfills
+  # full history via AzuraCast's auth-only history API — the key never
+  # leaves the container, and every /stats/* response is aggregates only
+  # (no raw API key, no per-listener data).
+  handle /stats/* {
+    reverse_proxy efm-requests:3000 {
+      # LOAD-BEARING: server/stats.mjs rate-limits /stats GETs per IP off
+      # this header, same as /requests/* above.
+      header_up X-Forwarded-For {remote_host}
+    }
+  }
+
   # ---- Album-art same-origin proxy --------------------------------------
   # Album art comes from euphoric.fm (cross-origin to info.euphoric.fm) and
   # euphoric.fm sends NO Access-Control-Allow-Origin header, so reading it onto

@@ -1,0 +1,137 @@
+---
+// Station Stats section. Markup skeleton only — every data-driven value
+// (KPI numbers, chart SVGs, table rows, top lists, detail overlay content)
+// is built by scripts/stats.ts into the containers identified by id below.
+// Starts `hidden`; stats.ts unhides #stats-section only after a successful
+// /stats/summary fetch with totals.plays > 0 (graceful degradation when the
+// sidecar/backfill has no data yet, e.g. `pnpm dev` with no sidecar running).
+import { site } from '../site.config';
+const s = site.stats;
+---
+
+<section id="stats-section" class="section hidden" aria-label={s.heading}>
+  <h2 class="text-base lg:text-xl font-bold tracking-wide text-sunburst">{s.heading}</h2>
+  <p class="text-xs text-cream/50">{s.tagline}</p>
+  <p id="stats-coverage" class="mt-1 text-xs text-cream/50"></p>
+
+  <!-- 1. KPI grid — 2x2, each tile its own .card. -->
+  <div class="grid grid-cols-2 gap-2 lg:gap-3 mt-3">
+    <div class="card">
+      <div class="text-[11px] uppercase tracking-wide text-cream/50">{s.kpi.plays.label}</div>
+      <div id="stats-kpi-plays-value" class="mt-1 text-2xl lg:text-3xl font-bold text-cream">—</div>
+      <div id="stats-kpi-plays-sub" class="mt-0.5 text-[11px] text-cream/45"></div>
+    </div>
+    <div class="card">
+      <div class="text-[11px] uppercase tracking-wide text-cream/50">{s.kpi.peakListeners.label}</div>
+      <div id="stats-kpi-peak-value" class="mt-1 text-2xl lg:text-3xl font-bold text-cream">—</div>
+      <div id="stats-kpi-peak-sub" class="mt-0.5 text-[11px] text-cream/45"></div>
+    </div>
+    <div class="card">
+      <div class="text-[11px] uppercase tracking-wide text-cream/50">{s.kpi.tracks.label}</div>
+      <div id="stats-kpi-tracks-value" class="mt-1 text-2xl lg:text-3xl font-bold text-cream">—</div>
+      <div id="stats-kpi-tracks-sub" class="mt-0.5 text-[11px] text-cream/45"></div>
+    </div>
+    <div class="card">
+      <div class="text-[11px] uppercase tracking-wide text-cream/50">{s.kpi.requests.label}</div>
+      <div id="stats-kpi-requests-value" class="mt-1 text-2xl lg:text-3xl font-bold text-cream">—</div>
+      <div id="stats-kpi-requests-sub" class="mt-0.5 text-[11px] text-cream/45"></div>
+    </div>
+  </div>
+
+  <!-- 2. Listeners card — two-row header (title row, then tabs on their own
+       line): a single-row header overflows at 320px (measured, see spec). -->
+  <div class="card mt-3">
+    <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.listeners.title}</h3>
+    <div id="stats-listeners-tabs" class="mt-2 flex flex-wrap gap-2" role="tablist" aria-label={s.listeners.ariaLabel}>
+      {Object.entries(s.listeners.tabs).map(([key, label]) => (
+        <button type="button" class="efm-stats-tab" data-range={key} aria-pressed="false">{label}</button>
+      ))}
+    </div>
+    <div id="stats-listeners-chart" class="efm-stats-chart mt-3" role="img" aria-label={s.listeners.ariaLabel}></div>
+    <details class="efm-stats-table mt-2">
+      <summary>{s.viewTable}</summary>
+      <div id="stats-listeners-table" class="efm-stats-table-scroll efm-sidebar-scroll"></div>
+    </details>
+  </div>
+
+  <!-- 3. Plays card — same two-row header; #stats-plays-sub flips between
+       "per day"/"per week" copy depending on the active range's bucketing. -->
+  <div class="card mt-3">
+    <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.plays.title}</h3>
+    <div id="stats-plays-tabs" class="mt-2 flex flex-wrap gap-2" role="tablist" aria-label={s.plays.ariaLabel}>
+      {Object.entries(s.plays.tabs).map(([key, label]) => (
+        <button type="button" class="efm-stats-tab" data-range={key} aria-pressed="false">{label}</button>
+      ))}
+    </div>
+    <p id="stats-plays-sub" class="mt-1 text-[11px] text-cream/45"></p>
+    <div id="stats-plays-chart" class="efm-stats-chart mt-2" role="img" aria-label={s.plays.ariaLabel}></div>
+    <details class="efm-stats-table mt-2">
+      <summary>{s.viewTable}</summary>
+      <div id="stats-plays-table" class="efm-stats-table-scroll efm-sidebar-scroll"></div>
+    </details>
+  </div>
+
+  <!-- 4. Rhythm card — plots lavg by default, falls back to plays (and swaps
+       #stats-rhythm-sub copy) when no listener samples exist yet. -->
+  <div class="card mt-3">
+    <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.rhythm.title}</h3>
+    <div id="stats-rhythm-tabs" class="mt-2 flex flex-wrap gap-2" role="tablist" aria-label={s.rhythm.ariaLabel}>
+      {Object.entries(s.rhythm.tabs).map(([key, label]) => (
+        <button type="button" class="efm-stats-tab" data-basis={key} aria-pressed="false">{label}</button>
+      ))}
+    </div>
+    <p id="stats-rhythm-sub" class="mt-1 text-[11px] text-cream/45"></p>
+    <div id="stats-rhythm-chart" class="efm-stats-chart efm-stats-chart--short mt-2" role="img" aria-label={s.rhythm.ariaLabel}></div>
+    <details class="efm-stats-table mt-2">
+      <summary>{s.viewTable}</summary>
+      <div id="stats-rhythm-table" class="efm-stats-table-scroll efm-sidebar-scroll"></div>
+    </details>
+  </div>
+
+  <!-- 5. Top tracks — rows are buttons (48px targets) that open the detail
+       overlay. Initial 10, "Show more" reveals +20 up to a 50 max. -->
+  <div class="card mt-3">
+    <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.topTracks.title}</h3>
+    <ul id="stats-top-tracks-list" class="mt-2 divide-y divide-cream/5"></ul>
+    <button type="button" id="stats-top-tracks-more" class="btn btn-midnight w-full mt-2 hidden">{s.showMore}</button>
+  </div>
+
+  <!-- 6. Top artists — same pattern, drills into the artist detail view. -->
+  <div class="card mt-3">
+    <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.topArtists.title}</h3>
+    <ul id="stats-top-artists-list" class="mt-2 divide-y divide-cream/5"></ul>
+    <button type="button" id="stats-top-artists-more" class="btn btn-midnight w-full mt-2 hidden">{s.showMore}</button>
+  </div>
+</section>
+
+<!-- Shared track/artist detail overlay. NO backdrop-filter (CEF paints it as
+     a black rectangle — see CLAUDE.md rule 5 / spec's CEF-safe CSS rule);
+     bg-ink/90 compensates with plain opacity instead.
+
+     data-close lives ONLY on the close button, never on the overlay root —
+     ActionRow's document-level `closest('[data-close]')` handler would
+     otherwise treat any click inside the overlay as a close. stats.ts adds
+     its own backdrop (e.target === overlay) and Escape handling; ActionRow's
+     hardcoded Escape id list is not ours to edit. -->
+<div id="stats-detail-overlay" class="hidden fixed inset-0 z-40 bg-ink/90" aria-hidden="true">
+  <div class="mx-auto max-w-md w-full h-full flex flex-col py-4 px-4 lg:py-10">
+    <div class="card efm-modal-enter !p-4 flex-1 flex flex-col overflow-hidden lg:max-h-[80vh]">
+      <div class="flex items-center gap-1 mb-2">
+        <button
+          type="button"
+          id="stats-detail-back"
+          class="hidden shrink-0 min-h-[48px] min-w-[48px] flex items-center justify-center text-cream/70"
+          aria-label={s.detail.back}
+        >&larr;</button>
+        <span id="stats-detail-title" class="flex-1 min-w-0 truncate text-base font-bold text-sunburst"></span>
+        <button
+          type="button"
+          class="shrink-0 min-h-[48px] min-w-[48px] flex items-center justify-center text-cream/60 text-xl leading-none"
+          data-close="stats-detail-overlay"
+          aria-label={s.detail.close}
+        >&times;</button>
+      </div>
+      <div id="stats-detail-body" class="flex-1 overflow-y-auto efm-sidebar-scroll"></div>
+    </div>
+  </div>
+</div>
