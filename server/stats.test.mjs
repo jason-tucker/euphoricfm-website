@@ -138,6 +138,39 @@ test('out-of-order rows within a single poll are sorted before gating', async ()
   }
 });
 
+// [S1 TEST] feed maxTracks + 150 distinct ids (a tiny cap override keeps this
+// fast) -> map size stays <= cap, the highest-n tracks survive eviction, and
+// totals.uniqueTracks counts every id ever seen (not just survivors).
+test('track-cap eviction (S1): amortized batch-evict keeps the map at/under the cap; high-n tracks survive; uniqueTracks stays monotonic', async () => {
+  const CAP = 300;
+  const s = await withServer({ maxTracks: CAP });
+  try {
+    let t = T_NOON;
+    const nextRow = (id) => { t += 1; return row(id, t, { shId: t }); };
+
+    // 10 "popular" tracks, played 5x each — high n, must survive eviction.
+    for (let play = 0; play < 5; play++) {
+      for (let i = 0; i < 10; i++) {
+        s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: nextRow(`pop-${i}`) }));
+      }
+    }
+    // CAP + 150 distinct filler tracks, played once each — low n, evictable.
+    const fillerCount = CAP + 150;
+    for (let i = 0; i < fillerCount; i++) {
+      s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: nextRow(`filler-${i}`) }));
+    }
+
+    assert.ok(Object.keys(s.stats.state.tracks).length <= CAP, 'map size must stay at/under the cap');
+    assert.equal(s.stats.state.totals.uniqueTracks, 10 + fillerCount); // monotonic — every id ever seen
+    for (let i = 0; i < 10; i++) {
+      assert.ok(s.stats.state.tracks[`pop-${i}`], `pop-${i} (n=5) should outlive n=1 filler tracks`);
+      assert.equal(s.stats.state.tracks[`pop-${i}`].n, 5);
+    }
+  } finally {
+    await s.close();
+  }
+});
+
 // ---- 2. Listener sampling ----------------------------------------------------
 
 test('listener sampling buckets min5/hourly avg+max, enforces caps, tracks peak; is_online:false contributes nothing', async () => {
@@ -226,6 +259,12 @@ test('backfill: boundary freezes once, multiple windows execute, forward/over-re
     assert.equal(more, true);
     assert.equal(s.stats.state.backfill.cursor, '2026-01-09'); // unmoved
     assert.ok(s.stats.state.backfill.lastError.includes('503'));
+
+    // S3: the 503 above was classified transient, so this step armed an
+    // exponential backoff (15s * 2^1 = 30s) rather than halting — advance
+    // the clock past it before retrying, or backfillStep would correctly
+    // no-op instead of fetching (exercised in its own dedicated test).
+    s.clockRef.t += 31_000;
 
     // Retrying window 2 with the SAME row ingests it exactly once.
     const retryRow = row('bf-retry', Date.parse('2026-01-09T17:00:00Z') / 1000, { shId: 102 });
@@ -319,7 +358,10 @@ test('backfill: paginated envelope follows links.next and includes page-2 rows',
 
     const page1Row = row('pg-1', Date.parse('2026-01-02T17:00:00Z') / 1000, { shId: 1 });
     const page2Row = row('pg-2', Date.parse('2026-01-03T17:00:00Z') / 1000, { shId: 2 });
-    const nextUrl = 'http://x/next-page';
+    // Same origin as the default API_BASE ('https://euphoric.fm/api') — the
+    // S4 SSRF guard rejects a cross-origin links.next, exercised separately
+    // below ("SSRF guard: cross-origin links.next").
+    const nextUrl = 'https://euphoric.fm/api/station/euphoricfm/history?page=2';
     const fetchImpl = async (url) => {
       if (url === nextUrl) {
         return { ok: true, status: 200, json: async () => ({ rows: [page2Row] }) };
@@ -329,6 +371,33 @@ test('backfill: paginated envelope follows links.next and includes page-2 rows',
     await s.stats.backfillStep(fetchImpl);
     assert.ok(s.stats.state.tracks['pg-1']);
     assert.ok(s.stats.state.tracks['pg-2']);
+  } finally {
+    await s.close();
+  }
+});
+
+// [S4 TEST] page1 links.next points off-origin -> error, no second fetch, halts.
+test('SSRF guard: a cross-origin links.next is rejected before it is ever fetched, and halts backfill', async () => {
+  const s = await withServer({ backfillStart: '2026-01-01', apiKey: 'k' });
+  try {
+    const boundaryTs = Date.parse('2026-01-20T17:00:00Z') / 1000;
+    seedForward(s, boundaryTs);
+    await s.stats.backfillStep(fakeFetchJson([])); // freeze boundary
+
+    const page1Row = row('evil-pg-1', Date.parse('2026-01-02T17:00:00Z') / 1000, { shId: 1 });
+    let fetchCalls = 0;
+    const fetchImpl = async () => {
+      fetchCalls += 1;
+      return { ok: true, status: 200, json: async () => ({ rows: [page1Row], links: { next: 'http://evil.example/x' } }) };
+    };
+    const more = await s.stats.backfillStep(fetchImpl);
+    assert.equal(fetchCalls, 1); // the malicious next URL was never fetched
+    assert.equal(more, false);
+    assert.equal(s.stats.state.backfill.halted, true);
+    assert.equal(s.stats.state.backfill.lastError, 'bad next url');
+    // Page 1's rows are discarded along with the window — fetchHistoryPaginated
+    // returns {error}, not a partial {list}, so nothing from this window ingests.
+    assert.ok(!s.stats.state.tracks['evil-pg-1']);
   } finally {
     await s.close();
   }
@@ -407,6 +476,81 @@ test('concurrent backfillStep calls: the second returns immediately via the busy
   }
 });
 
+// ---- 5b. Backfill error classification + backoff (S3) -------------------------
+
+// [S3 TEST a] a permanent (4xx) error halts immediately, no retry.
+test('backfill: a 403 window halts (permanent error), and a further step makes no fetch at all', async () => {
+  const s = await withServer({ backfillStart: '2026-01-01', apiKey: 'k' });
+  try {
+    const boundaryTs = Date.parse('2026-01-20T17:00:00Z') / 1000;
+    seedForward(s, boundaryTs);
+    await s.stats.backfillStep(fakeFetchJson([])); // freeze boundary
+
+    const more = await s.stats.backfillStep(fakeFetchJson({}, false, 403));
+    assert.equal(more, false);
+    assert.equal(s.stats.state.backfill.halted, true);
+    assert.equal(s.stats.state.backfill.lastError, 'http 403');
+
+    let fetchCalls = 0;
+    const countingFetch = async () => { fetchCalls += 1; return { ok: true, status: 200, json: async () => [] }; };
+    await s.stats.backfillStep(countingFetch); // halted -> the top guard returns before any fetch
+    assert.equal(fetchCalls, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+// [S3 TEST b] a transient (5xx) error backs off instead of halting; the next
+// immediate step no-ops (0 fetches) while backoff is pending, and resumes
+// once the injected clock advances past backoffUntil.
+test('backfill: a 503 window does not halt, backs off exponentially, and resumes once the clock passes backoffUntil', async () => {
+  const s = await withServer({ backfillStart: '2026-01-01', apiKey: 'k' });
+  try {
+    const boundaryTs = Date.parse('2026-01-20T17:00:00Z') / 1000;
+    seedForward(s, boundaryTs);
+    await s.stats.backfillStep(fakeFetchJson([])); // freeze boundary
+
+    let fetchCalls = 0;
+    const failingFetch = async () => { fetchCalls += 1; return { ok: false, status: 503, json: async () => ({}) }; };
+    const more = await s.stats.backfillStep(failingFetch);
+    assert.equal(more, true); // transient -> not halted, keep the retry chain alive
+    assert.equal(s.stats.state.backfill.halted, false);
+    assert.equal(s.stats.state.backfill.lastError, 'http 503');
+    assert.equal(fetchCalls, 1);
+
+    // Second immediate call: backoff is pending, so no fetch happens at all.
+    await s.stats.backfillStep(failingFetch);
+    assert.equal(fetchCalls, 1); // unchanged — the no-op returned before fetching
+
+    // Advance the clock past backoffUntil (first backoff: 15s * 2^1 = 30s)
+    // and confirm the next step actually fetches again.
+    s.clockRef.t += 31_000;
+    await s.stats.backfillStep(failingFetch);
+    assert.equal(fetchCalls, 2);
+  } finally {
+    await s.close();
+  }
+});
+
+// [S3 TEST c] /stats/health surfaces backfill.lastError.
+test('GET /stats/health includes backfill.lastError and a sync object', async () => {
+  const s = await withServer({ backfillStart: '2026-01-01', apiKey: 'k' });
+  try {
+    const boundaryTs = Date.parse('2026-01-20T17:00:00Z') / 1000;
+    seedForward(s, boundaryTs);
+    await s.stats.backfillStep(fakeFetchJson([])); // freeze boundary
+    await s.stats.backfillStep(fakeFetchJson({}, false, 403)); // halts with a classified error
+
+    const r = await fetch(`${s.base}/stats/health`);
+    const body = await r.json();
+    assert.equal(body.backfill.halted, true);
+    assert.equal(body.backfill.lastError, 'http 403');
+    assert.ok('sync' in body && 'failures' in body.sync && 'lastOkAt' in body.sync);
+  } finally {
+    await s.close();
+  }
+});
+
 // ---- 6. Key-but-broken --------------------------------------------------------
 
 test('key-but-broken: history always 403 — after 3 failed sync attempts, live nowplaying plays accumulate anyway', async () => {
@@ -461,6 +605,66 @@ test('syncRecent gap-fill: only rows newer than the watermark are ingested; a la
     assert.equal(s.stats.state.tracks['gap-1'].n, 1);
     assert.ok(!s.stats.state.tracks['too-old']);
     assert.equal(s.stats.state.watermark.playedAt, T_NOON + 50);
+  } finally {
+    await s.close();
+  }
+});
+
+// [S2 TEST] envelope response with links.next page 2 containing gap rows ->
+// all pages ingested, watermark at the true newest (page 2's row), before
+// the fix only page 1 was read and the watermark stranded everything past it.
+test('syncRecent (S2): follows links.next pagination so the whole gap window is drained before the watermark advances', async () => {
+  const s = await withServer({ apiKey: 'k' });
+  try {
+    s.stats.state.watermark = { playedAt: T_NOON - 3 * 86_400, shId: 1 }; // a multi-day outage gap
+
+    const page1Row = row('gap-old', T_NOON - 2 * 86_400, { shId: 10 });
+    const page2Row = row('gap-new', T_NOON, { shId: 20 }); // true newest — only reachable via page 2
+    const nextUrl = 'https://euphoric.fm/api/station/euphoricfm/history?page=2';
+    let historyFetches = 0;
+    const fetchImpl = async (url) => {
+      if (url === nextUrl) {
+        historyFetches += 1;
+        return { ok: true, status: 200, json: async () => ({ rows: [page2Row] }) };
+      }
+      if (url.includes('/history')) {
+        historyFetches += 1;
+        return { ok: true, status: 200, json: async () => ({ rows: [page1Row], links: { next: nextUrl }, has_next_page: true }) };
+      }
+      return { ok: true, status: 200, json: async () => nowPlayingPayload({}) };
+    };
+
+    await s.stats.tick(fetchImpl);
+    assert.equal(historyFetches, 2); // both pages fetched before the watermark moved
+    assert.ok(s.stats.state.tracks['gap-old']);
+    assert.ok(s.stats.state.tracks['gap-new']);
+    assert.equal(s.stats.state.watermark.playedAt, T_NOON); // true newest, from page 2
+  } finally {
+    await s.close();
+  }
+});
+
+// [S6 TEST] a halted backfill's lastError survives a later successful sync.
+test("syncRecent never touches backfill.lastError (S6): a halted backfill's lastError survives a later successful sync", async () => {
+  const s = await withServer({ apiKey: 'k', backfillStart: '2026-01-01' });
+  try {
+    const boundaryTs = Date.parse('2026-01-20T17:00:00Z') / 1000;
+    seedForward(s, boundaryTs);
+    await s.stats.backfillStep(fakeFetchJson([])); // freeze boundary
+    await s.stats.backfillStep(fakeFetchJson({}, false, 403)); // halts with a classified error
+    assert.equal(s.stats.state.backfill.halted, true);
+    assert.equal(s.stats.state.backfill.lastError, 'http 403');
+
+    // A later, fully successful syncRecent run must not erase it.
+    s.stats.state.watermark = { playedAt: T_NOON, shId: 1 };
+    const freshRow = row('sync-ok', T_NOON + 60, { shId: 2 });
+    await s.stats.tick(async (url) => {
+      if (url.includes('/history')) return { ok: true, status: 200, json: async () => [freshRow] };
+      return { ok: true, status: 200, json: async () => nowPlayingPayload({}) };
+    });
+    assert.ok(s.stats.state.tracks['sync-ok']); // sync actually succeeded
+    assert.equal(s.stats.state.backfill.halted, true); // still halted
+    assert.equal(s.stats.state.backfill.lastError, 'http 403'); // NOT clobbered
   } finally {
     await s.close();
   }
@@ -642,6 +846,47 @@ test('XSS payloads in title/art are sanitized in storage AND in summary/track pa
   }
 });
 
+// [S5 TEST] 2 plays as "Old Name", 1 later play as "New Name" -> artistsIdx
+// has only "New Name" with plays 3; after save+reload the numbers are
+// identical (no drift). Before the fix, rebuildArtistsIdx (whole-track,
+// latest-artist-wins) disagreed with the incremental per-row path (split
+// across both artist strings) and a restart silently rewrote the leaderboard.
+test('artist attribution (S5): a metadata correction reattributes the track instead of splitting counts, and survives save+reload', async () => {
+  const s = await withServer();
+  try {
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('drift-1', T_NOON, { artist: 'Old Name', shId: 1 }) }));
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('drift-1', T_NOON + 60, { artist: 'Old Name', shId: 2 }) }));
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('drift-1', T_NOON + 120, { artist: 'New Name', shId: 3 }) }));
+
+    const before = await fetch(`${s.base}/stats/artist?name=${encodeURIComponent('New Name')}`);
+    const beforeBody = await before.json();
+    assert.equal(beforeBody.artist.plays, 3);
+
+    const missingOld = await fetch(`${s.base}/stats/artist?name=${encodeURIComponent('Old Name')}`);
+    assert.equal(missingOld.status, 404); // old bucket fully drained and dropped
+
+    s.stats.save();
+
+    // Reload from disk — rebuildArtistsIdx must reproduce the exact same
+    // numbers the incremental path already converged on.
+    const s2 = createStats({ storePath: s.storePath, timezone: TZ, sanitizeText, sanitizeArt, now: () => s.clockRef.t });
+    assert.equal(s2.state.totals.plays, 3);
+    const storeHandler2 = async (req, res) => { res.writeHead(404); res.end('{}'); };
+    const server2 = createServer(async (req, res) => {
+      const handled = await s2.handler(req, res);
+      if (!handled) return storeHandler2(req, res);
+    });
+    await new Promise((r) => server2.listen(0, '127.0.0.1', r));
+    const { port } = server2.address();
+    const after = await fetch(`http://127.0.0.1:${port}/stats/artist?name=${encodeURIComponent('New Name')}`);
+    const afterBody = await after.json();
+    assert.equal(afterBody.artist.plays, 3); // identical — no drift across the restart
+    await new Promise((r2) => server2.close(r2));
+  } finally {
+    await s.close();
+  }
+});
+
 // ---- 10. Persistence --------------------------------------------------------------
 
 test('save() then a new createStats on the same path reloads state intact, incl. artistsIdx rebuilt from tracks', async () => {
@@ -690,23 +935,45 @@ test('corrupt JSON on disk -> fresh state, no throw', async () => {
   }
 });
 
-test('STATS_BACKFILL_RESET wipes plays but keeps listener rings + peak; applies once per token value', async () => {
+test('STATS_BACKFILL_RESET wipes plays and day/hour/dow listener aggregates but keeps rings + peak; applies once per token value', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'efm-stats-reset-'));
   const storePath = join(dir, 'stats.json');
   try {
     const clockRef = { t: Date.parse('2026-01-15T12:00:00Z') };
     const s1 = createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt, now: () => clockRef.t });
+    // listeners:15 feeds foldListener TWICE — once as the live "now" sample,
+    // once via the row's own listeners_at_start (both land on the same
+    // station-TZ day here) — exactly the two sources S7 says must both be
+    // zeroed by reset, or a post-reset re-backfill would double-fold them.
     s1.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('reset-1', T_NOON, { listeners: 15 }), listeners: 15 }));
     s1.save();
     assert.equal(s1.state.totals.plays, 1);
     const peakBefore = s1.state.totals.peak.value;
     assert.ok(peakBefore > 0);
+    const dayBefore = s1.state.days[Object.keys(s1.state.days)[0]];
+    assert.equal(dayBefore.lcnt, 2); // both listener sources folded pre-reset
 
     const s2 = createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt, now: () => clockRef.t, backfillReset: 'v1' });
     assert.equal(s2.state.totals.plays, 0);
     assert.equal(Object.keys(s2.state.tracks).length, 0);
-    assert.equal(s2.state.totals.peak.value, peakBefore); // listener data survives
+    assert.equal(s2.state.totals.peak.value, peakBefore); // min5/hourly-ring-derived peak survives
     assert.equal(s2.state.backfill.resetToken, 'v1');
+    // S7: day/hour/dow lsum/lcnt/lmax are zeroed alongside the play
+    // counters (they used to survive, so a post-reset re-backfill folded
+    // every history row's listeners_at_start reading a second time).
+    for (const d of Object.values(s2.state.days)) {
+      assert.equal(d.lsum, 0);
+      assert.equal(d.lcnt, 0);
+      assert.equal(d.lmax, 0);
+    }
+    for (const h of s2.state.hours) {
+      assert.equal(h.lsum, 0);
+      assert.equal(h.lcnt, 0);
+    }
+    for (const w of s2.state.dow) {
+      assert.equal(w.lsum, 0);
+      assert.equal(w.lcnt, 0);
+    }
     s2.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('reset-2', T_NOON + 10) }));
     s2.save();
 

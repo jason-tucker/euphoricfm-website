@@ -85,6 +85,9 @@ export function createStats(opts = {}) {
   const clock = typeof opts.now === 'function' ? opts.now : Date.now;
   const rateMax = opts.rateLimitMax ?? RATE_LIMIT_MAX;
   const rateWindow = opts.rateLimitWindowMs ?? RATE_LIMIT_WINDOW_MS;
+  // Test-only override so the S1 eviction test doesn't have to insert real
+  // MAX_TRACKS-scale data to exercise the cap.
+  const maxTracks = opts.maxTracks ?? MAX_TRACKS;
 
   // Identity-ish fallbacks so tests (and any other future caller) can build a
   // stats instance without wiring index.mjs's sanitisers. main() always
@@ -203,8 +206,13 @@ export function createStats(opts = {}) {
   };
 
   // ---- reset knob: recoverable via .env + `docker compose up -d`, no volume
-  // surgery (the container is read_only). Wipes play-derived data ONLY —
-  // listener rings/aggregates and totals.peak survive.
+  // surgery (the container is read_only). Wipes play-derived data AND the
+  // day/hour/dow lsum/lcnt/lmax listener aggregates — recordPlay folds
+  // listeners_at_start into those same fields (see foldListener), so a
+  // post-reset re-backfill would otherwise fold every history row's
+  // listener reading in a SECOND time (S7). The min5/hourly rings and
+  // totals.peak survive untouched: they are pure live-sample data that
+  // backfill never writes, so they carry no double-fold risk.
   if (RESET_TOKEN && RESET_TOKEN !== state.backfill.resetToken) {
     state.totals.plays = 0;
     state.totals.requests = 0;
@@ -212,9 +220,20 @@ export function createStats(opts = {}) {
     for (const d of Object.values(state.days)) {
       d.p = 0;
       d.r = 0;
+      d.lsum = 0;
+      d.lcnt = 0;
+      d.lmax = 0;
     }
-    for (const h of state.hours) h.p = 0;
-    for (const w of state.dow) w.p = 0;
+    for (const h of state.hours) {
+      h.p = 0;
+      h.lsum = 0;
+      h.lcnt = 0;
+    }
+    for (const w of state.dow) {
+      w.p = 0;
+      w.lsum = 0;
+      w.lcnt = 0;
+    }
     state.tracks = {};
     state.watermark = { playedAt: 0, shId: 0 };
     state.coveredFrom = null;
@@ -251,6 +270,47 @@ export function createStats(opts = {}) {
     }
   };
   rebuildArtistsIdx();
+
+  // S5: moves a track's ALREADY-ACCUMULATED aggregate (n, rq, its m map, its
+  // trackId) from its current artist's bucket to `newArtist`'s bucket.
+  // Called from recordPlay right before a row overwrites t.a, so the
+  // incremental path matches rebuildArtistsIdx's semantics — a track's
+  // WHOLE n belongs to its single latest artist — instead of splitting
+  // counts across two buckets until a restart silently rewrites the
+  // leaderboard. A no-op if the artist string didn't actually change.
+  const reattributeTrack = (t, id, newArtist) => {
+    const oldKey = t.a ? t.a.toLowerCase() : '';
+    const newKey = newArtist ? newArtist.toLowerCase() : '';
+    if (oldKey === newKey) return;
+    const oldBucket = oldKey ? artistsIdx.get(oldKey) : null;
+    if (oldBucket) {
+      oldBucket.plays -= t.n;
+      oldBucket.requests -= t.rq;
+      oldBucket.trackIds.delete(id);
+      for (const [m, n] of Object.entries(t.m)) {
+        const left = (oldBucket.months[m] || 0) - n;
+        if (left > 0) oldBucket.months[m] = left;
+        else delete oldBucket.months[m];
+      }
+      // Bucket fully drained — drop it rather than leave a zero-play ghost
+      // artist sitting in the leaderboard.
+      if (oldBucket.trackIds.size === 0) artistsIdx.delete(oldKey);
+    }
+    if (!newKey) return; // new artist is blank — rebuild would skip it too
+    let newBucket = artistsIdx.get(newKey);
+    if (!newBucket) {
+      newBucket = { name: newArtist, plays: 0, requests: 0, trackIds: new Set(), months: {}, first: t.first, last: t.last };
+      artistsIdx.set(newKey, newBucket);
+    }
+    newBucket.plays += t.n;
+    newBucket.requests += t.rq;
+    newBucket.trackIds.add(id);
+    for (const [m, n] of Object.entries(t.m)) {
+      newBucket.months[m] = (newBucket.months[m] || 0) + n;
+    }
+    if (t.first < newBucket.first) newBucket.first = t.first;
+    if (t.last > newBucket.last) newBucket.last = t.last;
+  };
 
   // ---- ingestion core --------------------------------------------------------
 
@@ -317,24 +377,22 @@ export function createStats(opts = {}) {
     state.dow[dow].p += 1;
 
     let t = state.tracks[songId];
+    const isNewTrack = !t;
     if (!t) {
       t = { t: title, a: artist, art, n: 0, rq: 0, first: playedAt, last: playedAt, m: {} };
       state.tracks[songId] = t;
       state.totals.uniqueTracks += 1; // monotonic — survives cap eviction below
-      if (Object.keys(state.tracks).length > MAX_TRACKS) {
-        // Far-tail safety valve: evict the least-played track. O(n) but this
-        // only fires once every MAX_TRACKS inserts past the cap.
-        let evictId = null;
-        let evictN = Infinity;
-        for (const [id, tt] of Object.entries(state.tracks)) {
-          if (tt.n < evictN) {
-            evictN = tt.n;
-            evictId = id;
-          }
-        }
-        if (evictId && evictId !== songId) delete state.tracks[evictId];
-      }
     }
+
+    // S5: this row is about to become the track's "latest" metadata (see
+    // the playedAt >= t.last block below) — if its artist differs from the
+    // track's current one, move the track's aggregate to the new artist's
+    // bucket BEFORE this row's own increments are applied, using t.n/t.rq/
+    // t.m as they stood just before this play.
+    if (!isNewTrack && playedAt >= t.last && artist !== t.a) {
+      reattributeTrack(t, songId, artist);
+    }
+
     t.n += 1;
     if (isRequest) t.rq += 1;
     if (playedAt < t.first) t.first = playedAt;
@@ -361,6 +419,24 @@ export function createStats(opts = {}) {
       if (playedAt >= a.last) {
         a.last = playedAt;
         a.name = artist;
+      }
+    }
+
+    // S1: far-tail safety valve, amortized. The eviction scan used to run
+    // BEFORE t.n += 1 with the just-inserted track still at n:0, so it was
+    // always its own argmin and `evictId !== songId` skipped the delete —
+    // a permanent no-op that still paid a full-map scan on every insert
+    // past the cap. Now it runs after this row's increments (so songId is
+    // never a spurious argmin), is explicitly excluded from the scan
+    // anyway, and batch-evicts down to maxTracks - 100 in one sorted pass
+    // so it only fires once per ~100 inserts past the cap, not per insert.
+    if (isNewTrack && Object.keys(state.tracks).length > maxTracks) {
+      const targetSize = Math.max(0, maxTracks - 100);
+      const entries = Object.entries(state.tracks).filter(([id]) => id !== songId);
+      entries.sort((a, b) => a[1].n - b[1].n);
+      const evictCount = entries.length - targetSize;
+      for (let i = 0; i < evictCount && i < entries.length; i++) {
+        delete state.tracks[entries[i][0]];
       }
     }
 
@@ -429,32 +505,31 @@ export function createStats(opts = {}) {
       const startDate = addDaysToISODate(dateParts(baseSec).day, -1);
       const endDate = addDaysToISODate(dateParts(Math.floor(clock() / 1000)).day, 1);
       const url = `${API_BASE}/station/${STATION_ID}/history?start=${startDate}&end=${endDate}`;
-      const r = await fetchImpl(url, {
-        headers: { 'X-API-Key': API_KEY },
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!r.ok) {
+      // S2: route through fetchHistoryPaginated (defined below) so the
+      // WHOLE window is drained before the watermark is allowed to advance
+      // — reading only the first page used to strand any gap rows past it
+      // below the watermark forever once an outage outlasted
+      // song_history's ~45min reach.
+      const result = await fetchHistoryPaginated(fetchImpl, url);
+      if (result.error) {
+        // S6: sync failures never touch state.backfill.lastError — that
+        // field is owned exclusively by backfillStep, so a successful sync
+        // running 10 min later can't erase why a halted backfill halted.
+        // Sync's own health is the syncFailures counter + lastOkAt, both
+        // surfaced at /stats/health under `sync`.
         syncFailures += 1;
-        state.backfill.lastError = `http ${r.status}`;
-        console.warn('[efm-stats] syncRecent failed:', r.status);
-        dirty = true;
+        console.warn('[efm-stats] syncRecent failed:', result.error);
         return;
       }
-      const body = await r.json();
-      const rows = Array.isArray(body) ? body : (body?.rows ?? []);
-      for (const row of sortRows(rows.filter(isValidRow))) {
+      for (const row of sortRows(result.list.filter(isValidRow))) {
         if (!passesWatermark(row)) continue;
         if (recordPlay(row)) advanceWatermark(row);
       }
       syncOkAt = clock();
       syncFailures = 0;
-      state.backfill.lastError = null;
-      dirty = true;
     } catch (e) {
       syncFailures += 1;
-      state.backfill.lastError = e.name === 'TimeoutError' ? 'timeout' : 'fetch failed';
       console.warn('[efm-stats] syncRecent error:', e.message);
-      dirty = true;
     }
   };
 
@@ -486,6 +561,7 @@ export function createStats(opts = {}) {
   // Follows AzuraCast's `links.next` pagination, up to BACKFILL_MAX_PAGES.
   // Returns { list } on success or { error } — never throws.
   const fetchHistoryPaginated = async (fetchImpl, url) => {
+    const apiOrigin = new URL(API_BASE).origin;
     const rows = [];
     let next = url;
     let pages = 0;
@@ -514,9 +590,49 @@ export function createStats(opts = {}) {
       rows.push(...pageRows);
       const more =
         !!body?.links?.next || body?.has_next_page === true || (typeof body?.total === 'number' && body.total > rows.length);
-      next = more ? (body?.links?.next ?? null) : null;
+      const rawNext = more ? (body?.links?.next ?? null) : null;
+      if (rawNext) {
+        // S4 (SSRF): links.next is upstream-supplied and would otherwise be
+        // fetched verbatim WITH the API key attached — a compromised or
+        // redirect-abused history endpoint could point it at an internal
+        // host (docker bridge siblings, the metadata endpoint, etc.) and
+        // exfiltrate the key. Resolve relative to API_BASE and require the
+        // result stay on API_BASE's origin before it is ever fetched; the
+        // first-page URL is always self-built, so this only ever gates
+        // subsequent pages.
+        let resolved;
+        try {
+          resolved = new URL(rawNext, API_BASE);
+        } catch {
+          return { error: 'bad next url' };
+        }
+        if (resolved.origin !== apiOrigin) return { error: 'bad next url' };
+        next = resolved.href;
+      } else {
+        next = null;
+      }
     }
     return { list: rows };
+  };
+
+  // S3: in-memory only (deliberately not persisted, like `busy` below) —
+  // exponential backoff for TRANSIENT backfill errors (5xx, timeout, fetch
+  // failed). Reset to 0 on any successful window.
+  let consecutiveErrors = 0;
+  let backoffUntil = 0;
+
+  // Permanent backfill errors get `halted = true` (recovery is the reset
+  // knob, same as 'shape mismatch') instead of being retried forever:
+  // 'too many pages' re-fires BACKFILL_MAX_PAGES authenticated requests
+  // every retry with no possible different outcome, a 4xx means the
+  // request itself is invalid (bad key, revoked, etc — retrying changes
+  // nothing), and 'bad next url' (S4) means the upstream response is
+  // actively hostile. Everything else (5xx, timeout, fetch failed) is
+  // treated as transient and backed off instead.
+  const isPermanentBackfillError = (err) => {
+    if (err === 'too many pages' || err === 'bad next url') return true;
+    const m = /^http (\d\d\d)$/.exec(err);
+    return !!m && Number(m[1]) >= 400 && Number(m[1]) < 500;
   };
 
   let busy = false;
@@ -545,6 +661,12 @@ export function createStats(opts = {}) {
       }
       if (!API_KEY) return true;
 
+      // S3: still backing off from a recent transient error — no-op (and
+      // crucially, no fetch) until backoffUntil passes. Returning true
+      // keeps index.mjs's setTimeout chain alive at its normal 15s cadence
+      // so we naturally retry once the window elapses.
+      if (clock() < backoffUntil) return true;
+
       if (state.backfill.cursor == null) state.backfill.cursor = BACKFILL_START;
       const boundary = state.backfill.boundary;
       const cursor = state.backfill.cursor;
@@ -566,9 +688,20 @@ export function createStats(opts = {}) {
       const result = await fetchHistoryPaginated(fetchImpl, url);
       if (result.error) {
         state.backfill.lastError = result.error;
+        if (isPermanentBackfillError(result.error)) {
+          state.backfill.halted = true;
+          save();
+          return false; // deterministic — retrying can never change the outcome
+        }
+        // Transient (5xx/timeout/fetch failed) — exponential backoff,
+        // capped at 15min, instead of the previous unconditional 15s
+        // retry. consecutiveErrors resets on any successful window below.
+        consecutiveErrors += 1;
+        backoffUntil = clock() + Math.min(15 * 60_000, 15_000 * 2 ** consecutiveErrors);
         save();
-        return true; // retry same window next step
+        return true; // retry same window once backoffUntil passes
       }
+      consecutiveErrors = 0;
 
       const rows = result.list;
       state.backfill.rowsSeen += rows.length;
@@ -821,7 +954,15 @@ export function createStats(opts = {}) {
           ok: true,
           plays: state.totals.plays,
           coveredFrom: state.coveredFrom,
-          backfill: { enabled: !!API_KEY, done: state.backfill.done, halted: state.backfill.halted },
+          // lastError is status-code-level only ('http 403', 'timeout',
+          // 'too many pages', 'shape mismatch', 'bad next url' — see
+          // fetchHistoryPaginated/backfillStep) and NEVER free text, so
+          // it's safe to expose and makes a halted/backed-off backfill
+          // observable (S3).
+          backfill: { enabled: !!API_KEY, done: state.backfill.done, halted: state.backfill.halted, lastError: state.backfill.lastError },
+          // S6: sync's own health, kept separate from backfill.lastError
+          // (which sync never writes to).
+          sync: { failures: syncFailures, lastOkAt: syncOkAt || null },
         });
         return true;
       }

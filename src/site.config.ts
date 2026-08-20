@@ -102,10 +102,13 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       title: 'Rhythm',
       ariaLabel: 'Listening rhythm by time of day',
       tabs: { hour: 'By hour', day: 'By day' },
-      subtitleListenersHour: 'Average listeners by hour, station time (ET)',
-      subtitleListenersDay: 'Average listeners by day, station time (ET)',
-      subtitlePlaysHour: 'Plays by hour, station time (ET)',
-      subtitlePlaysDay: 'Plays by day, station time (ET)',
+      // stats.ts appends the actual short tz abbreviation (derived from
+      // meta.timezone, e.g. "EDT") in parens after this — never hardcode
+      // one here, STATS_TZ is operator-configurable.
+      subtitleListenersHour: 'Average listeners by hour, station time',
+      subtitleListenersDay: 'Average listeners by day, station time',
+      subtitlePlaysHour: 'Plays by hour, station time',
+      subtitlePlaysDay: 'Plays by day, station time',
       tableHour: 'Hour',
       tableDay: 'Day',
       tableValue: 'Value',
