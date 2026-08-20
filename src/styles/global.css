@@ -687,3 +687,125 @@ html.efm-cef .card {
 /* PWA bits (install banner, .pwa-mode body class) were removed entirely.
    The in-game phone is the primary use case and the PWA wiring was causing
    first-paint regressions in custom phone CEF builds. */
+
+/* ---------------------------------------------------------------------------
+ * Station Stats section (src/components/Stats.astro + src/scripts/stats.ts).
+ *
+ * NO filter/backdrop-filter anywhere in this block — CEF-safe per CLAUDE.md
+ * rule 5 / the stats spec. Tooltips and the detail overlay use plain solid
+ * backgrounds instead of blur, same reasoning as html.efm-cef above.
+ * ------------------------------------------------------------------------- */
+
+/* Range/basis tab buttons (Listeners/Plays/Rhythm cards). 48px tap target;
+   stats.ts toggles .is-active in lockstep with aria-pressed. */
+.efm-stats-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 0.75rem;
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: rgb(var(--efm-cream-rgb) / 0.5);
+  border: 1px solid rgb(var(--efm-cream-rgb) / 0.10);
+  background: transparent;
+  transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
+}
+.efm-stats-tab.is-active {
+  color: rgb(var(--efm-sunburst-rgb));
+  border-color: rgb(var(--efm-sunburst-rgb) / 0.40);
+  background: rgb(var(--efm-sunburst-rgb) / 0.15);
+}
+
+/* Chart wrapper — position:relative is load-bearing, the tooltip below is
+   absolutely positioned against it. Fixed heights per spec (areas ~180px,
+   rhythm columns ~150px, overlay monthly ~120px) so there's no layout jump
+   between renders/resizes; stats.ts's renderChart() sizes its viewBox to
+   match whichever of these is active. */
+.efm-stats-chart {
+  position: relative;
+  height: 180px;
+}
+.efm-stats-chart--short {
+  height: 150px;
+}
+.efm-stats-chart--mini {
+  height: 120px;
+}
+
+/* Chart tooltip — plain solid background + border, no blur. */
+.efm-stats-tooltip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  background: rgb(var(--efm-ink-rgb) / 0.95);
+  border: 1px solid rgb(var(--efm-cream-rgb) / 0.15);
+  border-radius: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  white-space: nowrap;
+  z-index: 10;
+}
+
+/* Table twin — the accessible counterpart to each chart's aria-hidden SVG.
+   Plain <details>/<summary>; the summary itself is the 48px tap target. */
+.efm-stats-table summary {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgb(var(--efm-cream-rgb) / 0.6);
+  cursor: pointer;
+  list-style: none;
+}
+.efm-stats-table summary::-webkit-details-marker {
+  display: none;
+}
+.efm-stats-table summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 0.4rem;
+  transition: transform 120ms ease;
+}
+.efm-stats-table[open] summary::before {
+  transform: rotate(90deg);
+}
+.efm-stats-table-scroll {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.efm-stats-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.efm-stats-table th,
+.efm-stats-table td {
+  padding: 0.25rem 0.5rem 0.25rem 0;
+  text-align: left;
+  white-space: nowrap;
+}
+.efm-stats-table th {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: rgb(var(--efm-cream-rgb) / 0.5);
+  border-bottom: 1px solid rgb(var(--efm-cream-rgb) / 0.10);
+}
+.efm-stats-table td {
+  font-size: 0.75rem;
+  color: rgb(var(--efm-cream-rgb) / 0.85);
+  border-top: 1px solid rgb(var(--efm-cream-rgb) / 0.05);
+}
+
+/* Focus ring for the one interactive element here that isn't a <button>
+   (the global `button:focus-visible` rule near the top already covers the
+   tabs, show-more, and detail-overlay buttons). */
+.efm-stats-table summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(var(--efm-sunburst-rgb)), 0 0 0 4px rgb(var(--efm-ink-rgb));
+  border-radius: 0.25rem;
+}

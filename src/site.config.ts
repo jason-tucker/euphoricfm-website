@@ -57,4 +57,80 @@ San Andreas is not only our home; it's also the source of incredible talent wait
   // NewDayRP profile URL pattern — used to validate the optional profile field
   // on the contact form (mirrors the existing AzuraCast button behaviour).
   newDayRpProfilePattern: '^https?://(www\\.)?newdayrp\\.com/members/\\d+/?$',
+
+  // Station Stats section (src/components/Stats.astro + src/scripts/stats.ts).
+  // EVERY user-visible string the section renders comes from here — stats.ts
+  // imports this module directly (it's build-time bundled, unlike the webhook
+  // URLs). "{date}"/"{count}"/"{pct}" tokens are filled in by stats.ts.
+  stats: {
+    heading: 'Station Stats',
+    tagline: 'The story of EuphoricFM, in numbers.',
+    // Coverage line: "{prefix} {date}" — never overstates how far back the
+    // sidecar's data actually goes (meta.coverage.from), so there are two
+    // variants depending on whether backfill has reached the station's
+    // founding month.
+    coveragePrefixFull: 'All-time · since',
+    coveragePrefixPartial: 'Tracking since',
+
+    kpi: {
+      plays: { label: 'Total plays', sub: 'since {date}' },
+      peakListeners: { label: 'Peak listeners', sub: '{date}' },
+      tracks: { label: 'Tracks played', sub: '{count} artists' },
+      requests: { label: 'Requests played', sub: '{pct}% of all plays' },
+    },
+
+    listeners: {
+      title: 'Listeners',
+      ariaLabel: 'Listener count over time',
+      tabs: { '24h': '24H', '7d': '7D', '30d': '30D', all: 'ALL' },
+      tableTime: 'Time',
+      tableAvg: 'Avg',
+      tableMax: 'Peak',
+    },
+
+    plays: {
+      title: 'Plays',
+      ariaLabel: 'Plays over time',
+      tabs: { '30d': '30D', '90d': '90D', '1y': '1Y', all: 'ALL' },
+      perDay: 'per day',
+      perWeek: 'per week',
+      tableDate: 'Date',
+      tablePlays: 'Plays',
+    },
+
+    rhythm: {
+      title: 'Rhythm',
+      ariaLabel: 'Listening rhythm by time of day',
+      tabs: { hour: 'By hour', day: 'By day' },
+      subtitleListenersHour: 'Average listeners by hour, station time (ET)',
+      subtitleListenersDay: 'Average listeners by day, station time (ET)',
+      subtitlePlaysHour: 'Plays by hour, station time (ET)',
+      subtitlePlaysDay: 'Plays by day, station time (ET)',
+      tableHour: 'Hour',
+      tableDay: 'Day',
+      tableValue: 'Value',
+    },
+
+    topTracks: { title: 'Top Tracks' },
+    topArtists: { title: 'Top Artists', tracksSuffix: 'tracks' },
+
+    showMore: 'Show more',
+    viewTable: 'View as table',
+    notEnoughData: 'Not enough data yet',
+
+    detail: {
+      close: 'Close',
+      back: 'Back',
+      plays: 'Plays',
+      requests: 'Requests',
+      firstPlayed: 'First played',
+      lastPlayed: 'Last played',
+      playsPerMonth: 'Plays per month',
+      topTracks: 'Top tracks',
+      tracksSuffix: 'tracks',
+      loadError: 'Failed to load — try again later.',
+      tableMonth: 'Month',
+      tablePlays: 'Plays',
+    },
+  },
 } as const;
