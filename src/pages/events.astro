@@ -1,0 +1,31 @@
+---
+// Euphoric FM Events — public marketing/inquiry page at /events. Composition
+// mirrors index.astro: BaseLayout > .phone > Header > sections > Footer,
+// with the page's one modal rendered outside .phone (same placement pattern
+// as index's modals). No ActionRow here — see EventInquiryModal.astro for
+// why that means the modal is fully self-contained.
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Header from '../components/Header.astro';
+import EventsHero from '../components/EventsHero.astro';
+import EventsHowItWorks from '../components/EventsHowItWorks.astro';
+import EventsServices from '../components/EventsServices.astro';
+import EventStatus from '../components/EventStatus.astro';
+import EventInquiryModal from '../components/EventInquiryModal.astro';
+import Footer from '../components/Footer.astro';
+import { site } from '../site.config';
+---
+
+<BaseLayout title={site.events.title} description={site.events.description}>
+  <div class="phone">
+    <Header />
+
+    <EventsHero />
+    <EventsHowItWorks />
+    <EventsServices />
+    <EventStatus />
+
+    <Footer />
+  </div>
+
+  <EventInquiryModal />
+</BaseLayout>

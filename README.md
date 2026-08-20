@@ -21,6 +21,10 @@ leaving the phone:
   drill-down, covering the station's history back to 2023 where data permits.
 - **Submit a song / Contact us** — forms that post to Discord webhooks for
   artist submissions and general contact.
+- **Euphoric FM Events** (`/events`) — a page for booking curated music and
+  radio programming for an event, with an inquiry form that posts to Discord
+  through the same contact webhook pipeline, distinguished by its own embed
+  styling.
 - **Iframe-first** — explicitly embeddable from anywhere, no framebusting, no
   PWA bits that trip up CEF, served direct (no Cloudflare proxy) so the in-game
   phone can load it.
@@ -39,7 +43,9 @@ src/
                               loads /efm-runtime-config.js (webhooks) + the
                               effects backdrop + client scripts
   pages/index.astro           composes the single page top-to-bottom
+  pages/events.astro          composes the Euphoric FM Events page
   site.config.ts              one source of truth for editable strings + URLs
+                               (includes the `events` copy block)
   lib/azuracast.ts            TS types + URL helpers for the AzuraCast API
   lib/version.ts              footer version + sha (reads package.json + env)
   scripts/nowplaying.ts       polling + RAF progress bar + recently-played +
@@ -68,6 +74,13 @@ src/
     SubmitSongModal.astro     Discord webhook — artist song submission
     ContactModal.astro        Discord webhook — general contact form
     BusinessAdModal.astro     static pricing + perks
+    EventsHero.astro          /events hero + CTAs
+    EventsHowItWorks.astro    /events three-step walkthrough
+    EventsServices.astro      /events services list + "Good for" chips
+    EventStatus.astro         /events config-driven current/upcoming-event
+                               status card (off-air empty state today)
+    EventInquiryModal.astro   /events booking form — posts to the contact
+                               Discord webhook with a distinguished embed
     Footer.astro              copyright + Effects toggle + v<version> · <sha>
 public/fonts/                 Begaron + Cortado Script TTFs/WOFF2
 public/cef-test.html          plain-HTML no-JS diagnostic page for confirming
@@ -134,6 +147,8 @@ sprinkle it across components:
 - Station name + tagline + description
 - "What is EuphoricFM?" paragraphs (`aboutText`)
 - Business AD price, perks, and note
+- Euphoric FM Events copy (`events` — hero, how-it-works, services, "Good
+  for" chips, status states, and inquiry form strings)
 - AzuraCast API base + station shortcode + stream URL
 - Poll mode + interval (`realtime`)
 - Discord avatar URL + NewDayRP profile validation pattern

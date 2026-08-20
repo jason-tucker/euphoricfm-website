@@ -1,13 +1,17 @@
 ---
-// Four-button action row: Request, Submit, Contact, Business AD.
+// Five-button action row: Request, Submit, Events, Contact, Business AD.
 // Click handlers dispatch CustomEvents that the modal components listen for.
-// Uses View Transitions API for smooth modal open if supported.
+// Uses View Transitions API for smooth modal open if supported. "Events" is
+// plain navigation (no CustomEvent, no modal) — it links to /events, whose
+// own EventInquiryModal handles the "Plan Your Event" flow independently.
+// The auto-fit grid below already wraps five items at phone widths.
 ---
 
 <section class="pt-2">
   <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); gap: clamp(0.5rem, 1vw, 0.75rem);">
     <button type="button" id="open-request" class="btn btn-sunburst">Request a song</button>
     <button type="button" id="open-submit" class="btn btn-midnight">Submit a song</button>
+    <a href="/events" id="open-events" class="btn btn-events">Events</a>
     <button type="button" id="open-contact" class="btn btn-ruby">Contact us</button>
     <button type="button" id="open-business" class="btn btn-mixed">Business AD</button>
   </div>

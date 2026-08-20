@@ -1,0 +1,250 @@
+---
+// /events page only — the "Plan Your Event" inquiry form. Unlike the
+// homepage modals, this component ships with NO ActionRow on the page, so it
+// can't lean on ActionRow's shared `[data-close]`/Escape script (that script
+// only ships on `/`). Everything below is fully self-contained: its own
+// efm:open-event-inquiry listener, its own delegated close handler scoped to
+// clicks INSIDE this overlay, its own backdrop dismiss, its own Escape
+// keydown. bg-ink/90 with no backdrop-blur — CEF paints backdrop-filter as a
+// black rectangle (see CLAUDE.md rule 5); this is the same fix the stats
+// detail overlay already uses.
+//
+// Submits to the EXISTING contact webhook (window.__EFM_CONFIG__.discord.
+// contactWebhook) — no new env var, see CLAUDE.md rule 7. The username/embed
+// title/color make it instantly distinguishable from regular contact-form
+// submissions in Discord.
+import { site } from '../site.config';
+const s = site.events.inquiry;
+---
+
+<div id="event-overlay" class="hidden fixed inset-0 z-40 bg-ink/90" aria-hidden="true">
+  <div class="mx-auto max-w-md w-full h-full flex flex-col py-4 px-4 lg:py-10">
+    <div class="card efm-modal-enter !p-4 flex-1 overflow-y-auto lg:max-h-[80vh]">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-base font-bold text-sunburst">{s.title}</h2>
+        <button
+          type="button"
+          class="shrink-0 min-h-[48px] min-w-[48px] flex items-center justify-center text-cream/60 text-xl leading-none"
+          data-close="event-overlay"
+          aria-label="Close"
+        >&times;</button>
+      </div>
+      <p class="text-xs text-cream/60 mb-3">{s.intro}</p>
+
+      <form id="event-form" novalidate class="space-y-2.5">
+        <div><label class="label">Your Name <span class="text-ruby">*</span></label><input class="input" name="name" required placeholder="e.g., Wyatt McKenzie" /></div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="label">Organization (optional)</label><input class="input" name="org" placeholder="Optional" /></div>
+          <div><label class="label">Phone (optional)</label><input class="input" name="phone" type="tel" placeholder="Optional" /></div>
+        </div>
+
+        <div><label class="label">NewDayRP Profile (optional)</label><input class="input" name="profile" type="url" placeholder="https://newdayrp.com/members/9631/" /></div>
+
+        <div><label class="label">Event Name <span class="text-ruby">*</span></label><input class="input" name="eventName" required placeholder="e.g., Grand Opening Night" /></div>
+
+        <div><label class="label">Event Date <span class="text-ruby">*</span></label><input class="input" name="eventDate" type="date" required /></div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="label">Start Time (optional)</label><input class="input" name="startTime" type="time" /></div>
+          <div><label class="label">End Time (optional)</label><input class="input" name="endTime" type="time" /></div>
+        </div>
+
+        <div><label class="label">Venue <span class="text-ruby">*</span></label><input class="input" name="venue" required placeholder="e.g., The Vinewood Ballroom" /></div>
+
+        <div>
+          <label class="label">Event Type (optional)</label>
+          <select class="input" name="eventType">
+            <option value="">Select an event type…</option>
+            {s.eventTypes.map((t) => <option value={t}>{t}</option>)}
+          </select>
+        </div>
+
+        <div><label class="label">Expected Attendance (optional)</label><input class="input" name="attendance" placeholder={s.attendancePlaceholder} /></div>
+        <div><label class="label">Music Style / Genres (optional)</label><input class="input" name="music" placeholder="e.g., pop, top 40, throwbacks" /></div>
+        <div><label class="label">Desired Atmosphere (optional)</label><input class="input" name="atmosphere" placeholder={s.atmospherePlaceholder} /></div>
+        <div><label class="label">Announcements / Promotions (optional)</label><input class="input" name="announcements" placeholder={s.announcementsPlaceholder} /></div>
+
+        <div><label class="label">Details <span class="text-ruby">*</span></label><textarea class="input min-h-[110px]" name="details" required placeholder="Tell us more about your event…"></textarea></div>
+
+        <div id="event-msg" class="hidden text-xs px-3 py-2 rounded-lg"></div>
+
+        <div class="pt-2 flex gap-2">
+          <button type="button" class="btn flex-1 bg-cream/10 text-cream" data-close="event-overlay">Cancel</button>
+          <button type="submit" id="event-go" class="btn flex-1 btn-sunburst">{s.button}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script is:inline define:vars={{
+  avatar: site.discord.avatarUrl,
+  profilePattern: site.newDayRpProfilePattern,
+  successMsg: s.success,
+  webhookMissingMsg: s.webhookMissing,
+}}>
+  (function () {
+    const overlay = document.getElementById('event-overlay');
+    const form = document.getElementById('event-form');
+    const msg = document.getElementById('event-msg');
+    const go = document.getElementById('event-go');
+    if (!overlay || !form || !msg || !go) return;
+
+    const getWebhook = () => (window.__EFM_CONFIG__ && window.__EFM_CONFIG__.discord && window.__EFM_CONFIG__.discord.contactWebhook) || '';
+
+    const setMsg = (text, kind) => {
+      msg.textContent = text;
+      msg.className = 'text-xs px-3 py-2 rounded-lg ' +
+        (kind === 'error' ? 'bg-ruby/15 text-ruby border border-ruby/30' : 'bg-sunburst/15 text-sunburst border border-sunburst/30');
+      msg.classList.remove('hidden');
+    };
+
+    const profileRe = new RegExp(profilePattern, 'i');
+
+    // Own open/close wiring — this page ships no ActionRow, so there's no
+    // shared [data-close]/Escape script to lean on (see file header).
+    const openOverlay = () => {
+      overlay.classList.remove('hidden');
+      overlay.setAttribute('aria-hidden', 'false');
+    };
+    const closeOverlay = () => {
+      overlay.classList.add('hidden');
+      overlay.setAttribute('aria-hidden', 'true');
+      msg.classList.add('hidden');
+    };
+    const fireClose = () => {
+      if (typeof document.startViewTransition === 'function') {
+        document.startViewTransition(closeOverlay);
+      } else {
+        closeOverlay();
+      }
+    };
+
+    document.addEventListener('efm:open-event-inquiry', () => {
+      if (typeof document.startViewTransition === 'function') {
+        document.startViewTransition(openOverlay);
+      } else {
+        openOverlay();
+      }
+    });
+
+    // Delegated close click — scoped to clicks inside THIS overlay only
+    // (data-close lives on the close + cancel buttons here, never on the
+    // overlay root, same reasoning as the stats detail overlay).
+    overlay.addEventListener('click', (e) => {
+      const el = e.target.closest && e.target.closest('[data-close="event-overlay"]');
+      if (el) { fireClose(); return; }
+      if (e.target === overlay) fireClose(); // backdrop dismiss
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (overlay.classList.contains('hidden')) return;
+      fireClose();
+    });
+
+    const REQUIRED = [
+      ['name', 'Your Name'],
+      ['eventName', 'Event Name'],
+      ['eventDate', 'Event Date'],
+      ['venue', 'Venue'],
+      ['details', 'Details'],
+    ];
+
+    const joinLabels = (labels) => {
+      if (labels.length === 1) return labels[0];
+      if (labels.length === 2) return labels.join(' and ');
+      return labels.slice(0, -1).join(', ') + ', and ' + labels[labels.length - 1];
+    };
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      msg.classList.add('hidden');
+      const data = Object.fromEntries(new FormData(form).entries());
+      const get = (k) => String(data[k] || '').trim();
+
+      const name = get('name');
+      const org = get('org');
+      const phone = get('phone');
+      const profile = get('profile');
+      const eventName = get('eventName');
+      const eventDate = get('eventDate');
+      const startTime = get('startTime');
+      const endTime = get('endTime');
+      const venue = get('venue');
+      const eventType = get('eventType');
+      const attendance = get('attendance');
+      const music = get('music');
+      const atmosphere = get('atmosphere');
+      const announcements = get('announcements');
+      const details = get('details');
+
+      const missing = REQUIRED.filter(([key]) => !get(key)).map(([, label]) => label);
+      if (missing.length) { setMsg('Please fill in: ' + joinLabels(missing) + '.', 'error'); return; }
+      if (profile && !profileRe.test(profile)) {
+        setMsg('Profile must be a valid NewDayRP link like https://newdayrp.com/members/9631/', 'error'); return;
+      }
+
+      go.setAttribute('disabled', 'true');
+
+      const fields = [{ name: 'Contact', value: name, inline: true }];
+      if (phone) fields.push({ name: 'Phone', value: phone, inline: true });
+      if (org) fields.push({ name: 'Organization', value: org, inline: true });
+      if (profile) fields.push({ name: 'NewDayRP Profile', value: profile });
+      fields.push({ name: 'Event', value: eventName, inline: true });
+      fields.push({ name: 'Date', value: eventDate, inline: true });
+      if (startTime || endTime) {
+        const timeValue = startTime && endTime ? (startTime + ' → ' + endTime) : (startTime || endTime);
+        fields.push({ name: 'Time', value: timeValue, inline: true });
+      }
+      fields.push({ name: 'Venue', value: venue, inline: true });
+      if (eventType) fields.push({ name: 'Type', value: eventType, inline: true });
+      if (attendance) fields.push({ name: 'Expected Attendance', value: attendance, inline: true });
+      if (music) fields.push({ name: 'Music Style / Genres', value: music });
+      if (atmosphere) fields.push({ name: 'Desired Atmosphere', value: atmosphere });
+      if (announcements) fields.push({ name: 'Announcements / Promotions', value: announcements });
+      fields.push({ name: 'Details', value: details.length > 1024 ? details.slice(0, 1021) + '…' : details });
+
+      const embed = {
+        title: '📅 Euphoric FM Event Inquiry',
+        color: 0xfeb139,
+        fields,
+        timestamp: new Date().toISOString(),
+        footer: { text: 'EuphoricFM Events Inquiry' },
+      };
+      const threadName = ('Event Inquiry: ' + eventName).slice(0, 90);
+
+      const webhook = getWebhook();
+      if (!webhook) { setMsg(webhookMissingMsg, 'error'); go.removeAttribute('disabled'); return; }
+
+      try {
+        const r = await fetch(webhook, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: 'EuphoricFM Events',
+            avatar_url: avatar,
+            thread_name: threadName,
+            embeds: [embed],
+          }),
+        });
+        if (r.ok || r.status === 204) {
+          setMsg(successMsg, 'ok');
+          form.reset();
+          setTimeout(() => { fireClose(); }, 1200);
+        } else if (r.status === 429) {
+          const j = await r.json().catch(() => ({}));
+          setMsg(`Rate limited by Discord. Try again in ${j.retry_after ?? 'a moment'}s.`, 'error');
+        } else {
+          setMsg(`Failed to send (HTTP ${r.status}).`, 'error');
+        }
+      } catch (err) {
+        console.warn('[efm] event inquiry failed', err);
+        setMsg('Network error while sending.', 'error');
+      } finally {
+        go.removeAttribute('disabled');
+      }
+    });
+  })();
+</script>
