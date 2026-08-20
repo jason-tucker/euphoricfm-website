@@ -81,6 +81,9 @@ src/
                                OKLCH colour extractor, effects master toggle)
   scripts/stats.ts              station stats section: fetch/render, hand-rolled SVG charts,
                                top-tracks/top-artists drill-down (no chart libraries)
+  scripts/events.ts             /events live driver: polls the Euphoric Events station's
+                               PUBLIC schedule API and hydrates EventStatus (ON AIR card +
+                               "On the Calendar" upcoming list); config override wins
   lib/azuracast.ts             TS types + URL helpers
   lib/version.ts               version + sha for footer
   lib/stats.ts                  TS types for the /stats/* payloads (kept in sync with server/stats.mjs)
@@ -91,7 +94,9 @@ src/
     EventStatus.astro, EventInquiryModal.astro
                                /events page components; EventInquiryModal posts to the
                                existing contact Discord webhook with a distinguished embed;
-                               EventStatus is config-driven (site.events.status.current)
+                               EventStatus renders off-air/on-air/calendar blocks hydrated by
+                               scripts/events.ts from the events station's schedule — a
+                               non-null site.events.status.current still overrides it
 public/
   fonts/                       Begaron (Euphoric) + Cortado Script (FM)
   favicon.svg
@@ -152,6 +157,11 @@ There is **no `typecheck` script** in `package.json`. Type-checking runs as `pnp
 - Station shortcode: `euphoricfm`. The numeric internal ID is `1`, surfaced in
   request URLs (e.g. `/api/station/1/request/<id>`) — don't hardcode `1`, use
   `request_url` from the requests endpoint payload instead.
+- Second station: shortcode `event` ("Euphoric Events") — carries event
+  programming. Its `GET /api/station/event/schedule` is PUBLIC (CORS `*`) and
+  feeds the /events calendar directly from the browser (`scripts/events.ts`,
+  config in `site.events.station`); no key, no proxy, CSP already allows
+  euphoric.fm. Its public player lives at https://euphoric.fm/public/event.
 - The `now_playing` object includes `sh_id` (unique per playback), `played_at`
   (unix seconds), `duration`, and `elapsed`. Use `played_at` + `duration` for
   client-side progress interpolation, and `sh_id` for track-change detection.

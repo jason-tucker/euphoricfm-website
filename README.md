@@ -22,9 +22,10 @@ leaving the phone:
 - **Submit a song / Contact us** — forms that post to Discord webhooks for
   artist submissions and general contact.
 - **Euphoric FM Events** (`/events`) — a page for booking curated music and
-  radio programming for an event, with an inquiry form that posts to Discord
-  through the same contact webhook pipeline, distinguished by its own embed
-  styling.
+  radio programming for an event, with a live on-air/"On the Calendar" status
+  card driven by the Euphoric Events station's public schedule, and an inquiry
+  form that posts to Discord through the same contact webhook pipeline,
+  distinguished by its own embed styling.
 - **Iframe-first** — explicitly embeddable from anywhere, no framebusting, no
   PWA bits that trip up CEF, served direct (no Cloudflare proxy) so the in-game
   phone can load it.
@@ -54,6 +55,10 @@ src/
                               colour theming, the footer Effects toggle
   scripts/stats.ts            hand-rolled SVG charts + fetch/render for the
                               stats section (/stats/* from the sidecar)
+  scripts/events.ts            polls the Euphoric Events station's public
+                              schedule (site.events.station) to drive
+                              EventStatus.astro's live on-air card + "On the
+                              Calendar" list
   lib/stats.ts                TS types for the /stats/* payloads
   styles/tokens.css           centralised CSS colour tokens — brand palette
                               (RGB channels) + semantic surface/text/accent roles
@@ -77,8 +82,9 @@ src/
     EventsHero.astro          /events hero + CTAs
     EventsHowItWorks.astro    /events three-step walkthrough
     EventsServices.astro      /events services list + "Good for" chips
-    EventStatus.astro         /events config-driven current/upcoming-event
-                               status card (off-air empty state today)
+    EventStatus.astro         /events on-air card + "On the Calendar" list,
+                               live-driven by scripts/events.ts unless
+                               site.events.status.current overrides it
     EventInquiryModal.astro   /events booking form — posts to the contact
                                Discord webhook with a distinguished embed
     Footer.astro              copyright + Effects toggle + v<version> · <sha>
@@ -201,6 +207,13 @@ JSON for the station shortcode **`euphoricfm`**:
   `server/stats.mjs` holds `AZURACAST_API_KEY` server-side and backfills
   history there; the frontend consumes same-origin `/stats/*` (reverse-proxied
   by Caddy, see below), never AzuraCast directly.
+- **Second station: Euphoric Events** (`event` shortcode) powers the `/events`
+  page's live status card. `GET /api/station/event/schedule?rows=N` is public
+  and CORS-open (`access-control-allow-origin: *`), so `scripts/events.ts`
+  fetches it client-side cross-origin, same as the main station's now-playing
+  poll — no Caddyfile change, no API key. Entries carry `is_now` plus unix
+  `start_timestamp`/`end_timestamp`; recurring playlists appear as multiple
+  rows sharing an `id`.
 
 ### Iframe / CEF constraint
 
