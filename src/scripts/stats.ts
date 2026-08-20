@@ -15,6 +15,10 @@ import { site } from '../site.config';
 import type {
   StatsSummary,
   StatsDay,
+  StatsHour,
+  StatsDow,
+  StatsGridCell,
+  StatsRangeKey,
   ListenersSeries,
   ListenersRange,
   TrackDetail,
@@ -24,8 +28,11 @@ import type {
   ArtistDetailResponse,
 } from '../lib/stats';
 
-type PlaysRange = '30d' | '90d' | '1y' | 'all';
-type RhythmBasis = 'hour' | 'day';
+// The one synced range — drives the primary tab row, the Listeners/Plays
+// cards' own rows, the KPI tiles, and the top lists. Rhythm is intentionally
+// NOT synced to this (it stays all-time, see showRhythm below).
+type ActiveRange = StatsRangeKey | 'all';
+type RhythmBasis = 'plays' | 'listeners';
 type DetailView = { kind: 'track'; id: string } | { kind: 'artist'; name: string };
 
 // A single plotted point, shared by the chart renderer and its table twin.
@@ -99,6 +106,20 @@ interface PlotPoint {
   // formatters built before load still resolve to the right zone.
   let TZ = 'America/New_York';
 
+  // Short tz abbreviation (e.g. "EDT") for the Rhythm card subtitle —
+  // resolved once from the real meta.timezone in boot(). STATS_TZ is
+  // operator-configurable, so this must never be a hardcoded "(ET)"; on
+  // failure (an odd zone string Intl can't abbreviate) it's simply omitted.
+  let tzShort = '';
+  const shortTzName = (timeZone: string): string => {
+    try {
+      const parts = new Intl.DateTimeFormat(undefined, { timeZone, timeZoneName: 'short' }).formatToParts(new Date());
+      return parts.find((p) => p.type === 'timeZoneName')?.value ?? '';
+    } catch {
+      return '';
+    }
+  };
+
   const monthYearFmt = () =>
     new Intl.DateTimeFormat(undefined, { timeZone: TZ, month: 'short', year: 'numeric' });
   const fullDateFmt = () =>
@@ -150,16 +171,21 @@ interface PlotPoint {
     return dt.toISOString().slice(0, 10);
   };
 
-  const todayStationISO = (): string => {
+  const stationISOFromDate = (d: Date): string => {
     const parts = new Intl.DateTimeFormat('en-CA', {
       timeZone: TZ,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
-    }).formatToParts(new Date());
+    }).formatToParts(d);
     const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '01';
     return `${get('year')}-${get('month')}-${get('day')}`;
   };
+  const todayStationISO = (): string => stationISOFromDate(new Date());
+  // Same 'YYYY-MM-DD' station-day key as todayStationISO, but for an
+  // arbitrary listeners bucket's unix-second `t` — used only to build the
+  // chart caption from t-keyed (7d/30d) series, which carry no `.d`.
+  const stationISOFromT = (t: number): string => stationISOFromDate(new Date(t * 1000));
 
   // 24h/7d/30d listener buckets carry a real unix-second `t` — format those
   // through the station timezone per spec (this is a real instant, unlike
@@ -185,9 +211,17 @@ interface PlotPoint {
     const h12 = h % 12 === 0 ? 12 : h % 12;
     return `${h12} ${period}`;
   });
-  const HOUR_TICKS: Record<number, string> = { 0: '12a', 6: '6a', 12: '12p', 18: '6p' };
+  const HOUR_TICK_LIST: [number, string][] = [[0, '12a'], [6, '6a'], [12, '12p'], [18, '6p']];
   const DOW_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const DOW_SHORT = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  // 3-letter form for the heatmap's combined "Tue · 6 PM · station time"
+  // tooltip — DOW_SHORT (2-letter) is for the row labels beside the grid.
+  const DOW_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  // Coverage-gated preset order, always rendered in this fixed sequence —
+  // see computeEligibleRanges() and renderRangeTabs() below.
+  const RANGE_ORDER: ActiveRange[] = ['7d', '30d', '90d', '1y', 'all'];
+  const RANGE_DAYS: Record<Exclude<ActiveRange, 'all'>, number> = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
 
   // Evenly-spaced tick indices, always including both ends. Width-aware:
   // ~90px per date label keeps a middle-anchored tick from colliding with
@@ -211,6 +245,7 @@ interface PlotPoint {
 
   const elSection = $('stats-section');
   const elCoverage = $('stats-coverage');
+  const elRangeTabs = $('stats-range-tabs');
 
   const elKpiPlaysValue = $('stats-kpi-plays-value');
   const elKpiPlaysSub = $('stats-kpi-plays-sub');
@@ -223,20 +258,25 @@ interface PlotPoint {
 
   const elListenersTabs = $('stats-listeners-tabs');
   const elListenersChart = $('stats-listeners-chart');
+  const elListenersCaption = $('stats-listeners-caption');
   const elListenersTable = $('stats-listeners-table');
 
   const elPlaysTabs = $('stats-plays-tabs');
   const elPlaysSub = $('stats-plays-sub');
   const elPlaysChart = $('stats-plays-chart');
+  const elPlaysCaption = $('stats-plays-caption');
   const elPlaysTable = $('stats-plays-table');
 
   const elRhythmTabs = $('stats-rhythm-tabs');
   const elRhythmSub = $('stats-rhythm-sub');
   const elRhythmChart = $('stats-rhythm-chart');
+  const elRhythmCaption = $('stats-rhythm-caption');
   const elRhythmTable = $('stats-rhythm-table');
 
+  const elTopTracksSub = $('stats-top-tracks-sub');
   const elTopTracksList = $('stats-top-tracks-list');
   const elTopTracksMore = $('stats-top-tracks-more');
+  const elTopArtistsSub = $('stats-top-artists-sub');
   const elTopArtistsList = $('stats-top-artists-list');
   const elTopArtistsMore = $('stats-top-artists-more');
 
@@ -367,7 +407,14 @@ interface PlotPoint {
     svg.style.display = 'block';
 
     // Grid: 3 horizontal hairlines + a slightly bolder baseline axis line.
-    [0, yMax / 2, yMax].forEach((gv) => {
+    // Below a max of 10 (routine for listener-average charts), the caller's
+    // compact/rounded formatter collapses distinct values into duplicate or
+    // misleading labels (yMax=1 -> "0, 1, 1"; yMax=5 -> mid "2.5" prints as
+    // "3") — format with one decimal in that range instead, and drop a mid
+    // label that would still print identically to the top one.
+    const yLabelText = (v: number): string => (yMax < 10 ? v.toFixed(1) : yTickFormatter(v));
+    const topLabelText = yLabelText(yMax);
+    [0, yMax / 2, yMax].forEach((gv, gi) => {
       const y = yOf(gv);
       svg.appendChild(
         svgEl('line', {
@@ -379,6 +426,8 @@ interface PlotPoint {
           'stroke-width': '1',
         }),
       );
+      const text = yLabelText(gv);
+      if (gi === 1 && text === topLabelText) return; // duplicate mid label — keep the gridline, skip the text
       const label = svgEl('text', {
         x: String(plotX0 - 6),
         y: String(y + 3),
@@ -386,7 +435,7 @@ interface PlotPoint {
         'font-size': '10',
         fill: 'rgb(var(--efm-cream-rgb) / 0.45)',
       });
-      label.textContent = yTickFormatter(gv);
+      label.textContent = text;
       svg.appendChild(label);
     });
     svg.appendChild(
@@ -417,7 +466,10 @@ interface PlotPoint {
     let dot: SVGCircleElement | null = null;
     let crosshair: SVGLineElement | null = null;
     let barsByIndex: (SVGPathElement | null)[] = [];
-    let hitTargets: { x0: number; x1: number; idx: number }[] = [];
+    // cx is the point's true center (xOf(i)) — separate from the x0/x1 band
+    // edges, which for columns don't tile the axis (bandW < point spacing)
+    // and for areas are deliberately asymmetric at the first/last point.
+    let hitTargets: { x0: number; x1: number; idx: number; cx: number }[] = [];
 
     if (kind === 'area') {
       const gradId = `efm-stats-grad-${idPrefix}-${chartIdCounter++}`;
@@ -484,7 +536,7 @@ interface PlotPoint {
         const x = xOf(i);
         const halfL = i === 0 ? (xOf(1) - x) / 2 : (x - xOf(i - 1)) / 2;
         const halfR = i === n - 1 ? halfL : (xOf(i + 1) - x) / 2;
-        return { x0: x - halfL, x1: x + halfR, idx: i };
+        return { x0: x - halfL, x1: x + halfR, idx: i, cx: x };
       });
     } else {
       const bandW = plotW / n;
@@ -509,7 +561,7 @@ interface PlotPoint {
       });
       hitTargets = points.map((_, i) => {
         const cx = xOf(i);
-        return { x0: cx - bandW / 2, x1: cx + bandW / 2, idx: i };
+        return { x0: cx - bandW / 2, x1: cx + bandW / 2, idx: i, cx };
       });
     }
 
@@ -585,7 +637,21 @@ interface PlotPoint {
       for (const t of hitTargets) {
         if (userX >= t.x0 && userX < t.x1) return t.idx;
       }
-      return hitTargets[hitTargets.length - 1].idx;
+      // Fell through every band: either a dead strip between column bars
+      // (bandW = plotW/n is narrower than the plotW/(n-1) center spacing —
+      // every gap between two bars is uncovered) or past the last band's
+      // edge. Either way, snap to whichever point's true CENTER is nearest,
+      // not blindly to the last bucket.
+      let best = hitTargets[0];
+      let bestDist = Math.abs(userX - best.cx);
+      for (const t of hitTargets) {
+        const dist = Math.abs(userX - t.cx);
+        if (dist < bestDist) {
+          best = t;
+          bestDist = dist;
+        }
+      }
+      return best.idx;
     };
 
     const handlePointer = (e: PointerEvent) => {
@@ -640,11 +706,106 @@ interface PlotPoint {
   const trackCache = new Map<string, TrackDetail>();
   const artistCache = new Map<string, ArtistDetail>();
 
-  let activeListenersRange: ListenersRange = '24h';
-  let activePlaysRange: PlaysRange = '30d';
-  let activeRhythmBasis: RhythmBasis = 'hour';
+  // The one shared range — see RANGE_ORDER/computeEligibleRanges below for
+  // the coverage-gating rule and setRange() for the fan-out.
+  let eligibleRanges: ActiveRange[] = ['7d'];
+  let activeRange: ActiveRange = '7d';
+  let activeRhythmBasis: RhythmBasis = 'plays';
   let tracksShown = 10;
   let artistsShown = 10;
+
+  // Stale-async-render guards. Each bumps on every new navigation/request
+  // and closeOverlay/showListeners snapshot it before their await; if the
+  // counter moved by the time the response lands, a newer request already
+  // owns the view and the stale one must not write anything.
+  let listenersGen = 0;
+  let detailGen = 0;
+
+  // ---- shared range: coverage gating + tab rows ------------------------------
+
+  // spanDays = (now - coverage.from)/86400; 7d is always eligible, each wider
+  // preset needs strictly more span than its own window so the button is
+  // never offered when it would show the exact same days as the one before
+  // it. Same list drives every synced row — see PART F spec's "coverage
+  // gating" section.
+  const computeEligibleRanges = (sum: StatsSummary): ActiveRange[] => {
+    const from = sum.meta.coverage.from;
+    if (!from) return ['7d'];
+    const spanDays = (Date.now() / 1000 - from) / 86400;
+    const out: ActiveRange[] = ['7d'];
+    if (spanDays > 7) out.push('30d');
+    if (spanDays > 30) out.push('90d');
+    if (spanDays > 90) out.push('1y');
+    if (spanDays > 365) out.push('all');
+    return out;
+  };
+
+  // Renders the eligible presets into one tab row (or hides the row entirely
+  // when fewer than 2 are eligible — a lone button is noise, not a control).
+  // Called once per container at boot; setRange() below re-syncs
+  // is-active/aria-pressed on click without ever rebuilding the buttons.
+  const renderRangeTabs = (container: HTMLElement | null) => {
+    if (!container) return;
+    container.innerHTML = ''; // static clear — buttons rebuilt below
+    if (eligibleRanges.length < 2) {
+      container.classList.add('hidden');
+      return;
+    }
+    container.classList.remove('hidden');
+    RANGE_ORDER.filter((r) => eligibleRanges.includes(r)).forEach((r) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'efm-stats-tab';
+      btn.dataset.range = r;
+      const active = r === activeRange;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-pressed', String(active));
+      btn.textContent = s.rangeLabels[r];
+      container.appendChild(btn);
+    });
+  };
+
+  const daysForRange = (sum: StatsSummary, range: ActiveRange): StatsDay[] => {
+    if (range === 'all') return sum.days;
+    const cutoff = addDaysISO(todayStationISO(), -RANGE_DAYS[range]);
+    // Date is selected numerically-by-string, never by array index.
+    return sum.days.filter((d) => d.d >= cutoff);
+  };
+
+  // Coverage caption under a chart — states the EXACTLY-rendered window, not
+  // the requested one, so it stays honest if a range is short a few days'
+  // data. `firstD`/`lastD` come from the actually-plotted points ('YYYY-MM-DD'
+  // strings), never derived from `range` alone. 'all' uses coverage.from
+  // instead, since the plotted series may start later than true coverage
+  // (e.g. a listeners gap) but the caption should still promise the full span.
+  const rangeCaption = (range: ActiveRange, firstD: string | undefined, lastD: string | undefined, coverageFromSec: number | null): string => {
+    if (range === 'all') {
+      return coverageFromSec ? s.caption.all.replace('{date}', monthYearFmt().format(new Date(coverageFromSec * 1000))) : '';
+    }
+    if (!firstD || !lastD) return '';
+    const startLabel = spansYears(firstD, lastD) ? dayLabelWithYear(firstD) : dayLabel(firstD);
+    const endLabel = dayLabelWithYear(lastD);
+    return `${startLabel}${s.caption.rangeSeparator}${endLabel}`;
+  };
+
+  // Fans a range change out to every synced area: all three tab rows, the
+  // KPI tiles, both charts, and both top lists. Never refetches
+  // /stats/summary — everything here is already client-side except the
+  // listeners series, which keeps its own per-range fetch cache.
+  const setRange = (range: ActiveRange) => {
+    if (!summary) return;
+    activeRange = range;
+    [elRangeTabs, elListenersTabs, elPlaysTabs].forEach((c) => updateTabs(c, 'range', range));
+    renderKpis(summary, range);
+    void showListeners(range);
+    showPlays(range);
+    // Show-more reset on range change (spec) — a fresh window shouldn't
+    // inherit how far a previous range's list had been expanded.
+    tracksShown = 10;
+    artistsShown = 10;
+    renderTopTracks();
+    renderTopArtists();
+  };
 
   // ---- KPIs + coverage --------------------------------------------------------
 
@@ -659,27 +820,63 @@ interface PlotPoint {
     elCoverage.textContent = `${prefix} ${monthYearFmt().format(new Date(coverage.from * 1000))}`;
   };
 
-  const renderKpis = (sum: StatsSummary) => {
-    const { totals } = sum;
-    if (elKpiPlaysValue) elKpiPlaysValue.textContent = compactNumber(totals.plays);
+  const renderKpis = (sum: StatsSummary, range: ActiveRange) => {
+    const days = daysForRange(sum, range);
+    const totalPlays = days.reduce((a, d) => a + d.p, 0);
+    const totalRequests = days.reduce((a, d) => a + d.r, 0);
+
+    if (elKpiPlaysValue) elKpiPlaysValue.textContent = compactNumber(totalPlays);
     if (elKpiPlaysSub) {
-      elKpiPlaysSub.textContent = sum.meta.coverage.from
-        ? s.kpi.plays.sub.replace('{date}', monthYearFmt().format(new Date(sum.meta.coverage.from * 1000)))
-        : '';
+      elKpiPlaysSub.textContent =
+        range === 'all'
+          ? sum.meta.coverage.from
+            ? s.kpi.plays.sub.replace('{date}', monthYearFmt().format(new Date(sum.meta.coverage.from * 1000)))
+            : ''
+          : s.kpi.plays.rangeSub[range];
     }
-    if (elKpiPeakValue) elKpiPeakValue.textContent = compactNumber(totals.peakListeners.value);
-    if (elKpiPeakSub) {
-      elKpiPeakSub.textContent =
-        totals.peakListeners.value > 0 && totals.peakListeners.at
-          ? s.kpi.peakListeners.sub.replace('{date}', fullDateFmt().format(new Date(totals.peakListeners.at * 1000)))
+
+    if (range === 'all') {
+      // 'all' keeps totals.peakListeners — it carries the exact timestamp,
+      // which a max-over-days scan can't reconstruct from date-only `d`.
+      const pl = sum.totals.peakListeners;
+      if (elKpiPeakValue) elKpiPeakValue.textContent = compactNumber(pl.value);
+      if (elKpiPeakSub) {
+        elKpiPeakSub.textContent =
+          pl.value > 0 && pl.at ? s.kpi.peakListeners.sub.replace('{date}', fullDateFmt().format(new Date(pl.at * 1000))) : '';
+      }
+    } else {
+      let peakValue: number | null = null;
+      let peakDay: string | null = null;
+      for (const d of days) {
+        if (d.lmax !== null && (peakValue === null || d.lmax > peakValue)) {
+          peakValue = d.lmax;
+          peakDay = d.d;
+        }
+      }
+      if (elKpiPeakValue) elKpiPeakValue.textContent = peakValue === null ? '—' : compactNumber(peakValue);
+      if (elKpiPeakSub) {
+        elKpiPeakSub.textContent =
+          peakValue === null || peakDay === null ? s.kpi.peakListeners.noData : s.kpi.peakListeners.sub.replace('{date}', dayLabelWithYear(peakDay));
+      }
+    }
+
+    if (range === 'all') {
+      if (elKpiTracksValue) elKpiTracksValue.textContent = compactNumber(sum.totals.uniqueTracks);
+      if (elKpiTracksSub) elKpiTracksSub.textContent = s.kpi.tracks.sub.replace('{count}', fullNumber(sum.totals.uniqueArtists));
+    } else {
+      const rollup = sum.ranges[range];
+      if (elKpiTracksValue) elKpiTracksValue.textContent = rollup ? compactNumber(rollup.uniqueTracks) : '—';
+      if (elKpiTracksSub) {
+        elKpiTracksSub.textContent = rollup
+          ? `${s.kpi.tracks.sub.replace('{count}', fullNumber(rollup.uniqueArtists))} · ${s.since.replace('{date}', monthLabel(rollup.sinceMonth))}`
           : '';
+      }
     }
-    if (elKpiTracksValue) elKpiTracksValue.textContent = compactNumber(totals.uniqueTracks);
-    if (elKpiTracksSub) elKpiTracksSub.textContent = s.kpi.tracks.sub.replace('{count}', fullNumber(totals.uniqueArtists));
-    if (elKpiRequestsValue) elKpiRequestsValue.textContent = compactNumber(totals.requests);
+
+    if (elKpiRequestsValue) elKpiRequestsValue.textContent = compactNumber(totalRequests);
     if (elKpiRequestsSub) {
-      const pct = totals.plays > 0 ? (totals.requests / totals.plays) * 100 : 0;
-      elKpiRequestsSub.textContent = totals.plays > 0 ? s.kpi.requests.sub.replace('{pct}', pct.toFixed(1)) : '';
+      const pct = totalPlays > 0 ? (totalRequests / totalPlays) * 100 : 0;
+      elKpiRequestsSub.textContent = totalPlays > 0 ? s.kpi.requests.sub.replace('{pct}', pct.toFixed(1)) : '';
     }
   };
 
@@ -700,11 +897,33 @@ interface PlotPoint {
     }
   };
 
+  // The server only emits buckets that actually have samples (station
+  // offline, or the sidecar itself down, both leave holes). Index-based
+  // plotting closes those gaps and bends the time axis — walk t from the
+  // first bucket to the last in series.step increments and insert
+  // { avg: null } for every missing timestamp so renderChart's null-gap
+  // segmentation (not this function) draws the real break. Only meaningful
+  // for the t-keyed ranges (24h/7d/30d); the 'all' range is already dense
+  // day buckets from the server.
+  const densifyListeners = (series: ListenersSeries): ListenersSeries['points'] => {
+    if (series.range === 'all' || series.points.length === 0) return series.points;
+    const first = series.points[0].t;
+    const last = series.points[series.points.length - 1].t;
+    if (first === undefined || last === undefined) return series.points;
+    const byT = new Map(series.points.map((p) => [p.t, p] as const));
+    const out: ListenersSeries['points'] = [];
+    for (let t = first; t <= last; t += series.step) {
+      out.push(byT.get(t) ?? { t, avg: null, max: null });
+    }
+    return out;
+  };
+
   const pointsFromListeners = (series: ListenersSeries, plotW: number): PlotPoint[] => {
-    const n = series.points.length;
+    const densePoints = densifyListeners(series);
+    const n = densePoints.length;
     const tickIdxs = pickTicks(n, plotW);
-    const longSpan = spansYears(series.points[0]?.d, series.points[n - 1]?.d);
-    return series.points.map((pt, i) => {
+    const longSpan = spansYears(densePoints[0]?.d, densePoints[n - 1]?.d);
+    return densePoints.map((pt, i) => {
       let label: string;
       let tick: string | undefined;
       if (pt.d) {
@@ -725,16 +944,26 @@ interface PlotPoint {
     });
   };
 
-  const showListeners = async (range: ListenersRange) => {
-    activeListenersRange = range;
-    updateTabs(elListenersTabs, 'range', range);
+  // '7d'/'30d' map straight onto the matching server endpoint range; '90d'/
+  // '1y'/'all' all fetch the dense daily `range=all` series and clip it
+  // client-side to the cutoff date. The 24h view is retired from the UI —
+  // the endpoint and its ListenersRange type stay put server-side.
+  const listenersFetchRange = (range: ActiveRange): ListenersRange => (range === '7d' ? '7d' : range === '30d' ? '30d' : 'all');
+  const LISTENERS_CLIP_DAYS: Partial<Record<ActiveRange, number>> = { '90d': 90, '1y': 365 };
+
+  const showListeners = async (range: ActiveRange) => {
     if (!elListenersChart) return;
+    const fetchRange = listenersFetchRange(range);
+    // Generation guard: a slow, abandoned range's response must not paint
+    // over whatever range the user tapped in the meantime.
+    const gen = ++listenersGen;
     // Hold the previous chart dimmed while the new range loads — no
     // skeleton, no layout jump (spec: opacity 0.5, contents untouched).
     elListenersChart.style.opacity = '0.5';
-    const series = await loadListeners(range);
+    const raw = await loadListeners(fetchRange);
+    if (gen !== listenersGen) return; // superseded — the newer call owns the chart now
     elListenersChart.style.opacity = '1';
-    if (!series) {
+    if (!raw) {
       renderChart({
         wrapper: elListenersChart,
         kind: 'area',
@@ -746,16 +975,23 @@ interface PlotPoint {
       });
       rerenderListeners = null;
       if (elListenersTable) elListenersTable.innerHTML = '';
+      if (elListenersCaption) elListenersCaption.textContent = '';
       return;
     }
-    const points = pointsFromListeners(series, plotWOf(elListenersChart));
+    const clipDays = LISTENERS_CLIP_DAYS[range];
+    const series: ListenersSeries = clipDays
+      ? { ...raw, points: raw.points.filter((p) => (p.d ? p.d >= addDaysISO(todayStationISO(), -clipDays) : true)) }
+      : raw;
+    // draw() rebuilds points from the CURRENT plotWOf(...) every call — a
+    // resize must re-pick tick density (pickTicks), not redraw with the
+    // width-frozen ticks baked in at the initial call.
     const draw = () => {
       if (!elListenersChart) return;
       renderChart({
         wrapper: elListenersChart,
         kind: 'area',
         height: 180,
-        points,
+        points: pointsFromListeners(series, plotWOf(elListenersChart)),
         idPrefix: 'listeners',
         yTickFormatter: compactNumber,
         tooltipValueFormatter: fullNumber,
@@ -763,25 +999,32 @@ interface PlotPoint {
     };
     draw();
     rerenderListeners = draw;
-    buildTable(elListenersTable, [s.listeners.tableTime, s.listeners.tableAvg, s.listeners.tableMax], points, fullNumber, fullNumber);
+    // The table twin doesn't depend on ticks — built once from the initial
+    // width's points, never rebuilt on resize.
+    buildTable(
+      elListenersTable,
+      [s.listeners.tableTime, s.listeners.tableAvg, s.listeners.tableMax],
+      pointsFromListeners(series, plotWOf(elListenersChart)),
+      fullNumber,
+      fullNumber,
+    );
+    if (elListenersCaption) {
+      // Day key for either bucket shape — 'all' points carry `.d` directly,
+      // 7d/30d points carry only a unix-second `.t` and need the station-TZ
+      // conversion so the caption reads the same calendar day the tooltip does.
+      const dayKeys = series.points.map((p) => p.d ?? (p.t !== undefined ? stationISOFromT(p.t) : undefined)).filter((d): d is string => !!d);
+      elListenersCaption.textContent = rangeCaption(range, dayKeys[0], dayKeys[dayKeys.length - 1], summary?.meta.coverage.from ?? null);
+    }
   };
 
   // ---- plays card -----------------------------------------------------------------
 
   const playsPointsForRange = (
     sum: StatsSummary,
-    range: PlaysRange,
+    range: ActiveRange,
     plotW: number,
-  ): { points: PlotPoint[]; perWeek: boolean } => {
-    let filtered: StatsDay[];
-    if (range === 'all') {
-      filtered = sum.days;
-    } else {
-      const n = range === '30d' ? 30 : range === '90d' ? 90 : 365;
-      const cutoff = addDaysISO(todayStationISO(), -n);
-      // Date is selected numerically-by-string, never by array index.
-      filtered = sum.days.filter((d) => d.d >= cutoff);
-    }
+  ): { points: PlotPoint[]; perWeek: boolean; firstD?: string; lastD?: string } => {
+    const filtered = daysForRange(sum, range);
     let series: { d: string; p: number }[] = filtered.map((d) => ({ d: d.d, p: d.p }));
     let perWeek = false;
     if (series.length > 120) {
@@ -803,22 +1046,25 @@ interface PlotPoint {
       tick: tickIdxs.has(i) ? (longSpan ? dayTickMonthYear(pt.d) : dayLabel(pt.d)) : undefined,
       tickAnchor: i === 0 ? 'start' : i === series.length - 1 ? 'end' : 'middle',
     }));
-    return { points, perWeek };
+    return { points, perWeek, firstD: series[0]?.d, lastD: series[series.length - 1]?.d };
   };
 
-  const showPlays = (range: PlaysRange) => {
+  const showPlays = (range: ActiveRange) => {
     if (!summary) return;
-    activePlaysRange = range;
-    updateTabs(elPlaysTabs, 'range', range);
-    const { points, perWeek } = playsPointsForRange(summary, range, plotWOf(elPlaysChart));
-    if (elPlaysSub) elPlaysSub.textContent = perWeek ? s.plays.perWeek : s.plays.perDay;
+    const sum = summary; // narrowed once so the draw closure below stays non-null
+    // perWeek depends only on the covered day count, not on plot width, so
+    // it's stable to compute once; the points themselves are recomputed
+    // per draw() below (plotW-dependent tick density).
+    const initial = playsPointsForRange(sum, range, plotWOf(elPlaysChart));
+    if (elPlaysSub) elPlaysSub.textContent = initial.perWeek ? s.plays.perWeek : s.plays.perDay;
+    if (elPlaysCaption) elPlaysCaption.textContent = rangeCaption(range, initial.firstD, initial.lastD, sum.meta.coverage.from);
     const draw = () => {
       if (!elPlaysChart) return;
       renderChart({
         wrapper: elPlaysChart,
         kind: 'area',
         height: 180,
-        points,
+        points: playsPointsForRange(sum, range, plotWOf(elPlaysChart)).points,
         idPrefix: 'plays',
         yTickFormatter: compactNumber,
         tooltipValueFormatter: fullNumber,
@@ -826,69 +1072,341 @@ interface PlotPoint {
     };
     draw();
     rerenderPlays = draw;
-    buildTable(elPlaysTable, [s.plays.tableDate, s.plays.tablePlays], points, fullNumber, fullNumber);
+    // The table twin doesn't depend on ticks — built once, never rebuilt on resize.
+    buildTable(elPlaysTable, [s.plays.tableDate, s.plays.tablePlays], initial.points, fullNumber, fullNumber);
   };
 
-  // ---- rhythm card ----------------------------------------------------------------
+  // ---- rhythm card — percentage heatmap ---------------------------------------------
+  //
+  // Always all-time (not synced to activeRange, see the ActiveRange comment
+  // near the top). Cell metric is plays count or avg listeners (the basis
+  // tabs); intensity for BOTH bases is value/maxCellValue, but the shown
+  // percentage's denominator differs (plays: share of the sum; listeners:
+  // share of the single peak cell) — see heatCellsFor. Built entirely from
+  // CSS-grid divs + inline background-color (no filter/backdrop-filter, no
+  // canvas) so it degrades the same way the rest of the section's CEF-safe
+  // CSS does.
+
+  const pctLabel = (pct: number, basis: RhythmBasis): string =>
+    basis === 'plays' ? s.rhythm.pctOfPlays.replace('{pct}', pct.toFixed(1)) : s.rhythm.pctOfPeak.replace('{pct}', String(Math.round(pct)));
+  const pctShort = (pct: number, basis: RhythmBasis): string => (basis === 'plays' ? `${pct.toFixed(1)}%` : `${Math.round(pct)}%`);
+
+  interface HeatStat {
+    values: (number | null)[];
+    pct: (number | null)[];
+    max: number;
+  }
+
+  // Shared intensity/percentage math for the full grid AND the two marginal
+  // strips — `raw` is whatever cell list is in play (168 grid cells, 24
+  // hour-marginal cells, or 7 dow-marginal cells).
+  const heatCellsFor = (raw: { p: number; lavg: number | null }[], basis: RhythmBasis): HeatStat => {
+    const values = raw.map((c) => (basis === 'plays' ? c.p : c.lavg));
+    const numeric = values.filter((v): v is number => v !== null);
+    const max = Math.max(0, ...numeric);
+    const sum = numeric.reduce((a, v) => a + v, 0);
+    const denom = basis === 'plays' ? sum : max;
+    const pct = values.map((v) => (v === null ? null : denom > 0 ? (v / denom) * 100 : 0));
+    return { values, pct, max };
+  };
+
+  // One tooltip element shared by every cell in a heatmap render — cells
+  // register pointerover/pointerdown (the cell itself is the hit target, per
+  // spec) and call showTooltip; there's no continuous pointermove tracking
+  // like the SVG charts use since each cell is its own discrete hit area.
+  const makeHeatmap = (wrapper: HTMLElement) => {
+    wrapper.innerHTML = ''; // static clear — rebuilt fresh on every render
+    wrapper.classList.add('relative');
+    const tooltip = document.createElement('div');
+    tooltip.className = 'efm-stats-tooltip';
+    tooltip.style.display = 'none';
+    wrapper.appendChild(tooltip);
+    const showTooltip = (cellEl: HTMLElement, valueLine: string, label: string) => {
+      tooltip.textContent = '';
+      const valueEl = document.createElement('div');
+      valueEl.className = 'font-semibold text-cream';
+      valueEl.textContent = valueLine;
+      const labelEl = document.createElement('div');
+      labelEl.className = 'text-cream/60';
+      labelEl.textContent = label;
+      tooltip.appendChild(valueEl);
+      tooltip.appendChild(labelEl);
+      tooltip.style.display = '';
+      const wrapRect = wrapper.getBoundingClientRect();
+      const cellRect = cellEl.getBoundingClientRect();
+      const tw = tooltip.offsetWidth || 80;
+      const cx = cellRect.left - wrapRect.left + cellRect.width / 2;
+      const left = Math.max(4, Math.min(cx - tw / 2, wrapRect.width - tw - 4));
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${Math.max(0, cellRect.top - wrapRect.top - 34)}px`;
+    };
+    const hideTooltip = () => {
+      tooltip.style.display = 'none';
+    };
+    return { showTooltip, hideTooltip };
+  };
+
+  const makeHeatCell = (
+    value: number | null,
+    max: number,
+    pct: number | null,
+    basis: RhythmBasis,
+    label: string,
+    onShow: (el: HTMLElement, valueLine: string, label: string) => void,
+    onHide: () => void,
+  ): HTMLElement => {
+    const cell = document.createElement('div');
+    cell.className = 'aspect-square rounded-[2px]';
+    if (value === null) {
+      // No samples for this cell (listeners basis only) — faint fixed
+      // ground, no intensity to compute, no tooltip (nothing to report).
+      cell.style.backgroundColor = 'rgb(var(--efm-cream-rgb) / 0.04)';
+      return cell;
+    }
+    const intensity = max > 0 ? value / max : 0;
+    const a = 0.06 + intensity * 0.9;
+    cell.style.backgroundColor = `rgb(var(--efm-sunburst-rgb) / ${a.toFixed(3)})`;
+    const valueLine = pct === null ? fullNumber(value) : `${fullNumber(value)} · ${pctLabel(pct, basis)}`;
+    const show = () => onShow(cell, valueLine, label);
+    cell.addEventListener('pointerover', show);
+    cell.addEventListener('pointerdown', show);
+    cell.addEventListener('pointerleave', onHide);
+    return cell;
+  };
+
+  // Evenly-spaced tick labels below a strip of `n` cells — shared by the
+  // full grid's hour ticks and the hour strip's ticks in fallback mode.
+  const buildTickRow = (n: number, ticks: { i: number; label: string }[]): HTMLElement => {
+    const row = document.createElement('div');
+    row.className = 'relative h-3 mt-1';
+    ticks.forEach(({ i, label }) => {
+      const t = document.createElement('span');
+      t.className = 'absolute text-[10px] text-cream/45';
+      const pct = n === 1 ? 50 : (i / (n - 1)) * 100;
+      t.style.left = `${pct}%`;
+      t.style.transform = i === 0 ? 'translateX(0)' : i === n - 1 ? 'translateX(-100%)' : 'translateX(-50%)';
+      t.textContent = label;
+      row.appendChild(t);
+    });
+    return row;
+  };
+
+  // True once the T3 grid accumulator has real data — production's history
+  // predates the grid field (it always emits 168 zero-filled cells for an
+  // old store), which is exactly the signal that should fall back to the
+  // marginal strips below instead of rendering a matrix with nothing in it.
+  const gridHasData = (sum: StatsSummary): boolean => sum.grid.some((c) => c.p > 0 || c.lavg !== null);
+  const hasListenerData = (sum: StatsSummary): boolean => sum.hours.some((h) => h.lavg !== null);
+
+  const renderFullGrid = (wrapper: HTMLElement, grid: StatsGridCell[], basis: RhythmBasis): HeatStat => {
+    const { showTooltip, hideTooltip } = makeHeatmap(wrapper);
+    const stat = heatCellsFor(grid, basis);
+    const body = document.createElement('div');
+    body.className = 'flex flex-col gap-[2px]';
+    for (let w = 0; w < 7; w++) {
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-[2px]';
+      const rowLabel = document.createElement('span');
+      rowLabel.className = 'w-4 shrink-0 text-[10px] text-cream/45';
+      rowLabel.textContent = DOW_SHORT[w];
+      row.appendChild(rowLabel);
+      const cellsWrap = document.createElement('div');
+      cellsWrap.className = 'flex-1 grid gap-[2px]';
+      cellsWrap.style.gridTemplateColumns = 'repeat(24, 1fr)';
+      for (let h = 0; h < 24; h++) {
+        const idx = w * 24 + h;
+        const label = s.rhythm.tooltipCell.replace('{day}', DOW_ABBR[w]).replace('{hour}', HOUR_FULL[h]);
+        cellsWrap.appendChild(makeHeatCell(stat.values[idx], stat.max, stat.pct[idx], basis, label, showTooltip, hideTooltip));
+      }
+      row.appendChild(cellsWrap);
+      body.appendChild(row);
+    }
+    wrapper.appendChild(body);
+    const tickRow = document.createElement('div');
+    tickRow.className = 'flex items-center gap-[2px]';
+    const spacer = document.createElement('span');
+    spacer.className = 'w-4 shrink-0';
+    tickRow.appendChild(spacer);
+    const ticks = document.createElement('div');
+    ticks.className = 'flex-1';
+    ticks.appendChild(buildTickRow(24, HOUR_TICK_LIST.map(([i, label]) => ({ i, label }))));
+    tickRow.appendChild(ticks);
+    wrapper.appendChild(tickRow);
+    return stat;
+  };
+
+  const renderStrips = (wrapper: HTMLElement, hours: StatsHour[], dow: StatsDow[], basis: RhythmBasis): { hourStat: HeatStat; dowStat: HeatStat } => {
+    const { showTooltip, hideTooltip } = makeHeatmap(wrapper);
+    const hourStat = heatCellsFor(hours, basis);
+    const dowStat = heatCellsFor(dow, basis);
+
+    const buildStrip = (title: string, n: number, cells: HTMLElement[], ticks?: HTMLElement): HTMLElement => {
+      const section = document.createElement('div');
+      const heading = document.createElement('div');
+      heading.className = 'text-[10px] uppercase tracking-wide text-cream/45 mb-1';
+      heading.textContent = title;
+      section.appendChild(heading);
+      const row = document.createElement('div');
+      row.className = 'grid gap-[2px]';
+      row.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+      cells.forEach((c) => row.appendChild(c));
+      section.appendChild(row);
+      if (ticks) section.appendChild(ticks);
+      return section;
+    };
+
+    const hourCells = hours.map((x) =>
+      makeHeatCell(hourStat.values[x.h], hourStat.max, hourStat.pct[x.h], basis, s.rhythm.tooltipHour.replace('{hour}', HOUR_FULL[x.h]), showTooltip, hideTooltip),
+    );
+    wrapper.appendChild(buildStrip(s.rhythm.byHour, 24, hourCells, buildTickRow(24, HOUR_TICK_LIST.map(([i, label]) => ({ i, label })))));
+
+    const spacer = document.createElement('div');
+    spacer.className = 'h-3';
+    wrapper.appendChild(spacer);
+
+    const dowCells = dow.map((x) =>
+      makeHeatCell(dowStat.values[x.w], dowStat.max, dowStat.pct[x.w], basis, s.rhythm.tooltipDay.replace('{day}', DOW_FULL[x.w]), showTooltip, hideTooltip),
+    );
+    wrapper.appendChild(
+      buildStrip(
+        s.rhythm.byDay,
+        7,
+        dowCells,
+        buildTickRow(7, DOW_SHORT.map((label, i) => ({ i, label }))),
+      ),
+    );
+
+    return { hourStat, dowStat };
+  };
+
+  const buildRhythmGridTable = (grid: StatsGridCell[], stat: HeatStat, basis: RhythmBasis) => {
+    if (!elRhythmTable) return;
+    elRhythmTable.innerHTML = '';
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    [s.rhythm.tableDay, s.rhythm.tableHour, s.rhythm.tableValue, s.rhythm.tablePct].forEach((h) => {
+      const th = document.createElement('th');
+      th.textContent = h;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    grid.forEach((c, idx) => {
+      const v = stat.values[idx];
+      if (v === null) return; // non-empty cells only
+      const pct = stat.pct[idx];
+      const tr = document.createElement('tr');
+      [DOW_ABBR[c.w], HOUR_FULL[c.h], fullNumber(v), pct === null ? '—' : pctShort(pct, basis)].forEach((text) => {
+        const td = document.createElement('td');
+        td.className = 'tabular-nums';
+        td.textContent = text;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    elRhythmTable.appendChild(table);
+  };
+
+  const buildRhythmStripsTable = (hours: StatsHour[], dow: StatsDow[], hourStat: HeatStat, dowStat: HeatStat, basis: RhythmBasis) => {
+    if (!elRhythmTable) return;
+    elRhythmTable.innerHTML = '';
+    const section = (title: string, rowLabel: string, labels: string[], indices: number[], stat: HeatStat) => {
+      const heading = document.createElement('div');
+      heading.className = 'text-[10px] uppercase tracking-wide text-cream/45 mt-2 mb-1 first:mt-0';
+      heading.textContent = title;
+      elRhythmTable!.appendChild(heading);
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      [rowLabel, s.rhythm.tableValue, s.rhythm.tablePct].forEach((h) => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        headRow.appendChild(th);
+      });
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      indices.forEach((i) => {
+        const v = stat.values[i];
+        if (v === null) return;
+        const pct = stat.pct[i];
+        const tr = document.createElement('tr');
+        [labels[i], fullNumber(v), pct === null ? '—' : pctShort(pct, basis)].forEach((text) => {
+          const td = document.createElement('td');
+          td.className = 'tabular-nums';
+          td.textContent = text;
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      elRhythmTable!.appendChild(table);
+    };
+    section(s.rhythm.byHour, s.rhythm.tableHour, HOUR_FULL, hours.map((h) => h.h), hourStat);
+    section(s.rhythm.byDay, s.rhythm.tableDay, DOW_FULL, dow.map((d) => d.w), dowStat);
+  };
+
+  const renderRhythmCaption = (sum: StatsSummary) => {
+    if (!elRhythmCaption) return;
+    const from = sum.meta.coverage.from;
+    elRhythmCaption.textContent = from ? `${s.rhythm.allTimePrefix}${s.since.replace('{date}', monthYearFmt().format(new Date(from * 1000)))}` : '';
+  };
 
   const showRhythm = (basis: RhythmBasis) => {
     if (!summary) return;
+    const sum = summary;
     activeRhythmBasis = basis;
     updateTabs(elRhythmTabs, 'basis', basis);
-    let points: PlotPoint[];
-    let usePlays: boolean;
-    if (basis === 'hour') {
-      const arr = summary.hours;
-      usePlays = arr.every((x) => x.lavg === null);
-      points = arr.map((x, i) => ({
-        value: usePlays ? x.p : x.lavg,
-        label: HOUR_FULL[x.h] ?? String(x.h),
-        tick: HOUR_TICKS[x.h],
-        tickAnchor: i === 0 ? 'start' : i === arr.length - 1 ? 'end' : 'middle',
-      }));
-    } else {
-      const arr = summary.dow;
-      usePlays = arr.every((x) => x.lavg === null);
-      points = arr.map((x, i) => ({
-        value: usePlays ? x.p : x.lavg,
-        label: DOW_FULL[x.w] ?? String(x.w),
-        tick: DOW_SHORT[x.w],
-        tickAnchor: i === 0 ? 'start' : i === arr.length - 1 ? 'end' : 'middle',
-      }));
-    }
+    // Basis tabs aren't a coverage-gated preset row, but a Listeners basis
+    // with zero samples anywhere is a dead control — hide just that button.
+    const listenersTabBtn = elRhythmTabs?.querySelector<HTMLButtonElement>('button[data-basis="listeners"]') ?? null;
+    listenersTabBtn?.classList.toggle('hidden', !hasListenerData(sum));
+
     if (elRhythmSub) {
-      elRhythmSub.textContent =
-        basis === 'hour'
-          ? usePlays
-            ? s.rhythm.subtitlePlaysHour
-            : s.rhythm.subtitleListenersHour
-          : usePlays
-            ? s.rhythm.subtitlePlaysDay
-            : s.rhythm.subtitleListenersDay;
+      const base = basis === 'plays' ? s.rhythm.subtitlePlays : s.rhythm.subtitleListeners;
+      const withTz = tzShort ? `${base} (${tzShort})` : base;
+      elRhythmSub.textContent = `${s.rhythm.allTimePrefix}${withTz}`;
     }
+
     const draw = () => {
       if (!elRhythmChart) return;
-      renderChart({
-        wrapper: elRhythmChart,
-        kind: 'column',
-        height: 150,
-        points,
-        idPrefix: 'rhythm',
-        yTickFormatter: compactNumber,
-        tooltipValueFormatter: fullNumber,
-      });
+      if (gridHasData(sum)) {
+        const stat = renderFullGrid(elRhythmChart, sum.grid, basis);
+        buildRhythmGridTable(sum.grid, stat, basis);
+      } else {
+        const { hourStat, dowStat } = renderStrips(elRhythmChart, sum.hours, sum.dow, basis);
+        buildRhythmStripsTable(sum.hours, sum.dow, hourStat, dowStat, basis);
+      }
     };
     draw();
+    // Cells size themselves with fr/% units, but resize is kept consistent
+    // with the SVG charts' rerenderX pattern (spec: preserve resize redraws).
     rerenderRhythm = draw;
-    const header0 = basis === 'hour' ? s.rhythm.tableHour : s.rhythm.tableDay;
-    buildTable(elRhythmTable, [header0, s.rhythm.tableValue], points, fullNumber, fullNumber);
+    renderRhythmCaption(sum);
   };
 
   // ---- top tracks / top artists lists ----------------------------------------------
 
+  // 'all' uses the root (all-time) lists, capped at 50 as before; any other
+  // range reads the matching server rollup (top 25 by windowed plays). Both
+  // shapes carry id/title/art/artist/plays — StatsRangeTopTrack additionally
+  // omits firstAt/lastAt, which the row renderer below never reads anyway.
+  const topTracksSource = (sum: StatsSummary, range: ActiveRange) => (range === 'all' ? sum.topTracks : (sum.ranges[range]?.topTracks ?? []));
+  const topArtistsSource = (sum: StatsSummary, range: ActiveRange) => (range === 'all' ? sum.topArtists : (sum.ranges[range]?.topArtists ?? []));
+  const topListCap = (range: ActiveRange): number => (range === 'all' ? 50 : 25);
+
   const renderTopTracks = () => {
     if (!summary || !elTopTracksList) return;
-    const list = summary.topTracks.slice(0, tracksShown);
+    const range = activeRange;
+    const source = topTracksSource(summary, range);
+    if (elTopTracksSub) {
+      const rollup = range === 'all' ? null : summary.ranges[range];
+      elTopTracksSub.textContent = rollup ? s.since.replace('{date}', monthLabel(rollup.sinceMonth)) : '';
+    }
+    const list = source.slice(0, tracksShown);
     elTopTracksList.innerHTML = '';
     list.forEach((t, i) => {
       const li = document.createElement('li');
@@ -931,13 +1449,19 @@ interface PlotPoint {
       elTopTracksList.appendChild(li);
     });
     if (elTopTracksMore) {
-      elTopTracksMore.classList.toggle('hidden', tracksShown >= Math.min(50, summary.topTracks.length));
+      elTopTracksMore.classList.toggle('hidden', tracksShown >= Math.min(topListCap(range), source.length));
     }
   };
 
   const renderTopArtists = () => {
     if (!summary || !elTopArtistsList) return;
-    const list = summary.topArtists.slice(0, artistsShown);
+    const range = activeRange;
+    const source = topArtistsSource(summary, range);
+    if (elTopArtistsSub) {
+      const rollup = range === 'all' ? null : summary.ranges[range];
+      elTopArtistsSub.textContent = rollup ? s.since.replace('{date}', monthLabel(rollup.sinceMonth)) : '';
+    }
+    const list = source.slice(0, artistsShown);
     elTopArtistsList.innerHTML = '';
     list.forEach((a, i) => {
       const li = document.createElement('li');
@@ -972,16 +1496,16 @@ interface PlotPoint {
       elTopArtistsList.appendChild(li);
     });
     if (elTopArtistsMore) {
-      elTopArtistsMore.classList.toggle('hidden', artistsShown >= Math.min(50, summary.topArtists.length));
+      elTopArtistsMore.classList.toggle('hidden', artistsShown >= Math.min(topListCap(range), source.length));
     }
   };
 
   elTopTracksMore?.addEventListener('click', () => {
-    tracksShown = Math.min(50, tracksShown + 20);
+    tracksShown = Math.min(topListCap(activeRange), tracksShown + 20);
     renderTopTracks();
   });
   elTopArtistsMore?.addEventListener('click', () => {
-    artistsShown = Math.min(50, artistsShown + 20);
+    artistsShown = Math.min(topListCap(activeRange), artistsShown + 20);
     renderTopArtists();
   });
 
@@ -1001,19 +1525,46 @@ interface PlotPoint {
     elOverlay?.setAttribute('aria-hidden', 'false');
   };
   const closeOverlay = () => {
+    // Bump the generation so any in-flight track/artist fetch started before
+    // close (then reopen) is recognized as stale and never writes the body.
+    detailGen++;
     elOverlay?.classList.add('hidden');
     elOverlay?.setAttribute('aria-hidden', 'true');
     previousView = null;
     rerenderDetail = null;
   };
 
+  // The server only stores months that had at least one play (Object.keys
+  // of a sparse map) — index plotting closes real silent stretches in a
+  // track's/artist's history. Fill every missing 'YYYY-MM' between the
+  // first and last month with p:0 — unlike the listener series, zero here
+  // IS the true value, not a gap, so it plots (not a null break).
+  const densifyMonths = (months: TrackDetailMonth[]): TrackDetailMonth[] => {
+    if (months.length < 2) return months;
+    const byM = new Map(months.map((m) => [m.m, m] as const));
+    let [y, mo] = months[0].m.split('-').map((x) => parseInt(x, 10));
+    const [lastY, lastMo] = months[months.length - 1].m.split('-').map((x) => parseInt(x, 10));
+    const out: TrackDetailMonth[] = [];
+    while (y < lastY || (y === lastY && mo <= lastMo)) {
+      const key = `${y}-${String(mo).padStart(2, '0')}`;
+      out.push(byM.get(key) ?? { m: key, p: 0 });
+      mo++;
+      if (mo > 12) {
+        mo = 1;
+        y++;
+      }
+    }
+    return out;
+  };
+
   const monthPoints = (months: TrackDetailMonth[], plotW: number): PlotPoint[] => {
-    const tickIdxs = pickTicks(months.length, plotW);
-    return months.map((m, i) => ({
+    const dense = densifyMonths(months);
+    const tickIdxs = pickTicks(dense.length, plotW);
+    return dense.map((m, i) => ({
       value: m.p,
       label: monthLabel(m.m),
       tick: tickIdxs.has(i) ? monthLabel(m.m) : undefined,
-      tickAnchor: i === 0 ? 'start' : i === months.length - 1 ? 'end' : 'middle',
+      tickAnchor: i === 0 ? 'start' : i === dense.length - 1 ? 'end' : 'middle',
     }));
   };
 
@@ -1055,6 +1606,47 @@ interface PlotPoint {
     chart.setAttribute('aria-label', label);
     wrap.appendChild(chart);
     return wrap;
+  };
+
+  // Draws the plays-per-month chart into `chartBlock` (from buildMonthlyChart
+  // above) and appends its table twin — the one chart in the section that
+  // was missing one. Shared by both the track and artist detail bodies.
+  // draw() rebuilds points from the CURRENT plotWOf(...) every call so a
+  // resize re-picks tick density instead of redrawing width-frozen ticks.
+  const attachMonthlyChart = (chartBlock: HTMLElement, months: TrackDetailMonth[], idPrefix: string) => {
+    const chartWrap = chartBlock.querySelector<HTMLElement>('.efm-stats-chart');
+    const draw = () => {
+      if (!chartWrap) return;
+      renderChart({
+        wrapper: chartWrap,
+        kind: 'area',
+        height: 120,
+        points: monthPoints(months, plotWOf(chartWrap)),
+        idPrefix,
+        yTickFormatter: compactNumber,
+        tooltipValueFormatter: fullNumber,
+      });
+    };
+    draw();
+    rerenderDetail = draw;
+
+    const tableDetails = document.createElement('details');
+    tableDetails.className = 'efm-stats-table mt-2';
+    const tableSummary = document.createElement('summary');
+    tableSummary.textContent = s.viewTable;
+    tableDetails.appendChild(tableSummary);
+    const tableContainer = document.createElement('div');
+    tableContainer.className = 'efm-stats-table-scroll efm-sidebar-scroll';
+    tableDetails.appendChild(tableContainer);
+    chartBlock.appendChild(tableDetails);
+    // The table twin doesn't depend on ticks — built once, never rebuilt on resize.
+    buildTable(
+      tableContainer,
+      [s.detail.tableMonth, s.detail.tablePlays],
+      monthPoints(months, plotWOf(chartWrap)),
+      fullNumber,
+      fullNumber,
+    );
   };
 
   const buildTrackRow = (t: { id: string; title: string; art: string; plays: number }, rank: number, onOpen: () => void): HTMLElement => {
@@ -1130,22 +1722,7 @@ interface PlotPoint {
 
     const chartBlock = buildMonthlyChart(s.detail.playsPerMonth);
     elDetailBody.appendChild(chartBlock);
-    const chartWrap = chartBlock.querySelector<HTMLElement>('.efm-stats-chart');
-    const points = monthPoints(detail.months, plotWOf(chartWrap));
-    const draw = () => {
-      if (!chartWrap) return;
-      renderChart({
-        wrapper: chartWrap,
-        kind: 'area',
-        height: 120,
-        points,
-        idPrefix: 'detail-track',
-        yTickFormatter: compactNumber,
-        tooltipValueFormatter: fullNumber,
-      });
-    };
-    draw();
-    rerenderDetail = draw;
+    attachMonthlyChart(chartBlock, detail.months, 'detail-track');
   };
 
   const renderArtistDetailBody = (detail: ArtistDetail) => {
@@ -1166,22 +1743,7 @@ interface PlotPoint {
 
     const chartBlock = buildMonthlyChart(s.detail.playsPerMonth);
     elDetailBody.appendChild(chartBlock);
-    const chartWrap = chartBlock.querySelector<HTMLElement>('.efm-stats-chart');
-    const points = monthPoints(detail.months, plotWOf(chartWrap));
-    const draw = () => {
-      if (!chartWrap) return;
-      renderChart({
-        wrapper: chartWrap,
-        kind: 'area',
-        height: 120,
-        points,
-        idPrefix: 'detail-artist',
-        yTickFormatter: compactNumber,
-        tooltipValueFormatter: fullNumber,
-      });
-    };
-    draw();
-    rerenderDetail = draw;
+    attachMonthlyChart(chartBlock, detail.months, 'detail-artist');
 
     const tracksLabel = document.createElement('div');
     tracksLabel.className = 'text-[11px] uppercase tracking-wide text-cream/50 mt-4 mb-1';
@@ -1227,12 +1789,18 @@ interface PlotPoint {
   };
 
   async function openTrackDetail(id: string, from?: DetailView) {
+    // Snapshot the generation before the await: a slow response only gets
+    // to render if nothing newer (another open, a close+reopen) has
+    // happened since — otherwise it would paint over whatever view/overlay
+    // state the user has navigated to in the meantime.
+    const gen = ++detailGen;
     previousView = from ?? null;
     openOverlay();
     updateBackButton();
     if (elDetailTitle) elDetailTitle.textContent = '';
     if (elDetailBody) elDetailBody.innerHTML = '';
     const detail = await loadTrack(id);
+    if (gen !== detailGen) return; // superseded — a newer navigation owns the overlay now
     if (!detail) {
       renderDetailError();
       return;
@@ -1241,12 +1809,14 @@ interface PlotPoint {
     renderTrackDetailBody(detail);
   }
   async function openArtistDetail(name: string, from?: DetailView) {
+    const gen = ++detailGen;
     previousView = from ?? null;
     openOverlay();
     updateBackButton();
     if (elDetailTitle) elDetailTitle.textContent = '';
     if (elDetailBody) elDetailBody.innerHTML = '';
     const detail = await loadArtist(name);
+    if (gen !== detailGen) return; // superseded — a newer navigation owns the overlay now
     if (!detail) {
       renderDetailError();
       return;
@@ -1282,16 +1852,16 @@ interface PlotPoint {
 
   // ---- tab wiring ---------------------------------------------------------------
 
-  elListenersTabs?.addEventListener('click', (e) => {
+  // One delegated handler per row, all funneling into the same setRange() —
+  // whichever row was clicked, every synced row/tile/chart updates together.
+  const onRangeTabClick = (e: Event) => {
     const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-range]');
-    const range = btn?.dataset.range as ListenersRange | undefined;
-    if (range) void showListeners(range);
-  });
-  elPlaysTabs?.addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-range]');
-    const range = btn?.dataset.range as PlaysRange | undefined;
-    if (range) showPlays(range);
-  });
+    const range = btn?.dataset.range as ActiveRange | undefined;
+    if (range) setRange(range);
+  };
+  elRangeTabs?.addEventListener('click', onRangeTabClick);
+  elListenersTabs?.addEventListener('click', onRangeTabClick);
+  elPlaysTabs?.addEventListener('click', onRangeTabClick);
   elRhythmTabs?.addEventListener('click', (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-basis]');
     const basis = btn?.dataset.basis as RhythmBasis | undefined;
@@ -1308,15 +1878,24 @@ interface PlotPoint {
       if (!data.ok || !data.totals || data.totals.plays === 0) return;
       summary = data;
       TZ = data.meta.timezone || TZ;
+      tzShort = shortTzName(TZ);
       elSection?.classList.remove('hidden');
       renderCoverage(data);
-      renderKpis(data);
+
+      eligibleRanges = computeEligibleRanges(data);
+      // Default: '30d' once it's visible (coverage > 7d), else '7d'.
+      activeRange = eligibleRanges.includes('30d') ? '30d' : '7d';
+      renderRangeTabs(elRangeTabs);
+      renderRangeTabs(elListenersTabs);
+      renderRangeTabs(elPlaysTabs);
+
+      renderKpis(data, activeRange);
       tracksShown = 10;
       artistsShown = 10;
       renderTopTracks();
       renderTopArtists();
-      void showListeners(activeListenersRange);
-      showPlays(activePlaysRange);
+      void showListeners(activeRange);
+      showPlays(activeRange);
       showRhythm(activeRhythmBasis);
     } catch (err) {
       console.warn('[efm] /stats/summary fetch failed', err);

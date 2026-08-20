@@ -72,17 +72,54 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     coveragePrefixFull: 'All-time · since',
     coveragePrefixPartial: 'Tracking since',
 
+    // The one synced range selection (primary row + Listeners/Plays cards'
+    // own rows, and the "since {date}" tile/top-list subs below) shares this
+    // single label map and aria-label — see stats.ts renderRangeTabs().
+    rangeLabels: { '7d': '7D', '30d': '30D', '90d': '90D', '1y': '1Y', all: 'ALL' },
+    rangeAriaLabel: 'Time range',
+
+    // "since {date}" — reused verbatim by the ranged KPI tile subs, the
+    // top-list card subs, and (prefixed with rhythm.allTimePrefix) the
+    // Rhythm card's caption. Lowercase by design — it always follows other
+    // words ("last year", card titles) except the chart captions below,
+    // which use the capitalized caption.all variant instead.
+    since: 'since {date}',
+
     kpi: {
-      plays: { label: 'Total plays', sub: 'since {date}' },
-      peakListeners: { label: 'Peak listeners', sub: '{date}' },
+      plays: {
+        label: 'Total plays',
+        // 'all' range only — every other range uses rangeSub below instead.
+        sub: 'since {date}',
+        rangeSub: {
+          '7d': 'last 7 days',
+          '30d': 'last 30 days',
+          '90d': 'last 90 days',
+          '1y': 'last year',
+        },
+      },
+      peakListeners: {
+        label: 'Peak listeners',
+        sub: '{date}',
+        // Shown instead of the {date} sub when every day in the selected
+        // range has a null lmax (no listener samples landed in that window).
+        noData: 'No listener data yet',
+      },
       tracks: { label: 'Tracks played', sub: '{count} artists' },
-      requests: { label: 'Requests played', sub: '{pct}% of all plays' },
+      requests: { label: 'Requests played', sub: '{pct}% of plays' },
+    },
+
+    // Coverage captions under every chart (between the chart and its table
+    // twin): ranged windows get the exact rendered day span; 'all' gets this
+    // capitalized variant (distinct from the lowercase `since` above, which
+    // reads naturally after other words instead of starting a line).
+    caption: {
+      rangeSeparator: ' – ',
+      all: 'Since {date}',
     },
 
     listeners: {
       title: 'Listeners',
       ariaLabel: 'Listener count over time',
-      tabs: { '24h': '24H', '7d': '7D', '30d': '30D', all: 'ALL' },
       tableTime: 'Time',
       tableAvg: 'Avg',
       tableMax: 'Peak',
@@ -91,7 +128,6 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     plays: {
       title: 'Plays',
       ariaLabel: 'Plays over time',
-      tabs: { '30d': '30D', '90d': '90D', '1y': '1Y', all: 'ALL' },
       perDay: 'per day',
       perWeek: 'per week',
       tableDate: 'Date',
@@ -100,15 +136,32 @@ San Andreas is not only our home; it's also the source of incredible talent wait
 
     rhythm: {
       title: 'Rhythm',
-      ariaLabel: 'Listening rhythm by time of day',
-      tabs: { hour: 'By hour', day: 'By day' },
-      subtitleListenersHour: 'Average listeners by hour, station time (ET)',
-      subtitleListenersDay: 'Average listeners by day, station time (ET)',
-      subtitlePlaysHour: 'Plays by hour, station time (ET)',
-      subtitlePlaysDay: 'Plays by day, station time (ET)',
-      tableHour: 'Hour',
+      ariaLabel: 'Listening rhythm heatmap by day and hour, station time',
+      tabs: { plays: 'Plays', listeners: 'Listeners' },
+      // Rhythm stays all-time regardless of the synced range — this prefix
+      // makes that explicit right in the subtitle.
+      allTimePrefix: 'All-time · ',
+      // stats.ts appends the actual short tz abbreviation (derived from
+      // meta.timezone, e.g. "EDT") in parens after this — never hardcode
+      // one here, STATS_TZ is operator-configurable.
+      subtitlePlays: 'Plays by hour & day, station time',
+      subtitleListeners: 'Average listeners by hour & day, station time',
+      byHour: 'By hour',
+      byDay: 'By day',
+      // Cell percentage basis: plays = share of all plays; listeners = share
+      // of the single peak hour/day cell. {pct} is 1dp for plays, whole
+      // number for listeners — see stats.ts pctLabel()/pctShort().
+      pctOfPlays: '{pct}% of all plays',
+      pctOfPeak: '{pct}% of the peak hour',
+      // Per-cell tooltip label lines. {day}/{hour} are filled from the
+      // day-of-week/hour-of-day lookup tables, never a timezone-aware Date.
+      tooltipCell: '{day} · {hour} · station time',
+      tooltipHour: '{hour} · station time',
+      tooltipDay: '{day} · station time',
       tableDay: 'Day',
+      tableHour: 'Hour',
       tableValue: 'Value',
+      tablePct: '%',
     },
 
     topTracks: { title: 'Top Tracks' },

@@ -14,6 +14,13 @@ const s = site.stats;
   <p class="text-xs text-cream/50">{s.tagline}</p>
   <p id="stats-coverage" class="mt-1 text-xs text-cream/50"></p>
 
+  <!-- Primary range row — the ONE synced selection that scopes the KPI grid
+       plus the Listeners/Plays cards' own rows below it (all three render
+       the same eligible presets and stay in lockstep, see stats.ts
+       renderRangeTabs()/setRange()). JS-rendered only: coverage gates which
+       presets exist, so there is nothing safe to pre-render here. -->
+  <div id="stats-range-tabs" class="mt-2 flex flex-wrap gap-2" role="tablist" aria-label={s.rangeAriaLabel}></div>
+
   <!-- 1. KPI grid — 2x2, each tile its own .card. -->
   <div class="grid grid-cols-2 gap-2 lg:gap-3 mt-3">
     <div class="card">
@@ -42,12 +49,12 @@ const s = site.stats;
        line): a single-row header overflows at 320px (measured, see spec). -->
   <div class="card mt-3">
     <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.listeners.title}</h3>
-    <div id="stats-listeners-tabs" class="mt-2 flex flex-wrap gap-2" role="tablist" aria-label={s.listeners.ariaLabel}>
-      {Object.entries(s.listeners.tabs).map(([key, label]) => (
-        <button type="button" class="efm-stats-tab" data-range={key} aria-pressed="false">{label}</button>
-      ))}
-    </div>
+    <!-- Buttons are rendered by stats.ts (renderRangeTabs) — same eligible
+         presets and state as #stats-range-tabs, so a static Astro loop here
+         would fight the coverage-gated hide/show logic. -->
+    <div id="stats-listeners-tabs" class="mt-2 flex flex-wrap gap-2" role="tablist" aria-label={s.listeners.ariaLabel}></div>
     <div id="stats-listeners-chart" class="efm-stats-chart mt-3" role="img" aria-label={s.listeners.ariaLabel}></div>
+    <p id="stats-listeners-caption" class="mt-1 text-[11px] text-cream/40"></p>
     <details class="efm-stats-table mt-2">
       <summary>{s.viewTable}</summary>
       <div id="stats-listeners-table" class="efm-stats-table-scroll efm-sidebar-scroll"></div>
@@ -58,21 +65,24 @@ const s = site.stats;
        "per day"/"per week" copy depending on the active range's bucketing. -->
   <div class="card mt-3">
     <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.plays.title}</h3>
-    <div id="stats-plays-tabs" class="mt-2 flex flex-wrap gap-2" role="tablist" aria-label={s.plays.ariaLabel}>
-      {Object.entries(s.plays.tabs).map(([key, label]) => (
-        <button type="button" class="efm-stats-tab" data-range={key} aria-pressed="false">{label}</button>
-      ))}
-    </div>
+    <!-- Buttons are rendered by stats.ts (renderRangeTabs) — see the
+         Listeners card's tabs container above for why this is empty. -->
+    <div id="stats-plays-tabs" class="mt-2 flex flex-wrap gap-2" role="tablist" aria-label={s.plays.ariaLabel}></div>
     <p id="stats-plays-sub" class="mt-1 text-[11px] text-cream/45"></p>
     <div id="stats-plays-chart" class="efm-stats-chart mt-2" role="img" aria-label={s.plays.ariaLabel}></div>
+    <p id="stats-plays-caption" class="mt-1 text-[11px] text-cream/40"></p>
     <details class="efm-stats-table mt-2">
       <summary>{s.viewTable}</summary>
       <div id="stats-plays-table" class="efm-stats-table-scroll efm-sidebar-scroll"></div>
     </details>
   </div>
 
-  <!-- 4. Rhythm card — plots lavg by default, falls back to plays (and swaps
-       #stats-rhythm-sub copy) when no listener samples exist yet. -->
+  <!-- 4. Rhythm card — PERCENTAGE HEATMAP (7×24 day×hour, all-time, not
+       synced to the range above). Basis tabs pick plays vs. avg listeners as
+       the cell metric; stats.ts hides the Listeners button entirely when no
+       listener sample exists anywhere. No `.efm-stats-chart` height class on
+       the chart container — a CSS-grid heatmap sizes itself from content,
+       unlike the fixed-height SVG area/column charts. -->
   <div class="card mt-3">
     <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.rhythm.title}</h3>
     <div id="stats-rhythm-tabs" class="mt-2 flex flex-wrap gap-2" role="tablist" aria-label={s.rhythm.ariaLabel}>
@@ -81,7 +91,8 @@ const s = site.stats;
       ))}
     </div>
     <p id="stats-rhythm-sub" class="mt-1 text-[11px] text-cream/45"></p>
-    <div id="stats-rhythm-chart" class="efm-stats-chart efm-stats-chart--short mt-2" role="img" aria-label={s.rhythm.ariaLabel}></div>
+    <div id="stats-rhythm-chart" class="relative mt-3" role="img" aria-label={s.rhythm.ariaLabel}></div>
+    <p id="stats-rhythm-caption" class="mt-1 text-[11px] text-cream/40"></p>
     <details class="efm-stats-table mt-2">
       <summary>{s.viewTable}</summary>
       <div id="stats-rhythm-table" class="efm-stats-table-scroll efm-sidebar-scroll"></div>
@@ -89,9 +100,12 @@ const s = site.stats;
   </div>
 
   <!-- 5. Top tracks — rows are buttons (48px targets) that open the detail
-       overlay. Initial 10, "Show more" reveals +20 up to a 50 max. -->
+       overlay. Initial 10, "Show more" reveals to the range's full list
+       (25 for a ranged rollup, 50 for 'all'). #stats-top-tracks-sub carries
+       the "since <Mon YYYY>" window label for ranged views (empty for 'all'). -->
   <div class="card mt-3">
     <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.topTracks.title}</h3>
+    <p id="stats-top-tracks-sub" class="mt-0.5 text-[11px] text-cream/45"></p>
     <ul id="stats-top-tracks-list" class="mt-2 divide-y divide-cream/5"></ul>
     <button type="button" id="stats-top-tracks-more" class="btn btn-midnight w-full mt-2 hidden">{s.showMore}</button>
   </div>
@@ -99,6 +113,7 @@ const s = site.stats;
   <!-- 6. Top artists — same pattern, drills into the artist detail view. -->
   <div class="card mt-3">
     <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.topArtists.title}</h3>
+    <p id="stats-top-artists-sub" class="mt-0.5 text-[11px] text-cream/45"></p>
     <ul id="stats-top-artists-list" class="mt-2 divide-y divide-cream/5"></ul>
     <button type="button" id="stats-top-artists-more" class="btn btn-midnight w-full mt-2 hidden">{s.showMore}</button>
   </div>
