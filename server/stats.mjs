@@ -142,6 +142,10 @@ export function createStats(opts = {}) {
     days: {},
     hours: Array.from({ length: 24 }, () => ({ p: 0, lsum: 0, lcnt: 0 })),
     dow: Array.from({ length: 7 }, () => ({ p: 0, lsum: 0, lcnt: 0 })),
+    // T3: dow x hour rhythm-heatmap accumulator, indexed dow*24+hour (station
+    // TZ, same dateParts source as hours/dow above). Populated going forward
+    // only — see normalizeLoaded's zero-fill for stores that predate it.
+    grid: Array.from({ length: 168 }, () => ({ p: 0, lsum: 0, lcnt: 0 })),
     tracks: {},
     min5: [],
     hourly: [],
@@ -165,6 +169,11 @@ export function createStats(opts = {}) {
       days: raw?.days && typeof raw.days === 'object' ? raw.days : {},
       hours: Array.isArray(raw?.hours) && raw.hours.length === 24 ? raw.hours : fresh.hours,
       dow: Array.isArray(raw?.dow) && raw.dow.length === 7 ? raw.dow : fresh.dow,
+      // T3: a store from before the grid existed (the entire production
+      // history) simply gains an empty one here — the frontend's marginal-
+      // strip fallback exists precisely for that gap. A one-time
+      // STATS_BACKFILL_RESET re-run repopulates it from history.
+      grid: Array.isArray(raw?.grid) && raw.grid.length === 168 ? raw.grid : fresh.grid,
       tracks: raw?.tracks && typeof raw.tracks === 'object' ? raw.tracks : {},
       min5: Array.isArray(raw?.min5) ? raw.min5 : [],
       hourly: Array.isArray(raw?.hourly) ? raw.hourly : [],
@@ -233,6 +242,13 @@ export function createStats(opts = {}) {
       w.p = 0;
       w.lsum = 0;
       w.lcnt = 0;
+    }
+    // T3: grid is play+listener derived, same double-fold risk as
+    // hours/dow above — zero it entirely on reset.
+    for (const g of state.grid) {
+      g.p = 0;
+      g.lsum = 0;
+      g.lcnt = 0;
     }
     state.tracks = {};
     state.watermark = { playedAt: 0, shId: 0 };
@@ -337,6 +353,12 @@ export function createStats(opts = {}) {
     const w = state.dow[dow];
     w.lsum += v;
     w.lcnt += 1;
+    // T3: same reading, folded into the rhythm-heatmap cell — shared by
+    // both callers of foldListener (the live 30s sample and a play row's
+    // own listeners_at_start), same as hours/dow above.
+    const g = state.grid[dow * 24 + hour];
+    g.lsum += v;
+    g.lcnt += 1;
     if (v > state.totals.peak.value) state.totals.peak = { value: v, at: unixSec };
     dirty = true;
   };
@@ -375,6 +397,7 @@ export function createStats(opts = {}) {
     if (isRequest) d.r += 1;
     state.hours[hour].p += 1;
     state.dow[dow].p += 1;
+    state.grid[dow * 24 + hour].p += 1; // T3
 
     let t = state.tracks[songId];
     const isNewTrack = !t;
@@ -797,6 +820,100 @@ export function createStats(opts = {}) {
       .map((x) => ({ id: x.id, title: x.t.t, art: x.t.art, plays: x.t.n })),
   });
 
+  // T2: single source of truth for the coverage/backfill state string, used
+  // by both /stats/summary's meta.coverage.backfill and /stats/health's
+  // backfill.state. Previously meta.coverage.backfill went straight to
+  // 'none' whenever API_KEY was absent, even with a fully-done backfill
+  // (production's actual shape: done=true, key since removed) — halted/done
+  // must be reported regardless of whether a key is currently configured,
+  // since they describe what already happened, not what a key would do now.
+  const backfillState = () =>
+    state.backfill.halted ? 'halted' : state.backfill.done ? 'done' : API_KEY ? 'running' : 'none';
+
+  // T1: per-range rollups for /stats/summary. Per-track/per-artist data is
+  // only month-granular, so each window is deliberately month-floored (the
+  // client labels it "since <Mon YYYY>") rather than day-exact like the KPI
+  // tiles, which read the dense `days` series client-side instead.
+  //
+  // Single pass over tracks (and one over artistsIdx): each entry's months
+  // map is walked once, and each month's count is folded into every window
+  // bucket whose sinceMonth is <= that month — O(tracks x months) with a
+  // constant (4) window fan-out per month, not O(tracks x months x windows)
+  // in any bigger-O sense.
+  const RANGE_DAY_WINDOWS = [
+    ['7d', 7],
+    ['30d', 30],
+    ['90d', 90],
+    ['1y', 365],
+  ];
+  const computeRanges = (nowSec) => {
+    const sinceMonths = RANGE_DAY_WINDOWS.map(([key, days]) => [key, dateParts(nowSec - days * 86_400).month]);
+
+    const trackAgg = new Map(RANGE_DAY_WINDOWS.map(([key]) => [key, new Map()])); // key -> Map<trackId, plays>
+    for (const [id, t] of Object.entries(state.tracks)) {
+      for (const [m, n] of Object.entries(t.m || {})) {
+        for (const [key, sinceMonth] of sinceMonths) {
+          if (m >= sinceMonth) {
+            const bucket = trackAgg.get(key);
+            bucket.set(id, (bucket.get(id) || 0) + n);
+          }
+        }
+      }
+    }
+
+    const artistAgg = new Map(RANGE_DAY_WINDOWS.map(([key]) => [key, new Map()])); // key -> Map<artistKey, plays>
+    for (const [artistKey, a] of artistsIdx) {
+      for (const [m, n] of Object.entries(a.months || {})) {
+        for (const [key, sinceMonth] of sinceMonths) {
+          if (m >= sinceMonth) {
+            const bucket = artistAgg.get(key);
+            bucket.set(artistKey, (bucket.get(artistKey) || 0) + n);
+          }
+        }
+      }
+    }
+
+    const ranges = {};
+    for (const [key, sinceMonth] of sinceMonths) {
+      const trackBucket = trackAgg.get(key);
+      // requests here is the track's ALL-TIME rq, not range-scoped — per-play
+      // request flags aren't month-granular so a true range sum isn't cheap
+      // to derive from `m`. Still useful for the top-list rows; the KPI
+      // requests tile uses an exact day-sum instead (client-side, from the
+      // dense `days` series).
+      const topTracks = [...trackBucket.entries()]
+        .map(([id, plays]) => {
+          const t = state.tracks[id];
+          return { id, title: t.t, artist: t.a, art: t.art, plays, requests: t.rq };
+        })
+        .sort((a, b) => b.plays - a.plays)
+        .slice(0, 25);
+
+      const artistBucket = artistAgg.get(key);
+      const topArtists = [...artistBucket.entries()]
+        .map(([artistKey, plays]) => {
+          const a = artistsIdx.get(artistKey);
+          // Same all-time-requests note as topTracks above. `tracks` is a
+          // true range count though: how many of this artist's trackIds
+          // actually had a month in this window (not the artist's all-time
+          // track count).
+          const tracks = [...a.trackIds].filter((id) => trackBucket.has(id)).length;
+          return { name: a.name, plays, requests: a.requests, tracks };
+        })
+        .sort((a, b) => b.plays - a.plays)
+        .slice(0, 25);
+
+      ranges[key] = {
+        sinceMonth,
+        uniqueTracks: trackBucket.size,
+        uniqueArtists: artistBucket.size,
+        topTracks,
+        topArtists,
+      };
+    }
+    return ranges;
+  };
+
   let summaryCache = null;
   let summaryCacheAt = 0;
   const computeSummary = () => {
@@ -822,7 +939,7 @@ export function createStats(opts = {}) {
         coverage: {
           from: state.coveredFrom,
           to: state.watermark.playedAt || null,
-          backfill: API_KEY ? (state.backfill.halted ? 'halted' : state.backfill.done ? 'done' : 'running') : 'none',
+          backfill: backfillState(),
         },
       },
       totals: {
@@ -837,8 +954,13 @@ export function createStats(opts = {}) {
       days: densifyDays(fromDay, toDay),
       hours: state.hours.map((h, i) => ({ h: i, p: h.p, lavg: h.lcnt ? round1(h.lsum / h.lcnt) : null })),
       dow: state.dow.map((w, i) => ({ w: i, p: w.p, lavg: w.lcnt ? round1(w.lsum / w.lcnt) : null })),
+      // T3: always emitted (~6KB) — all-zero on a store that predates the
+      // grid, which is exactly why the frontend has a marginal-strip
+      // fallback for that case rather than a "no data yet" server flag.
+      grid: state.grid.map((g, i) => ({ w: Math.floor(i / 24), h: i % 24, p: g.p, lavg: g.lcnt ? round1(g.lsum / g.lcnt) : null })),
       topTracks,
       topArtists,
+      ranges: computeRanges(nowSec),
     };
   };
   const buildSummary = () => {
@@ -850,12 +972,34 @@ export function createStats(opts = {}) {
 
   const bucketToPoint = (b) => ({ t: b.t, avg: b.cnt ? round1(b.sum / b.cnt) : null, max: b.cnt ? b.max : null });
 
+  // Ring buckets are appended in arrival order, which normally IS time order —
+  // but a clock step (NTP, restart with a skewed host clock) can leave the
+  // ring locally unsorted or with a duplicate bucket for the same t. Clients
+  // densify these series by walking first→last t, so serve them SORTED with
+  // duplicate-t buckets merged (weighted, max-of-max) rather than trusting
+  // arrival order.
+  const sortedMerged = (buckets) => {
+    const sorted = buckets.slice().sort((a, b) => a.t - b.t);
+    const out = [];
+    for (const b of sorted) {
+      const last = out[out.length - 1];
+      if (last && last.t === b.t) {
+        last.sum += b.sum;
+        last.cnt += b.cnt;
+        if (b.max > last.max) last.max = b.max;
+      } else {
+        out.push({ ...b });
+      }
+    }
+    return out;
+  };
+
   const computeListeners = (range) => {
     const nowSec = Math.floor(clock() / 1000);
     if (range === '7d' || range === '30d') {
       const days = range === '7d' ? 7 : 30;
       const cutoff = nowSec - days * 86_400;
-      return { ok: true, range, step: 3600, points: state.hourly.filter((b) => b.t >= cutoff).map(bucketToPoint) };
+      return { ok: true, range, step: 3600, points: sortedMerged(state.hourly.filter((b) => b.t >= cutoff)).map(bucketToPoint) };
     }
     if (range === 'all') {
       const fromDay = state.coveredFrom != null ? dateParts(state.coveredFrom).day : dateParts(nowSec).day;
@@ -877,7 +1021,7 @@ export function createStats(opts = {}) {
     }
     // default: 24h
     const cutoff = nowSec - 24 * 3600;
-    return { ok: true, range: '24h', step: 300, points: state.min5.filter((b) => b.t >= cutoff).map(bucketToPoint) };
+    return { ok: true, range: '24h', step: 300, points: sortedMerged(state.min5.filter((b) => b.t >= cutoff)).map(bucketToPoint) };
   };
   const listenersCache = new Map(); // range -> { at, payload }
   const buildListeners = (range) => {
@@ -959,7 +1103,18 @@ export function createStats(opts = {}) {
           // fetchHistoryPaginated/backfillStep) and NEVER free text, so
           // it's safe to expose and makes a halted/backed-off backfill
           // observable (S3).
-          backfill: { enabled: !!API_KEY, done: state.backfill.done, halted: state.backfill.halted, lastError: state.backfill.lastError },
+          // T2: `state` mirrors meta.coverage.backfill's derivation (see
+          // backfillState) so a done-but-keyless deploy (production, since
+          // the key was removed post-backfill) reports 'done' here too,
+          // not just via the enabled/done/halted booleans that were already
+          // present.
+          backfill: {
+            enabled: !!API_KEY,
+            done: state.backfill.done,
+            halted: state.backfill.halted,
+            lastError: state.backfill.lastError,
+            state: backfillState(),
+          },
           // S6: sync's own health, kept separate from backfill.lastError
           // (which sync never writes to).
           sync: { failures: syncFailures, lastOkAt: syncOkAt || null },

@@ -984,3 +984,258 @@ test('STATS_BACKFILL_RESET wipes plays and day/hour/dow listener aggregates but 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- 11. Rhythm grid (T3) -----------------------------------------------------
+
+test('grid (T3): a play lands in the right dow*24+hour cell across a station-TZ day boundary', async () => {
+  const s = await withServer();
+  try {
+    // Same row as the "played_at 03:00 UTC buckets to the PREVIOUS
+    // station-TZ day" test above: 2026-01-15T03:00:00Z = 2026-01-14T22:00
+    // ET. isOnline:false so the live listener sample (bucketed at the
+    // withServer clock, a different calendar day) doesn't also touch the
+    // grid and confuse this assertion.
+    const ts = Date.parse('2026-01-15T03:00:00Z') / 1000;
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('grid-x', ts), isOnline: false }));
+
+    // dow of 2026-01-14 (Wednesday) via the same UTC-date-string method the
+    // implementation uses, hour 22 (ET) — cell index dow*24+hour.
+    const dow = new Date('2026-01-14T00:00:00Z').getUTCDay();
+    const cellIndex = dow * 24 + 22;
+    assert.equal(s.stats.state.grid[cellIndex].p, 1);
+    // No other cell got a play.
+    const totalP = s.stats.state.grid.reduce((sum, g) => sum + g.p, 0);
+    assert.equal(totalP, 1);
+  } finally {
+    await s.close();
+  }
+});
+
+test('grid (T3): both listener sources (live sample + a row\'s listeners_at_start) fold lsum/lcnt into the same cell', async () => {
+  const s = await withServer();
+  try {
+    // Both land on the same calendar hour/day/dow: the live "now" sample
+    // (the withServer clock) and the row's own listeners_at_start.
+    const nowSec = Math.floor(s.clockRef.t / 1000);
+    s.stats.ingestNowPlaying(
+      nowPlayingPayload({ nowPlaying: row('grid-l', nowSec, { listeners: 9 }), listeners: 9 }),
+    );
+    const anyFolded = s.stats.state.grid.some((g) => g.lcnt === 2 && g.lsum === 18);
+    assert.ok(anyFolded, 'one cell must have folded both the live sample and the row listener reading');
+  } finally {
+    await s.close();
+  }
+});
+
+test('grid (T3): STATS_BACKFILL_RESET zeroes the grid entirely', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'efm-stats-grid-reset-'));
+  const storePath = join(dir, 'stats.json');
+  try {
+    const clockRef = { t: Date.parse('2026-01-15T12:00:00Z') };
+    const s1 = createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt, now: () => clockRef.t });
+    s1.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('grid-reset', T_NOON, { listeners: 5 }), listeners: 5 }));
+    s1.save();
+    const someNonZero = s1.state.grid.some((g) => g.p > 0 || g.lcnt > 0);
+    assert.ok(someNonZero);
+
+    const s2 = createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt, now: () => clockRef.t, backfillReset: 'grid-v1' });
+    for (const g of s2.state.grid) {
+      assert.equal(g.p, 0);
+      assert.equal(g.lsum, 0);
+      assert.equal(g.lcnt, 0);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('grid (T3): /stats/summary always emits a 168-entry grid shaped { w, h, p, lavg }', async () => {
+  const s = await withServer();
+  try {
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('grid-shape', T_NOON, { listeners: 4 }), listeners: 4 }));
+
+    const r = await fetch(`${s.base}/stats/summary`);
+    const body = await r.json();
+    assert.equal(body.grid.length, 168);
+    for (let i = 0; i < 168; i++) {
+      assert.equal(body.grid[i].w, Math.floor(i / 24));
+      assert.equal(body.grid[i].h, i % 24);
+    }
+    const totalP = body.grid.reduce((sum, c) => sum + c.p, 0);
+    assert.equal(totalP, 1);
+    const nonEmpty = body.grid.filter((c) => c.lavg !== null);
+    assert.ok(nonEmpty.length >= 1);
+  } finally {
+    await s.close();
+  }
+});
+
+// ---- 12. Per-range rollups (T1) ------------------------------------------------
+
+test('ranges (T1): month-floored per-range windows compute correct unique counts, sums, sort order, and leave root topTracks untouched', async () => {
+  const s = await withServer({ startMs: Date.parse('2026-08-20T18:00:00Z') });
+  try {
+    // "now" = 2026-08-20T18:00 UTC (13:00/14:00 ET) — sinceMonth for each
+    // window, by the same nowSec-minus-N-days/dateParts math the
+    // implementation uses:
+    //   7d  -> 2026-08-13 -> month 2026-08
+    //   30d -> 2026-07-21 -> month 2026-07
+    //   90d -> 2026-05-22 -> month 2026-05
+    //   1y  -> 2025-08-20 -> month 2025-08
+    // Five tracks, one play-timestamp each (ascending, so every call clears
+    // the shared forward watermark), placed to land in different window
+    // combinations:
+    const plays = [
+      // rangeD: Jan 2025 — before even the 1y window (2025-08) — excluded
+      // from every range, but highest all-time n so it must still lead the
+      // root (unfiltered) topTracks list, proving ranges are additive, not
+      // a replacement.
+      ...Array.from({ length: 5 }, (_, i) => ['rangeD', Date.parse('2025-01-15T12:00:00Z') / 1000 + i, 'Artist D']),
+      // rangeC: Oct 2025 — inside the 1y window only.
+      ['rangeC', Date.parse('2025-10-15T12:00:00Z') / 1000, 'Shared Artist'],
+      // rangeB: Jun 2026 — inside 90d and 1y, outside 30d/7d.
+      ...Array.from({ length: 4 }, (_, i) => ['rangeB', Date.parse('2026-06-15T12:00:00Z') / 1000 + i, 'Shared Artist']),
+      // rangeE: Jul 2026 — inside 30d/90d/1y, outside 7d.
+      ...Array.from({ length: 2 }, (_, i) => ['rangeE', Date.parse('2026-07-25T12:00:00Z') / 1000 + i, 'Artist E']),
+      // rangeA: Aug 2026 — inside every window, one play flagged as a
+      // request (all-time rq=1) to check the requests passthrough.
+      ['rangeA', Date.parse('2026-08-15T12:00:00Z') / 1000, 'Artist A', true],
+      ...Array.from({ length: 2 }, (_, i) => ['rangeA', Date.parse('2026-08-15T12:00:00Z') / 1000 + 1 + i, 'Artist A']),
+    ];
+    for (const [id, playedAt, artist, isRequest] of plays) {
+      s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row(id, playedAt, { artist, isRequest: !!isRequest, shId: playedAt }) }));
+    }
+
+    const r = await fetch(`${s.base}/stats/summary`);
+    const body = await r.json();
+    const { ranges } = body;
+
+    // sinceMonth per window.
+    assert.equal(ranges['7d'].sinceMonth, '2026-08');
+    assert.equal(ranges['30d'].sinceMonth, '2026-07');
+    assert.equal(ranges['90d'].sinceMonth, '2026-05');
+    assert.equal(ranges['1y'].sinceMonth, '2025-08');
+
+    // 7d: rangeA only.
+    assert.equal(ranges['7d'].uniqueTracks, 1);
+    assert.equal(ranges['7d'].uniqueArtists, 1);
+    assert.deepEqual(ranges['7d'].topTracks.map((t) => t.id), ['rangeA']);
+    assert.equal(ranges['7d'].topTracks[0].plays, 3);
+    assert.equal(ranges['7d'].topTracks[0].requests, 1); // all-time rq, per spec
+
+    // 30d: rangeA + rangeE, sorted desc by range plays (A=3 > E=2).
+    assert.equal(ranges['30d'].uniqueTracks, 2);
+    assert.deepEqual(ranges['30d'].topTracks.map((t) => t.id), ['rangeA', 'rangeE']);
+    assert.equal(ranges['30d'].topTracks[1].plays, 2);
+
+    // 90d: + rangeB (plays=4), now the top of the list.
+    assert.equal(ranges['90d'].uniqueTracks, 3);
+    assert.deepEqual(ranges['90d'].topTracks.map((t) => t.id), ['rangeB', 'rangeA', 'rangeE']);
+    assert.equal(ranges['90d'].topTracks[0].plays, 4);
+
+    // 1y: + rangeC (plays=1), at the tail.
+    assert.equal(ranges['1y'].uniqueTracks, 4);
+    assert.deepEqual(ranges['1y'].topTracks.map((t) => t.id), ['rangeB', 'rangeA', 'rangeE', 'rangeC']);
+
+    // topArtists: "Shared Artist" (rangeB + rangeC) — 90d sees only rangeB
+    // (rangeC is outside 90d), so tracks=1 there but tracks=2 once rangeC
+    // also enters at 1y; plays sums its months across whichever of its
+    // tracks' months fall in-window.
+    const shared90 = ranges['90d'].topArtists.find((a) => a.name === 'Shared Artist');
+    assert.equal(shared90.plays, 4);
+    assert.equal(shared90.tracks, 1);
+    const shared1y = ranges['1y'].topArtists.find((a) => a.name === 'Shared Artist');
+    assert.equal(shared1y.plays, 5);
+    assert.equal(shared1y.tracks, 2);
+    assert.equal(shared1y.requests, 0); // all-time rq for this artist — no requests were flagged
+
+    // Root (unfiltered) topTracks is untouched by the ranges addition —
+    // rangeD (n=5, all-time) still leads it even though it's excluded from
+    // every range window.
+    assert.equal(body.topTracks[0].id, 'rangeD');
+    assert.equal(body.topTracks[0].plays, 5);
+  } finally {
+    await s.close();
+  }
+});
+
+// ---- 13. Backfill state reporting (T2) -----------------------------------------
+
+test('backfill state (T2): done=true + no key reports "done" (not "none") in both summary and health', async () => {
+  const s = await withServer(); // no apiKey
+  try {
+    s.stats.state.backfill.done = true;
+
+    const rSummary = await fetch(`${s.base}/stats/summary`);
+    const summary = await rSummary.json();
+    assert.equal(summary.meta.coverage.backfill, 'done');
+
+    const rHealth = await fetch(`${s.base}/stats/health`);
+    const health = await rHealth.json();
+    assert.equal(health.backfill.state, 'done');
+    // The pre-existing enabled/done/halted shape is untouched.
+    assert.equal(health.backfill.enabled, false);
+    assert.equal(health.backfill.done, true);
+    assert.equal(health.backfill.halted, false);
+  } finally {
+    await s.close();
+  }
+});
+
+test('backfill state (T2): halted takes priority over done, regardless of key presence; a fresh store with a key reports "running"', async () => {
+  const s = await withServer({ apiKey: 'k' });
+  try {
+    s.stats.state.backfill.done = true;
+    s.stats.state.backfill.halted = true;
+    let r = await fetch(`${s.base}/stats/summary`);
+    let body = await r.json();
+    assert.equal(body.meta.coverage.backfill, 'halted');
+
+    s.stats.state.backfill.halted = false;
+    s.stats.state.backfill.done = false;
+    s.clockRef.t += 31_000; // past the summary cache TTL so the mutation above is actually recomputed
+    r = await fetch(`${s.base}/stats/summary`);
+    body = await r.json();
+    assert.equal(body.meta.coverage.backfill, 'running'); // key present, not done/halted yet
+  } finally {
+    await s.close();
+  }
+});
+
+test('backfill state (T2): no key, not done, not halted reports "none"', async () => {
+  const s = await withServer();
+  try {
+    const r = await fetch(`${s.base}/stats/summary`);
+    const body = await r.json();
+    assert.equal(body.meta.coverage.backfill, 'none');
+  } finally {
+    await s.close();
+  }
+});
+
+// ---- 14. Listener series ordering ---------------------------------------------
+
+test('listeners series are served sorted with duplicate-t buckets merged (clock-step safety)', async () => {
+  const s = await withServer();
+  try {
+    // Simulate a ring left unsorted by a clock step: a "now" bucket appended
+    // first, then older buckets, then a duplicate of the first bucket's hour.
+    const nowSec = Math.floor(s.clockRef.t / 1000);
+    const hour = Math.floor(nowSec / 3600) * 3600;
+    s.stats.state.hourly = [
+      { t: hour, sum: 42, cnt: 1, max: 42 },
+      { t: hour - 2 * 3600, sum: 10, cnt: 2, max: 6 },
+      { t: hour - 3600, sum: 20, cnt: 2, max: 12 },
+      { t: hour, sum: 58, cnt: 1, max: 67 },
+    ];
+    const r = await fetch(`${s.base}/stats/listeners?range=30d`);
+    const body = await r.json();
+    const ts = body.points.map((p) => p.t);
+    assert.deepEqual(ts, [hour - 2 * 3600, hour - 3600, hour]); // sorted, no duplicate t
+    const merged = body.points[2];
+    assert.equal(merged.avg, 50); // (42+58)/2 — weighted merge of the duplicate hour
+    assert.equal(merged.max, 67);
+  } finally {
+    await s.close();
+  }
+});

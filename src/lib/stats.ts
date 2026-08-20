@@ -44,6 +44,50 @@ export interface StatsTopArtist {
 
 export type BackfillState = 'none' | 'running' | 'done' | 'halted';
 
+// Per-range rollup (PART S T1) — month-floored windows, since per-track
+// history is only month-granular. Shapes mirror the root topTracks/topArtists
+// entries closely on purpose (the client's list renderer is shared), but the
+// range variants are deliberately slimmer: no firstAt/lastAt (not meaningful
+// once the list is windowed) and `requests` is sourced from the ALL-TIME
+// per-track/artist count (cheap, still useful) rather than a windowed sum —
+// see server/stats.mjs for the comment. The KPI requests tile never reads
+// this; it sums StatsDay.r over the window instead, which is exact.
+export type StatsRangeKey = '7d' | '30d' | '90d' | '1y';
+
+export interface StatsRangeTopTrack {
+  id: string;
+  title: string;
+  artist: string;
+  art: string;
+  plays: number; // Σ months >= sinceMonth
+  requests: number; // all-time, not windowed — see note above
+}
+
+export interface StatsRangeTopArtist {
+  name: string;
+  plays: number;
+  requests: number;
+  tracks: number;
+}
+
+export interface StatsRangeRollup {
+  sinceMonth: string; // 'YYYY-MM', station TZ — the honest floor for the window label
+  uniqueTracks: number;
+  uniqueArtists: number;
+  topTracks: StatsRangeTopTrack[]; // top 25 by windowed plays
+  topArtists: StatsRangeTopArtist[]; // top 25 by windowed plays
+}
+
+// Day-of-week × hour rhythm grid (PART S T3), index = dow*24 + hour, always
+// 168 entries (a store that predates the grid emits it zero-filled — that's
+// exactly why the frontend keeps the marginal-strip fallback, see stats.ts).
+export interface StatsGridCell {
+  w: number; // 0..6, 0 = Sunday, station TZ
+  h: number; // 0..23, station TZ hour-of-day
+  p: number; // plays landing in this day×hour cell, all-time
+  lavg: number | null; // avg listeners folded into this cell, null = no samples
+}
+
 export interface StatsSummary {
   ok: true;
   meta: {
@@ -70,6 +114,8 @@ export interface StatsSummary {
   dow: StatsDow[];
   topTracks: StatsTopTrack[];
   topArtists: StatsTopArtist[];
+  ranges: Record<StatsRangeKey, StatsRangeRollup>;
+  grid: StatsGridCell[]; // always 168 entries, see StatsGridCell
 }
 
 export interface ListenersPoint {
