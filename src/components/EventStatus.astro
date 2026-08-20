@@ -1,0 +1,59 @@
+---
+// /events page — "what's happening right now" card. `site.events.status.current`
+// is null today, so this always renders the off-air empty state below. The
+// ACTIVE branch is fully implemented and styled (status pill matching the
+// player's AUTO DJ/ON AIR pills, name/venue/times/description, optional
+// image, Listen button) so flipping `current` in site.config.ts lights it up
+// with no component changes. Every node a later runtime fetch would need to
+// hydrate carries a stable evst-* id. No backend, no polling here.
+import { site } from '../site.config';
+const s = site.events.status;
+const current = s.current;
+---
+
+<section class="section" aria-label={s.title}>
+  <div class="card" id="evst-card">
+    <h2 class="text-base lg:text-xl font-bold tracking-wide text-sunburst">{s.title}</h2>
+
+    {current ? (
+      <div class="mt-3">
+        <span id="evst-pill" class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-ruby/90 text-cream animate-soft-pulse">
+          <span id="evst-pill-text">{s.onAir.pill}</span>
+        </span>
+        {current.imageUrl && (
+          <img id="evst-image" src={current.imageUrl} alt="" class="mt-3 w-full rounded-lg object-cover" style="max-height: 160px;" />
+        )}
+        <h3 id="evst-name" class="mt-2 text-lg font-bold text-cream">{current.name}</h3>
+        <p id="evst-venue" class="text-sm text-cream/70">{current.venue}</p>
+        <p id="evst-times" class="mt-1 text-xs text-cream/50">{current.startsAt} &ndash; {current.endsAt}</p>
+        <p id="evst-description" class="mt-2 text-sm text-cream/80 leading-relaxed">{current.description}</p>
+        <a id="evst-listen" href={current.listenUrl || '/'} class="btn btn-sunburst mt-3 w-full">Listen</a>
+      </div>
+    ) : (
+      <div class="mt-3">
+        <span id="evst-pill" class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-widest bg-cream/10 text-cream/50">
+          <span class="efm-eq" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span id="evst-pill-text">{s.offAir.pill}</span>
+        </span>
+        <h3 id="evst-heading" class="mt-2 text-base font-bold text-cream">{s.offAir.heading}</h3>
+        <p id="evst-body" class="mt-1 text-sm text-cream/70 leading-relaxed">{s.offAir.body}</p>
+        <button type="button" id="evst-cta" class="btn btn-sunburst mt-3 w-full">{s.offAir.cta}</button>
+      </div>
+    )}
+  </div>
+</section>
+
+<script is:inline>
+  (function () {
+    var cta = document.getElementById('evst-cta');
+    if (!cta) return;
+    cta.addEventListener('click', function () {
+      var dispatch = function () { document.dispatchEvent(new CustomEvent('efm:open-event-inquiry')); };
+      if (typeof document.startViewTransition === 'function') {
+        document.startViewTransition(dispatch);
+      } else {
+        dispatch();
+      }
+    });
+  })();
+</script>

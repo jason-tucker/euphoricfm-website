@@ -71,7 +71,11 @@ Webhook URLs (`PUBLIC_DISCORD_REQUEST_WEBHOOK`, `PUBLIC_DISCORD_CONTACT_WEBHOOK`
 src/
   layouts/BaseLayout.astro     window.__EFM_CONFIG__ injected here; imports nowplaying.ts + effects.ts
   pages/index.astro            composes the page top-to-bottom
-  site.config.ts               single source of truth for editable strings (NOT webhook URLs)
+  pages/events.astro           composes the Euphoric FM Events page (Header → EventsHero →
+                               EventsHowItWorks → EventsServices → EventStatus → Footer,
+                               EventInquiryModal outside .phone)
+  site.config.ts               single source of truth for editable strings (NOT webhook URLs);
+                               includes the `events` block — all /events copy lives here
   scripts/nowplaying.ts        client-side polling + RAF progress bar
   scripts/effects.ts           music-reactive visual effects (spring physics, album-art theming,
                                OKLCH colour extractor, effects master toggle)
@@ -83,6 +87,11 @@ src/
   styles/tokens.css            centralised CSS colour tokens (brand palette + semantic roles)
   components/*.astro            includes Stats.astro (stats section skeleton, hydrated by
                                scripts/stats.ts)
+  components/EventsHero.astro, EventsHowItWorks.astro, EventsServices.astro,
+    EventStatus.astro, EventInquiryModal.astro
+                               /events page components; EventInquiryModal posts to the
+                               existing contact Discord webhook with a distinguished embed;
+                               EventStatus is config-driven (site.events.status.current)
 public/
   fonts/                       Begaron (Euphoric) + Cortado Script (FM)
   favicon.svg

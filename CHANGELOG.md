@@ -5,6 +5,18 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.15.0] — 2026-08-20 — Euphoric FM Events page
+
+### Added
+- **New `/events` page** for booking Euphoric FM to bring curated music and radio programming to a venue: a hero (heading, body, "Plan Your Event" / "Listen to Euphoric FM" CTAs), a three-step "How It Works" walkthrough, a services rundown (curated music, event radio programming, announcements, venue-wide radio, live changes) with a "Good for" chip list (grand openings, club nights, private parties, car meets, business events, community events, special events), and an `EventStatus` section — new components `EventsHero.astro`, `EventsHowItWorks.astro`, `EventsServices.astro`, `EventStatus.astro`, `EventInquiryModal.astro`, mirroring `index.astro`'s composition through `BaseLayout`.
+- **Event inquiry modal reuses the existing contact webhook pipeline** (`window.__EFM_CONFIG__.discord.contactWebhook`, still runtime env-injected, no new env var) but posts a distinguished sunburst-coloured embed (`username: 'EuphoricFM Events'`, `📅 Euphoric FM Event Inquiry`, thread named after the event) so staff can tell an event booking apart from a general contact message at a glance. Since `/events` doesn't mount `ActionRow`, the modal ships fully self-contained — its own open listener, close/backdrop/Escape handling, loading/success/error states — rather than relying on `ActionRow`'s shared close-handling script.
+- **Config-driven, future-ready `EventStatus`.** The section reads `site.events.status.current` (`null` today) and renders a polished "nothing on the calendar" empty state with its own "Plan Your Event" CTA; the fully-styled active-broadcast branch (status pill, name, venue, times, description, optional image, Listen link) is ready to light up the moment an event is set in config, no code changes needed later.
+- **Events link on the homepage.** `ActionRow` gains a third `Events` button (outline `btn-events` style, tokens only) alongside Request / Submit / Contact / Business AD, routing to `/events`.
+- All Events copy — hero, how-it-works, services, good-for chips, status states, and inquiry form strings — lives in `src/site.config.ts`'s new `events` block, matching the rest of the site's editable-copy convention.
+
+### Fixed
+- **Rhythm heatmap read as broken on live data.** Cell intensity was `value / max`, but a 24/7 station's per-hour totals all sit at 60–100% of the peak — every cell painted near-full-strength orange and switching the Plays/Listeners basis looked like it did nothing. Intensity is now min–max normalized across the rendered cells (a genuinely flat series gets a uniform mid tone), so the daily rhythm is actually visible and the basis toggle visibly changes the pattern. The fallback heat strips' cells also swap `aspect-square` for a fixed strip height — the 7-cell "By day" row rendered as giant ~44px blocks. The stats module also now skips its `/stats/summary` fetch entirely on pages without the stats section (e.g. `/events`).
+
 ## [0.14.0] — 2026-08-20 — Synced stats ranges, rhythm heatmap, and ten review fixes
 
 ### Added

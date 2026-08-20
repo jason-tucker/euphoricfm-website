@@ -1,0 +1,38 @@
+---
+// /events page hero — eyebrow + heading + body + two CTAs. No ActionRow on
+// this page (see EventInquiryModal.astro), so "Plan Your Event" dispatches
+// efm:open-event-inquiry itself, wrapped the same View Transition way
+// ActionRow.astro's fire() helper does on the homepage.
+import { site } from '../site.config';
+const h = site.events.hero;
+---
+
+<section class="section">
+  <div class="card">
+    <div class="flex items-center gap-2">
+      <span class="efm-eq text-sunburst" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+      <span class="text-[10px] uppercase tracking-widest text-gold">{h.eyebrow}</span>
+    </div>
+    <h2 class="mt-2 font-bold text-cream leading-tight" style="font-size: clamp(1.375rem, 3.5vw, 2rem);">{h.heading}</h2>
+    <p class="mt-2 text-sm lg:text-base text-cream/75 leading-relaxed">{h.body}</p>
+    <div class="mt-4 flex flex-wrap gap-2">
+      <button type="button" id="events-hero-plan" class="btn btn-sunburst">{h.ctaPlan}</button>
+      <a href="/" class="btn btn-midnight">{h.ctaListen}</a>
+    </div>
+  </div>
+</section>
+
+<script is:inline>
+  (function () {
+    var btn = document.getElementById('events-hero-plan');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      var dispatch = function () { document.dispatchEvent(new CustomEvent('efm:open-event-inquiry')); };
+      if (typeof document.startViewTransition === 'function') {
+        document.startViewTransition(dispatch);
+      } else {
+        dispatch();
+      }
+    });
+  })();
+</script>

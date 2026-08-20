@@ -186,4 +186,132 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       tablePlays: 'Plays',
     },
   },
+
+  // Euphoric FM Events — public /events page (src/pages/events.astro +
+  // EventsHero/EventsHowItWorks/EventsServices/EventStatus/EventInquiryModal).
+  // EVERY user-visible string those components render comes from here, same
+  // discipline as `stats` above. Discord payload copy (username, embed title/
+  // color/footer) stays inline in EventInquiryModal.astro's script — same
+  // pattern ContactModal.astro already uses for its own webhook copy.
+  events: {
+    title: 'Events',
+    description:
+      'Bring Euphoric FM to your next event — curated music and radio programming for grand openings, private parties, car meets, club nights, and more.',
+
+    hero: {
+      eyebrow: 'EUPHORIC FM EVENTS',
+      heading: 'Bring Euphoric FM to your next event.',
+      body: "Whether you're planning a grand opening, private party, car meet, club night, community gathering, or something entirely your own, Euphoric FM can help give your event its own sound. Work with our team to create curated music and radio programming tailored to your event.",
+      ctaPlan: 'Plan Your Event',
+      ctaListen: 'Listen to Euphoric FM',
+    },
+
+    howItWorks: {
+      title: 'How It Works',
+      steps: [
+        {
+          n: 1,
+          title: 'Tell Us About Your Event',
+          body: "Send us the details — what you're planning, when, and where. No detail is too small to include.",
+        },
+        {
+          n: 2,
+          title: 'We Build the Sound',
+          body: "Our team puts together curated music and radio programming that matches the mood you're going for.",
+        },
+        {
+          n: 3,
+          title: 'Tune In',
+          body: 'Set up Euphoric FM radios throughout your venue and let the programming carry the night.',
+        },
+      ],
+    },
+
+    services: {
+      title: 'Your Event. Your Sound.',
+      items: [
+        {
+          title: 'Curated Music',
+          body: 'Hand-picked tracks that match the mood and pace of your event, start to finish.',
+        },
+        {
+          title: 'Event Radio Programming',
+          body: 'A dedicated programming block built around your event — not just a playlist on shuffle.',
+        },
+        {
+          title: 'Announcements',
+          body: 'On-air shoutouts and updates woven into the broadcast — schedule changes, specials, whatever guests need to hear.',
+        },
+        {
+          title: 'Venue-Wide Radio',
+          body: 'Set up Euphoric FM radios throughout your venue so the sound follows guests wherever they go.',
+        },
+        {
+          title: 'Live Changes',
+          body: "Want to shift the mood mid-event? We'll accommodate changes where practical.",
+        },
+      ],
+    },
+
+    goodFor: {
+      title: 'Good For',
+      items: [
+        'Grand Openings',
+        'Club Nights',
+        'Private Parties',
+        'Car Meets',
+        'Business Events',
+        'Community Events',
+        'Special Events',
+      ],
+    },
+
+    // EventStatus.astro — the future-dynamic "what's on right now" area.
+    // `current` is null today (renders the polished empty state below); the
+    // ACTIVE shape is fully typed so a later runtime fetch can hydrate the
+    // evst-* nodes without any component changes. No backend, no polling yet.
+    status: {
+      title: 'Happening Now',
+      offAir: {
+        pill: 'OFF AIR',
+        heading: 'Nothing on the calendar right now.',
+        body: "Euphoric FM Events isn't currently broadcasting for an event. Planning something? Let's change that.",
+        cta: 'Plan Your Event',
+      },
+      onAir: {
+        pill: 'ON AIR',
+      },
+      current: null as null | {
+        name: string;
+        venue: string;
+        startsAt: string;
+        endsAt: string;
+        description: string;
+        imageUrl?: string;
+        status: string;
+        listenUrl?: string;
+      },
+    },
+
+    inquiry: {
+      button: 'Send Inquiry',
+      title: 'Plan an Event with Euphoric FM',
+      intro:
+        "Tell us what you're planning and what you'd like Euphoric FM to bring to it. You don't need to have every detail figured out yet.",
+      eventTypes: [
+        'Grand Opening',
+        'Nightlife & Club',
+        'Private Party',
+        'Car Meet',
+        'Business Event',
+        'Community Event',
+        'Other',
+      ],
+      attendancePlaceholder: 'e.g., 30–50 guests',
+      atmospherePlaceholder: 'High energy, relaxed, upscale, throwback, party, background music…',
+      announcementsPlaceholder: 'Anything we should announce or promote during the broadcast?',
+      success: "Thanks! Your event inquiry was sent — we'll be in touch.",
+      webhookMissing: 'Inquiries are temporarily disabled — webhook not configured.',
+    },
+  },
 } as const;

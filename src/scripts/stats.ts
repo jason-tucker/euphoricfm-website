@@ -1095,6 +1095,7 @@ interface PlotPoint {
     values: (number | null)[];
     pct: (number | null)[];
     max: number;
+    min: number;
   }
 
   // Shared intensity/percentage math for the full grid AND the two marginal
@@ -1104,10 +1105,11 @@ interface PlotPoint {
     const values = raw.map((c) => (basis === 'plays' ? c.p : c.lavg));
     const numeric = values.filter((v): v is number => v !== null);
     const max = Math.max(0, ...numeric);
+    const min = numeric.length ? Math.min(...numeric) : 0;
     const sum = numeric.reduce((a, v) => a + v, 0);
     const denom = basis === 'plays' ? sum : max;
     const pct = values.map((v) => (v === null ? null : denom > 0 ? (v / denom) * 100 : 0));
-    return { values, pct, max };
+    return { values, pct, max, min };
   };
 
   // One tooltip element shared by every cell in a heatmap render — cells
@@ -1148,23 +1150,32 @@ interface PlotPoint {
 
   const makeHeatCell = (
     value: number | null,
-    max: number,
+    stat: HeatStat,
     pct: number | null,
     basis: RhythmBasis,
     label: string,
     onShow: (el: HTMLElement, valueLine: string, label: string) => void,
     onHide: () => void,
+    shape: 'square' | 'strip' = 'square',
   ): HTMLElement => {
     const cell = document.createElement('div');
-    cell.className = 'aspect-square rounded-[2px]';
+    // Strips (24×1 / 7×1 fallback rows) get a fixed height — aspect-square
+    // on a 7-cell 1fr row produced giant ~44px blocks that read as broken.
+    cell.className = shape === 'square' ? 'aspect-square rounded-[2px]' : 'h-5 rounded-[2px]';
     if (value === null) {
       // No samples for this cell (listeners basis only) — faint fixed
       // ground, no intensity to compute, no tooltip (nothing to report).
       cell.style.backgroundColor = 'rgb(var(--efm-cream-rgb) / 0.04)';
       return cell;
     }
-    const intensity = max > 0 ? value / max : 0;
-    const a = 0.06 + intensity * 0.9;
+    // Min–max normalization, NOT value/max: a 24/7 station's per-hour totals
+    // all sit at 60–100% of the peak, so value/max painted every cell nearly
+    // full-strength — an unreadable flat orange bar where switching the
+    // Plays/Listeners basis appeared to do nothing (live-reported bug). A
+    // flat series (max == min) is genuinely uniform → mid intensity.
+    const span = stat.max - stat.min;
+    const intensity = span > 0 ? (value - stat.min) / span : 0.5;
+    const a = 0.08 + intensity * 0.88;
     cell.style.backgroundColor = `rgb(var(--efm-sunburst-rgb) / ${a.toFixed(3)})`;
     const valueLine = pct === null ? fullNumber(value) : `${fullNumber(value)} · ${pctLabel(pct, basis)}`;
     const show = () => onShow(cell, valueLine, label);
@@ -1216,7 +1227,7 @@ interface PlotPoint {
       for (let h = 0; h < 24; h++) {
         const idx = w * 24 + h;
         const label = s.rhythm.tooltipCell.replace('{day}', DOW_ABBR[w]).replace('{hour}', HOUR_FULL[h]);
-        cellsWrap.appendChild(makeHeatCell(stat.values[idx], stat.max, stat.pct[idx], basis, label, showTooltip, hideTooltip));
+        cellsWrap.appendChild(makeHeatCell(stat.values[idx], stat, stat.pct[idx], basis, label, showTooltip, hideTooltip));
       }
       row.appendChild(cellsWrap);
       body.appendChild(row);
@@ -1256,7 +1267,7 @@ interface PlotPoint {
     };
 
     const hourCells = hours.map((x) =>
-      makeHeatCell(hourStat.values[x.h], hourStat.max, hourStat.pct[x.h], basis, s.rhythm.tooltipHour.replace('{hour}', HOUR_FULL[x.h]), showTooltip, hideTooltip),
+      makeHeatCell(hourStat.values[x.h], hourStat, hourStat.pct[x.h], basis, s.rhythm.tooltipHour.replace('{hour}', HOUR_FULL[x.h]), showTooltip, hideTooltip, 'strip'),
     );
     wrapper.appendChild(buildStrip(s.rhythm.byHour, 24, hourCells, buildTickRow(24, HOUR_TICK_LIST.map(([i, label]) => ({ i, label })))));
 
@@ -1265,7 +1276,7 @@ interface PlotPoint {
     wrapper.appendChild(spacer);
 
     const dowCells = dow.map((x) =>
-      makeHeatCell(dowStat.values[x.w], dowStat.max, dowStat.pct[x.w], basis, s.rhythm.tooltipDay.replace('{day}', DOW_FULL[x.w]), showTooltip, hideTooltip),
+      makeHeatCell(dowStat.values[x.w], dowStat, dowStat.pct[x.w], basis, s.rhythm.tooltipDay.replace('{day}', DOW_FULL[x.w]), showTooltip, hideTooltip, 'strip'),
     );
     wrapper.appendChild(
       buildStrip(
@@ -1871,6 +1882,7 @@ interface PlotPoint {
   // ---- boot -------------------------------------------------------------------------
 
   const boot = async () => {
+    if (!elSection) return; // page doesn't render #stats-section (e.g. /events) — skip the fetch entirely
     try {
       const r = await fetch('/stats/summary');
       if (!r.ok) return;
