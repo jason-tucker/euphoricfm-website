@@ -5,6 +5,15 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.18.0] — 2026-09-27 — EFM Music Portal core (music/)
+
+### Added
+- **`music/`**: the EFM Music Portal (`music.euphoric.fm`), phase P2 security foundation. It is its own package, lockfile and compose project (`efm-music`), so the Astro site build is untouched. See `music/README.md` and `music/CHANGELOG.md`.
+- A CI job, `build-music`: `pnpm audit --prod`, a typecheck, and the Docker test harness (`music/test/run.sh`, mocks only). On `main` it pushes the tested images as `ghcr.io/jason-tucker/euphoricfm-website-music:{web,worker,probe}-<sha7>` (plus `-latest`). Watchtower stays off for these images.
+
+### Changed
+- The site's `tsconfig.json` and `.dockerignore` exclude `music/`.
+
 ## [0.17.0] — 2026-09-26 — Stats count listens instead of plays
 
 ### Changed
