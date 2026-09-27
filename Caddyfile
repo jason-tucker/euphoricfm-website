@@ -105,6 +105,46 @@
     respond `(function(){window.__EFM_CONFIG__=window.__EFM_CONFIG__||{};window.__EFM_CONFIG__.discord={requestWebhook:"{$PUBLIC_DISCORD_REQUEST_WEBHOOK}",contactWebhook:"{$PUBLIC_DISCORD_CONTACT_WEBHOOK}"};})();`
   }
 
+  # ---- Music portal entry: /music → music.euphoric.fm -------------------
+  # The music submission portal lives at https://music.euphoric.fm (separate
+  # stack, Discord OAuth). It is browser-only — OAuth can't complete inside
+  # the in-game phone's CEF iframe — so:
+  #   - framed (Sec-Fetch-Dest: iframe/frame) or in-game (User-Agent contains
+  #     CitizenFX, case-insensitive) → the static card page (/music-card/),
+  #     which tells the player to open the portal on their PC or phone;
+  #   - everyone else → 302 to the portal, FIXED host:
+  #       /music         → https://music.euphoric.fm/
+  #       /music/<rest>  → https://music.euphoric.fm/<rest>
+  #
+  # Open-redirect safety: the matcher is ONLY `path /music /music/*`, so
+  # /music.evil.com, /music@evil.com and /musicx never match and fall through
+  # to the normal site handling below. When it does match, the target is the
+  # literal host followed by `{uri}`, which after handle_path's prefix strip
+  # ALWAYS starts with "/" — the authority can't be extended or replaced
+  # (/music//evil.com → https://music.euphoric.fm//evil.com, still that host).
+  #
+  # The answer depends on request headers, so both the card and the redirect
+  # carry no-store + Vary to keep any cache from crossing the two.
+  @musicPortal path /music /music/*
+  handle @musicPortal {
+    header Cache-Control "no-store"
+    header Vary "Sec-Fetch-Dest, User-Agent"
+
+    @musicInGame expression `{header.Sec-Fetch-Dest} in ["iframe", "frame"] || {header.User-Agent}.matches("(?i)citizenfx")`
+    handle @musicInGame {
+      rewrite * /music-card/index.html
+      file_server
+    }
+
+    handle_path /music/* {
+      redir https://music.euphoric.fm{uri} 302
+    }
+
+    handle {
+      redir https://music.euphoric.fm/ 302
+    }
+  }
+
   # ---- Shared pending-requests API --------------------------------------
   # Tiny Node service in the `efm-requests` container holds the cross-visitor
   # pending-requests list (v0.6.0 was per-browser localStorage, this is the
