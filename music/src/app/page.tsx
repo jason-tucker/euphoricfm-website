@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic'
 
 const STEPS = [
   { t: 'Sign in with Discord', d: 'The portal is for members of the EuphoricFM Discord server. We only read your server membership.' },
-  { t: 'Upload your MP3s', d: 'Drop in one or more songs (MP3, up to 35 MB each). We read the tags and cover art for you, and you can fix anything that is wrong.' },
+  { t: 'Upload your MP3s or WAVs', d: 'Drop in one or more songs (MP3 up to 35 MB, or WAV up to 250 MB, which we convert to a 320 kbps MP3). We read the tags and cover art for you, and you can fix anything that is wrong.' },
   { t: 'Managers review', d: 'Each batch opens a ticket in Discord. Managers listen, then approve or decline each song, with a reason if declined.' },
   { t: 'On air', d: 'Approved songs are added to the station and go into rotation. Track every song’s status from your dashboard.' },
 ]

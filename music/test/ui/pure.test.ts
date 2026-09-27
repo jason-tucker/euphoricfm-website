@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { playlistLabel, songName } from '@/components/format'
-import { probeErrorText } from '@/components/messages'
-import { changedFields, precheck } from '@/components/submit/types'
+import { convertedLabel, playlistLabel, songName } from '@/components/format'
+import { errorText, PROBE_ERROR_TEXT, probeErrorText } from '@/components/messages'
+import { ACCEPT, changedFields, declaredType, fileKind, precheck } from '@/components/submit/types'
 import { libraryArtUrl } from '@/server/ui/art'
 import { escapeLike, folderOf, libraryRoot, onLibrarySurface } from '@/server/ui/library'
 
@@ -39,12 +39,47 @@ describe('library whitelist and LIKE escaping', () => {
 })
 
 describe('advisory client pre-checks', () => {
-  it('blocks empty and over-35 MB files, warns on non-MP3 names', () => {
-    expect(precheck({ name: 'a.mp3', size: 0, type: '' }, 35 * MB).block).toBeTruthy()
-    expect(precheck({ name: 'a.mp3', size: 36 * MB, type: 'audio/mpeg' }, 35 * MB).block).toMatch(/35 MB/)
-    expect(precheck({ name: 'a.MP3', size: MB, type: '' }, 35 * MB)).toEqual({})
-    expect(precheck({ name: 'a.wav', size: MB, type: 'audio/wav' }, 35 * MB).warn).toMatch(/MP3/)
-    expect(precheck({ name: 'a.wav', size: MB, type: 'audio/wav' }, 35 * MB).block).toBeUndefined()
+  const L = { mp3: 35 * MB, wav: 250 * MB }
+  it('blocks empty and over-35 MB MP3s, warns on names that are neither MP3 nor WAV', () => {
+    expect(precheck({ name: 'a.mp3', size: 0, type: '' }, L).block).toBeTruthy()
+    expect(precheck({ name: 'a.mp3', size: 36 * MB, type: 'audio/mpeg' }, L).block).toMatch(/limit for MP3 files is 35 MB/)
+    expect(precheck({ name: 'a.MP3', size: MB, type: '' }, L)).toEqual({})
+    expect(precheck({ name: 'a.flac', size: MB, type: 'audio/flac' }, L).warn).toMatch(/MP3 or WAV/)
+    // an unknown type gets the MP3 limit (the server caps an undeclared upload the same way)
+    expect(precheck({ name: 'a.flac', size: 36 * MB, type: 'audio/flac' }, L).block).toMatch(/35 MB \(WAV files: 250 MB\)/)
+  })
+  it('WAV (v0.3.0): accepted by name or MIME type, with its own 250 MB limit', () => {
+    expect(precheck({ name: 'a.wav', size: MB, type: 'audio/wav' }, L)).toEqual({})
+    expect(precheck({ name: 'a.WAV', size: 200 * MB, type: '' }, L)).toEqual({})
+    expect(precheck({ name: 'take', size: 100 * MB, type: 'audio/x-wav' }, L)).toEqual({})
+    expect(precheck({ name: 'a.wav', size: 251 * MB, type: 'audio/wav' }, L).block).toMatch(/limit for WAV files is 250 MB/)
+    // an admin-lowered WAV cap is what the page passes in
+    expect(precheck({ name: 'a.wav', size: 101 * MB, type: 'audio/wav' }, { mp3: 35 * MB, wav: 100 * MB }).block).toMatch(/100 MB/)
+  })
+  it('declares the tus filetype the server caps by; the picker accepts WAV', () => {
+    expect(declaredType({ name: 'a.wav', type: '' })).toBe('audio/wav')
+    expect(declaredType({ name: 'x', type: 'audio/wave' })).toBe('audio/wav')
+    expect(declaredType({ name: 'a.mp3', type: 'audio/mpeg' })).toBe('audio/mpeg')
+    expect(declaredType({ name: 'a.flac', type: 'audio/flac' })).toBe('audio/mpeg')
+    expect(fileKind({ name: 'a.mp3', type: '' })).toBe('mp3')
+    for (const t of ['.mp3', '.wav', 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/wave']) expect(ACCEPT.split(',')).toContain(t)
+  })
+  it('the converted-from-WAV label and the WAV rejection reasons are human text', () => {
+    expect(convertedLabel('wav')).toBe('Converted from WAV (320 kbps MP3)')
+    expect(convertedLabel('mp3')).toBeNull()
+    expect(convertedLabel(null)).toBeNull()
+    for (const code of [
+      'wav_codec_unsupported', 'wav_rf64_unsupported', 'wav_truncated', 'wav_too_long', 'wav_too_large', 'mp3_too_large',
+      'wav_bad_list', 'wav_bad_id3', 'wav_channels', 'wav_sample_rate', 'wav_header_mismatch', 'convert_timeout', 'convert_failed',
+      'convert_invalid', 'converted_too_large', 'not_wav', 'wav_trailing_data', 'wav_chunk_too_large', 'wav_too_many_chunks',
+      'wav_bad_fmt', 'wav_bad_data', 'wav_no_audio', 'wav_bad_riff', 'wav_bad_chunk', 'wav_not_single_stream', 'wav_unsupported',
+    ]) {
+      expect(PROBE_ERROR_TEXT[code], code).toBeTruthy()
+    }
+    expect(probeErrorText('wav_codec_unsupported')).toMatch(/ADPCM/)
+    expect(probeErrorText('wav_too_long')).toMatch(/15 minutes/)
+    expect(errorText('wav_upload_too_large')).toMatch(/250 MB/)
+    expect(errorText('upload_too_large')).toMatch(/35 MB/)
   })
 })
 

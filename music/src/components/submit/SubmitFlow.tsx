@@ -1,6 +1,6 @@
 'use client'
 
-// The submit flow: drag-and-drop multi-file MP3 upload over tus (per-file
+// The submit flow: drag-and-drop multi-file MP3 / WAV upload over tus (per-file
 // progress, pause/resume, and resume after a reload via the tus fingerprint),
 // attach each finished upload to the draft batch, poll until the network-less
 // probe has read it, then edit the pre-filled fields and submit.
@@ -14,14 +14,14 @@ import { errorText } from '../messages'
 import { Notice } from '../ui'
 import { FileCard } from './FileCard'
 import { SubmitPanel, type SummaryRow } from './SubmitPanel'
-import { changedFields, type Entry, type Fields, fieldsOf, precheck } from './types'
+import { ACCEPT, changedFields, declaredType, type Entry, type Fields, fieldsOf, precheck } from './types'
 
 // The server allows 3 concurrent uploads per user; 2 leaves headroom for a
 // stale upload that has not expired yet.
 const CONCURRENCY = 2
 const POLL_MS = [1000, 1500, 2000, 3000, 4000, 5000]
 
-type ItemApi = Pick<UiItem, 'id' | 'batchId' | 'status' | 'title' | 'artist' | 'album' | 'genre' | 'durationS' | 'bitrate' | 'probeError' | 'hasCover'> & {
+type ItemApi = Pick<UiItem, 'id' | 'batchId' | 'status' | 'title' | 'artist' | 'album' | 'genre' | 'durationS' | 'bitrate' | 'probeError' | 'hasCover' | 'inputFormat'> & {
   prefill?: unknown
 }
 
@@ -58,6 +58,7 @@ export function SubmitFlow({
   initialItems,
   rights,
   maxUploadBytes,
+  maxWavUploadBytes,
   chunkBytes,
   maxItemsPerBatch,
 }: {
@@ -65,6 +66,7 @@ export function SubmitFlow({
   initialItems: UiItem[]
   rights: { version: string; text: string }
   maxUploadBytes: number
+  maxWavUploadBytes: number
   chunkBytes: number
   maxItemsPerBatch: number
 }) {
@@ -176,6 +178,9 @@ export function SubmitFlow({
       const up = new tus.Upload(file, {
         endpoint: '/api/uploads',
         chunkSize: chunkBytes,
+        // The server caps the upload by this declared type (MP3 35 MB, WAV
+        // 250 MB); the probe checks the real type from the bytes.
+        metadata: { filetype: declaredType(file) },
         retryDelays: [0, 1000, 3000, 5000, 10000, 20000],
         storeFingerprintForResuming: true,
         removeFingerprintOnSuccess: true,
@@ -237,7 +242,7 @@ export function SubmitFlow({
     const added: Entry[] = []
     for (const f of Array.from(list)) {
       const key = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
-      const c = precheck(f, maxUploadBytes)
+      const c = precheck(f, { mp3: maxUploadBytes, wav: maxWavUploadBytes })
       files.current.set(key, f)
       added.push({ key, fileName: f.name, size: f.size, phase: c.block ? 'blocked' : 'queued', progress: 0, warning: c.warn, error: c.block, edits: fieldsOf(undefined) })
     }
@@ -353,15 +358,20 @@ export function SubmitFlow({
           <span className="text-3xl" aria-hidden="true">
             ♫
           </span>
-          <span className="font-semibold">Drop MP3 files here</span>
+          <span className="font-semibold">Drop MP3 or WAV files here</span>
           <span className="btn btn-secondary btn-sm pointer-events-none">or choose files</span>
-          <span className="text-xs text-cream/55">MP3 only · up to {Math.round(maxUploadBytes / 1024 / 1024)} MB each · 30 s to 20 min · at least 128 kbps</span>
+          <span className="text-xs text-cream/55">
+            MP3: up to {Math.round(maxUploadBytes / 1024 / 1024)} MB each · 30 s to 20 min · at least 128 kbps
+          </span>
+          <span className="text-xs text-cream/55">
+            WAV: up to {Math.round(maxWavUploadBytes / 1024 / 1024)} MB each · 30 s to 15 min · converted to a 320 kbps MP3 for you
+          </span>
         </label>
         <input
           id="file-input"
           type="file"
           multiple
-          accept=".mp3,audio/mpeg"
+          accept={ACCEPT}
           className="sr-only"
           onChange={(ev) => {
             if (ev.target.files?.length) addFiles(ev.target.files)

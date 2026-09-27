@@ -43,12 +43,46 @@ export function changedFields(e: Entry): Partial<Record<keyof Fields, string | n
 }
 
 export const MP3_NAME = /\.mp3$/i
+export const WAV_NAME = /\.wav$/i
+export const WAV_TYPES = ['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave']
+// The file picker's accept list (v0.3.0: WAV too).
+export const ACCEPT = ['.mp3', '.wav', 'audio/mpeg', ...WAV_TYPES].join(',')
+
+export type Limits = { mp3: number; wav: number }
+export type FileKind = 'mp3' | 'wav' | 'unknown'
+
+// What the file LOOKS like from its name / browser type. Only picks the
+// per-file limit and the tus `filetype` the server caps by; the probe decides
+// the real type from the bytes.
+export function fileKind(file: { name: string; type: string }): FileKind {
+  if (WAV_NAME.test(file.name) || WAV_TYPES.includes(file.type.toLowerCase())) return 'wav'
+  if (MP3_NAME.test(file.name) || file.type === 'audio/mpeg') return 'mp3'
+  return 'unknown'
+}
+
+// Sent as tus Upload-Metadata `filetype`: the server allows the WAV limit
+// only for a declared WAV; anything else gets the MP3 limit.
+export function declaredType(file: { name: string; type: string }): string {
+  return fileKind(file) === 'wav' ? 'audio/wav' : 'audio/mpeg'
+}
+
+const mb = (n: number) => Math.round(n / 1024 / 1024)
 
 // Client pre-checks are ADVISORY: they save a pointless upload and explain the
 // problem early. The server (tus caps + probe) is the authority either way.
-export function precheck(file: { name: string; size: number; type: string }, maxBytes: number): { block?: string; warn?: string } {
+export function precheck(file: { name: string; size: number; type: string }, limits: Limits): { block?: string; warn?: string } {
   if (file.size === 0) return { block: 'This file is empty.' }
-  if (file.size > maxBytes) return { block: `This file is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is ${Math.round(maxBytes / 1024 / 1024)} MB.` }
-  if (!MP3_NAME.test(file.name) && file.type !== 'audio/mpeg') return { warn: "This doesn't look like an MP3. It will be checked after upload, and only MP3 files are accepted." }
+  const kind = fileKind(file)
+  const max = kind === 'wav' ? limits.wav : limits.mp3
+  const size = `${(file.size / 1024 / 1024).toFixed(1)} MB`
+  if (file.size > max) {
+    return {
+      block:
+        kind === 'wav'
+          ? `This WAV file is ${size}. The limit for WAV files is ${mb(max)} MB.`
+          : `This file is ${size}. The limit for MP3 files is ${mb(max)} MB${kind === 'unknown' ? ` (WAV files: ${mb(limits.wav)} MB)` : ''}.`,
+    }
+  }
+  if (kind === 'unknown') return { warn: "This doesn't look like an MP3 or WAV file. It will be checked after upload, and only MP3 and WAV files are accepted." }
   return {}
 }
