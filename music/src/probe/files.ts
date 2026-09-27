@@ -6,7 +6,7 @@
 
 import { createHash, randomBytes } from 'node:crypto'
 import { constants as FS } from 'node:fs'
-import { open, rename, unlink, readFile } from 'node:fs/promises'
+import { open, rename, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export class ProbeReject extends Error {
@@ -52,8 +52,22 @@ export async function copyNoFollowHashed(src: string, dst: string, maxBytes: num
   }
 }
 
+// Streams (1 MiB at a time, never through a symlink): a converted WAV's MP3
+// is up to 35 MiB, and the probe's whole container has 256 MB.
 export async function sha256File(path: string): Promise<string> {
-  return createHash('sha256').update(await readFile(path)).digest('hex')
+  const hash = createHash('sha256')
+  const fh = await open(path, FS.O_RDONLY | FS.O_NOFOLLOW)
+  try {
+    const buf = Buffer.alloc(1024 * 1024)
+    for (;;) {
+      const { bytesRead } = await fh.read(buf, 0, buf.length, null)
+      if (bytesRead === 0) break
+      hash.update(buf.subarray(0, bytesRead))
+    }
+  } finally {
+    await fh.close()
+  }
+  return hash.digest('hex')
 }
 
 export function reader(path: string) {
@@ -69,15 +83,30 @@ export function reader(path: string) {
   }
 }
 
+// Copies in 1 MiB steps (see sha256File) into an exclusive tmp file, then
+// renames it over destName (rename replaces a symlink itself, never its
+// target).
 export async function publishFile(srcInWork: string, destDir: string, destName: string): Promise<void> {
   const tmp = join(destDir, `.tmp-${randomBytes(12).toString('hex')}`)
-  const data = await readFile(srcInWork)
-  const fh = await open(tmp, FS.O_WRONLY | FS.O_CREAT | FS.O_EXCL | FS.O_NOFOLLOW, 0o644)
+  const src = await open(srcInWork, FS.O_RDONLY | FS.O_NOFOLLOW)
   try {
-    await fh.writeFile(data)
-    await fh.sync()
+    const fh = await open(tmp, FS.O_WRONLY | FS.O_CREAT | FS.O_EXCL | FS.O_NOFOLLOW, 0o644)
+    try {
+      const buf = Buffer.alloc(1024 * 1024)
+      for (;;) {
+        const { bytesRead } = await src.read(buf, 0, buf.length, null)
+        if (bytesRead === 0) break
+        await fh.write(buf.subarray(0, bytesRead))
+      }
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+  } catch (e) {
+    await unlink(tmp).catch(() => {})
+    throw e
   } finally {
-    await fh.close()
+    await src.close()
   }
   try {
     await rename(tmp, join(destDir, destName))

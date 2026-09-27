@@ -26,6 +26,13 @@ export function when(iso: string | null | undefined): string {
   return `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`
 }
 
+// v0.3.0: an item uploaded as a WAV plays and ships as the probe's MP3.
+export const CONVERTED_FROM_WAV = 'Converted from WAV (320 kbps MP3)'
+
+export function convertedLabel(inputFormat: string | null | undefined): string | null {
+  return inputFormat === 'wav' ? CONVERTED_FROM_WAV : null
+}
+
 export function songName(it: { title?: string | null; artist?: string | null }): string {
   const t = it.title?.trim() || 'Untitled'
   return it.artist?.trim() ? `${it.artist.trim()} – ${t}` : t

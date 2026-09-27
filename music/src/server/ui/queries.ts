@@ -33,6 +33,8 @@ export function uiItem(v: Viewer, it: ItemRow) {
     prefill: (it.prefill ?? null) as Record<string, string | null> | null,
     probeError: it.probeError,
     denyReason: it.denyReason,
+    // 'wav' = uploaded as a WAV and converted to a 320 kbps MP3 (v0.3.0)
+    inputFormat: it.inputFormat,
     hasCover: Boolean(it.coverFile),
     hasArt: itemHasArt(it),
     hasCustomArt: customArtIdOf(it) !== null,

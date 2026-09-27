@@ -247,7 +247,12 @@ describe.skipIf(!E2E())('submission flow through the real containers', () => {
     await waitFor(async () => ((await control('/__mock/tickets/messages')) as { body: string }[]).some((m) => m.body.includes(body)), 60_000)
     const row = await waitFor(async () => (await ownerSql()`SELECT ticket_message_id FROM comments WHERE id = ${cid}`)[0]!.ticket_message_id as string | null, 30_000)
     expect(row).toBeTruthy()
-    const job = (await ownerSql()`SELECT status FROM jobs WHERE dedupe_key = ${`ticket_comment:${cid}`}`)[0]!
+    // The handler stores ticket_message_id before the job loop marks the job
+    // done (worker/main.ts), so the status may still read 'running' here.
+    const job = await waitFor(async () => {
+      const j = (await ownerSql()`SELECT status FROM jobs WHERE dedupe_key = ${`ticket_comment:${cid}`}`)[0]!
+      return j.status === 'running' ? null : j
+    }, 30_000)
     expect(job.status).toBe('done')
   })
 

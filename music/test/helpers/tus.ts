@@ -18,9 +18,12 @@ export async function tusHead(jar: Jar, location: string, extra: Record<string, 
   return req(jar, location, { method: 'HEAD', headers: { ...TUS, ...extra } })
 }
 
+// tus Upload-Metadata declaring a type (v0.3.0: the server caps by it).
+export const declare = (filetype: string) => ({ 'upload-metadata': `filetype ${Buffer.from(filetype).toString('base64')}` })
+
 // Uploads a whole buffer in ≤8 MB chunks; returns the upload id.
-export async function tusUpload(jar: Jar, data: Buffer, chunk = 8 * 1024 * 1024): Promise<string> {
-  const c = await tusCreate(jar, data.length)
+export async function tusUpload(jar: Jar, data: Buffer, chunk = 8 * 1024 * 1024, createHeaders: Record<string, string> = {}): Promise<string> {
+  const c = await tusCreate(jar, data.length, createHeaders)
   if (c.status !== 201) throw new Error(`tus create ${c.status} ${await c.text()}`)
   const loc = c.headers.get('location')!
   let off = 0

@@ -3,7 +3,7 @@ import { AudioPreview } from '@/components/AudioPreview'
 import { ItemArtControl } from '@/components/ItemArtControl'
 import { Thumb } from '@/components/Thumb'
 import { CommentThread, type UiComment } from '@/components/CommentThread'
-import { duration, playlistLabel, songName, when } from '@/components/format'
+import { convertedLabel, duration, playlistLabel, songName, when } from '@/components/format'
 import { ReviewItemActions } from '@/components/review/ReviewItemActions'
 import { ItemStatusChip, NewArtistBadge, Notice, PageTitle, TicketLink } from '@/components/ui'
 import { getDb } from '@/server/db/client'
@@ -70,7 +70,7 @@ export default async function ReviewItemPage({ params }: { params: Promise<{ id:
           )}
           <AudioPreview itemId={it.id} hideCover />
           <p className="text-xs text-cream/60">
-            {[duration(it.durationS), it.bitrate ? `${Math.round(it.bitrate / 1000)} kbps` : null].filter(Boolean).join(' · ')}
+            {[duration(it.durationS), it.bitrate ? `${Math.round(it.bitrate / 1000)} kbps` : null, convertedLabel(it.inputFormat)].filter(Boolean).join(' · ')}
           </p>
           <details className="text-xs text-cream/60">
             <summary className="cursor-pointer hover:text-cream">Original file tags</summary>

@@ -227,6 +227,10 @@ export const items = pgTable(
     customArtId: uuid('custom_art_id').references(() => artUploads.id, { onDelete: 'set null' }),
     durationS: integer('duration_s'),
     bitrate: integer('bitrate'),
+    // What the member uploaded (v0.3.0): 'mp3', or 'wav' when the probe
+    // converted it to the 320 kbps MP3 that is now the item's source. Null
+    // for items probed before v0.3.0 (all MP3).
+    inputFormat: text('input_format'),
     prefill: jsonb('prefill'),
     title: text('title'),
     artist: text('artist'),

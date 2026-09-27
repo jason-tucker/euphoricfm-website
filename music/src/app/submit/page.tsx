@@ -8,6 +8,9 @@ import { DEFAULT_CAPS } from '@/server/settings-defaults'
 import { uiSettings } from '@/server/ui/settings'
 
 export const dynamic = 'force-dynamic'
+
+// A saved cap may be lowered, never raised past the compiled default.
+const capOf = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.min(v, max) : max)
 export const metadata = { title: 'Submit songs' }
 
 export default async function SubmitPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
@@ -24,13 +27,14 @@ export default async function SubmitPage({ searchParams }: { searchParams: Promi
   const s = await uiSettings(db)
   return (
     <section>
-      <PageTitle title="Submit songs" sub="Upload MP3s, check the details we read from each file, then send the batch to the managers." />
+      <PageTitle title="Submit songs" sub="Upload MP3s or WAVs, check the details we read from each file, then send the batch to the managers." />
       <SubmitFlow
         initialBatchId={batch?.id ?? null}
         initialItems={batch?.items ?? []}
         rights={s.rights}
         // The tus route enforces the compiled defaults, so never exceed them.
-        maxUploadBytes={Math.min(s.caps.maxUploadBytes, DEFAULT_CAPS.maxUploadBytes)}
+        maxUploadBytes={capOf(s.caps.maxUploadBytes, DEFAULT_CAPS.maxUploadBytes)}
+        maxWavUploadBytes={capOf(s.caps.maxWavUploadBytes, DEFAULT_CAPS.maxWavUploadBytes)}
         chunkBytes={Math.min(s.caps.chunkBytes, DEFAULT_CAPS.chunkBytes)}
         maxItemsPerBatch={s.caps.maxItemsPerBatch}
       />

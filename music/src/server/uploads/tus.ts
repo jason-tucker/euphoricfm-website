@@ -15,8 +15,8 @@ import { getDb } from '../db/client'
 import { uploads } from '../db/schema'
 import { webEnv } from '../env'
 import { loadCaps } from '../settings'
-import { DEFAULT_CAPS } from '../settings-defaults'
-import { admitUpload, UPLOAD_ID_RE } from './caps'
+import { MAX_PROBE_INPUT_BYTES } from '../spool/protocol'
+import { admitUpload, declaredKind, UPLOAD_ID_RE } from './caps'
 
 export const TUS_PATH = '/api/uploads'
 export const tusContext = new AsyncLocalStorage<{ userId: string }>()
@@ -41,7 +41,11 @@ export function tusServer(): Server {
     relativeLocation: true,
     respectForwardedHeaders: false,
     allowedOrigins: [env.PORTAL_ORIGIN],
-    maxSize: DEFAULT_CAPS.maxUploadBytes,
+    // The largest per-file cap (a declared WAV, v0.3.0). The cap for the
+    // DECLARED type is enforced at creation (route checkCreateHeaders with
+    // the compiled limits, admitUpload with the loaded caps); a PATCH can
+    // never change Upload-Length (no defer-length).
+    maxSize: MAX_PROBE_INPUT_BYTES,
     disableTerminationForFinishedUploads: true,
     namingFunction: () => randomBytes(16).toString('hex'),
     async onIncomingRequest(req, id) {
@@ -54,10 +58,10 @@ export function tusServer(): Server {
       if (req.method === 'PATCH' && row.status !== 'uploading') throw refuse(409, 'Upload not in progress')
       if (req.method === 'DELETE' && row.status !== 'uploading') throw refuse(409, 'Upload not in progress')
     },
-    async onUploadCreate(_req, upload) {
+    async onUploadCreate(req, upload) {
       const ctx = tusContext.getStore()
       if (!ctx) throw refuse(401, 'Unauthorized')
-      const refusal = await admitUpload(db, ctx.userId, upload.id, upload.size ?? 0, await loadCaps(db))
+      const refusal = await admitUpload(db, ctx.userId, upload.id, upload.size ?? 0, await loadCaps(db), declaredKind(req.headers))
       if (refusal) throw refuse(refusal.status, refusal.code)
       // Replace (not merge) whatever the client sent.
       return { metadata: { owner: ctx.userId } }

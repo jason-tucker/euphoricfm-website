@@ -8,11 +8,11 @@ import { useEffect, useState } from 'react'
 import { ItemArtControl } from '../ItemArtControl'
 import { AudioPreview } from '../AudioPreview'
 import { Autocomplete } from '../Autocomplete'
-import { duration } from '../format'
+import { convertedLabel, duration } from '../format'
 import { useDebounced, useJson } from '../hooks'
 import { probeErrorText } from '../messages'
 import { NewArtistBadge, Notice } from '../ui'
-import { changedFields, type Entry, type Fields, fieldsOf, FIELD_KEYS } from './types'
+import { changedFields, type Entry, type Fields, fieldsOf, FIELD_KEYS, fileKind } from './types'
 
 type ArtistLookup = { known: { name: string; folder: string } | null; proposedFolder: string | null; folderError: string | null; folderTaken: boolean }
 type Dup =
@@ -69,6 +69,8 @@ export function FileCard({
   const base = fieldsOf(e.item)
   const changed = changedFields(e)
   const prefillYear = e.item?.prefill && typeof e.item.prefill.year === 'string' ? e.item.prefill.year : null
+  const converted = convertedLabel(e.item?.inputFormat)
+  const isWav = fileKind({ name: e.fileName, type: '' }) === 'wav'
 
   return (
     <li className="card space-y-3" data-entry={e.key} data-phase={e.phase}>
@@ -82,6 +84,13 @@ export function FileCard({
               .filter(Boolean)
               .join(' · ')}
           </p>
+          {converted ? (
+            <p className="mt-1">
+              <span className="chip chip-neutral" data-testid="converted-from-wav">
+                {converted}
+              </span>
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           {e.phase === 'uploading' ? (
@@ -127,7 +136,7 @@ export function FileCard({
       {e.phase === 'attaching' || e.phase === 'probing' ? (
         <p className="text-sm text-sky-300" role="status">
           <span className="mr-2 inline-block size-3 animate-pulse rounded-full bg-sky-300" aria-hidden="true" />
-          Checking the file and reading its tags…
+          {isWav ? 'Checking the WAV and converting it to a 320 kbps MP3… Large files can take a few minutes.' : 'Checking the file and reading its tags…'}
         </p>
       ) : null}
 

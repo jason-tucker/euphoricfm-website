@@ -21,7 +21,14 @@ export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-
 export const UPLOAD_ID_RE = /^[0-9a-f]{32}$/
 export const COVER_FILE_RE = /^cover-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.jpg$/
 export const SHA256_RE = /^[0-9a-f]{64}$/
+// MP3 uploads (and every MP3 the probe publishes into /staging/uploads,
+// including one converted from a WAV) are at most MAX_UPLOAD_BYTES; a WAV
+// upload is at most MAX_WAV_UPLOAD_BYTES (v0.3.0). The web caps a tus upload
+// by its DECLARED type; the probe caps it again by its ACTUAL type (magic
+// bytes), so the effective limit is the stricter of the two.
 export const MAX_UPLOAD_BYTES = 35 * 1024 * 1024
+export const MAX_WAV_UPLOAD_BYTES = 250 * 1024 * 1024
+export const MAX_PROBE_INPUT_BYTES = Math.max(MAX_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES)
 export const MAX_SPOOL_DOC_BYTES = 64 * 1024
 // Album art (art contract 2026-09-27): the web writes the raw upload to
 // <art-in>/<artId>; the probe writes the re-encoded JPEG to
@@ -47,7 +54,11 @@ export const probeRequest = z
     id: z.string().regex(UUID_RE),
     type: z.literal('probe'),
     upload: z.string().regex(UPLOAD_ID_RE),
-    expectedSize: z.number().int().min(1).max(MAX_UPLOAD_BYTES),
+    expectedSize: z.number().int().min(1).max(MAX_PROBE_INPUT_BYTES),
+    // The admin-lowered WAV cap at attach time (caps.maxWavUploadBytes); the
+    // probe applies it to an actual WAV on top of MAX_WAV_UPLOAD_BYTES.
+    // Optional so a request spooled by an older web still parses.
+    maxWavBytes: z.number().int().min(1).max(MAX_WAV_UPLOAD_BYTES).optional(),
   })
   .strict()
 
@@ -127,6 +138,11 @@ export const probeOk = z.object({
   tags: probeTags,
   cover: z.object({ file: z.string().regex(COVER_FILE_RE), sha256: z.string().regex(SHA256_RE), width: z.number().int(), height: z.number().int() }).nullable(),
   flags: z.array(z.string().max(64)).max(16),
+  // v0.3.0: what the member uploaded. 'wav' = the probe converted it to a
+  // 320 kbps MP3, which replaced the WAV under the same upload id; sha256 /
+  // size / durationS / bitrate above describe that MP3. Optional: results
+  // written by an older probe have no field (= mp3).
+  inputFormat: z.enum(['mp3', 'wav']).optional(),
 })
 
 export const finalizeOk = z.object({
@@ -156,6 +172,9 @@ export const spoolFailure = z.object({
   type: z.string().max(32),
   ok: z.literal(false),
   error: z.string().max(64),
+  // v0.3.0, 'probe' only: the probe deleted the rejected upload's bytes from
+  // /staging/uploads, so the worker releases them from the staging quota.
+  released: z.boolean().optional(),
 })
 
 export const cleanupOk = z.object({

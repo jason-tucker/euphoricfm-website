@@ -29,13 +29,22 @@ export const CHILD_ENV = { PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/
 // Fixed absolute paths (Alpine: util-linux-misc and the busybox applet).
 export const PRLIMIT = '/usr/bin/prlimit'
 export const TIMEOUT = '/usr/bin/timeout'
+// busybox nice (v0.3.0): long CPU-bound jobs (the WAV → MP3 conversion) run
+// at a lowered priority so the 1-vCPU host stays responsive. Raising the
+// nice value needs no capability.
+export const NICE = '/bin/nice'
 
 // The full argv for runLimited: every element is one execve argument.
-export function limitedArgv(cmd: string, args: readonly string[], vmemKb: number, timeoutS: number): string[] {
+//   prlimit … -- timeout … [nice -n <n>] <cmd> <args…>
+// nice execs the tool in place, so the group leader, the timeout's child and
+// the process the limits apply to stay the same.
+export function limitedArgv(cmd: string, args: readonly string[], vmemKb: number, timeoutS: number, nice?: number): string[] {
   const asBytes = Math.floor(vmemKb) * 1024
   const secs = Math.max(1, Math.floor(timeoutS))
   if (!Number.isSafeInteger(asBytes) || asBytes <= 0) throw new Error('runLimited: bad vmemKb')
-  return [`--as=${asBytes}`, '--core=0', '--', TIMEOUT, '-s', 'KILL', '-k', '1', String(secs), cmd, ...args]
+  if (nice !== undefined && (!Number.isInteger(nice) || nice < 1 || nice > 19)) throw new Error('runLimited: bad nice')
+  const niced = nice === undefined ? [] : [NICE, '-n', String(nice)]
+  return [`--as=${asBytes}`, '--core=0', '--', TIMEOUT, '-s', 'KILL', '-k', '1', String(secs), ...niced, cmd, ...args]
 }
 
 export type ExecResult = { code: number | null; signal: NodeJS.Signals | null; stdout: Buffer; stderr: string; timedOut: boolean }
@@ -52,7 +61,7 @@ function killGroup(pid: number | undefined): void {
 export function runLimited(
   cmd: string,
   args: readonly string[],
-  opts: { timeoutS: number; vmemKb: number; maxStdout?: number; cwd?: string; stdin?: Buffer },
+  opts: { timeoutS: number; vmemKb: number; maxStdout?: number; cwd?: string; stdin?: Buffer; nice?: number },
 ): Promise<ExecResult> {
   const maxOut = opts.maxStdout ?? 1024 * 1024
   const timeoutS = Math.max(1, Math.floor(opts.timeoutS))
@@ -63,7 +72,7 @@ export function runLimited(
     // the job's process group, and node's own timer covers a stuck watcher.
     // prlimit execs timeout in place (no fork), so the group leader is the
     // same process as before.
-    const child = spawn(PRLIMIT, limitedArgv(cmd, args, opts.vmemKb, timeoutS), {
+    const child = spawn(PRLIMIT, limitedArgv(cmd, args, opts.vmemKb, timeoutS, opts.nice), {
       env: CHILD_ENV as unknown as NodeJS.ProcessEnv,
       cwd: opts.cwd ?? '/tmp',
       stdio: ['pipe', 'pipe', 'pipe'],

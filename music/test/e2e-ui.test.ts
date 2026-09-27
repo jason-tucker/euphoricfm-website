@@ -68,7 +68,8 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
 
     const submit = await page(member, '/submit')
     expect(submit.status).toBe(200)
-    expect(submit.html).toContain('Drop MP3 files here')
+    expect(submit.html).toContain('Drop MP3 or WAV files here')
+    expect(submit.html).toContain('converted to a 320 kbps MP3 for you')
     expect(submit.html).toContain('Coming soon')
     expect(submit.html).toContain('Rights statement version')
 
