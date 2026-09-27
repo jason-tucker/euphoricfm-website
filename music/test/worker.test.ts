@@ -251,3 +251,60 @@ describe.skipIf(!DBENV())('dependency waits do not spend attempts (ticket not op
     expect((await ownerSql()`SELECT status FROM jobs WHERE id = ${j!.id}`)[0]!.status).toBe('dead')
   })
 })
+
+describe.skipIf(!DBENV() || !MOCKS())('comment actor: staff/opener rule and the 403 fallback (v0.12.2)', () => {
+  const STAFF_ROLE = '1144462744456794153'
+  it('opener and staff post as themselves; a bound role outside the category staff falls back once, named, and is never lost', async () => {
+    const db = getDb(process.env.TEST_APP_DATABASE_URL, 2)
+    const tickets = new TicketsClient({ baseUrl: process.env.MOCKS_TICKETS!, key: process.env.TICKETS_WRITE_KEY!, portalOrigin: ORIGIN })
+    const t0 = Date.now()
+    const opener = `31${String(t0).padStart(16, '0')}`
+    const staff = `32${String(t0).padStart(16, '0')}`
+    const outsider = `33${String(t0).padStart(16, '0')}`
+    const ownerOnly = `34${String(t0).padStart(16, '0')}`
+    const extraRole = `35${String(t0).padStart(16, '0')}`
+    await control('/__mock/tickets/member', { id: opener, member: true })
+    await control('/__mock/tickets/member', { id: staff, member: true, roleIds: [STAFF_ROLE] })
+    await control('/__mock/tickets/member', { id: outsider, member: true, roleIds: [extraRole] })
+    await control('/__mock/tickets/member', { id: ownerOnly, member: true, roleIds: [] })
+    const t = await tickets.openTicket({ categoryKey: 'newsong', openerDiscordId: opener, subject: 's', card: { title: 't', lines: [], link: { label: 'Open', url: `${ORIGIN}/b` } }, externalRef: `batch:actor${t0}` })
+    const [u] = await ownerSql()`INSERT INTO "user" (id, discord_id, name) VALUES (${randomUUID()}, ${opener}, 'Opener') RETURNING id`
+    const [b] = await ownerSql()`INSERT INTO batches (owner_user_id, status, ticket_id) VALUES (${u!.id}, 'submitted', ${t.ticketId}) RETURNING id`
+    // An admin-added 'review' binding for a role the tickets category does not list as staff.
+    await ownerSql()`INSERT INTO role_bindings (role_id, permission, note, created_by) VALUES (${extraRole}, 'review', 'test', 'test')`
+    for (const [id, roles] of [[staff, [STAFF_ROLE]], [outsider, [extraRole]], [ownerOnly, []]] as const) {
+      await ownerSql()`INSERT INTO member_cache (discord_id, member, pending, role_ids, source, checked_at) VALUES (${id}, true, false, ${roles as unknown as string[]}, 'discord', now())
+                       ON CONFLICT (discord_id) DO UPDATE SET role_ids = EXCLUDED.role_ids`
+    }
+    try {
+      const alerts: string[] = []
+      const ctx = { db, tickets, alert: async (x: string) => void alerts.push(x) } as unknown as WorkerCtx
+      const post = async (author: string, name: string, body: string) => {
+        const [c] = await ownerSql()`INSERT INTO comments (batch_id, source, visibility, body, author_discord_id, author_name) VALUES (${b!.id}, 'portal', 'all', ${body}, ${author}, ${name}) RETURNING id`
+        await ticketComment(ctx, { commentId: c!.id as number })
+        return c!.id as number
+      }
+      const cOpener = await post(opener, 'Opener', `from opener ${t0}`)
+      const cStaff = await post(staff, 'Staffer', `from staff ${t0}`)
+      const cOutsider = await post(outsider, 'New *Reviewer* @everyone', `from outsider ${t0}`)
+      const cOwner = await post(ownerOnly, 'Owner Admin', `from owner ${t0}`)
+      const msgs = (await control('/__mock/tickets/messages')) as { key: string; body: string; actorDiscordId: string | null }[]
+      const mine = msgs.filter((m) => m.key.startsWith(`${t.ticketId}|`))
+      expect(mine.find((m) => m.key.endsWith(`comment:${cOpener}`))).toMatchObject({ actorDiscordId: opener, body: `from opener ${t0}` })
+      expect(mine.find((m) => m.key.endsWith(`comment:${cStaff}`))).toMatchObject({ actorDiscordId: staff })
+      // refused as actor (403 actor_forbidden) → posted once without it, named
+      expect(mine.find((m) => m.key.endsWith(`comment:${cOutsider}`))).toBeUndefined()
+      expect(mine.find((m) => m.key.endsWith(`comment:${cOutsider}:anon`))).toMatchObject({ actorDiscordId: null, body: `New Reviewer everyone: from outsider ${t0}` })
+      // no staff role at all: never sent as actor in the first place
+      expect(mine.find((m) => m.key.endsWith(`comment:${cOwner}:anon`))).toMatchObject({ actorDiscordId: null, body: `Owner Admin: from owner ${t0}` })
+      const calls = (await control('/__mock/tickets/calls')) as { path: string; body?: { body?: string; actorDiscordId?: string } }[]
+      expect(calls.filter((x) => x.body?.body?.includes(`from owner ${t0}`) && x.body.actorDiscordId)).toHaveLength(0)
+      const ids = await ownerSql()`SELECT id, ticket_message_id FROM comments WHERE id IN (${cOpener}, ${cStaff}, ${cOutsider}, ${cOwner})`
+      expect(ids.every((r) => r.ticket_message_id)).toBe(true)
+      expect((await ownerSql()`SELECT count(*)::int AS n FROM audit_log WHERE action = 'comment.actor_fallback' AND target_id = ${String(cOutsider)}`)[0]!.n).toBe(1)
+      expect(alerts).toEqual([])
+    } finally {
+      await ownerSql()`DELETE FROM role_bindings WHERE role_id = ${extraRole}`
+    }
+  })
+})

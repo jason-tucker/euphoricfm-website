@@ -1,6 +1,6 @@
 // Tickets Integration API client (worker only; key scopes tickets:read,
 // tickets:write, tickets:close, actor_impersonation). Shapes and error codes
-// follow euphoric-tickets-web docs/INTEGRATION_API.md v0.12.1.
+// follow euphoric-tickets-web docs/INTEGRATION_API.md v0.12.2.
 //
 // Staff-only content never crosses: postComment() refuses any comment whose
 // visibility is not 'all', independently of the job layer's filter.
@@ -117,7 +117,21 @@ const ticketResponse = z
   })
   .passthrough()
 
-export type CommentForTicket = { id: number; visibility: 'all' | 'staff'; body: string; itemId?: number | null; authorDiscordId?: string | null }
+export type CommentForTicket = {
+  id: number
+  visibility: 'all' | 'staff'
+  body: string
+  itemId?: number | null
+  authorDiscordId?: string | null
+  authorName?: string | null
+}
+
+// The author's portal name as a plain-text prefix: no markdown/mention
+// characters, no control characters, bounded.
+export function commentNamePrefix(name: string | null | undefined): string {
+  const clean = (name ?? '').replace(/[\p{Cc}\p{Cf}*_`~|<>@#\[\]()\\]/gu, '').trim().slice(0, 64)
+  return `${clean || 'Portal member'}: `
+}
 
 export class TicketsClient {
   private readonly f: typeof fetch
@@ -178,18 +192,24 @@ export class TicketsClient {
   }
 
   // A portal comment → ticket message. Refuses staff-only comments outright.
-  async postComment(ticketId: number, c: CommentForTicket) {
+  //
+  // asActor (default: whenever there is an author id) posts AS the author
+  // (actorDiscordId). Under INTEGRATION_API v0.12.2 the actor must be a
+  // non-pending member in the category staff set, or the ticket's opener,
+  // or the API answers 403 actor_forbidden; callers decide asActor from that
+  // rule and fall back to asActor:false once. Without an actor the message
+  // is posted as the integration, with the author's name as a prefix, under
+  // its own idempotency key (a replay with a different actor would be a 409
+  // idempotency_conflict).
+  async postComment(ticketId: number, c: CommentForTicket, opts: { asActor?: boolean } = {}) {
     if (c.visibility !== 'all') throw new TicketsApiError(0, 'staff_comment_never_forwarded')
-    return this.postMessage(
-      ticketId,
-      {
-        kind: 'comment',
-        body: c.body.slice(0, 1800),
-        ...(c.itemId ? { itemRef: `item:${c.itemId}` } : {}),
-        ...(c.authorDiscordId ? { actorDiscordId: c.authorDiscordId } : {}),
-      },
-      `comment:${c.id}`,
-    )
+    const asActor = (opts.asActor ?? true) && Boolean(c.authorDiscordId)
+    const itemRef = c.itemId ? { itemRef: `item:${c.itemId}` } : {}
+    if (asActor) {
+      return this.postMessage(ticketId, { kind: 'comment', body: c.body.slice(0, 1800), ...itemRef, actorDiscordId: c.authorDiscordId! }, `comment:${c.id}`)
+    }
+    const body = `${commentNamePrefix(c.authorName)}${c.body}`.slice(0, 1800)
+    return this.postMessage(ticketId, { kind: 'comment', body, ...itemRef }, `comment:${c.id}:anon`)
   }
 
   async patchTicket(ticketId: number, input: PatchInput) {

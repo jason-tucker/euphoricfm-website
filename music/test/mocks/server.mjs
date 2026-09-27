@@ -2,7 +2,7 @@
 //
 //   :4100  control API   /__mock/*  (reset, seed, call logs)
 //   :4101  Discord       OAuth2 authorize/token, users/@me, guild member
-//   :4102  tickets       Integration API v0.12.1 (docs/INTEGRATION_API.md)
+//   :4102  tickets       Integration API v0.12.2 (docs/INTEGRATION_API.md)
 //   :4103  AzuraCast     P0d / P0d-B contracts (station 1 only; others 403)
 //   :4104  egress canary records ANY request (proves the probe never calls out)
 //
@@ -21,6 +21,8 @@ const TICKETS_KEYS = {
   [process.env.MOCK_TICKETS_WEB_KEY ?? 'test-tickets-web-key']: { name: 'efm-music-web', scopes: ['guild:read'], actor: false },
 }
 const AZ_KEY = process.env.MOCK_AZURACAST_KEY ?? 'test-azuracast-key-0000'
+// Category staff sets (INTEGRATION_API v0.12.2): the three reviewer roles.
+const STAFF_ROLE_IDS = (process.env.MOCK_STAFF_ROLE_IDS ?? '1144462744456794153,917525862696489001,1145243342620327947').split(',')
 const OPENAPI = readFileSync(new URL('../fixtures/openapi-min.yml', import.meta.url), 'utf8')
 
 // ------------------------------------------------------------ helpers ----
@@ -189,6 +191,15 @@ function strictKeys(obj, allowed) {
   return obj && typeof obj === 'object' && !Array.isArray(obj) && Object.keys(obj).every((k) => allowed.includes(k))
 }
 
+// v0.12.2: an actor must be a non-pending guild member who is in the
+// category's staff set, or the ticket's opener; otherwise 403 actor_forbidden.
+function actorAllowed(t, actorId) {
+  const m = state.tickets.members.get(actorId)
+  if (!m?.member || m.pending) return false
+  if (actorId === t.opener) return true
+  return (m.roleIds ?? []).some((r) => STAFF_ROLE_IDS.includes(r))
+}
+
 function ticketView(t) {
   return { status: t.status, claimedBy: t.claimedBy, closedAt: t.closedAt, webUrl: t.webUrl, discordChannelUrl: t.discordChannelUrl }
 }
@@ -272,7 +283,7 @@ async function handleTickets(req, res, url) {
       if (!strictKeys(body, ['status', 'actorDiscordId', 'reason']) || !['in_progress', 'waiting', 'on_hold', 'completed', 'closed'].includes(body?.status)) {
         return validationError(res, [{ path: 'status', message: 'invalid' }])
       }
-      if (body.actorDiscordId && !key.actor) return send(res, 403, { error: 'actor_forbidden' })
+      if (body.actorDiscordId && (!key.actor || !actorAllowed(t, body.actorDiscordId))) return send(res, 403, { error: 'actor_forbidden' })
       if (body.status === 'closed') {
         if (!key.scopes.includes('tickets:close')) return send(res, 403, { error: 'scope_missing', required: 'tickets:close' })
         if (t.status === 'closed') return send(res, 409, { error: 'already_closed' })
@@ -297,7 +308,7 @@ async function handleTickets(req, res, url) {
         return send(res, 200, { messageId: prior.messageId, discordMessageId: prior.discordMessageId, created: false })
       }
       if (t.status === 'closed') return send(res, 409, { error: 'ticket_closed' })
-      if (body.actorDiscordId && !key.actor) return send(res, 403, { error: 'actor_forbidden' })
+      if (body.actorDiscordId && (!key.actor || !actorAllowed(t, body.actorDiscordId))) return send(res, 403, { error: 'actor_forbidden' })
       const msg = { messageId: randomUUID(), discordMessageId: String(Date.now()), actorDiscordId: body.actorDiscordId ?? null, kind: body.kind, body: body.body, itemRef: body.itemRef ?? null }
       state.tickets.messages.set(k, msg)
       return send(res, 201, { messageId: msg.messageId, discordMessageId: msg.discordMessageId, created: true })

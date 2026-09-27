@@ -7,7 +7,7 @@ import type { AzuraCastClient } from '../server/azuracast/client'
 import { checkContract } from '../server/azuracast/contract'
 import { audit } from '../server/audit'
 import type { DB } from '../server/db/client'
-import { batches, comments, items, users } from '../server/db/schema'
+import { batches, comments, items, memberCache, roleBindings, users } from '../server/db/schema'
 import { enqueue } from '../server/jobs'
 import { getQueuesPaused, pauseQueues, resumeQueuesIf } from '../server/pause'
 import { readSpoolResult } from '../server/spool/protocol'
@@ -170,13 +170,40 @@ export async function ticketComment(ctx: WorkerCtx, payload: { commentId: number
   if (!c.batchId) throw new Permanent('comment without batch')
   const b = await ctx.db.query.batches.findFirst({ where: eq(batches.id, c.batchId) })
   if (!b?.ticketId) throw new RetryLater(60, 'ticket not open yet')
+  const asActor = await mayActAs(ctx, b.ownerUserId, c.authorDiscordId)
+  const input = { id: c.id, visibility: c.visibility, body: c.body, itemId: c.itemId, authorDiscordId: c.authorDiscordId, authorName: c.authorName }
   let res
   try {
-    res = await ctx.tickets.postComment(b.ticketId, { id: c.id, visibility: c.visibility, body: c.body, itemId: c.itemId, authorDiscordId: c.authorDiscordId })
+    res = await ctx.tickets.postComment(b.ticketId, input, { asActor })
   } catch (e) {
-    fromTickets(e)
+    if (!(asActor && e instanceof TicketsApiError && e.status === 403 && e.code === 'actor_forbidden')) fromTickets(e)
+    // The tickets staff set disagrees with ours: post once as the
+    // integration, with the author's name, so the comment is never lost.
+    await audit(ctx.db, { action: 'comment.actor_fallback', targetType: 'comment', targetId: c.id, detail: { ticketId: b.ticketId, actorDiscordId: c.authorDiscordId } })
+    try {
+      res = await ctx.tickets.postComment(b.ticketId, input, { asActor: false })
+    } catch (e2) {
+      fromTickets(e2)
+    }
   }
   await ctx.db.update(comments).set({ ticketMessageId: res.messageId }).where(eq(comments.id, c.id))
+}
+
+// Whether to post a portal comment AS its author (actorDiscordId). The
+// tickets API accepts an actor only if it is the ticket's opener or a
+// non-pending member in the category staff set (INTEGRATION_API v0.12.2).
+// The portal's side of that: the batch owner (the opener), or a member whose
+// cached roles include a role_bindings role (the reviewer roles, which are
+// the newsong/songedit/songremoval staff roles). Admin-by-PORTAL_OWNER_IDS
+// alone is NOT a staff role. A mismatch still falls back (see above).
+async function mayActAs(ctx: WorkerCtx, batchOwnerUserId: string, authorDiscordId: string | null): Promise<boolean> {
+  if (!authorDiscordId) return false
+  const owner = await ctx.db.query.users.findFirst({ where: eq(users.id, batchOwnerUserId) })
+  if (owner?.discordId === authorDiscordId) return true
+  const mc = await ctx.db.query.memberCache.findFirst({ where: eq(memberCache.discordId, authorDiscordId) })
+  if (!mc || !mc.member || mc.pending) return false
+  const bound = new Set((await ctx.db.select({ roleId: roleBindings.roleId }).from(roleBindings)).map((r) => r.roleId))
+  return mc.roleIds.some((r) => bound.has(r))
 }
 
 export async function ticketDecision(ctx: WorkerCtx, payload: { itemId: number }) {
