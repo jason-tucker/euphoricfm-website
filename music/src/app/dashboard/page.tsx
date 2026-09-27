@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { songName, when } from '@/components/format'
 import { probeErrorText } from '@/components/messages'
+import { Thumb } from '@/components/Thumb'
 import { RequestWithdrawButton } from '@/components/requests/RequestWithdrawButton'
 import { BatchStatusChip, ItemStatusChip, NewArtistBadge, PageTitle, RequestStatusChip, TicketLink } from '@/components/ui'
 import { getDb } from '@/server/db/client'
@@ -52,7 +53,8 @@ export default async function Dashboard() {
                 {b.items.map((it) => (
                   <li key={it.id} data-item-id={it.id} className="rounded-xl border border-cream/10 bg-cream/[0.02] px-3 py-2">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="min-w-0 truncate text-sm">
+                      {it.kind === 'song' ? <Thumb src={it.coverUrl} alt="" size="xs" /> : null}
+                      <span className="min-w-0 flex-1 truncate text-sm">
                         {it.kind === 'new_artist' ? (
                           <>
                             <NewArtistBadge /> <span className="ml-1">{it.newArtistName ?? it.artist}</span>
@@ -100,7 +102,8 @@ export default async function Dashboard() {
           <ul className="space-y-2" data-testid="own-requests">
             {requests.map((r) => (
               <li key={r.id} className="card flex flex-wrap items-center justify-between gap-2 py-3">
-                <div className="min-w-0">
+                <Thumb src={r.artUrl} alt="" size="sm" />
+                <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">
                     {r.kind === 'edit' ? 'Edit' : 'Removal'} request #{r.id}
                   </p>
@@ -109,10 +112,13 @@ export default async function Dashboard() {
                     <p className="text-xs text-cream/60">
                       Proposed:{' '}
                       {Object.entries(r.proposed)
-                        .map(([k, v]) => `${k}: ${v}`)
+                        .map(([k, v]) => (k === 'artId' ? 'new album art' : `${k}: ${String(v)}`))
                         .join(', ')}
                     </p>
                   ) : null}
+                  {r.awaitingArtist ? <p className="text-xs text-gold">Approved; waiting for managers to approve the new artist.</p> : null}
+                  {r.status === 'denied' && r.denyReason ? <p className="text-xs text-rose-200">Reason: {r.denyReason}</p> : null}
+                  {r.status === 'failed' && r.error ? <p className="text-xs text-rose-200">It could not be applied ({r.error}). The managers have been told.</p> : null}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <RequestStatusChip status={r.status} />

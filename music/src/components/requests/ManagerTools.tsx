@@ -6,7 +6,8 @@
 
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
-import { archiveSong, directEdit, setPlaylists, type Proposed } from '@/lib/api/requests'
+import { archiveSong, directEdit, setLibraryArt, setPlaylists, type Proposed } from '@/lib/api/requests'
+import { ArtControl } from '../ArtControl'
 import { messageFor } from '../api'
 import { ConfirmDialog } from '../ConfirmDialog'
 import { Notice } from '../ui'
@@ -17,12 +18,14 @@ const KEYS = ['title', 'artist', 'album', 'genre'] as const
 export function ManagerTools({
   mediaId,
   current,
+  artUrl = null,
   playlistIds,
   assignable,
   otherPlaylistLabels,
 }: {
   mediaId: number
   current: Fields
+  artUrl?: string | null
   playlistIds: number[]
   assignable: { id: number; label: string }[]
   otherPlaylistLabels: string[]
@@ -72,6 +75,19 @@ export function ManagerTools({
         <button type="button" className="btn btn-primary btn-sm" disabled={!!busy || Object.keys(changes).length === 0} onClick={() => void run('edit', () => directEdit(mediaId, changes), 'Saved. The station copy updates shortly.')}>
           {busy === 'edit' ? 'Saving…' : 'Save metadata'}
         </button>
+      </div>
+
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold text-cream/80">Album art</h3>
+        <ArtControl
+          src={artUrl}
+          title="Station album art"
+          prompt="This song has no album art on the station. Upload some to set it (optional)."
+          attach={async (artId) => {
+            await setLibraryArt(mediaId, artId)
+            setMsg({ tone: 'ok', text: 'New art queued. The station copy updates shortly.' })
+          }}
+        />
       </div>
 
       <fieldset className="space-y-2">

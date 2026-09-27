@@ -1,9 +1,12 @@
 import { when } from '@/components/format'
+import { ArtistDecision } from '@/components/requests/ArtistDecision'
 import { RequestDecision } from '@/components/requests/RequestDecision'
 import { ReviewTabs } from '@/components/review/ReviewTabs'
+import { ArtUploadPreview } from '@/components/ArtUploadPreview'
+import { Thumb } from '@/components/Thumb'
 import { PageTitle, TicketLink } from '@/components/ui'
 import { getDb } from '@/server/db/client'
-import { pendingRequests } from '@/server/ui/browse'
+import { artistsAwaitingApproval, pendingRequests } from '@/server/ui/browse'
 import { pageViewer } from '@/server/ui/page'
 
 export const dynamic = 'force-dynamic'
@@ -13,11 +16,36 @@ const KEYS = ['title', 'artist', 'album', 'genre'] as const
 
 export default async function ReviewRequestsPage() {
   const viewer = await pageViewer('review')
-  const rows = await pendingRequests(getDb(), viewer)
+  const db = getDb()
+  const [rows, waiting] = await Promise.all([pendingRequests(db, viewer), artistsAwaitingApproval(db, viewer)])
   return (
     <section>
       <PageTitle title="Review" sub={`${rows.length} pending edit/removal request${rows.length === 1 ? '' : 's'}, oldest first.`} />
       <ReviewTabs active="requests" />
+      {waiting.length ? (
+        <section className="mb-6 space-y-3" aria-labelledby="waiting-h">
+          <h2 id="waiting-h" className="text-lg font-bold">
+            New artists waiting for approval
+          </h2>
+          {waiting.map((a) => (
+            <div key={a.artistId} className="card space-y-2 border-gold/40" data-waiting-artist={a.artistId}>
+              <p className="flex flex-wrap items-center gap-2">
+                <span className="chip chip-new">NEW ARTIST</span>
+                <span className="font-semibold">{a.name}</span>
+                <span className="text-xs text-cream/60">folder: {a.folder}</span>
+              </p>
+              <ul className="list-disc pl-5 text-xs text-cream/70">
+                {a.requests.map((r) => (
+                  <li key={r.id}>
+                    Edit request #{r.id}: {r.targetPath.replace(/^.*Music\/Artists\//, '')}
+                  </li>
+                ))}
+              </ul>
+              <ArtistDecision artistId={a.artistId} name={a.name} folder={a.folder} />
+            </div>
+          ))}
+        </section>
+      ) : null}
       {rows.length === 0 ? (
         <p className="card text-center text-cream/70">No requests waiting.</p>
       ) : (
@@ -33,7 +61,17 @@ export default async function ReviewRequestsPage() {
                 </h2>
                 <TicketLink ticket={r.ticket} />
               </div>
-              <p className="break-all text-xs text-cream/60">{r.targetPath.replace(/^Music\/Artists\//, '')}</p>
+              <div className="flex flex-wrap items-center gap-3">
+                <Thumb src={r.currentArtUrl} alt="Current album art" size="md" />
+                {r.proposedArtId ? (
+                  <>
+                    <span aria-hidden="true" className="text-cream/50">→</span>
+                    <ArtUploadPreview artId={r.proposedArtId} alt="Proposed album art" />
+                    <span className="chip chip-pending">new album art proposed</span>
+                  </>
+                ) : null}
+                <p className="min-w-0 flex-1 break-all text-xs text-cream/60">{r.targetPath.replace(/^.*Music\/Artists\//, '')}</p>
+              </div>
               {r.kind === 'edit' && r.proposed ? (
                 <table className="w-full text-left text-sm">
                   <thead>

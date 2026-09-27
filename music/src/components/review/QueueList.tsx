@@ -11,6 +11,7 @@ import type { UiItem } from '@/server/ui/queries'
 import { api, ApiError, messageFor } from '../api'
 import { ConfirmDialog } from '../ConfirmDialog'
 import { duration, songName, when } from '../format'
+import { Thumb } from '../Thumb'
 import { NewArtistBadge, Notice } from '../ui'
 
 export type QueueGroup = { batchId: number; submittedAt: string | null; ownerName: string; ticketNumber: number | null; items: UiItem[] }
@@ -130,6 +131,7 @@ export function QueueList({ groups, defaultPlaylistLabels }: { groups: QueueGrou
                   <span className="size-5 shrink-0" aria-hidden="true" />
                 )}
                 <Link href={`/review/items/${it.id}`} className="row-link min-w-0 flex-1 text-sm">
+                  {it.kind === 'song' ? <Thumb src={it.coverUrl} alt="" size="xs" /> : null}
                   <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                     {it.kind === 'new_artist' ? <NewArtistBadge /> : null}
                     <span className="min-w-0 truncate">{it.kind === 'new_artist' ? (it.newArtistName ?? it.artist) : songName(it)}</span>

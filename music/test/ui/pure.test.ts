@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { playlistLabel, songName } from '@/components/format'
 import { probeErrorText } from '@/components/messages'
 import { changedFields, precheck } from '@/components/submit/types'
-import { escapeLike, onLibrarySurface } from '@/server/ui/library'
+import { libraryArtUrl } from '@/server/ui/art'
+import { escapeLike, folderOf, libraryRoot, onLibrarySurface } from '@/server/ui/library'
 
 const MB = 1024 * 1024
 
@@ -15,6 +16,22 @@ describe('library whitelist and LIKE escaping', () => {
     expect(onLibrarySurface('Removed/12/x.mp3')).toBe(false)
     expect(onLibrarySurface('Portal-Test/Music/Artists/A/b.mp3')).toBe(false)
     expect(onLibrarySurface('Music/Artists/../ADS/x.mp3')).toBe(false)
+    // exactly one artist folder deep (same rule as P4's isRequestTarget)
+    expect(onLibrarySurface('Music/Artists/GRIM/Live/x.mp3')).toBe(false)
+    expect(onLibrarySurface('Music/Artists/GRIM')).toBe(false)
+  })
+  it('honours PORTAL_TEST_PREFIX as the library root, and refuses a bad one', () => {
+    const root = libraryRoot({ PORTAL_TEST_PREFIX: 'Portal-Test/' })
+    expect(onLibrarySurface('Portal-Test/Music/Artists/A/b.mp3', root)).toBe(true)
+    expect(onLibrarySurface('Music/Artists/A/b.mp3', root)).toBe(false)
+    expect(folderOf('Portal-Test/Music/Artists/A B/c.mp3', root)).toBe('A B')
+    expect(() => libraryRoot({ PORTAL_TEST_PREFIX: '../x/' })).toThrow()
+    expect(libraryRoot({})).toBe('')
+  })
+  it('library art: only https://euphoric.fm URLs, else the unique_id fallback', () => {
+    expect(libraryArtUrl('https://euphoric.fm/api/station/euphoricfm/art/abc123ef', null)).toBe('https://euphoric.fm/api/station/euphoricfm/art/abc123ef')
+    expect(libraryArtUrl('https://evil.example/x.jpg', 'deadbeefdeadbeefdeadbeef')).toBe('https://euphoric.fm/api/station/euphoricfm/art/deadbeefdeadbeefdeadbeef')
+    expect(libraryArtUrl(null, 'not hex!')).toBeNull()
   })
   it('escapes LIKE wildcards', () => {
     expect(escapeLike('100%_a\\b')).toBe('100\\%\\_a\\\\b')

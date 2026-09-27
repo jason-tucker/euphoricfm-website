@@ -9,7 +9,7 @@ import { useState } from 'react'
 import { ConfirmDialog } from '../ConfirmDialog'
 import { NewArtistBadge, Notice } from '../ui'
 
-export type SummaryRow = { key: string; name: string; newArtist: boolean; edited: boolean; duplicate: boolean }
+export type SummaryRow = { key: string; name: string; newArtist: boolean; edited: boolean; duplicate: boolean; noArt?: boolean }
 
 export function SubmitPanel({
   rights,
@@ -115,9 +115,23 @@ export function SubmitPanel({
               {r.newArtist ? <NewArtistBadge /> : null}
               {r.edited ? <span className="chip chip-neutral">edited</span> : null}
               {r.duplicate ? <span className="chip chip-pending">possible duplicate</span> : null}
+              {r.noArt ? <span className="chip chip-muted">no art</span> : null}
             </li>
           ))}
         </ul>
+        {rows.some((r) => r.noArt) ? (
+          <div className="rounded-lg border border-gold/40 bg-gold/[0.06] p-2" data-testid="no-art-list">
+            <p className="font-semibold text-gold">No album art on {rows.filter((r) => r.noArt).length} song{rows.filter((r) => r.noArt).length === 1 ? '' : 's'}</p>
+            <ul className="list-disc pl-5 text-xs">
+              {rows
+                .filter((r) => r.noArt)
+                .map((r) => (
+                  <li key={r.key}>{r.name}</li>
+                ))}
+            </ul>
+            <p className="mt-1 text-xs text-cream/65">Art is optional. Cancel to add it, or submit as is.</p>
+          </div>
+        ) : null}
         {notes.trim() ? (
           <p className="text-cream/70">
             Notes: <span className="whitespace-pre-wrap">{notes.trim()}</span>

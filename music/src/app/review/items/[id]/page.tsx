@@ -1,5 +1,7 @@
 import Link from 'next/link'
 import { AudioPreview } from '@/components/AudioPreview'
+import { ItemArtControl } from '@/components/ItemArtControl'
+import { Thumb } from '@/components/Thumb'
 import { CommentThread, type UiComment } from '@/components/CommentThread'
 import { duration, playlistLabel, songName, when } from '@/components/format'
 import { ReviewItemActions } from '@/components/review/ReviewItemActions'
@@ -61,7 +63,12 @@ export default async function ReviewItemPage({ params }: { params: Promise<{ id:
 
       {it.kind === 'song' ? (
         <div className="card space-y-3">
-          <AudioPreview itemId={it.id} />
+          {it.status === 'pending' ? (
+            <ItemArtControl itemId={it.id} src={it.coverUrl} hasCustomArt={it.hasCustomArt} prompt="No cover art on this song. You can add or replace it before approving (optional)." />
+          ) : (
+            <Thumb src={it.coverUrl} alt="Album art" size="lg" />
+          )}
+          <AudioPreview itemId={it.id} hideCover />
           <p className="text-xs text-cream/60">
             {[duration(it.durationS), it.bitrate ? `${Math.round(it.bitrate / 1000)} kbps` : null].filter(Boolean).join(' · ')}
           </p>

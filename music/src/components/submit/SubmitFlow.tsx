@@ -73,7 +73,7 @@ export function SubmitFlow({
     initialItems.filter((i) => i.kind === 'song' && i.status !== 'withdrawn').map(entryFromItem),
   )
   const [batchId, setBatchId] = useState<number | null>(initialBatchId)
-  const [flags, setFlags] = useState<Record<string, { newArtist?: boolean; dup?: boolean }>>({})
+  const [flags, setFlags] = useState<Record<string, { newArtist?: boolean; dup?: boolean; art?: boolean }>>({})
   const [notes, setNotes] = useState('')
   const [dragging, setDragging] = useState(false)
   const [topError, setTopError] = useState<string | null>(null)
@@ -290,6 +290,7 @@ export function SubmitFlow({
     newArtist: Boolean(flags[e.key]?.newArtist),
     edited: Object.keys(changedFields(e)).length > 0,
     duplicate: Boolean(flags[e.key]?.dup),
+    noArt: !(flags[e.key]?.art ?? e.item?.hasArt ?? e.item?.hasCover ?? false),
   }))
 
   const onSubmit = async (att: { attest: true; version: string }): Promise<string | null> => {
@@ -324,7 +325,7 @@ export function SubmitFlow({
     return null
   }
 
-  const setFlag = (key: string, k: 'newArtist' | 'dup', v: boolean) =>
+  const setFlag = (key: string, k: 'newArtist' | 'dup' | 'art', v: boolean) =>
     setFlags((f) => (f[key]?.[k] === v ? f : { ...f, [key]: { ...f[key], [k]: v } }))
 
   return (
@@ -416,6 +417,7 @@ export function SubmitFlow({
                 }}
                 onNewArtist={(v) => setFlag(e.key, 'newArtist', v)}
                 onDuplicate={(v) => setFlag(e.key, 'dup', v)}
+                onArt={(v) => setFlag(e.key, 'art', v)}
               />
             ))}
           </ul>

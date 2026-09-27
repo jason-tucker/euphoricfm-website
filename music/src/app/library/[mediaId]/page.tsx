@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { duration, playlistLabel, when } from '@/components/format'
 import { ManagerTools } from '@/components/requests/ManagerTools'
 import { RequestForms } from '@/components/requests/RequestForms'
+import { Thumb } from '@/components/Thumb'
 import { Notice, PageTitle, RequestStatusChip } from '@/components/ui'
 import { getDb } from '@/server/db/client'
 import { parseId } from '@/server/http/route'
@@ -33,8 +34,9 @@ export default async function SongPage({ params }: { params: Promise<{ mediaId: 
       </p>
       <PageTitle title={song.title ?? song.fileName} sub={[song.artist, song.album].filter(Boolean).join(' · ')} />
 
-      <div className="card">
-        <dl className="grid grid-cols-[7rem_1fr] gap-y-1 text-sm">
+      <div className="card flex flex-wrap items-start gap-4">
+        <Thumb src={song.artUrl} alt={`Album art for ${song.title ?? song.fileName}`} size="xl" />
+        <dl className="grid min-w-0 flex-1 grid-cols-[7rem_1fr] gap-y-1 text-sm">
           <dt className="text-cream/55">Artist</dt>
           <dd>{song.artist ?? '—'}</dd>
           <dt className="text-cream/55">Album</dt>
@@ -77,13 +79,13 @@ export default async function SongPage({ params }: { params: Promise<{ mediaId: 
         openMine ? (
           <Notice tone="info">You already have an open request (#{openMine.id}) for this song. Withdraw it from My music to file a different one.</Notice>
         ) : (
-          <RequestForms mediaId={song.mediaId} current={current} />
+          <RequestForms mediaId={song.mediaId} current={current} currentArtUrl={song.artUrl} />
         )
       ) : null}
       {r.openRequests > 0 && viewer.perms.has('review') ? <Notice tone="warn">This song has {r.openRequests} open request(s). See Review → Requests.</Notice> : null}
 
       {viewer.perms.has('manage') ? (
-        <ManagerTools mediaId={song.mediaId} current={current} playlistIds={song.playlistIds ?? []} assignable={assignable} otherPlaylistLabels={others} />
+        <ManagerTools mediaId={song.mediaId} current={current} artUrl={song.artUrl} playlistIds={song.playlistIds ?? []} assignable={assignable} otherPlaylistLabels={others} />
       ) : null}
     </section>
   )

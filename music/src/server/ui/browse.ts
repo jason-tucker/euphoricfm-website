@@ -5,17 +5,15 @@
 import { and, asc, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm'
 import { isReviewer, type Viewer } from '../authz/predicates'
 import type { DB } from '../db/client'
-import { archive, libraryCache, requests, users } from '../db/schema'
+import { archive, artists, libraryCache, requests, users } from '../db/schema'
 import { forbidden, notFound } from '../http/errors'
-import { escapeLike, onLibrarySurface } from './library'
+import { libraryArtUrl } from './art'
+import { escapeLike, folderOf, onLibrarySurface, surfaceSql } from './library'
 
-const SURFACE_LIKE = 'Music/Artists/%'
+export { folderOf }
+
 export const PAGE_SIZE = 50
 
-// The artist folder is the path segment after Music/Artists/.
-export function folderOf(path: string): string {
-  return path.split('/')[2] ?? ''
-}
 
 function songView(v: Viewer, r: typeof libraryCache.$inferSelect) {
   return {
@@ -27,6 +25,7 @@ function songView(v: Viewer, r: typeof libraryCache.$inferSelect) {
     lengthS: r.lengthS,
     folder: folderOf(r.path),
     fileName: r.path.slice(r.path.lastIndexOf('/') + 1),
+    artUrl: libraryArtUrl((r as unknown as Record<string, unknown>).artUrl as string | undefined, r.uniqueId),
     // Playlist memberships are a staff concern.
     ...(isReviewer(v) ? { playlistIds: r.playlistIds } : {}),
   }
@@ -36,7 +35,7 @@ export type LibrarySong = ReturnType<typeof songView>
 export async function browseLibrary(db: DB, v: Viewer, opts: { q?: string; page?: number }) {
   if (!v.perms.has('submit')) throw forbidden()
   const page = Math.max(1, Math.min(opts.page ?? 1, 1000))
-  const conds = [sql`${libraryCache.path} LIKE ${SURFACE_LIKE}`]
+  const conds = [surfaceSql(libraryCache.path)]
   if (opts.q) {
     const pat = `%${escapeLike(opts.q)}%`
     conds.push(or(ilike(libraryCache.title, pat), ilike(libraryCache.artist, pat), ilike(libraryCache.album, pat))!)
@@ -105,6 +104,8 @@ export async function pendingRequests(db: DB, v: Viewer) {
       ownerName: ownerName ?? ownerDiscordId,
       ticket: r.ticketId ? { number: r.ticketNumber, webUrl: r.ticketWebUrl, channelUrl: r.ticketChannelUrl, status: r.ticketStatus } : null,
       current: c ? { title: c.title, artist: c.artist, album: c.album, genre: c.genre } : null,
+      currentArtUrl: c ? libraryArtUrl((c as unknown as Record<string, unknown>).artUrl as string | undefined, c.uniqueId) : null,
+      proposedArtId: r.proposed && typeof r.proposed === 'object' && 'artId' in r.proposed ? String((r.proposed as Record<string, unknown>).artId) : null,
     }
   })
 }
@@ -121,5 +122,29 @@ export async function archivedSongs(db: DB, v: Viewer) {
     fileName: a.originalPath.slice(a.originalPath.lastIndexOf('/') + 1),
     archivedAt: a.archivedAt.toISOString(),
     requestId: a.requestId,
+  }))
+}
+
+// Approved edits parked on a new artist (P4: requests.pending_artist_id,
+// artist status 'pending'). Read through to_jsonb so this query does not
+// depend on the column being in this branch's schema file.
+export async function artistsAwaitingApproval(db: DB, v: Viewer) {
+  if (!isReviewer(v)) throw forbidden()
+  const rows = await db.execute<{ id: number; target_path: string; proposed: Record<string, string> | null; artist_id: string }>(sql`
+    SELECT r.id, r.target_path, r.proposed, to_jsonb(r) ->> 'pending_artist_id' AS artist_id
+    FROM requests r
+    WHERE r.status IN ('approved', 'applying') AND (to_jsonb(r) ->> 'pending_artist_id') IS NOT NULL
+    ORDER BY r.id
+    LIMIT 100`)
+  const ids = [...new Set([...rows].map((r) => Number(r.artist_id)).filter((n) => Number.isInteger(n) && n > 0))]
+  if (ids.length === 0) return []
+  const as = await db.select().from(artists).where(and(inArray(artists.id, ids), eq(artists.status, 'pending')))
+  return as.map((a) => ({
+    artistId: a.id,
+    name: a.name,
+    folder: a.folder,
+    requests: [...rows]
+      .filter((r) => Number(r.artist_id) === a.id)
+      .map((r) => ({ id: r.id, targetPath: r.target_path, proposed: r.proposed })),
   }))
 }

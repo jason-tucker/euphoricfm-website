@@ -7,21 +7,34 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, messageFor } from './api'
 
-type Urls = { audioUrl: string; coverUrl: string | null }
+export type Urls = { audioUrl: string; coverUrl: string | null }
 
-export function AudioPreview({ itemId, compact = false }: { itemId: number; compact?: boolean }) {
+export function AudioPreview({
+  itemId,
+  compact = false,
+  hideCover = false,
+  onUrls,
+}: {
+  itemId: number
+  compact?: boolean
+  // The caller shows the cover itself (e.g. with an ArtControl).
+  hideCover?: boolean
+  onUrls?: (u: Urls) => void
+}) {
   const [urls, setUrls] = useState<Urls | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const retried = useRef(false)
 
   const load = useCallback(async () => {
     try {
-      setUrls(await api<Urls>(`/api/items/${itemId}/preview`))
+      const u = await api<Urls>(`/api/items/${itemId}/preview`)
+      setUrls(u)
+      onUrls?.(u)
       setErr(null)
     } catch (e) {
       setErr(messageFor(e))
     }
-  }, [itemId])
+  }, [itemId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     void load()
@@ -29,7 +42,7 @@ export function AudioPreview({ itemId, compact = false }: { itemId: number; comp
 
   return (
     <div className={`flex items-center gap-3 ${compact ? '' : 'flex-wrap'}`}>
-      {urls?.coverUrl ? (
+      {hideCover ? null : urls?.coverUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={urls.coverUrl} alt="Cover art" className={`${compact ? 'size-14' : 'size-20'} shrink-0 rounded-lg border border-cream/10 object-cover`} />
       ) : (

@@ -4,7 +4,8 @@
 // pre-filled, editable fields with library autocomplete, the NEW ARTIST badge
 // with its proposed folder, duplicate warnings and remove.
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { ItemArtControl } from '../ItemArtControl'
 import { AudioPreview } from '../AudioPreview'
 import { Autocomplete } from '../Autocomplete'
 import { duration } from '../format'
@@ -35,6 +36,7 @@ export function FileCard({
   onRetry,
   onNewArtist,
   onDuplicate,
+  onArt,
 }: {
   entry: Entry
   inBatchDuplicate: boolean
@@ -45,6 +47,7 @@ export function FileCard({
   onRetry: () => void
   onNewArtist: (isNew: boolean) => void
   onDuplicate: (isDup: boolean) => void
+  onArt: (hasArt: boolean) => void
 }) {
   const e = entry
   const ready = e.phase === 'ready'
@@ -55,6 +58,11 @@ export function FileCard({
   const isNew = Boolean(ready && lookup.data && !lookup.data.known)
   const dupList = dups.data?.results ?? []
   const isDup = inBatchDuplicate || dupList.length > 0
+  const [cover, setCover] = useState<string | null>(null)
+  const initialArt = Boolean(e.item?.hasArt ?? e.item?.hasCover)
+  useEffect(() => {
+    if (ready) onArt(initialArt)
+  }, [ready, initialArt]) // eslint-disable-line react-hooks/exhaustive-deps
   // Report upward for the confirmation summary.
   useEffect(() => onNewArtist(isNew), [isNew]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => onDuplicate(isDup), [isDup]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -127,7 +135,14 @@ export function FileCard({
 
       {ready && e.itemId ? (
         <>
-          <AudioPreview itemId={e.itemId} />
+          <ItemArtControl
+            itemId={e.itemId}
+            src={cover}
+            hasCustomArt={Boolean(e.item?.hasCustomArt)}
+            onChange={onArt}
+            prompt="This song has no cover art yet. Add a square JPEG, PNG or WebP (up to 5 MB). It's optional: you can still submit without it."
+          />
+          <AudioPreview itemId={e.itemId} hideCover onUrls={(u) => setCover(u.coverUrl)} />
           <div className="grid gap-3 sm:grid-cols-2">
             {FIELD_KEYS.map((k) => {
               const props = {

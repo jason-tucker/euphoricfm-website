@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { duration } from '@/components/format'
+import { Thumb } from '@/components/Thumb'
 import { PageTitle } from '@/components/ui'
 import { getDb } from '@/server/db/client'
 import { browseLibrary, PAGE_SIZE } from '@/server/ui/browse'
@@ -56,6 +57,7 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
           {r.songs.map((s) => (
             <li key={s.mediaId}>
               <Link href={`/library/${s.mediaId}`} className="row-link">
+                <Thumb src={s.artUrl} alt="" size="sm" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{s.title ?? s.fileName}</span>
                   <span className="block truncate text-xs text-cream/60">

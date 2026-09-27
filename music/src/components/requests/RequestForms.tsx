@@ -6,7 +6,8 @@
 
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
-import { fileEditRequest, fileRemovalRequest, type Proposed } from '@/lib/api/requests'
+import { fileEditRequest, fileRemovalRequest, type ArtId, type Proposed } from '@/lib/api/requests'
+import { ArtControl } from '../ArtControl'
 import { messageFor } from '../api'
 import { Autocomplete } from '../Autocomplete'
 import { ConfirmDialog } from '../ConfirmDialog'
@@ -24,7 +25,7 @@ export function proposedChanges(current: Fields, edits: Fields): Proposed {
   return out
 }
 
-export function RequestForms({ mediaId, current }: { mediaId: number; current: Fields }) {
+export function RequestForms({ mediaId, current, currentArtUrl = null }: { mediaId: number; current: Fields; currentArtUrl?: string | null }) {
   const router = useRouter()
   const [tab, setTab] = useState<'edit' | 'removal'>('edit')
   const [edits, setEdits] = useState<Fields>(current)
@@ -33,11 +34,13 @@ export function RequestForms({ mediaId, current }: { mediaId: number; current: F
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
-  const changes = proposedChanges(current, edits)
+  const [artId, setArtId] = useState<ArtId | null>(null)
+  const [artPreview, setArtPreview] = useState<string | null>(null)
+  const changes: Proposed = { ...proposedChanges(current, edits), ...(artId !== null ? { artId } : {}) }
 
   const open = () => {
     setError(null)
-    if (tab === 'edit' && Object.keys(changes).length === 0) return setError('Change at least one field to suggest an edit.')
+    if (tab === 'edit' && Object.keys(changes).length === 0) return setError('Change at least one field, or propose new album art, to suggest an edit.')
     if (tab === 'removal' && !reason.trim()) return setError('Tell the managers why this song should be removed.')
     setConfirm(true)
   }
@@ -82,6 +85,24 @@ export function RequestForms({ mediaId, current }: { mediaId: number; current: F
             {edits.album.trim() !== current.album.trim() ? <p className="mt-1 text-xs text-cream/55">Now: {current.album || '(empty)'}</p> : null}
           </div>
           <TextField id="rq-genre" label="Genre" value={edits.genre} was={current.genre} onChange={(v) => setEdits({ ...edits, genre: v })} />
+          <div className="sm:col-span-2">
+            <ArtControl
+              src={currentArtUrl}
+              title={artId !== null ? 'New album art (proposed)' : 'Current album art'}
+              prompt="This song has no album art. You can propose some (optional)."
+              canRemove={false}
+              removeLabel="Undo new art"
+              attach={async (id, preview) => {
+                setArtId(id)
+                setArtPreview(preview)
+              }}
+              detach={async () => {
+                setArtId(null)
+                setArtPreview(null)
+                return currentArtUrl
+              }}
+            />
+          </div>
         </div>
       ) : (
         <p className="text-sm text-cream/75">Removed songs are archived (taken out of every playlist and moved out of the library), not deleted. Managers can restore them.</p>
@@ -91,7 +112,7 @@ export function RequestForms({ mediaId, current }: { mediaId: number; current: F
         <label className="label" htmlFor="rq-reason">
           {tab === 'removal' ? 'Why should it be removed? (required)' : 'Why? (optional)'}
         </label>
-        <textarea id="rq-reason" className="input min-h-[70px]" maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
+        <textarea id="rq-reason" className="input min-h-[70px]" maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
       </div>
 
       {error ? <Notice tone="error">{error}</Notice> : null}
@@ -111,11 +132,15 @@ export function RequestForms({ mediaId, current }: { mediaId: number; current: F
       >
         {tab === 'edit' ? (
           <ul className="list-disc pl-5">
-            {Object.entries(changes).map(([k, v]) => (
-              <li key={k}>
-                <span className="capitalize">{k}</span>: “{current[k as keyof Fields] || '(empty)'}” → “{v}”
-              </li>
-            ))}
+            {Object.entries(changes).map(([k, v]) =>
+              k === 'artId' ? (
+                <li key={k}>New album art{artPreview ? ' (shown above)' : ''}</li>
+              ) : (
+                <li key={k}>
+                  <span className="capitalize">{k}</span>: “{current[k as keyof Fields] || '(empty)'}” → “{String(v)}”
+                </li>
+              ),
+            )}
           </ul>
         ) : (
           <p>Ask the managers to archive this song.</p>

@@ -8,6 +8,7 @@ import { canViewOwned, isReviewer, type Viewer } from '../authz/predicates'
 import type { DB } from '../db/client'
 import { batches, comments, items, jobs, requests, roleBindings, settings, uploads, users } from '../db/schema'
 import { forbidden, notFound } from '../http/errors'
+import { customArtIdOf, itemCoverUrl, itemHasArt, libraryArt } from './art'
 import { escapeLike } from './library'
 
 type ItemRow = typeof items.$inferSelect
@@ -32,6 +33,9 @@ export function uiItem(v: Viewer, it: ItemRow) {
     probeError: it.probeError,
     denyReason: it.denyReason,
     hasCover: Boolean(it.coverFile),
+    hasArt: itemHasArt(it),
+    hasCustomArt: customArtIdOf(it) !== null,
+    coverUrl: itemCoverUrl(v.userId, it),
     playlistIds: it.playlistIds,
     decidedAt: it.decidedAt?.toISOString() ?? null,
     liveAt: it.liveAt?.toISOString() ?? null,
@@ -68,13 +72,30 @@ export async function listOwnBatches(db: DB, v: Viewer, limit = 50) {
 
 export async function listOwnRequests(db: DB, v: Viewer, limit = 50) {
   const rows = await db.query.requests.findMany({ where: eq(requests.ownerUserId, v.userId), orderBy: desc(requests.id), limit })
+  // P4 columns (deny_reason, error, pending_artist_id) read through to_jsonb
+  // so this does not depend on them being in this branch's schema file.
+  const extra = new Map<number, { deny_reason: string | null; error: string | null; pending_artist_id: string | null }>()
+  if (rows.length) {
+    const ids = sql.join(rows.map((r) => sql`${r.id}`), sql`, `)
+    const ex = await db.execute<{ id: number; deny_reason: string | null; error: string | null; pending_artist_id: string | null }>(
+      sql`SELECT r.id, to_jsonb(r) ->> 'deny_reason' AS deny_reason, to_jsonb(r) ->> 'error' AS error, to_jsonb(r) ->> 'pending_artist_id' AS pending_artist_id
+          FROM requests r WHERE r.owner_user_id = ${v.userId} AND r.id IN (${ids})`,
+    )
+    for (const e of ex) extra.set(Number(e.id), e)
+  }
+  const art = await libraryArt(db, rows.map((r) => r.mediaId))
   return rows.map((r) => ({
     id: r.id,
     kind: r.kind,
     status: r.status,
+    mediaId: r.mediaId,
     targetPath: r.targetPath,
-    proposed: (r.proposed ?? null) as Record<string, string> | null,
+    proposed: (r.proposed ?? null) as Record<string, unknown> | null,
     reason: r.reason,
+    denyReason: extra.get(r.id)?.deny_reason ?? null,
+    error: extra.get(r.id)?.error ?? null,
+    awaitingArtist: Boolean(extra.get(r.id)?.pending_artist_id),
+    artUrl: art.get(r.mediaId) ?? null,
     createdAt: r.createdAt.toISOString(),
     ticket: r.ticketId ? { number: r.ticketNumber, webUrl: r.ticketWebUrl, channelUrl: r.ticketChannelUrl, status: r.ticketStatus } : null,
   }))
@@ -174,7 +195,7 @@ export async function adminOverview(db: DB, v: Viewer) {
     db.select({ n: count() }).from(comments).where(and(eq(comments.visibility, 'all'), eq(comments.source, 'portal'), sql`${comments.ticketMessageId} IS NULL`)),
   ])
   return {
-    bindings: bindings.map((b) => ({ id: b.id, roleId: b.roleId, permission: b.permission, note: b.note, createdBy: b.createdBy, createdAt: b.createdAt.toISOString() })),
+    bindings: bindings.map((b) => ({ id: b.id, roleId: b.roleId, permission: b.permission as 'review' | 'manage', note: b.note, createdBy: b.createdBy, createdAt: b.createdAt.toISOString() })),
     settings: settingRows.map((s) => ({ key: s.key, value: s.value, updatedAt: s.updatedAt.toISOString(), updatedBy: s.updatedBy })),
     itemCounts: Object.fromEntries(itemCounts.map((r) => [r.status, Number(r.n)])),
     jobCounts: Object.fromEntries(jobCounts.map((r) => [r.status, Number(r.n)])),
