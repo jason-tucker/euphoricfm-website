@@ -3,15 +3,18 @@
 // Start-up refuses unless: env is clean of web secrets; the profile guard
 // passes (MUSIC_PROFILE, STATION_ID=1, PORTAL_TEST_PREFIX rules); the key
 // self-check passes (own station 200, canary station 403). Then the contract
-// probe runs (drift pauses queues + alerts, it does not stop the worker), and
-// the job loop starts.
+// probe runs (drift, or a spec it cannot verify, pauses the MUTATING queues
+// and alerts; it does not stop the worker), and the job loop starts. While
+// paused, claimJob() skips mutating kinds and the AzuraCast write gate
+// refuses every write (server/pause.ts).
 
 import { sql } from 'drizzle-orm'
-import { AzuraCastClient } from '../server/azuracast/client'
+import { AzuraCastClient, AzuraCastError } from '../server/azuracast/client'
 import { resolveProfile, type Profile } from '../server/azuracast/guard'
 import { closeDb, getDb, type DB } from '../server/db/client'
 import { loadWorkerEnv, type WorkerEnv } from '../server/env'
 import { enqueue } from '../server/jobs'
+import { assertQueuesNotPaused, MUTATING_JOB_KINDS, PAUSED_SQL, QueuesPausedError } from '../server/pause'
 import { TicketsClient } from '../server/tickets/client'
 import {
   collectProbeResults,
@@ -75,15 +78,28 @@ type JobRow = { id: number; kind: string; payload: Record<string, unknown>; atte
 export async function claimJob(db: DB): Promise<JobRow | null> {
   // Reclaim jobs whose runner died mid-flight.
   await db.execute(sql`UPDATE jobs SET status = 'queued', locked_at = NULL WHERE status = 'running' AND locked_at < now() - interval '10 minutes'`)
+  // While settings.queues_paused is set, mutating kinds are never claimed.
+  const mutating = sql.join(
+    MUTATING_JOB_KINDS.map((k) => sql`${k}`),
+    sql`, `,
+  )
   const rows = await db.execute<JobRow>(sql`
     UPDATE jobs SET status = 'running', locked_at = now(), attempts = attempts + 1, updated_at = now()
-    WHERE id = (SELECT id FROM jobs WHERE status = 'queued' AND run_after <= now() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)
+    WHERE id = (
+      SELECT id FROM jobs
+      WHERE status = 'queued' AND run_after <= now()
+        AND NOT (kind IN (${mutating}) AND ${PAUSED_SQL})
+      ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)
     RETURNING id, kind, payload, attempts, max_attempts`)
   return (rows as unknown as JobRow[])[0] ?? null
 }
 
 export async function runJob(ctx: WorkerCtx, job: JobRow): Promise<void> {
   try {
+    // The pause may have been set after the claim: re-check before a
+    // mutating handler starts (each handler's AzuraCast writes are gated
+    // again by the wrapper's write gate).
+    if (MUTATING_JOB_KINDS.includes(job.kind)) await assertQueuesNotPaused(ctx.db)
     switch (job.kind) {
       case 'ticket_open':
         await ticketOpen(ctx, job.payload as { batchId: number })
@@ -103,6 +119,14 @@ export async function runJob(ctx: WorkerCtx, job: JobRow): Promise<void> {
     await ctx.db.execute(sql`UPDATE jobs SET status = 'done', updated_at = now(), last_error = NULL WHERE id = ${job.id}`)
   } catch (e) {
     const msg = e instanceof Error ? `${e.name}: ${e.message}`.slice(0, 500) : 'error'
+    if (e instanceof QueuesPausedError || (e instanceof AzuraCastError && e.code === 'refused_queues_paused')) {
+      // Paused: park it without spending an attempt; claimJob skips it until
+      // the pause is cleared.
+      await ctx.db.execute(
+        sql`UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = GREATEST(attempts - 1, 0), updated_at = now(), last_error = ${msg}, run_after = now() + interval '60 seconds' WHERE id = ${job.id}`,
+      )
+      return
+    }
     if (e instanceof Permanent || job.attempts >= job.max_attempts) {
       await ctx.db.execute(sql`UPDATE jobs SET status = 'dead', updated_at = now(), last_error = ${msg} WHERE id = ${job.id}`)
       await ctx.alert(`job ${job.kind} #${job.id} failed permanently`, { error: msg })
@@ -119,6 +143,7 @@ export async function main() {
   const { env, profile, azuracast } = await startupChecks()
   console.log(`[worker] profile=${profile.profile} station=${profile.stationId} prefix=${profile.testPrefix || '(none)'} self-check ok`)
   const db = getDb(env.DATABASE_URL, 3)
+  azuracast.setWriteGate(() => assertQueuesNotPaused(db))
   const ctx: WorkerCtx = {
     db,
     azuracast,
@@ -127,10 +152,12 @@ export async function main() {
     spoolOutDir: env.SPOOL_PROBE_OUT_DIR,
     alert: await makeAlert(env),
   }
+  // Fails closed on its own (pauses the mutating queues); the catch only
+  // covers a DB failure while recording that.
   try {
     await contractProbe(ctx)
   } catch (e) {
-    await ctx.alert('contract probe could not run at start-up', { error: e instanceof Error ? e.message : 'error' })
+    await ctx.alert('contract probe could not run at start-up; mutating jobs may not be paused', { error: e instanceof Error ? e.message : 'error' })
   }
 
   let stopping = false

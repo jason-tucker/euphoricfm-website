@@ -7,7 +7,9 @@ import type { AzuraCastClient } from '../server/azuracast/client'
 import { checkContract } from '../server/azuracast/contract'
 import { audit } from '../server/audit'
 import type { DB } from '../server/db/client'
-import { batches, comments, items, settings, users } from '../server/db/schema'
+import { batches, comments, items, users } from '../server/db/schema'
+import { enqueue } from '../server/jobs'
+import { getQueuesPaused, pauseQueues, resumeQueuesIf } from '../server/pause'
 import { readSpoolResult } from '../server/spool/protocol'
 import { TicketsApiError, type TicketsClient } from '../server/tickets/client'
 
@@ -168,16 +170,38 @@ export async function ticketDecision(ctx: WorkerCtx, payload: { itemId: number }
 
 // --------------------------------------------------------- contract probe --
 
+// Runs at start-up and daily. FAILS CLOSED: if the spec cannot be fetched or
+// checked, the mutating queues are paused with reason 'contract_unverified'
+// (and a retry is scheduled); on drift they are paused with 'contract_drift'.
+// Only a 'contract_unverified' pause is lifted automatically, by a later
+// successful probe. Never throws (a thrown probe would retry, then die, and
+// leave the queues running).
 export async function contractProbe(ctx: WorkerCtx): Promise<boolean> {
-  const spec = await ctx.azuracast.openapi()
-  const report = checkContract(spec)
-  if (report.ok) return true
-  const value = { reason: 'contract_drift', at: new Date().toISOString(), drift: report.drift.slice(0, 20) }
-  await ctx.db
-    .insert(settings)
-    .values({ key: 'queues_paused', value, updatedBy: 'worker' })
-    .onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: new Date(), updatedBy: 'worker' } })
+  let report: ReturnType<typeof checkContract>
+  try {
+    const spec = await ctx.azuracast.openapi()
+    report = checkContract(spec)
+  } catch (e) {
+    const error = e instanceof Error ? `${e.name}: ${e.message}`.slice(0, 300) : 'error'
+    const current = await getQueuesPaused(ctx.db)
+    // Never replace a stronger reason (drift, an operator pause) with this one.
+    if (!current) await pauseQueues(ctx.db, 'contract_unverified', { error })
+    const retryAt = new Date(Date.now() + 15 * 60_000)
+    await enqueue(ctx.db, 'contract_probe', {}, { dedupeKey: `contract_probe:retry:${retryAt.toISOString().slice(0, 15)}`, runAfter: retryAt })
+    await ctx.alert('AzuraCast contract could not be verified: mutating jobs (ingest, move, archive, restore, edits) are paused; retrying in 15 min', {
+      error,
+      pausedReason: current?.reason ?? 'contract_unverified',
+    })
+    return false
+  }
+  if (report.ok) {
+    if (await resumeQueuesIf(ctx.db, 'contract_unverified')) {
+      await ctx.alert('AzuraCast contract verified again: mutating jobs resumed', {})
+    }
+    return true
+  }
+  const value = await pauseQueues(ctx.db, 'contract_drift', { drift: report.drift.slice(0, 20) })
   await audit(ctx.db, { action: 'contract.drift', detail: value })
-  await ctx.alert('AzuraCast contract drift: ingest and move queues paused', value)
+  await ctx.alert('AzuraCast contract drift: mutating jobs (ingest, move, archive, restore, edits) are paused until an operator clears settings.queues_paused', value)
   return false
 }

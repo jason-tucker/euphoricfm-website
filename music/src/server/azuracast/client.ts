@@ -204,6 +204,9 @@ export type ClientDeps = {
   canaryStationId: number
   fetchImpl?: typeof fetch
   env?: EnvLike
+  // Runs immediately before every WRITE leaves the process (after all other
+  // checks). The worker wires it to assertQueuesNotPaused (server/pause.ts).
+  writeGate?: () => Promise<void>
 }
 
 type SendOpts = {
@@ -224,6 +227,15 @@ export class AzuraCastClient {
     reassertProfile(deps.profile, deps.env ?? process.env)
     this.root = deps.profile.testPrefix
     this.f = deps.fetchImpl ?? fetch
+    this.writeGate = deps.writeGate
+  }
+
+  private writeGate: (() => Promise<void>) | undefined
+
+  // The worker sets this once its DB exists (startupChecks builds the client
+  // before the DB connection).
+  setWriteGate(gate: () => Promise<void>): void {
+    this.writeGate = gate
   }
 
   get stationId(): number {
@@ -270,6 +282,18 @@ export class AzuraCastClient {
   }
 
   private async validate(method: string, pathAndQuery: string, opts: SendOpts): Promise<void> {
+    await this.validateShape(method, pathAndQuery, opts)
+    const entry = ALLOWLIST.find((e) => e.method === method && e.re.test(new URL(pathAndQuery, 'http://x').pathname))!
+    if (entry.kind !== 'read' && this.writeGate) {
+      try {
+        await this.writeGate()
+      } catch (e) {
+        throw new AzuraCastError('refused_queues_paused', e instanceof Error ? e.message : undefined)
+      }
+    }
+  }
+
+  private async validateShape(method: string, pathAndQuery: string, opts: SendOpts): Promise<void> {
     reassertProfile(this.deps.profile, this.deps.env ?? process.env)
     const u = new URL(pathAndQuery, 'http://x')
     if (u.origin !== 'http://x' || !pathAndQuery.startsWith('/api/')) throw new AzuraCastError('refused_path')
