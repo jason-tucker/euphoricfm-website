@@ -152,12 +152,33 @@ const decisionSchema = z.discriminatedUnion('decision', [
   z.object({ decision: z.literal('deny'), reason: text(500).refine((s) => s.trim().length > 0, 'reason required') }).strict(),
 ])
 
+// Items become 'pending' as soon as their probe succeeds, which can be while
+// their batch is still a DRAFT (no attestation, no ticket, the member may
+// still withdraw). Reviewers may decide an item only once its batch has been
+// submitted with the rights attestation. Use both helpers on every reviewer
+// path: assertBatchDecidable() for the early, readable 409, and
+// BATCH_DECIDABLE_SQL inside the conditional UPDATE (race-safe) and in any
+// review-queue query (so drafts never show up to reviewers as decidable).
+export const DECIDABLE_BATCH_STATUSES = ['submitted'] as const
+
+export function isBatchDecidable(b: { status: string; attestedAt: Date | null }): boolean {
+  return (DECIDABLE_BATCH_STATUSES as readonly string[]).includes(b.status) && b.attestedAt !== null
+}
+
+export function assertBatchDecidable(b: { status: string; attestedAt: Date | null } | null | undefined): void {
+  if (!b || !isBatchDecidable(b)) throw conflict('batch_not_submitted')
+}
+
+// Correlated on items.batch_id: usable in any query/UPDATE over `items`.
+export const BATCH_DECIDABLE_SQL = sql`EXISTS (SELECT 1 FROM batches b WHERE b.id = ${items.batchId} AND b.status = 'submitted' AND b.attested_at IS NOT NULL)`
+
 export async function decideItem(db: DB, v: Viewer, itemId: number, input: unknown) {
   if (!isReviewer(v)) throw forbidden()
   const d = decisionSchema.safeParse(input)
   if (!d.success) throw badRequest('invalid_decision', { issues: d.error.issues.map((i) => i.message) })
   const it = await db.query.items.findFirst({ where: eq(items.id, itemId) })
   if (!it) throw notFound()
+  assertBatchDecidable(await db.query.batches.findFirst({ where: eq(batches.id, it.batchId) }))
   const self = isSelfApproval(v, it)
   return db.transaction(async (tx) => {
     let rows
@@ -178,13 +199,13 @@ export async function decideItem(db: DB, v: Viewer, itemId: number, input: unkno
           selfApproved: self,
           updatedAt: new Date(),
         })
-        .where(and(eq(items.id, it.id), eq(items.status, 'pending'), sql`${items.probeSha256} IS NOT NULL`))
+        .where(and(eq(items.id, it.id), eq(items.status, 'pending'), sql`${items.probeSha256} IS NOT NULL`, BATCH_DECIDABLE_SQL))
         .returning()
     } else {
       rows = await tx
         .update(items)
         .set({ status: 'denied', denyReason: d.data.reason.trim(), decidedBy: v.discordId, decidedAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(items.id, it.id), eq(items.status, 'pending')))
+        .where(and(eq(items.id, it.id), eq(items.status, 'pending'), BATCH_DECIDABLE_SQL))
         .returning()
     }
     const row = oneOrConflict(rows)

@@ -217,14 +217,32 @@ describe.skipIf(!E2E())('submission flow through the real containers', () => {
     })
   })
 
-  it('self-approval is allowed but flagged', async () => {
+  it('self-approval is allowed but flagged (after submit; never on the reviewer’s own draft)', async () => {
     const selfId = newId()
     const jar = await loginOk({ id: selfId, roles: [REVIEWER_ROLE] })
+    await control('/__mock/tickets/member', { id: selfId, member: true })
     const b = await createBatch(jar)
     const item = await addFile(jar, b, 'raw35.mp3')
     await settled(jar, item)
+    expect((await req(jar, `/api/items/${item}/decision`, { json: { decision: 'approve' } })).status).toBe(409)
+    expect((await req(jar, `/api/batches/${b}/submit`, { json: { attest: true } })).status).toBe(200)
     const r = await req(jar, `/api/items/${item}/decision`, { json: { decision: 'approve' } })
     expect(await r.json()).toMatchObject({ status: 'approved', selfApproved: true })
+  })
+
+  it('a probed item in an unsubmitted draft batch cannot be approved or denied by a reviewer', async () => {
+    const b = await createBatch(owner)
+    const item = await addFile(owner, b, 'raw35b.mp3')
+    expect(await settled(owner, item)).toMatchObject({ status: 'pending' })
+    const ap = await req(reviewer, `/api/items/${item}/decision`, { json: { decision: 'approve' } })
+    expect(ap.status).toBe(409)
+    expect(await ap.json()).toMatchObject({ error: 'batch_not_submitted' })
+    expect((await req(reviewer, `/api/items/${item}/decision`, { json: { decision: 'deny', reason: 'x' } })).status).toBe(409)
+    const row = (await ownerSql()`SELECT status, approved_sha256 FROM items WHERE id = ${item}`)[0]!
+    expect(row).toMatchObject({ status: 'pending', approved_sha256: null })
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM jobs WHERE dedupe_key LIKE ${`ticket_decision:item:${item}:%`}`)[0]!.n).toBe(0)
+    // the owner can still withdraw it
+    expect((await req(owner, `/api/items/${item}/withdraw`, { method: 'POST' })).status).toBe(200)
   })
 
   it('tickets webhook: signed reply lands on the batch; replay, stale, bad signature and edge-routed requests are refused', async () => {
