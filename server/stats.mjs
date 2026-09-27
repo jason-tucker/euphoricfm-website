@@ -22,13 +22,31 @@
 // syncFailures escape hatch in ingestNowPlaying) — a bad key must not be
 // able to silently disable stats.
 //
+// Metric semantics (since schema 2): every play-derived aggregate counts
+// LISTENS, not song plays. A song play weighs w = the number of listeners
+// tuned in when it started (the row's listeners_at_start/listeners_start;
+// on the live nowplaying path, whose rows carry no per-row count, the poll's
+// listeners.current — the now_playing row is first seen within ~30s of its
+// start; otherwise 0). So a song with 3 listeners followed by one with 2 is
+// 5 listens. The field names are kept for wire/store compatibility and now
+// carry listens: totals.plays, days[d].p, hours/dow/grid .p, track n + m,
+// artist plays + months. Raw song-play counts live in totals.songs and
+// days[d].s (+1 per recorded row regardless of w) — the basis for the
+// requests percentage. Request counters (totals.requests, days.r, track rq,
+// artist requests) stay raw counts. Rows from excluded playlists (ads — see
+// STATS_EXCLUDE_PLAYLISTS) and blank rows (empty title AND artist, text
+// empty or " - " — untagged imaging, not songs) are never recorded at all;
+// the forward watermark still advances past them. A schema-1 store (song-play counts) is NOT
+// migrated — it is discarded on load ("unknown schema, starting fresh") and
+// the history is rebuilt by replaying rows through ingestNowPlaying.
+//
 // Zero deps: node:fs + node:path + global fetch (Node 22+/24). No side
 // effects at import — createStats() is a factory, mirroring index.mjs.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, copyFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const MAX_TRACKS = 10_000;
 export const MIN5_CAP = 576; // 48h of 5-min buckets
 export const HOURLY_CAP = 720; // 30d of 1h buckets
@@ -41,6 +59,11 @@ export const RATE_LIMIT_WINDOW_MS = 60_000;
 export const RATE_LIMIT_MAX = 120;
 const MAX_RATE_BUCKETS = 10_000;
 const MAX_DAY_POINTS = 4200; // safety valve — trims oldest, see spec
+// Ad/ID playlists whose rows are not songs anyone tuned in for — excluded
+// from every stat. Override with STATS_EXCLUDE_PLAYLISTS (comma-separated,
+// case-insensitive exact names; empty/unset = this default, so compose can
+// pass it through unconditionally).
+export const DEFAULT_EXCLUDE_PLAYLISTS = '2Ads,3EFM/Free Ads,5Local Ads,Go Vote,4EuphoricFM';
 
 // ---- small pure helpers -----------------------------------------------------
 
@@ -52,6 +75,17 @@ const isValidRow = (row) =>
   Number(row.played_at) > 0 &&
   typeof row?.song?.id === 'string' &&
   row.song.id.length > 0;
+
+// A finite, non-negative listener count, or null.
+const listenerCount = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+
+const parsePlaylistList = (raw) =>
+  new Set(
+    String(raw ?? '')
+      .split(',')
+      .map((x) => x.trim().toLowerCase())
+      .filter(Boolean),
+  );
 
 // Rows may arrive unsorted (out-of-order poll batches, over-returning API) —
 // every stream must sort ascending before gating so the watermark comparison
@@ -88,6 +122,26 @@ export function createStats(opts = {}) {
   // Test-only override so the S1 eviction test doesn't have to insert real
   // MAX_TRACKS-scale data to exercise the cap.
   const maxTracks = opts.maxTracks ?? MAX_TRACKS;
+  const excludeRaw = opts.excludePlaylists ?? (process.env.STATS_EXCLUDE_PLAYLISTS?.trim() || DEFAULT_EXCLUDE_PLAYLISTS);
+  const EXCLUDED = parsePlaylistList(Array.isArray(excludeRaw) ? excludeRaw.join(',') : excludeRaw);
+  // AzuraCast API rows carry `playlist` as a string name; tolerate an
+  // object with .name too.
+  // Rows whose song has no title AND no artist (and no usable text — empty
+  // or just " - ") are not songs: in the real history they are ~25s
+  // untagged imaging/ad files. Treated exactly like excluded-playlist rows.
+  const isBlankSong = (row) => {
+    const song = row?.song || {};
+    if (String(song.title ?? '').trim() || String(song.artist ?? '').trim()) return false;
+    const text = String(song.text ?? '').trim();
+    return text === '' || text === '-';
+  };
+  const isExcluded = (row) => {
+    if (isBlankSong(row)) return true;
+    if (!EXCLUDED.size) return false;
+    const pl = row?.playlist;
+    const name = typeof pl === 'string' ? pl : typeof pl?.name === 'string' ? pl.name : '';
+    return !!name && EXCLUDED.has(name.trim().toLowerCase());
+  };
 
   // Identity-ish fallbacks so tests (and any other future caller) can build a
   // stats instance without wiring index.mjs's sanitisers. main() always
@@ -138,7 +192,8 @@ export function createStats(opts = {}) {
       cursor: null, boundary: null, done: false, halted: false, lastError: null,
       windows: 0, rowsSeen: 0, rowsIngested: 0, resetToken: '',
     },
-    totals: { plays: 0, requests: 0, uniqueTracks: 0, peak: { value: 0, at: 0 } },
+    // plays = listens (see header); songs = raw song-play count.
+    totals: { plays: 0, songs: 0, requests: 0, uniqueTracks: 0, peak: { value: 0, at: 0 } },
     days: {},
     hours: Array.from({ length: 24 }, () => ({ p: 0, lsum: 0, lcnt: 0 })),
     dow: Array.from({ length: 7 }, () => ({ p: 0, lsum: 0, lcnt: 0 })),
@@ -187,6 +242,18 @@ export function createStats(opts = {}) {
       if (raw && raw.schema === SCHEMA_VERSION) {
         state = normalizeLoaded(raw);
       } else {
+        // A store from another schema (e.g. schema 1's song-play counts) is
+        // never loaded into the current semantics — but the first save 60s
+        // later would overwrite it, and the offline history rebuild may
+        // still need it, so keep a one-time copy next to it first. Never
+        // overwrite an existing backup; a failed copy only warns.
+        const oldSchema = Number.isInteger(raw?.schema) ? raw.schema : 'unknown';
+        const bak = `${STORE_PATH}.schema${oldSchema}.bak`;
+        try {
+          if (!existsSync(bak)) copyFileSync(STORE_PATH, bak);
+        } catch (e) {
+          console.warn('[efm-stats] schema backup failed:', e.message);
+        }
         console.warn('[efm-stats] unknown schema, starting fresh');
       }
     }
@@ -224,10 +291,12 @@ export function createStats(opts = {}) {
   // backfill never writes, so they carry no double-fold risk.
   if (RESET_TOKEN && RESET_TOKEN !== state.backfill.resetToken) {
     state.totals.plays = 0;
+    state.totals.songs = 0;
     state.totals.requests = 0;
     state.totals.uniqueTracks = 0;
     for (const d of Object.values(state.days)) {
       d.p = 0;
+      d.s = 0;
       d.r = 0;
       d.lsum = 0;
       d.lcnt = 0;
@@ -333,7 +402,7 @@ export function createStats(opts = {}) {
   const ensureDay = (day) => {
     let d = state.days[day];
     if (!d) {
-      d = { p: 0, r: 0, lsum: 0, lcnt: 0, lmax: 0 };
+      d = { p: 0, s: 0, r: 0, lsum: 0, lcnt: 0, lmax: 0 };
       state.days[day] = d;
     }
     return d;
@@ -377,9 +446,11 @@ export function createStats(opts = {}) {
     if (v > bucket.max) bucket.max = v;
   };
 
-  // Internal — callers gate with isValidRow()/passesWatermark() first as
-  // appropriate for their stream. Returns true iff the row was counted.
-  const recordPlay = (row) => {
+  // Internal — callers gate with isValidRow()/passesWatermark()/isExcluded()
+  // first as appropriate for their stream. Returns true iff the row was
+  // counted. `fallbackListeners` is the weight used when the row carries no
+  // listener count of its own (live path only — see ingestNowPlaying).
+  const recordPlay = (row, fallbackListeners = null) => {
     const playedAt = Number(row?.played_at);
     const songId = row?.song?.id;
     if (!Number.isFinite(playedAt) || playedAt <= 0 || typeof songId !== 'string' || !songId) return false;
@@ -390,14 +461,21 @@ export function createStats(opts = {}) {
     const art = sanitizeArt(row.song?.art);
     const { day, month, hour, dow } = dateParts(playedAt);
 
-    state.totals.plays += 1;
+    // Listens weight (see module header): the row's own listener count,
+    // else the caller's fallback, else 0 (the row still counts as a song).
+    const lv = listenerCount(row.listeners_at_start ?? row.listeners_start ?? null);
+    const w = lv ?? listenerCount(fallbackListeners) ?? 0;
+
+    state.totals.plays += w;
+    state.totals.songs = (state.totals.songs || 0) + 1;
     if (isRequest) state.totals.requests += 1;
     const d = ensureDay(day);
-    d.p += 1;
+    d.p += w;
+    d.s = (d.s || 0) + 1;
     if (isRequest) d.r += 1;
-    state.hours[hour].p += 1;
-    state.dow[dow].p += 1;
-    state.grid[dow * 24 + hour].p += 1; // T3
+    state.hours[hour].p += w;
+    state.dow[dow].p += w;
+    state.grid[dow * 24 + hour].p += w; // T3
 
     let t = state.tracks[songId];
     const isNewTrack = !t;
@@ -416,7 +494,7 @@ export function createStats(opts = {}) {
       reattributeTrack(t, songId, artist);
     }
 
-    t.n += 1;
+    t.n += w;
     if (isRequest) t.rq += 1;
     if (playedAt < t.first) t.first = playedAt;
     if (playedAt >= t.last) {
@@ -425,7 +503,7 @@ export function createStats(opts = {}) {
       t.a = artist;
       t.art = art;
     }
-    t.m[month] = (t.m[month] || 0) + 1;
+    t.m[month] = (t.m[month] || 0) + w;
 
     if (artist) {
       const key = artist.toLowerCase();
@@ -434,10 +512,10 @@ export function createStats(opts = {}) {
         a = { name: artist, plays: 0, requests: 0, trackIds: new Set(), months: {}, first: playedAt, last: playedAt };
         artistsIdx.set(key, a);
       }
-      a.plays += 1;
+      a.plays += w;
       if (isRequest) a.requests += 1;
       a.trackIds.add(songId);
-      a.months[month] = (a.months[month] || 0) + 1;
+      a.months[month] = (a.months[month] || 0) + w;
       if (playedAt < a.first) a.first = playedAt;
       if (playedAt >= a.last) {
         a.last = playedAt;
@@ -465,8 +543,9 @@ export function createStats(opts = {}) {
 
     if (state.coveredFrom == null || playedAt < state.coveredFrom) state.coveredFrom = playedAt;
 
-    const lv = row.listeners_at_start ?? row.listeners_start ?? null;
-    if (typeof lv === 'number' && Number.isFinite(lv) && lv >= 0) foldListener(playedAt, lv);
+    // Only the row's OWN reading feeds the listener aggregates — the live
+    // fallback is already folded as the 30s sample in ingestNowPlaying.
+    if (lv != null) foldListener(playedAt, lv);
 
     dirty = true;
     return true;
@@ -494,9 +573,15 @@ export function createStats(opts = {}) {
     if (!data || typeof data !== 'object') return;
     const nowSec = Math.floor(clock() / 1000);
 
+    // Live listens weight for rows that carry no listener count of their
+    // own (nowplaying rows don't): the current listener count, sampled
+    // within ~30s of the now_playing row's start. Offline polls and the
+    // offline history replay (is_online:false) get no fallback.
+    let fallback = null;
     if (data.is_online !== false) {
       const v = Number(data.listeners?.current ?? 0);
       if (Number.isFinite(v) && v >= 0) {
+        fallback = v;
         bucketPush(state.min5, MIN5_CAP, 300, nowSec, v);
         bucketPush(state.hourly, HOURLY_CAP, 3600, nowSec, v);
         foldListener(nowSec, v);
@@ -513,7 +598,10 @@ export function createStats(opts = {}) {
       );
       for (const row of sortRows(candidates)) {
         if (!passesWatermark(row)) continue;
-        if (recordPlay(row)) advanceWatermark(row);
+        // Excluded (ad) rows are skipped but still move the watermark past
+        // them, so they are never re-evaluated.
+        if (isExcluded(row)) advanceWatermark(row);
+        else if (recordPlay(row, fallback)) advanceWatermark(row);
       }
     }
 
@@ -546,7 +634,8 @@ export function createStats(opts = {}) {
       }
       for (const row of sortRows(result.list.filter(isValidRow))) {
         if (!passesWatermark(row)) continue;
-        if (recordPlay(row)) advanceWatermark(row);
+        if (isExcluded(row)) advanceWatermark(row);
+        else if (recordPlay(row)) advanceWatermark(row);
       }
       syncOkAt = clock();
       syncFailures = 0;
@@ -740,6 +829,7 @@ export function createStats(opts = {}) {
         // region (>= boundary.playedAt) is skipped, never double-counted.
         if (dp.day < cursor || dp.day > clampedEndDay) continue;
         if (Number(row.played_at) >= boundary.playedAt) continue;
+        if (isExcluded(row)) continue;
         if (recordPlay(row)) {
           ingestedThisWindow += 1;
           state.backfill.rowsIngested += 1;
@@ -778,6 +868,7 @@ export function createStats(opts = {}) {
       out.push({
         d,
         p: entry?.p || 0,
+        s: entry?.s || 0,
         r: entry?.r || 0,
         lavg: entry && entry.lcnt ? round1(entry.lsum / entry.lcnt) : null,
         lmax: entry && entry.lcnt ? entry.lmax : null,
@@ -944,6 +1035,7 @@ export function createStats(opts = {}) {
       },
       totals: {
         plays: state.totals.plays,
+        songs: state.totals.songs || 0,
         requests: state.totals.requests,
         uniqueTracks: state.totals.uniqueTracks,
         uniqueArtists: artistsIdx.size,
@@ -1097,6 +1189,7 @@ export function createStats(opts = {}) {
         respond(res, 200, {
           ok: true,
           plays: state.totals.plays,
+          songs: state.totals.songs || 0,
           coveredFrom: state.coveredFrom,
           // lastError is status-code-level only ('http 403', 'timeout',
           // 'too many pages', 'shape mismatch', 'bad next url' — see
