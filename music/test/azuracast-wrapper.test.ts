@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { AzuraCastClient, AzuraCastError, base64JsonStream, mergePlaylists, TEST_SEND } from '@/server/azuracast/client'
+import { AzuraCastClient, AzuraCastError, base64JsonStream, mergePlaylists, samePathLoose, TEST_SEND } from '@/server/azuracast/client'
+import { loadWorkerEnv } from '@/server/env'
 import { resolveProfile } from '@/server/azuracast/guard'
 import { MOCKS } from './helpers/env'
 import { control } from './helpers/http'
@@ -101,6 +102,32 @@ describe('AzuraCast wrapper refusals (no request leaves the process)', () => {
     expect(calls).toHaveLength(0)
     await send(c, 'PUT', '/api/station/1/files/batch', { body, allowedPlaylistIds: new Set([2, 99]) })
     expect(calls).toHaveLength(1)
+  })
+
+  it('what is validated is exactly what is sent (a toJSON cannot swap the body)', async () => {
+    const { c, calls } = fakeClient(PROD_ENV)
+    const sneaky = { title: 't', artist: 'a', album: '', genre: '', toJSON: () => ({ do: 'delete', files: ['Music/Artists/A/x.mp3'] }) }
+    await refused(send(c, 'PUT', '/api/station/1/files/batch', { body: sneaky }), 'refused_batch_action')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('collision compare is case- and accent-insensitive (MariaDB _ci collations)', () => {
+    expect(samePathLoose('Music/Artists/GRIM/GRIM - Touch.mp3', 'Music/Artists/Grim/Grim - touch.mp3')).toBe(true)
+    expect(samePathLoose('Music/Artists/Beyoncé/x.mp3', 'Music/Artists/Beyonce/x.mp3')).toBe(true)
+    expect(samePathLoose('Music/Artists/A/x.mp3', 'Music/Artists/A/y.mp3')).toBe(false)
+  })
+
+  it('every canary station must answer 403 (e.g. 7 and 14)', async () => {
+    const fetchImpl = (async (url: string) => new Response('[]', { status: url.includes('/station/14/') ? 200 : url.includes('/station/7/') ? 403 : 200 })) as unknown as typeof fetch
+    const c = new AzuraCastClient({ baseUrl: 'https://az.invalid', apiKey: 'k'.repeat(20), profile: resolveProfile(PROD_ENV), canaryStationId: 7, extraCanaryStationIds: [14], fetchImpl, env: PROD_ENV })
+    await refused(c.selfCheck(), 'self_check_canary_not_403')
+  })
+
+  it('AZURACAST_BASE_URL must be a bare origin', () => {
+    const base = { DATABASE_URL: 'postgres://x', AZURACAST_API_KEY: 'k'.repeat(20), TICKETS_WRITE_KEY: 'k' }
+    expect(loadWorkerEnv({ ...base, AZURACAST_BASE_URL: 'https://euphoric.fm/' }).AZURACAST_BASE_URL).toBe('https://euphoric.fm')
+    expect(() => loadWorkerEnv({ ...base, AZURACAST_BASE_URL: 'https://euphoric.fm/proxy' })).toThrow(/bare origin/)
+    expect(() => loadWorkerEnv({ ...base, AZURACAST_BASE_URL: 'https://euphoric.fm/?x=1' })).toThrow(/bare origin/)
   })
 
   it('a wrong station id is refused on every route', async () => {

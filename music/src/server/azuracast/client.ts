@@ -202,6 +202,9 @@ export type ClientDeps = {
   apiKey: string
   profile: Profile
   canaryStationId: number
+  // More stations the key must NOT reach (e.g. 14, Events, which shares
+  // storage 2). Every canary must answer 403 in the self-check.
+  extraCanaryStationIds?: readonly number[]
   fetchImpl?: typeof fetch
   env?: EnvLike
   // Runs immediately before every WRITE leaves the process (after all other
@@ -255,8 +258,14 @@ export class AzuraCastClient {
   // Validates everything, then performs the request. Private: only the typed
   // methods of this class can build a request.
   async #send(method: string, pathAndQuery: string, opts: SendOpts = {}): Promise<{ status: number; text: string }> {
-    await this.validate(method, pathAndQuery, opts)
-    const url = `${this.deps.baseUrl}${pathAndQuery}`
+    // Serialize ONCE and validate the parsed copy of exactly those bytes, so
+    // getters / toJSON cannot make what is sent differ from what was checked.
+    const serialized = opts.body === undefined ? undefined : JSON.stringify(opts.body)
+    const checked: SendOpts = serialized === undefined ? opts : { ...opts, body: JSON.parse(serialized) as unknown }
+    await this.validate(method, pathAndQuery, checked)
+    // Send to the validated path on the configured origin only.
+    const u = new URL(pathAndQuery, 'http://x')
+    const url = `${this.deps.baseUrl}${u.pathname}${u.search}`
     const headers: Record<string, string> = { 'X-API-Key': this.deps.apiKey, Accept: 'application/json' }
     let body: BodyInit | undefined
     if (opts.uploadBytes) {
@@ -264,9 +273,9 @@ export class AzuraCastClient {
       headers['content-type'] = 'application/json'
       headers['content-length'] = String(stream.length)
       body = stream.body
-    } else if (opts.body !== undefined) {
+    } else if (serialized !== undefined) {
       headers['content-type'] = 'application/json'
-      body = JSON.stringify(opts.body)
+      body = serialized
     }
     const res = await this.f(url, {
       method,
@@ -315,7 +324,7 @@ export class AzuraCastClient {
     const sidMatch = SID_ROUTE.exec(path)
     if (sidMatch) {
       const sid = Number(sidMatch[1])
-      const canaryOk = opts.canary === true && method === 'GET' && /\/files\/list$/.test(path) && sid === this.deps.canaryStationId
+      const canaryOk = opts.canary === true && method === 'GET' && /\/files\/list$/.test(path) && this.canaries().includes(sid)
       if (sid !== this.deps.profile.stationId && !canaryOk) throw new AzuraCastError('refused_station', { sid })
     }
     if (opts.canary && !sidMatch) throw new AzuraCastError('refused_canary')
@@ -423,10 +432,14 @@ export class AzuraCastClient {
     return this.json(status, text, z.array(listEntrySchema), 'files/list')
   }
 
-  // Collision rule: ANY entry at the exact path, of any type.
+  // Collision rule: ANY entry at the path, of any type. Compared case- and
+  // accent-insensitively (NFC, Intl.Collator 'base'): if station_media.path
+  // uses a *_ci MariaDB collation, 'GRIM - Touch.mp3' and 'Grim - touch.mp3'
+  // are the same row to AzuraCast. Erring towards "taken" only ever picks the
+  // next ` (n)` name or refuses a move.
   async pathTaken(dir: string, path: string): Promise<boolean> {
     const entries = await this.listDirectory(dir)
-    return entries.some((e) => e.path === path)
+    return entries.some((e) => samePathLoose(e.path, path))
   }
 
   async getFile(id: number): Promise<StationMedia> {
@@ -519,9 +532,21 @@ export class AzuraCastClient {
     const q = new URLSearchParams({ currentDirectory: '', flushCache: 'true' })
     const own = await this.#send('GET', `${this.sidPath('/files/list')}?${q}`)
     if (own.status !== 200) throw new AzuraCastError('self_check_own_station', { status: own.status })
-    const canary = await this.#send('GET', `/api/station/${this.deps.canaryStationId}/files/list?${q}`, { canary: true })
-    if (canary.status !== 403) throw new AzuraCastError('self_check_canary_not_403', { status: canary.status })
+    for (const sid of this.canaries()) {
+      const canary = await this.#send('GET', `/api/station/${sid}/files/list?${q}`, { canary: true })
+      if (canary.status !== 403) throw new AzuraCastError('self_check_canary_not_403', { station: sid, status: canary.status })
+    }
   }
+
+  private canaries(): number[] {
+    const all = [this.deps.canaryStationId, ...(this.deps.extraCanaryStationIds ?? [])]
+    return [...new Set(all)].filter((sid) => Number.isSafeInteger(sid) && sid > 0 && sid !== this.deps.profile.stationId)
+  }
+}
+
+const looseCollator = new Intl.Collator('en', { sensitivity: 'base', usage: 'search' })
+export function samePathLoose(a: string, b: string): boolean {
+  return a === b || looseCollator.compare(a.normalize('NFC'), b.normalize('NFC')) === 0
 }
 
 // Streams `{"path":<json>,"file":"<base64 of bytes>"}` without building the

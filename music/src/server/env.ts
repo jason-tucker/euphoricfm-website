@@ -118,6 +118,8 @@ const workerSchema = z.object({
   AZURACAST_API_KEY: z.string().min(16),
   // The station the portal key must NOT reach (startup self-check expects 403).
   AZURACAST_CANARY_STATION_ID: z.string().regex(/^\d+$/).default('7'),
+  // Further stations the key must not reach (comma-separated), e.g. Events.
+  AZURACAST_EXTRA_CANARY_STATION_IDS: z.string().regex(/^(\d+(,\d+)*)?$/).default('14'),
   TICKETS_API_BASE: endpoint('http://tickets-web:3000'),
   TICKETS_WRITE_KEY: z.string().min(1),
   PORTAL_ORIGIN: z
@@ -150,6 +152,13 @@ export function loadWorkerEnv(env: Record<string, string | undefined> = process.
   refuseForeignSecrets('music-worker', env, WORKER_FORBIDDEN_KEYS)
   const parsed = workerSchema.parse(env)
   assertHttps('AZURACAST_BASE_URL', parsed.AZURACAST_BASE_URL, parsed.ALLOW_TEST_ENDPOINTS)
+  // The wrapper validates a path and appends it to this base: the base must
+  // be a bare origin (no path, query or fragment) so the two cannot differ.
+  const base = new URL(parsed.AZURACAST_BASE_URL)
+  if (base.pathname !== '/' || base.search !== '' || base.hash !== '' || base.username || base.password) {
+    throw new Error('AZURACAST_BASE_URL must be a bare origin (no path, query, fragment or credentials)')
+  }
+  parsed.AZURACAST_BASE_URL = base.origin
   return parsed
 }
 

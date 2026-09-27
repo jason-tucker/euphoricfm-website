@@ -248,6 +248,17 @@ export async function contractProbe(ctx: WorkerCtx): Promise<boolean> {
     return false
   }
   if (report.ok) {
+    // Daily re-run of the key self-check: a key that gained access to a
+    // canary station (or lost its own) pauses the mutating queues. Not
+    // auto-cleared: an operator must look at the key.
+    try {
+      await ctx.azuracast.selfCheck()
+    } catch (e) {
+      const error = e instanceof Error ? `${e.name}: ${e.message}`.slice(0, 300) : 'error'
+      const value = await pauseQueues(ctx.db, 'self_check_failed', { error })
+      await ctx.alert('AzuraCast key self-check failed: mutating jobs are paused until an operator clears settings.queues_paused', value)
+      return false
+    }
     if (await resumeQueuesIf(ctx.db, 'contract_unverified')) {
       await ctx.alert('AzuraCast contract verified again: mutating jobs resumed', {})
     }
