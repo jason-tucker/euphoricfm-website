@@ -41,7 +41,7 @@ export const ERROR_TEXT: Record<string, string> = {
   duplicate_request: 'You already have an open request for this song. Withdraw it first to file a different one.',
   no_change: 'Nothing would change: the proposed values are the same as the current ones.',
   invalid_request: 'The request is incomplete. Titles and artists cannot be blank, and a removal needs a reason.',
-  invalid_edit: 'The edit is not valid. Titles and artists cannot be blank.',
+  invalid_edit: 'The edit is not valid. Titles and artists cannot be blank, and text cannot contain line breaks, tabs or invisible formatting characters.',
   invalid_playlists: 'The playlist selection is not valid.',
   invalid_archive: 'The archive request is not valid.',
   artist_not_active: "That artist isn't approved in the library yet. Approve the new artist first, or pick an existing artist.",

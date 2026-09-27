@@ -16,6 +16,7 @@ import { isUsableArt, loadArt } from './library/art'
 import { afterApprove, ensureNewArtistItems } from './library/artists'
 import { mayHaveCover } from './media/cover'
 import { signMediaUrl } from './media/signing'
+import { metaText } from './requests/common'
 import { getIntList, getSetting } from './settings'
 import { DEFAULT_CAPS, type Caps } from './settings-defaults'
 import { writeSpoolRequest } from './spool/protocol'
@@ -173,7 +174,10 @@ export async function withdrawItem(db: DB, v: Viewer, itemId: number) {
 // ingest writes (finalize tags + file name). The owner may edit a pending
 // item while its batch is still a draft; a reviewer may edit a pending item
 // of a submitted batch before the decision. Conditional UPDATE: 409 once it is decided.
-const metaField = text(200).transform((s) => s.trim())
+// The edit-request rule (requests/common.ts metaText): a newline or tab here
+// used to pass and then fail finalize after approval, and \p{Cf} reached the
+// on-air tags. 200 = the finalize tag limit (spool/protocol.ts tagString).
+const metaField = metaText(200)
 const editSchema = z
   .object({
     title: metaField.refine((s) => s.length > 0, 'title required').optional(),

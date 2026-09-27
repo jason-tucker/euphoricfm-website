@@ -7,9 +7,9 @@
 
 import { writeFileSync } from 'node:fs'
 import { parseFile } from 'music-metadata'
+import { clipTag as clip } from './tags'
 
 const MAX_COVER = 5 * 1024 * 1024
-const clip = (s: unknown) => (typeof s === 'string' ? s.replace(/[\p{Cc}]/gu, ' ').trim().slice(0, 200) || null : null)
 
 async function main() {
   const [input, coverOut] = process.argv.slice(2)
