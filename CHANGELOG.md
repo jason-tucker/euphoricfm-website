@@ -5,6 +5,18 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.17.1] — 2026-09-26 — Upgrade Astro to 7.3.5; resolve AVIF RCE advisory (GHSA-26w7-cxv4-gfx2)
+
+### Security
+- **Resolved the critical Astro advisory GHSA-26w7-cxv4-gfx2** (RCE through AVIF image optimization, vulnerable `<7.2.8`) by upgrading `astro` 6.4.6 → 7.3.5. There is no 6.x backport, so this is the 6 → 7 major. The same upgrade clears the Astro moderate/low advisories GHSA-f48w-9m4c-m7f5, GHSA-4g3v-8h47-v7g6, GHSA-376h-93r7-7g6f and GHSA-7pw4-f3q4-r2p2.
+- **Cleared every transitive high-severity advisory** that had been failing the `audit` CI gate on `main` since at least 2026-08-31, by re-resolving within existing semver ranges: `sharp` 0.34.5 → 0.35.4 (GHSA-f88m-g3jw-g9cj, GHSA-rgj7-g3m4-5g8c), `svgo` 4.0.1 → 4.1.0 (GHSA-2p49-hgcm-8545, GHSA-w27v-7q3p-w38r, GHSA-4vpr-x523-8j87), `js-yaml` 4.2.0 → 4.3.2 (GHSA-52cp-r559-cp3m, GHSA-5p4m-2wfm-xmqj, GHSA-2883-xcg3-v3hh), `smol-toml` 1.6.1 → 1.9.0 (GHSA-7w5x-hrqm-74c2), `postcss` 8.5.15 → 8.5.28 (GHSA-r28c-9q8g-f849, GHSA-fxqj-rqcc-2cmp), `nanoid` 3.3.12 → 3.3.19 (GHSA-28wg-ghj8-5hjv, GHSA-2v37-7h3g-55p8), `fast-uri` 3.1.5 → 3.1.8 (GHSA-5jgf-p345-68v8, GHSA-f65p-4m7j-42xc, GHSA-fph4-wmhf-6fwf, GHSA-jqff-g426-hqxp) and `devalue` 5.8.1 → 5.9.4 (GHSA-9rgm-9g3h-6x36). No new `pnpm.overrides` were needed; the existing `esbuild@<0.28.1` override stays. `pnpm audit` now reports no known vulnerabilities at any severity (was 1 critical, 15 high, 6 moderate, 1 low).
+
+### Changed
+- **Astro 7 brings Vite 8** (7.3.5 → 8.3.1, Rolldown bundler, Oxc JS minifier). Two config pins keep the build render-equivalent to 0.17.0: `compressHTML: true` (Astro 7's new `'jsx'` default drops whitespace between inline elements) and `vite.build.cssMinify: 'esbuild'` (Vite 8's default lightningcss minifier strips `-webkit-backdrop-filter` and rewrites `min-width` media queries to range syntax, which the outdated in-game CEF and older Safari don't get). Tailwind stays at 4.3.1.
+- **Rendered output verified unchanged** against a 0.17.0 build: same file list, byte-identical `cef-test.html`, fonts, icons, `sw.js` and manifest; CSS identical apart from the scoped-style hash and the redundant default `ease` being dropped from three `transition`s. HTML differs only in inter-element whitespace next to comments/scripts and two developer comments in `EventStatus` that Astro 7 now keeps; neither changes layout. The JS bundle is re-minified by Oxc (and now also carries the full `site.config` object, all already-public copy) with no behaviour change.
+- Added `@types/node` (^24, matching CI's Node 24) as a dev dependency so `astro check` no longer errors on `process.env` in `astro.config.mjs`.
+- Docs: "Astro 6" → "Astro 7" in `CLAUDE.md`, `README.md` and `docs/security/THREAT_MODEL.md`; `CLAUDE.md`'s stack line also said "Tailwind 3", stale since 0.11.0, now "Tailwind 4".
+
 ## [0.17.0] — 2026-09-26 — Stats count listens instead of plays
 
 ### Changed
