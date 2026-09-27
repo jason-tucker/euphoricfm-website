@@ -1,7 +1,9 @@
 @import "tailwindcss";
 @import "./tokens.css";
 
-/* Same Tailwind v4 CSS-first theme as the site (src/styles/global.css). */
+/* Same Tailwind v4 CSS-first theme as the site (src/styles/global.css).
+ * The portal CSP is `style-src 'self'`: every style lives in this file or in
+ * Tailwind classes. No inline style attributes anywhere. */
 @theme {
   --color-ink: rgb(var(--efm-ink-rgb));
   --color-cream: rgb(var(--efm-cream-rgb));
@@ -10,14 +12,170 @@
   --color-sunburst: rgb(var(--efm-sunburst-rgb));
   --color-gold: rgb(var(--efm-gold-rgb));
   --font-body: "Inter", system-ui, sans-serif;
+  --font-euphoric: "Begaron", system-ui, sans-serif;
+  --font-fm: "Cortado Script", cursive;
 }
 
 @utility max-w-frame {
   max-width: 64rem;
 }
 
-html, body {
-  background: var(--efm-surface);
-  color: var(--efm-text);
-  font-family: var(--font-body);
+/* Self-hosted wordmark fonts (copied from the site's public/fonts). */
+@font-face {
+  font-family: 'Begaron';
+  src: url('/fonts/Begaron-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Cortado Script';
+  src: url('/fonts/CortadoScript-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  html {
+    background-color: #0a0a0a;
+    color-scheme: dark;
+    -webkit-text-size-adjust: 100%;
+  }
+  html, body {
+    color: var(--efm-text);
+    font-family: var(--font-body);
+  }
+  body {
+    min-height: 100vh;
+    min-height: 100dvh;
+    background-color: var(--efm-surface);
+    background-image: radial-gradient(70% 40% at 30% -10%, rgb(var(--efm-midnight-rgb) / 0.65), transparent 60%),
+                      radial-gradient(60% 40% at 90% 10%, rgb(var(--efm-ruby-rgb) / 0.30), transparent 55%),
+                      radial-gradient(80% 60% at 50% 110%, rgb(var(--efm-sunburst-rgb) / 0.18), transparent 60%);
+    background-repeat: no-repeat;
+  }
+  a:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visible,
+  select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid rgb(var(--efm-sunburst-rgb));
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: rgb(var(--efm-sunburst-rgb));
+    color: rgb(var(--efm-ink-rgb));
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-cream/10 bg-white/[0.03] p-4 sm:p-5;
+  }
+
+  /* Buttons: always visible chrome (border + fill), hover, pressed, disabled.
+     Affordance rule: controls must LOOK clickable. */
+  .btn {
+    @apply inline-flex cursor-pointer select-none items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-sm font-semibold
+      min-h-[44px] transition-[transform,background-color,border-color,filter] duration-150 active:scale-[0.98]
+      disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100;
+  }
+  .btn-primary {
+    @apply border-gold/60 bg-gradient-to-br from-sunburst to-gold text-ink shadow-sm hover:brightness-110 disabled:hover:brightness-100;
+  }
+  .btn-secondary {
+    @apply border-cream/25 bg-cream/[0.08] text-cream hover:border-cream/45 hover:bg-cream/[0.14] disabled:hover:bg-cream/[0.08];
+  }
+  .btn-danger {
+    @apply border-ruby/70 bg-ruby/85 text-cream hover:bg-ruby disabled:hover:bg-ruby/85;
+  }
+  .btn-approve {
+    @apply border-emerald-400/60 bg-emerald-600/85 text-cream hover:bg-emerald-600 disabled:hover:bg-emerald-600/85;
+  }
+  .btn-sm {
+    @apply min-h-[36px] rounded-lg px-3 py-1.5 text-xs;
+  }
+
+  /* Text links: accent colour + underline on hover. */
+  .link {
+    @apply cursor-pointer text-sunburst underline decoration-sunburst/40 underline-offset-2 hover:text-gold hover:decoration-gold;
+  }
+
+  /* Clickable rows: hover tint + chevron + pointer. */
+  .row-link {
+    @apply flex cursor-pointer items-center gap-3 rounded-xl border border-cream/10 bg-cream/[0.02] px-3 py-3 transition-colors
+      hover:border-sunburst/40 hover:bg-sunburst/[0.07];
+  }
+  .row-link::after {
+    content: '\203A';
+    @apply ml-auto shrink-0 pl-2 text-xl leading-none text-cream/40;
+  }
+  .row-link:hover::after {
+    @apply text-sunburst;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-cream/20 bg-cream/[0.06] px-3 py-2 text-sm text-cream placeholder:text-cream/40
+      hover:border-cream/35 focus:border-sunburst/70 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium text-cream/70;
+  }
+  .checkbox {
+    @apply size-5 shrink-0 cursor-pointer accent-sunburst disabled:cursor-not-allowed;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-semibold;
+  }
+  .chip-neutral { @apply border-cream/20 bg-cream/[0.06] text-cream/80; }
+  .chip-pending { @apply border-sunburst/50 bg-sunburst/15 text-sunburst; }
+  .chip-progress { @apply border-sky-400/50 bg-sky-400/15 text-sky-300; }
+  .chip-live { @apply border-emerald-400/50 bg-emerald-400/15 text-emerald-300; }
+  .chip-bad { @apply border-ruby/60 bg-ruby/20 text-rose-300; }
+  .chip-muted { @apply border-cream/15 bg-transparent text-cream/55; }
+  .chip-new { @apply border-gold/70 bg-gold text-ink; }
+  .chip-staff { @apply border-violet-400/60 bg-violet-500/20 text-violet-200; }
+
+  .notice {
+    @apply rounded-xl border px-3 py-2 text-sm;
+  }
+  .notice-error { @apply border-ruby/60 bg-ruby/15 text-rose-200; }
+  .notice-warn { @apply border-sunburst/50 bg-sunburst/10 text-gold; }
+  .notice-ok { @apply border-emerald-400/50 bg-emerald-400/10 text-emerald-200; }
+  .notice-info { @apply border-cream/20 bg-cream/[0.05] text-cream/85; }
+
+  /* Native <progress>: styled via pseudo-elements (no inline widths). */
+  .progress {
+    @apply h-2 w-full appearance-none overflow-hidden rounded-full border-0 bg-cream/10;
+  }
+  .progress::-webkit-progress-bar { background: rgb(var(--efm-cream-rgb) / 0.10); border-radius: 9999px; }
+  .progress::-webkit-progress-value { background: linear-gradient(90deg, rgb(var(--efm-sunburst-rgb)), rgb(var(--efm-gold-rgb))); border-radius: 9999px; }
+  .progress::-moz-progress-bar { background: linear-gradient(90deg, rgb(var(--efm-sunburst-rgb)), rgb(var(--efm-gold-rgb))); border-radius: 9999px; }
+
+  .dropzone {
+    @apply flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-cream/25 bg-cream/[0.03]
+      px-4 py-10 text-center transition-colors hover:border-sunburst/60 hover:bg-sunburst/[0.05];
+  }
+  .dropzone[data-active='true'] {
+    @apply border-sunburst bg-sunburst/10;
+  }
+
+  dialog.modal {
+    @apply m-auto w-[min(92vw,34rem)] rounded-2xl border border-cream/15 bg-[#121218] p-5 text-cream;
+  }
+  dialog.modal::backdrop {
+    background: rgb(0 0 0 / 0.7);
+  }
+
+  .menu-panel {
+    @apply absolute right-0 z-20 mt-2 w-56 rounded-xl border border-cream/15 bg-[#121218] p-2 shadow-xl;
+  }
+  .menu-item {
+    @apply block w-full cursor-pointer rounded-lg px-3 py-2 text-left text-sm text-cream/90 hover:bg-cream/10;
+  }
+  .nav-link {
+    @apply rounded-lg border border-transparent px-3 py-2 text-sm font-medium text-cream/80 hover:border-cream/20 hover:bg-cream/[0.07] hover:text-cream;
+  }
+  .nav-link[aria-current='page'] {
+    @apply border-sunburst/40 bg-sunburst/10 text-sunburst;
+  }
 }
