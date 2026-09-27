@@ -10,7 +10,20 @@ import { runLimited } from './exec'
 export type ImageKind = 'jpeg' | 'png' | 'webp' | 'gif' | 'svg'
 
 export const MAX_EDGE = 8000
-export const MAX_PIXELS = 40_000_000
+// Header bound on declared pixels. A decoded RGBA frame is 4 B/px; with the
+// scaler and encoder buffers the measured peak RSS at 12 MP is ~93 MB (GIF),
+// well under the probe's 256 MB cgroup even with the node loop alongside.
+export const MAX_PIXELS = 12_000_000
+// The decoder's own bound (ffmpeg -max_pixels): it counts the PADDED frame
+// (e.g. 4000x4000 is checked as 4032x4000), so it sits a little above
+// MAX_PIXELS. It also bounds what the header check cannot see: later frames,
+// a second SOF, animation frames.
+export const DECODER_MAX_PIXELS = 12_600_000
+// ulimit -v for the cover decoders: ffmpeg needs ~200 MiB of address space for
+// a 12 MP GIF/PNG (measured); rsvg-convert renders to 1000 px and needs far
+// less. Both stay below the probe's mem_limit.
+export const FFMPEG_COVER_VMEM_KB = 224 * 1024
+export const RSVG_VMEM_KB = 192 * 1024
 export const OUT_EDGE = 1000
 
 export function sniffImage(b: Buffer): ImageKind | null {
@@ -23,37 +36,70 @@ export function sniffImage(b: Buffer): ImageKind | null {
   return null
 }
 
+// Declared dimensions, read only from a structurally valid header; null
+// whenever they cannot be read reliably (the cover is then dropped).
 export function imageDims(b: Buffer, kind: ImageKind): { w: number; h: number } | null {
   try {
-    if (kind === 'png') return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) }
-    if (kind === 'gif') return { w: b.readUInt16LE(6), h: b.readUInt16LE(8) }
+    if (kind === 'png') {
+      // The first chunk MUST be IHDR (length 13): a decoder that tolerates an
+      // ancillary chunk first would otherwise see different dimensions.
+      if (b.length < 33 || b.readUInt32BE(8) !== 13 || b.toString('latin1', 12, 16) !== 'IHDR') return null
+      return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) }
+    }
+    if (kind === 'gif') {
+      if (b.length < 13) return null
+      return { w: b.readUInt16LE(6), h: b.readUInt16LE(8) }
+    }
     if (kind === 'webp') {
+      if (b.length < 30) return null
       const chunk = b.toString('latin1', 12, 16)
-      if (chunk === 'VP8X') return { w: 1 + b.readUIntLE(24, 3), h: 1 + b.readUIntLE(27, 3) }
+      const size = b.readUInt32LE(16)
+      if (chunk === 'VP8X') {
+        if (size < 10) return null
+        return { w: 1 + b.readUIntLE(24, 3), h: 1 + b.readUIntLE(27, 3) }
+      }
       if (chunk === 'VP8L') {
+        if (size < 5 || b[20] !== 0x2f) return null // VP8L signature byte
         const bits = b.readUInt32LE(21)
         return { w: 1 + (bits & 0x3fff), h: 1 + ((bits >> 14) & 0x3fff) }
       }
-      if (chunk === 'VP8 ') return { w: b.readUInt16LE(26) & 0x3fff, h: b.readUInt16LE(28) & 0x3fff }
+      if (chunk === 'VP8 ') {
+        // frame tag (3 B) then the key-frame start code 9d 01 2a
+        if (size < 10 || b[23] !== 0x9d || b[24] !== 0x01 || b[25] !== 0x2a) return null
+        return { w: b.readUInt16LE(26) & 0x3fff, h: b.readUInt16LE(28) & 0x3fff }
+      }
       return null
     }
     if (kind === 'jpeg') {
+      // Walk the marker segments up to the first SOS. Exactly one SOF must
+      // appear before it; hierarchical (DHP/EXP) streams, a truncated header
+      // or a malformed segment length make the dimensions unreliable.
       let o = 2
-      while (o + 9 < b.length) {
+      let sof: { w: number; h: number } | null = null
+      for (;;) {
+        if (o + 4 > b.length) return null
         if (b[o] !== 0xff) return null
         const marker = b[o + 1]!
-        if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+        if (marker === 0xff) {
+          o += 1 // fill byte
+          continue
+        }
+        if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
           o += 2
           continue
         }
+        if (marker === 0xd9) return null // EOI before any scan
         const len = b.readUInt16BE(o + 2)
+        if (len < 2 || o + 2 + len > b.length) return null
+        if (marker === 0xda) return sof // SOS: the header is complete
+        if (marker === 0xde || marker === 0xdf) return null // DHP / EXP
         // SOF0..SOF15 except DHT(C4), JPG(C8), DAC(CC)
         if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-          return { w: b.readUInt16BE(o + 7), h: b.readUInt16BE(o + 5) }
+          if (sof || len < 8) return null
+          sof = { w: b.readUInt16BE(o + 7), h: b.readUInt16BE(o + 5) }
         }
         o += 2 + len
       }
-      return null
     }
   } catch {
     return null
@@ -67,14 +113,14 @@ export function dimsAcceptable(d: { w: number; h: number } | null): boolean {
 
 const DEMUXER: Record<Exclude<ImageKind, 'svg'>, string> = { jpeg: 'jpeg_pipe', png: 'png_pipe', webp: 'webp_pipe', gif: 'gif' }
 
-async function ffmpegToJpeg(input: string, kind: Exclude<ImageKind, 'svg'>, output: string): Promise<boolean> {
-  const r = await runLimited(
-    'ffmpeg',
+export function ffmpegCoverArgs(input: string, kind: Exclude<ImageKind, 'svg'>, output: string): string[] {
+  return (
     [
       '-hide_banner', '-nostdin', '-loglevel', 'error',
       '-protocol_whitelist', 'file',
       '-threads', '1',
       '-filter_threads', '1',
+      '-max_pixels', String(DECODER_MAX_PIXELS),
       '-f', DEMUXER[kind], '-i', `file:${input}`,
       '-frames:v', '1',
       '-vf', `scale=w='min(${OUT_EDGE},iw)':h='min(${OUT_EDGE},ih)':force_original_aspect_ratio=decrease:threads=1,format=yuvj420p`,
@@ -82,9 +128,12 @@ async function ffmpegToJpeg(input: string, kind: Exclude<ImageKind, 'svg'>, outp
       '-map_metadata', '-1',
       '-f', 'image2', '-update', '1',
       `file:${output}`,
-    ],
-    { timeoutS: 20, vmemKb: 786432 },
+    ]
   )
+}
+
+async function ffmpegToJpeg(input: string, kind: Exclude<ImageKind, 'svg'>, output: string): Promise<boolean> {
+  const r = await runLimited('ffmpeg', ffmpegCoverArgs(input, kind, output), { timeoutS: 20, vmemKb: FFMPEG_COVER_VMEM_KB })
   return r.code === 0
 }
 
@@ -97,7 +146,7 @@ export async function reencodeCover(input: string, head: Buffer, workDir: string
     const r = await runLimited(
       'rsvg-convert',
       ['--format=png', `--width=${OUT_EDGE}`, `--height=${OUT_EDGE}`, '--keep-aspect-ratio', '--output', png, input],
-      { timeoutS: 20, vmemKb: 786432, cwd: workDir },
+      { timeoutS: 20, vmemKb: RSVG_VMEM_KB, cwd: workDir },
     )
     if (r.code !== 0) return null
     if (!(await ffmpegToJpeg(png, 'png', output))) return null

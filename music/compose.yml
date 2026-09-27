@@ -103,6 +103,7 @@ services:
       - /var/run/postgresql:size=1m
     shm_size: 32m
     mem_limit: 96m
+    memswap_limit: 96m # no swap on top of the limit (2 GB botvps)
     volumes:
       - music-db-data:/var/lib/postgresql/data
     networks:
@@ -122,6 +123,7 @@ services:
     env_file: ./env/migrate.env
     restart: "no"
     mem_limit: 128m
+    memswap_limit: 128m # no swap on top of the limit (2 GB botvps)
     networks:
       - music-int
     depends_on:
@@ -141,6 +143,7 @@ services:
       - /tmp:size=16m
       - /app/.next/cache:size=16m,uid=1000,gid=1000
     mem_limit: 256m
+    memswap_limit: 256m # no swap on top of the limit (2 GB botvps)
     # PINNED MOUNTS (plan §3): web writes only the tus dir and in-web.
     volumes:
       - ${MUSIC_DATA_DIR:-./data}/staging/uploads:/staging/uploads:rw
@@ -164,6 +167,7 @@ services:
     tmpfs:
       - /tmp:size=8m
     mem_limit: 160m
+    memswap_limit: 160m # no swap on top of the limit (2 GB botvps)
     # PINNED MOUNTS: final is read-only; the worker submits finalize/cover/
     # fetch-probe requests via in-worker and reads results from out (ro).
     volumes:
@@ -192,6 +196,7 @@ services:
     tmpfs:
       - /tmp:size=32m
     mem_limit: 256m
+    memswap_limit: 256m # no swap on top of the limit (2 GB botvps)
     pids_limit: 128
     # PINNED MOUNTS: only the staging subtrees the probe works on (not
     # /staging/fetch, which is P5's), plus /spool/probe; the inbox a request

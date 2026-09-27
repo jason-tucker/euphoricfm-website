@@ -14,7 +14,7 @@ import { runLimited } from '@/probe/exec'
 import { ffprobeArgs, judgeFfprobe, runProbe } from '@/probe/probe'
 import { scanId3 } from '@/probe/id3scan'
 import { checkMp3Magic } from '@/probe/magic'
-import { imageDims, sniffImage } from '@/probe/cover'
+import { dimsAcceptable, ffmpegCoverArgs, imageDims, reencodeCover, sniffImage } from '@/probe/cover'
 import { readSpoolResult, writeSpoolRequest } from '@/server/spool/protocol'
 import { fx, fxBuf } from './helpers/fixtures'
 
@@ -256,5 +256,111 @@ describe('probe containment: parser children cannot outlive their job', () => {
     expect(await readSpoolResult(join(dirs.spool, 'out'), id)).toMatchObject({ ok: false, error: 'containment_breach' })
     await new Promise((res) => setTimeout(res, 200))
     expect(alive(strays[0]!.pid)).toBe(false) // killed
+  })
+})
+
+// ---------------------------------------------------- cover decode bounds ---
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const len = Buffer.alloc(4)
+  len.writeUInt32BE(data.length)
+  return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]) // CRC not checked by the header parser
+}
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+function ihdr(w: number, h: number): Buffer {
+  const d = Buffer.alloc(13)
+  d.writeUInt32BE(w, 0)
+  d.writeUInt32BE(h, 4)
+  d[8] = 8
+  d[9] = 6
+  return pngChunk('IHDR', d)
+}
+function jpegSeg(marker: number, payload: Buffer): Buffer {
+  const h = Buffer.from([0xff, marker, 0, 0])
+  h.writeUInt16BE(payload.length + 2, 2)
+  return Buffer.concat([h, payload])
+}
+function sof(w: number, h: number, marker = 0xc0): Buffer {
+  const p = Buffer.alloc(15)
+  p[0] = 8
+  p.writeUInt16BE(h, 1)
+  p.writeUInt16BE(w, 3)
+  p[5] = 3
+  return jpegSeg(marker, p)
+}
+const SOI = Buffer.from([0xff, 0xd8])
+const SOS = jpegSeg(0xda, Buffer.alloc(10))
+
+describe('cover decode bounds (crafted headers)', () => {
+  it('PNG: IHDR must be the first chunk; a tEXt chunk carrying fake small dims in front is refused', () => {
+    const text = Buffer.alloc(13)
+    text.writeUInt32BE(100, 0)
+    text.writeUInt32BE(100, 4)
+    const fake = Buffer.concat([PNG_SIG, pngChunk('tEXt', text), ihdr(12000, 12000)])
+    expect(fake.readUInt32BE(16)).toBe(100) // what the old parser read
+    expect(imageDims(fake, 'png')).toBeNull()
+    expect(imageDims(Buffer.concat([PNG_SIG, ihdr(3000, 2000)]), 'png')).toEqual({ w: 3000, h: 2000 })
+    expect(imageDims(Buffer.concat([PNG_SIG, ihdr(3000, 2000)]).subarray(0, 24), 'png')).toBeNull() // truncated
+  })
+
+  it('JPEG: exactly one SOF before SOS; truncated / hierarchical / malformed headers are unreadable', () => {
+    expect(imageDims(Buffer.concat([SOI, jpegSeg(0xe0, Buffer.alloc(14)), sof(640, 480), SOS]), 'jpeg')).toEqual({ w: 640, h: 480 })
+    expect(imageDims(Buffer.concat([SOI, sof(100, 100), sof(12000, 12000, 0xc2), SOS]), 'jpeg')).toBeNull()
+    expect(imageDims(Buffer.concat([SOI, sof(100, 100)]), 'jpeg')).toBeNull() // no SOS: truncated
+    expect(imageDims(Buffer.concat([SOI, jpegSeg(0xde, Buffer.alloc(8)), sof(100, 100), SOS]), 'jpeg')).toBeNull() // DHP
+    expect(imageDims(Buffer.concat([SOI, Buffer.from([0xff, 0xc0, 0x00, 0x05, 8, 0, 100]), SOS]), 'jpeg')).toBeNull() // SOF too short
+    expect(imageDims(Buffer.concat([SOI, Buffer.from([0xff, 0xe1, 0xff, 0xff]), sof(100, 100), SOS]), 'jpeg')).toBeNull() // length past the end
+  })
+
+  it('WebP: the VP8 key-frame start code and the VP8L signature are required', () => {
+    const riff = (chunk: string, body: Buffer) => {
+      const h = Buffer.alloc(20)
+      h.write('RIFF', 0, 'latin1')
+      h.writeUInt32LE(body.length + 12, 4)
+      h.write('WEBP', 8, 'latin1')
+      h.write(chunk, 12, 'latin1')
+      h.writeUInt32LE(body.length, 16)
+      return Buffer.concat([h, body])
+    }
+    const vp8 = Buffer.alloc(12)
+    vp8.set([0x9d, 0x01, 0x2a], 3)
+    vp8.writeUInt16LE(800, 6)
+    vp8.writeUInt16LE(600, 8)
+    expect(imageDims(riff('VP8 ', vp8), 'webp')).toEqual({ w: 800, h: 600 })
+    const bad = Buffer.from(vp8)
+    bad[3] = 0
+    expect(imageDims(riff('VP8 ', bad), 'webp')).toBeNull()
+    const vp8l = Buffer.alloc(12)
+    vp8l[0] = 0x2e // wrong signature
+    expect(imageDims(riff('VP8L', vp8l), 'webp')).toBeNull()
+  })
+
+  it('the pixel bound is 12 MP; the decoder gets -max_pixels before -i', () => {
+    expect(dimsAcceptable({ w: 3464, h: 3464 })).toBe(true)
+    expect(dimsAcceptable({ w: 4000, h: 3500 })).toBe(false)
+    expect(dimsAcceptable({ w: 8001, h: 10 })).toBe(false)
+    expect(dimsAcceptable(null)).toBe(false)
+    const a = ffmpegCoverArgs('/w/in', 'png', '/w/out.jpg')
+    expect(a.indexOf('-max_pixels')).toBeGreaterThan(-1)
+    expect(a.indexOf('-max_pixels')).toBeLessThan(a.indexOf('-i'))
+    expect(Number(a[a.indexOf('-max_pixels') + 1])).toBeLessThanOrEqual(13_000_000)
+  })
+
+  it('a fake-IHDR PNG cover is dropped before any decoder runs; a real 12 MP PNG decodes within the memory limit', async () => {
+    const w = mkdtempSync(join(tmpdir(), 'cov-'))
+    const text = Buffer.alloc(13)
+    text.writeUInt32BE(100, 0)
+    text.writeUInt32BE(100, 4)
+    const fake = Buffer.concat([PNG_SIG, pngChunk('tEXt', text), ihdr(12000, 12000), pngChunk('IEND', Buffer.alloc(0))])
+    writeFileSync(join(w, 'fake.png'), fake)
+    const t0 = Date.now()
+    expect(await reencodeCover(join(w, 'fake.png'), fake, w, join(w, 'o1.jpg'))).toBeNull()
+    expect(Date.now() - t0).toBeLessThan(500)
+    expect(existsSync(join(w, 'o1.jpg'))).toBe(false)
+    const { execFileSync } = await import('node:child_process')
+    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=3440x3440', '-frames:v', '1', join(w, 'big.png')])
+    const big = readFileSync(join(w, 'big.png'))
+    expect(await reencodeCover(join(w, 'big.png'), big, w, join(w, 'o2.jpg'))).not.toBeNull()
+    expect(imageDims(readFileSync(join(w, 'o2.jpg')), 'jpeg')).toEqual({ w: 1000, h: 1000 })
   })
 })
