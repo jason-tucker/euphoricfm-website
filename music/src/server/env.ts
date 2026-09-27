@@ -76,6 +76,12 @@ const webSchema = z.object({
   // Required: with trustHost, Auth.js would otherwise derive its base URL
   // (redirect_uri, callback checks) from request headers.
   AUTH_URL: z.string().url(),
+  // Library root the portal surfaces (requests, search): '' in production,
+  // the worker's PORTAL_TEST_PREFIX in the prefix profile. Same format rule.
+  PORTAL_TEST_PREFIX: z
+    .string()
+    .default('')
+    .refine((v) => v === '' || /^Portal-Test[A-Za-z0-9-]*\/$/.test(v), 'PORTAL_TEST_PREFIX invalid'),
   ALLOW_TEST_ENDPOINTS: boolFlag,
 })
 

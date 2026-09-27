@@ -18,6 +18,17 @@ export const JOB_KINDS = [
   'ticket_item_event',
   'batch_summary',
   'ticket_autoclose',
+  // P4 (src/worker/requests): request tickets, edits, moves, archive/restore,
+  // manager playlist merges and the post-scan re-verify / recovery.
+  'request_ticket_open',
+  'request_ticket_post',
+  'apply_edit',
+  'apply_art',
+  'move',
+  'archive',
+  'restore',
+  'set_playlists',
+  'reverify',
 ] as const
 export type JobKind = (typeof JOB_KINDS)[number]
 

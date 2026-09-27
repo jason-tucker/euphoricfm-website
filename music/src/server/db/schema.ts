@@ -279,6 +279,16 @@ export const requests = pgTable(
     // zod-typed {title?, artist?, album?, genre?} (src/server/requests.ts)
     proposed: jsonb('proposed'),
     reason: text('reason'),
+    // P4: the library metadata at filing time ({path, title, artist, album,
+    // genre, playlistIds}); the ticket card and the reviewer diff use it.
+    snapshot: jsonb('snapshot'),
+    denyReason: text('deny_reason'),
+    // Machine code of the last failure (apply / move / archive / recovery).
+    error: text('error'),
+    // An edit whose new main artist is unknown waits on this artist's
+    // new-artist approval before anything is written.
+    pendingArtistId: integer('pending_artist_id').references(() => artists.id),
+    appliedAt: ts('applied_at'),
     status: requestStatusEnum('status').notNull().default('pending'),
     ticketId: integer('ticket_id'),
     ticketNumber: integer('ticket_number'),
@@ -400,6 +410,10 @@ export const mediaSnapshots = pgTable(
     album: text('album'),
     genre: text('genre'),
     playlistIds: integer('playlist_ids').array().notNull().default(sql`'{}'::int[]`),
+    // P4 art: whether the row had custom art (art_updated_at > 0) and, when
+    // the wrapper can fetch it, the sha256 of the old art bytes.
+    hadArt: boolean('had_art'),
+    artSha256: text('art_sha256'),
     reason: text('reason').notNull(),
     itemId: integer('item_id').references(() => items.id),
     requestId: integer('request_id').references(() => requests.id),

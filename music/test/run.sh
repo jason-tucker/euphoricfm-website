@@ -7,14 +7,21 @@
 # Env:   DOCKER_COMPOSE="docker compose" (override the compose command)
 #        KEEP=1 to leave the stack up afterwards.
 #        MUSIC_TEST_PROJECT=<name> (default efm-music-test) isolates parallel
-#        runs from different worktrees (project, networks, test image tag).
+#        runs from different worktrees (compose project, networks, test image
+#        tag); MUSIC_TEST_TAG overrides the runtime image tag; the web gets no
+#        host port unless MUSIC_TEST_WEB_PORT is set (127.0.0.1:<port>).
 set -eu
 cd "$(dirname "$0")/.."
 export MUSIC_DATA_DIR=./test/.out/data
 export MUSIC_TEST_PROJECT="${MUSIC_TEST_PROJECT:-efm-music-test}"
+P=$MUSIC_TEST_PROJECT
 # CI tags the images built under the default project (…:<target>-local-test).
-if [ "$MUSIC_TEST_PROJECT" = efm-music-test ]; then export MUSIC_TAG=local-test; else export MUSIC_TAG="local-test-$MUSIC_TEST_PROJECT"; fi
-DC="${DOCKER_COMPOSE:-docker compose} -p $MUSIC_TEST_PROJECT -f compose.yml -f test/compose.test.yml"
+if [ -n "${MUSIC_TEST_TAG:-}" ]; then export MUSIC_TAG="$MUSIC_TEST_TAG"
+elif [ "$P" = efm-music-test ]; then export MUSIC_TAG=local-test
+else export MUSIC_TAG="local-test-$P"; fi
+FILES="-f compose.yml -f test/compose.test.yml"
+if [ -n "${MUSIC_TEST_WEB_PORT:-}" ]; then export MUSIC_TEST_WEB_PORT; FILES="$FILES -f test/compose.webport.yml"; fi
+DC="${DOCKER_COMPOSE:-docker compose} -p $P $FILES"
 
 cleanup() {
   if [ "${KEEP:-0}" != "1" ]; then
@@ -81,7 +88,7 @@ guard "web secret in worker env refuses"   "another service" -e AUTH_SECRET=x
 echo "== idle memory (docker stats)"
 sleep 20
 docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}' \
-  "$MUSIC_TEST_PROJECT-music-web-1" "$MUSIC_TEST_PROJECT-music-worker-1" "$MUSIC_TEST_PROJECT-music-probe-1" "$MUSIC_TEST_PROJECT-music-db-1" | tee test/.out/stats.txt
+  "$P-music-web-1" "$P-music-worker-1" "$P-music-probe-1" "$P-music-db-1" | tee test/.out/stats.txt
 
 if [ $status -ne 0 ]; then
   echo "== logs (failure)"

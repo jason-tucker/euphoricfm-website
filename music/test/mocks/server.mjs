@@ -80,6 +80,8 @@ function reset() {
       batchErrorsNext: [],
       overwrites: [],
       artUploads: [],
+      nowplaying: null, // P4: {now_playing, playing_next} override
+      failNextMove: null, // P4: per-record error string for the next do=move
     },
     canary: [],
   }
@@ -434,7 +436,7 @@ async function handleAzuraCast(req, res, url) {
     return send(res, 200, spec, { 'content-type': 'application/x-yaml' })
   }
   const np = /^\/api\/nowplaying\/([a-z0-9_]+)$/.exec(p)
-  if (req.method === 'GET' && np) return send(res, 200, { station: { shortcode: np[1] }, now_playing: { song: { id: 'x' } }, playing_next: null })
+  if (req.method === 'GET' && np) return send(res, 200, { station: { shortcode: np[1] }, now_playing: { song: { id: 'x' } }, playing_next: null, ...(state.az.nowplaying ?? {}) })
 
   // Public album art: GET /api/station/{sid}/art/{unique_id|id}[-ts.jpg]
   const ga = /^\/api\/station\/[a-z0-9_]+\/art\/([A-Za-z0-9]+)(?:-\d+\.jpg)?$/.exec(p)
@@ -543,6 +545,12 @@ async function handleAzuraCast(req, res, url) {
         }
       }
     } else if (body?.do === 'move') {
+      // P4 control: a per-record exception on the next move only (like an
+      // upstream Filesystem error); nothing is moved.
+      if (state.az.failNextMove && errors.length === 0) {
+        for (const fp of files) errors.push(`${fp}: ${state.az.failNextMove}`)
+        state.az.failNextMove = null
+      }
       for (const fp of errors.length === 0 ? files : []) {
         const f = state.az.files.get(fp)
         if (!f) continue // no DB record: skipped silently, like upstream
@@ -614,6 +622,23 @@ async function handleControl(req, res, url) {
   }
   if (p === '/__mock/az/overwrites') return send(res, 200, state.az.overwrites)
   if (p === '/__mock/az/art-uploads') return send(res, 200, state.az.artUploads)
+  if (p === '/__mock/az/nowplaying' && req.method === 'POST') {
+    state.az.nowplaying = body && Object.keys(body).length ? body : null
+    return send(res, 200, { ok: true })
+  }
+  if (p === '/__mock/az/fail-next-move' && req.method === 'POST') {
+    state.az.failNextMove = body?.error ?? 'Filesystem error.'
+    return send(res, 200, { ok: true })
+  }
+  // A scan that lost the row and re-imported the file from disk: new id,
+  // metadata read back from the (unchanged) tags, no playlist memberships.
+  if (p === '/__mock/az/lose-row' && req.method === 'POST') {
+    const old = state.az.files.get(body.path)
+    if (!old) return send(res, 404, { error: 'no such path' })
+    state.az.files.delete(body.path)
+    azSeed([{ path: body.path, title: body.title ?? 'Scanned Title', artist: body.artist ?? 'Scanned Artist', album: body.album ?? null, genre: body.genre ?? null, playlists: [] }])
+    return send(res, 200, azMedia(state.az.files.get(body.path)))
+  }
   if (p === '/__mock/az/files') return send(res, 200, [...state.az.files.values()].map(azMedia))
   if (p === '/__mock/canary/hits') return send(res, 200, state.canary)
   return send(res, 404, { error: 'unknown control path' })

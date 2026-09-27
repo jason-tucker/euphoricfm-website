@@ -23,7 +23,15 @@ CREATE TABLE "ingest_runs" (
 --> statement-breakpoint
 ALTER TABLE "batches" ADD COLUMN "attest_version" text;--> statement-breakpoint
 ALTER TABLE "items" ADD COLUMN "custom_art_id" uuid;--> statement-breakpoint
+ALTER TABLE "media_snapshots" ADD COLUMN "had_art" boolean;--> statement-breakpoint
+ALTER TABLE "media_snapshots" ADD COLUMN "art_sha256" text;--> statement-breakpoint
+ALTER TABLE "requests" ADD COLUMN "snapshot" jsonb;--> statement-breakpoint
+ALTER TABLE "requests" ADD COLUMN "deny_reason" text;--> statement-breakpoint
+ALTER TABLE "requests" ADD COLUMN "error" text;--> statement-breakpoint
+ALTER TABLE "requests" ADD COLUMN "pending_artist_id" integer;--> statement-breakpoint
+ALTER TABLE "requests" ADD COLUMN "applied_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "ingest_runs" ADD CONSTRAINT "ingest_runs_item_id_items_id_fk" FOREIGN KEY ("item_id") REFERENCES "public"."items"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "ingest_runs_uploaded_idx" ON "ingest_runs" USING btree ("uploaded_at");--> statement-breakpoint
 CREATE INDEX "ingest_runs_stage_idx" ON "ingest_runs" USING btree ("stage");--> statement-breakpoint
-ALTER TABLE "items" ADD CONSTRAINT "items_custom_art_id_art_uploads_id_fk" FOREIGN KEY ("custom_art_id") REFERENCES "public"."art_uploads"("id") ON DELETE set null ON UPDATE no action;
+ALTER TABLE "items" ADD CONSTRAINT "items_custom_art_id_art_uploads_id_fk" FOREIGN KEY ("custom_art_id") REFERENCES "public"."art_uploads"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "requests" ADD CONSTRAINT "requests_pending_artist_id_artists_id_fk" FOREIGN KEY ("pending_artist_id") REFERENCES "public"."artists"("id") ON DELETE no action ON UPDATE no action;

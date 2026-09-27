@@ -1,5 +1,5 @@
 {
-  "id": "1be400b2-5f9e-4e6e-a9b3-baa3d8936a49",
+  "id": "c1fc2f02-ea51-434d-b638-fd68b978a0fe",
   "prevId": "30a9b82b-7976-4ceb-a30d-77ffb2014d07",
   "version": "7",
   "dialect": "postgresql",
@@ -1752,6 +1752,18 @@
           "notNull": true,
           "default": "'{}'::int[]"
         },
+        "had_art": {
+          "name": "had_art",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "art_sha256": {
+          "name": "art_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "reason": {
           "name": "reason",
           "type": "text",
@@ -1927,6 +1939,36 @@
           "primaryKey": false,
           "notNull": false
         },
+        "snapshot": {
+          "name": "snapshot",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deny_reason": {
+          "name": "deny_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pending_artist_id": {
+          "name": "pending_artist_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "applied_at": {
+          "name": "applied_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "status": {
           "name": "status",
           "type": "request_status",
@@ -2031,6 +2073,19 @@
           "tableTo": "user",
           "columnsFrom": [
             "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "requests_pending_artist_id_artists_id_fk": {
+          "name": "requests_pending_artist_id_artists_id_fk",
+          "tableFrom": "requests",
+          "tableTo": "artists",
+          "columnsFrom": [
+            "pending_artist_id"
           ],
           "columnsTo": [
             "id"

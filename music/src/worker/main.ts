@@ -29,6 +29,7 @@ import {
   ticketOpen,
   type WorkerCtx,
 } from './handlers'
+import { isRequestsCtx, REQUEST_JOB_KINDS, runRequestJob, sweepParkedRequests } from './requests/jobs'
 
 export type StartupDeps = { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch }
 
@@ -119,6 +120,11 @@ export async function runJob(ctx: WorkerCtx, job: JobRow): Promise<void> {
         await contractProbe(ctx)
         break
       default: {
+        if (REQUEST_JOB_KINDS.has(job.kind)) {
+          if (!isRequestsCtx(ctx)) throw new Permanent(`job kind ${job.kind} needs the requests context`)
+          await runRequestJob(ctx, job)
+          break
+        }
         const handler = P3_JOBS[job.kind]
         if (!handler) throw new Permanent(`unknown job kind ${job.kind}`)
         if (!isP3Ctx(ctx)) throw new Permanent(`job kind ${job.kind} needs the P3 context`)
@@ -198,6 +204,7 @@ export async function main() {
     try {
       await collectProbeResults(ctx)
       await scheduler.tick(ctx)
+      await sweepParkedRequests(ctx)
       if (Date.now() - lastDaily > 24 * 3600_000) {
         lastDaily = Date.now()
         await enqueue(db, 'contract_probe', {}, { dedupeKey: `contract_probe:${new Date().toISOString().slice(0, 10)}` })

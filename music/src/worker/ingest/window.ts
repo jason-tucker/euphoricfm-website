@@ -1,4 +1,6 @@
-// Scan window and pacing (plan §3.7 + the P0d-A measurements).
+// Scan window, pacing and the on-air gate (plan §3.7 + the P0d-A
+// measurements). The ONE implementation for every AzuraCast mutation: P3's
+// ingest and P4's moves, archives, restores, edits and art.
 //
 // CheckMediaTask runs at minutes 1-59/5 (:01, :06, …, "x1") and deletes any
 // media row whose file was not in its listing, so an upload or move that
@@ -11,9 +13,11 @@
 // now + 30 s < :x6.  With offset 10 that is [:x1:30, :x5:30).
 
 import { sql } from 'drizzle-orm'
+import type { AzuraCastClient, StationMedia } from '../../server/azuracast/client'
 import type { DB } from '../../server/db/client'
 import { getSetting } from '../../server/settings'
 import { DEFAULT_CAPS, type Caps } from '../../server/settings-defaults'
+import { RetryLater } from '../handlers'
 
 export const SCAN_PERIOD_MS = 300_000
 export const SCAN_PHASE_MS = 60_000 // :x1:00
@@ -58,6 +62,66 @@ export function afterScans(nowMs: number, scans: number, offsetS: number): numbe
 export async function scanOffsetS(db: DB): Promise<number> {
   const v = Number(await getSetting(db, 'scan_end_offset_s'))
   return Number.isFinite(v) ? v : 10
+}
+
+// Throws RetryLater (a wait: no attempt spent) unless a mutation may start
+// now; returns the offset for afterScans(). A misconfigured offset (the plan's
+// "offset + 20 s over 150 s: stop and ask Jason") holds the job for an hour
+// and alerts, it never fails it.
+export async function assertMutationWindow(db: DB, nowMs: number, alert?: (title: string, detail: Record<string, unknown>) => Promise<void>): Promise<number> {
+  const offset = await scanOffsetS(db)
+  let w: { open: boolean; waitMs: number }
+  try {
+    w = scanWindow(nowMs, offset)
+  } catch (e) {
+    if (e instanceof WindowConfigError) {
+      await alert?.('scan window misconfigured: AzuraCast mutations held (stop and ask Jason)', { offset })
+      throw new RetryLater(3600, e.message)
+    }
+    throw e
+  }
+  if (!w.open) throw new RetryLater(Math.max(1, Math.ceil(w.waitMs / 1000)), 'outside scan window')
+  return offset
+}
+
+// ------------------------------------------------------------- on air ---
+// (plan §3.7 "move, archive and restore: defer if the media is now_playing
+// or playing_next", checked against the configured station's nowplaying.)
+
+type NpSong = { id?: unknown; text?: unknown; artist?: unknown; title?: unknown }
+
+function songsOf(np: unknown): NpSong[] {
+  const o = (np ?? {}) as { now_playing?: { song?: NpSong } | null; playing_next?: { song?: NpSong } | null }
+  return [o.now_playing?.song, o.playing_next?.song].filter((s): s is NpSong => !!s && typeof s === 'object')
+}
+
+const norm = (s: string) => s.normalize('NFC').toLowerCase().replace(/\s+/g, ' ').trim()
+
+// NowPlaying carries song ids (hash of artist+title), not media ids, so a
+// file is on air when its song_id or its "artist - title" text matches the
+// current or the next song.
+export function isOnAir(np: unknown, media: StationMedia): boolean {
+  const raw = (media as Record<string, unknown>).song_id
+  const songId = typeof raw === 'string' ? raw : null
+  const text = norm(`${media.artist ?? ''} - ${media.title ?? ''}`)
+  return songsOf(np).some((s) => {
+    if (songId && s.id === songId) return true
+    const t = typeof s.text === 'string' ? s.text : typeof s.artist === 'string' && typeof s.title === 'string' ? `${s.artist} - ${s.title}` : null
+    return t !== null && norm(t) === text
+  })
+}
+
+export async function assertNotOnAir(db: DB, az: AzuraCastClient, media: StationMedia): Promise<void> {
+  const sc = await getSetting(db, 'nowplaying_shortcode')
+  const shortcode = typeof sc === 'string' && /^[a-z0-9_]{1,64}$/.test(sc) ? sc : 'euphoricfm'
+  let np: unknown
+  try {
+    np = await az.nowPlaying(shortcode)
+  } catch {
+    // Unknown is not "safe": wait and look again.
+    throw new RetryLater(60, 'nowplaying unavailable')
+  }
+  if (isOnAir(np, media)) throw new RetryLater(60, 'now playing')
 }
 
 export async function getCaps(db: DB): Promise<Caps> {

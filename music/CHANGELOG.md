@@ -1,5 +1,15 @@
 # Changelog — EFM Music Portal (`music/`)
 
+## [Unreleased] — P4 requests and library management
+
+### Added
+- Edit and removal requests (`request`): `POST /api/requests`, list/get, withdraw; one ticket each (`songedit` / `songremoval`) with a current → proposed card; targets only `Music/Artists/<folder>/<file>` in `library_cache`, not archived; 10 edits and 10 removals per member per day; one open request per song and kind.
+- Review (`review`): `POST /api/requests/:id/decision` (409 on a race, deny needs a reason) and `POST /api/requests/artists/:id/decision` for the new-artist approval an edit is parked on.
+- Manager actions (`manage`), each queued for the worker and audited: `PATCH /api/library/:mediaId`, `PUT /api/library/:mediaId/playlists` (merge), `POST /api/library/:mediaId/archive`, `POST /api/archive/:id/restore`, `GET /api/archive`.
+- Admin (`admin`): `PUT /api/admin/settings` (zod schema per key; caps can only be lowered), `POST /api/admin/role-bindings`, `DELETE /api/admin/role-bindings/:id`. Seeded `playlist_names`, `rights_attestation`, `discord_invite_url`.
+- Worker jobs `apply_edit`, `move`, `archive`, `restore`, `set_playlists`, `reverify` (post-scan, with lost-row recovery) and the request ticket posts. Moves run only inside the scan window and never while the song is playing or next; waiting does not spend attempts; `queues_paused` is re-checked before each write.
+- Album art (art contract): edit requests accept `proposed.artId` (a ready upload of the member's own; the card says "New album art proposed"); manager `PUT /api/library/:mediaId/art {artId}`; worker `apply_art` (snapshot with had_art / old art hash, `uploadArt`, verify `art_updated_at`, ticket post; scan window and `queues_paused`), run after `apply_edit` and any move. `art_uploads` and `uploadArt` are stubbed until the foundation lands them.
+- Migration `0002_p4_requests` (requests: snapshot, deny_reason, error, pending_artist_id, applied_at; media_snapshots: had_art, art_sha256). Web accepts an optional `PORTAL_TEST_PREFIX`.
 ## [0.1.1] — 2026-09-27 — P2 review fix round + album-art foundation
 
 ### Security

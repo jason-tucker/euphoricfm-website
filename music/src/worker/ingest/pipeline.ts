@@ -37,7 +37,7 @@ import { Defer, Permanent } from '../handlers'
 import { findMediaByPath, reapplySnapshot, RECOVERY_MIN_MS, RECOVERY_MIN_POLLS, remapMediaId } from '../library/recovery'
 import { ingestPlaylistIds, stationPlaylistIds } from '../library/playlists'
 import type { P3Ctx } from './context'
-import { afterScans, getCaps, pacingWait, scanOffsetS, scanWindow, WindowConfigError } from './window'
+import { afterScans, assertMutationWindow, getCaps, pacingWait, scanOffsetS, scanWindow } from './window'
 
 export const FINALIZE_TIMEOUT_MS = 15 * 60_000
 export const POLL_S = 5
@@ -72,22 +72,9 @@ const assertNotPaused = (ctx: P3Ctx) => assertQueuesNotPaused(ctx.db)
 // longer than the default 7-day wait budget.
 const ARTIST_WAIT_MAX_AGE_S = 30 * 24 * 3600
 
-// The window never opens if offset + 20 s > 150 s: alert (stop condition)
-// and look again in an hour.
-async function windowOrDefer(ctx: P3Ctx, itemId: number): Promise<number> {
-  const offset = await scanOffsetS(ctx.db)
-  try {
-    const w = scanWindow(ctx.now(), offset)
-    if (!w.open) throw new Defer(Math.ceil(w.waitMs / 1000), 'outside scan window')
-  } catch (e) {
-    if (e instanceof WindowConfigError) {
-      await ctx.alert('scan window misconfigured: ingest held (stop and ask Jason)', { itemId, offset })
-      throw new Defer(3600, e.message)
-    }
-    throw e
-  }
-  return offset
-}
+// The window never opens if offset + 20 s > 150 s: assertMutationWindow
+// alerts (stop condition) and holds the job for an hour.
+const windowOrDefer = (ctx: P3Ctx) => assertMutationWindow(ctx.db, ctx.now(), ctx.alert)
 
 export async function readFinal(dir: string, file: string): Promise<Buffer> {
   if (!FINAL_FILE_RE.test(file)) throw new Permanent('bad final file name')
@@ -205,7 +192,7 @@ async function stageFinalizing(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
 
 async function stageReady(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
   await assertNotPaused(ctx)
-  const offset = await windowOrDefer(ctx, it.id)
+  const offset = await windowOrDefer(ctx)
   const wait = await pacingWait(ctx.db, ctx.now(), await getCaps(ctx.db))
   if (wait > 0) throw new Defer(Math.ceil(wait / 1000), 'pacing')
 
