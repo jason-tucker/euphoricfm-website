@@ -8,36 +8,42 @@
 //               reviewer previewed), strips + re-tags, publishes final.mp3;
 //               the worker re-hashes what landed against final_sha256
 //   ready       scan window (clock only) + serial pacing, then the path build
-//               and a flushCache collision walk (ANY entry = taken; ` (2)`…
-//               ` (9)`), then POST /files (the wrapper re-hashes the bytes)
-//   uploaded    batch do=playlist with the approved ids that are still
-//               assignable AND belong to station 1
+//               and a flushCache collision walk (ANY entry = taken, and so
+//               is a path another active run has reserved; ` (2)`… ` (9)`),
+//               then the reservation (target_path + upload_attempted_at,
+//               after the window and pause checks) and POST /files (the
+//               wrapper re-hashes the bytes). A retry adopts the row at its
+//               reserved path only when it is provably its own upload.
+//   uploaded    batch do=playlist MERGING the approved ids that are still
+//               assignable AND belong to station 1 into the row's set
 //   playlists   GET verify, media_snapshots row, item → `verifying`
 //
 // Then an `ingest_verify` job runs after the next two scans: id + path +
-// playlists intact → `live`; playlists missing → re-apply (bounded); row
-// gone → recovery by path (≥ 3 polls and ≥ 20 min), metadata then playlists
-// re-applied from the snapshot, ids remapped, alert.
+// playlists intact → `live`; playlists missing → re-added (merge, bounded);
+// row gone → recovery by path (≥ 3 polls and ≥ 20 min), metadata then
+// playlists re-applied from the snapshot, ids remapped, alert. A later
+// portal mutation of the media (move, archive, playlists, edit) supersedes
+// the verify: the song went live and that mutation's own re-verify owns it.
 
 import { createHash, randomUUID } from 'node:crypto'
 import { constants as FS } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { join } from 'node:path'
-import { and, desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, isNotNull, ne, notInArray, sql } from 'drizzle-orm'
 import { audit } from '../../server/audit'
-import { AzuraCastError, type StationMedia } from '../../server/azuracast/client'
+import { AzuraCastError, samePathLoose, type StationMedia } from '../../server/azuracast/client'
 import { ingestRuns, items, mediaSnapshots } from '../../server/db/schema'
 import { enqueue } from '../../server/jobs'
 import { isUsableArt, loadArt } from '../../server/library/art'
 import { resolveArtistGate } from '../../server/library/artists'
-import { PathError, resolveIngestPath } from '../../server/paths/builder'
+import { dirname, PathError, resolveIngestPath } from '../../server/paths/builder'
 import { assertQueuesNotPaused } from '../../server/pause'
 import { FINAL_FILE_RE, readSpoolResult, writeSpoolRequest, type FinalizeRequest } from '../../server/spool/protocol'
 import { Defer, Permanent } from '../handlers'
-import { findMediaByPath, reapplySnapshot, RECOVERY_MIN_MS, RECOVERY_MIN_POLLS, remapMediaId } from '../library/recovery'
+import { findMediaByPath, reapplySnapshot, RECOVERY_MIN_MS, RECOVERY_MIN_POLLS, remapMediaId, stationIdsOf } from '../library/recovery'
 import { ingestPlaylistIds, stationPlaylistIds } from '../library/playlists'
 import type { P3Ctx } from './context'
-import { afterScans, assertMutationWindow, getCaps, pacingWait, scanOffsetS, scanWindow } from './window'
+import { afterScans, assertMutationWindow, getCaps, MUTATION_WAIT_MAX_AGE_S, pacingWait, scanOffsetS, scanWindow } from './window'
 
 export const FINALIZE_TIMEOUT_MS = 15 * 60_000
 export const POLL_S = 5
@@ -71,6 +77,18 @@ const assertNotPaused = (ctx: P3Ctx) => assertQueuesNotPaused(ctx.db)
 // A song waiting for its new-artist item's decision: reviewers may take
 // longer than the default 7-day wait budget.
 const ARTIST_WAIT_MAX_AGE_S = 30 * 24 * 3600
+
+// Every other wait of the `ingest` job. The job's age counts from approval,
+// so after an artist wait (or a long pause) the next wait still needs a
+// budget past ARTIST_WAIT_MAX_AGE_S; `exact` for the ones that know when
+// they may run (window, pacing).
+const wait = (delayS: number, message: string, exact = false) => new Defer(delayS, message, { maxAgeS: MUTATION_WAIT_MAX_AGE_S, exact })
+
+// A file that reached AzuraCast at our reserved path no earlier than this
+// before the recorded attempt (DB vs AzuraCast clock skew) may be ours.
+const ADOPT_CLOCK_SLACK_MS = 120_000
+// |media.length − probe duration| (s) for an adopted row, when both are known.
+const ADOPT_LENGTH_SLACK_S = 2
 
 // The window never opens if offset + 20 s > 150 s: assertMutationWindow
 // alerts (stop condition) and holds the job for an hour.
@@ -165,7 +183,7 @@ async function stageFinalize(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
   }
   await setRun(ctx, it.id, { stage: 'finalizing', finalizeRequestId: id, finalizeRequestedAt: new Date(ctx.now()) })
   await ctx.db.update(items).set({ status: 'applying', updatedAt: new Date(ctx.now()) }).where(and(eq(items.id, it.id), eq(items.status, 'approved')))
-  throw new Defer(POLL_S, 'finalize submitted')
+  throw wait(POLL_S, 'finalize submitted')
 }
 
 async function stageFinalizing(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
@@ -178,7 +196,7 @@ async function stageFinalizing(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
   }
   if (!r) {
     if (ctx.now() - (run.finalizeRequestedAt?.getTime() ?? 0) > FINALIZE_TIMEOUT_MS) throw new IngestFailure('finalize_timeout')
-    throw new Defer(POLL_S, 'finalize pending')
+    throw wait(POLL_S, 'finalize pending')
   }
   if (r.source !== 'in-worker' || r.type !== 'finalize') throw new IngestFailure('wrong_result_source')
   if (!r.ok || !('finalSha256' in r)) throw new IngestFailure(`finalize_${'error' in r ? r.error : 'failed'}`)
@@ -193,8 +211,8 @@ async function stageFinalizing(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
 async function stageReady(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
   await assertNotPaused(ctx)
   const offset = await windowOrDefer(ctx)
-  const wait = await pacingWait(ctx.db, ctx.now(), await getCaps(ctx.db))
-  if (wait > 0) throw new Defer(Math.ceil(wait / 1000), 'pacing')
+  const pace = await pacingWait(ctx.db, ctx.now(), await getCaps(ctx.db))
+  if (pace > 0) throw wait(Math.ceil(pace / 1000), 'pacing', true)
 
   const chosen = await ingestPlaylistIds(ctx.db, run.playlistIds)
   if (run.playlistIds.length > 0 && chosen.length === 0) throw new IngestFailure('playlists_not_assignable', { approved: run.playlistIds })
@@ -205,26 +223,43 @@ async function stageReady(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
   const bytes = await readFinal(ctx.finalDir, run.finalFile)
   if (sha256(bytes) !== it.finalSha256) throw new IngestFailure('final_sha_mismatch', { file: run.finalFile })
 
-  // A previous attempt recorded its target and may have uploaded before it
-  // could record the result: adopt that row instead of uploading twice.
+  // A previous attempt reserved a path and may have uploaded before it could
+  // record the result: adopt that row only if it is provably this run's
+  // upload. Anything else there (another item's upload, an SFTP file) is
+  // never adopted: the reservation is released and a path is picked again
+  // (the occupied one now counts as taken).
   if (run.targetPath) {
-    const m = await findMediaByPath(ctx.azuracast, run.targetPath)
+    const m = await ownUpload(ctx, it, run, bytes.length)
     if (m) return recordUpload(ctx, it, run.targetPath, m, chosen)
+    await setRun(ctx, it.id, { targetPath: null, uploadAttemptedAt: null })
   }
 
+  // Taken: any entry in AzuraCast, or a path another active run reserved
+  // (it may be about to upload there, or be waiting to adopt its row).
+  const reserved = await reservedPaths(ctx, it.id)
   let path: string
   try {
-    path = await resolveIngestPath(ctx.root, gate.folder, it.artist ?? '', it.title ?? '', (dir, p) => ctx.azuracast.pathTaken(dir, p))
+    path = await resolveIngestPath(ctx.root, gate.folder, it.artist ?? '', it.title ?? '', async (dir, p) => reserved.some((r) => samePathLoose(r, p)) || ctx.azuracast.pathTaken(dir, p))
   } catch (e) {
     if (e instanceof PathError) throw new IngestFailure(e.code === 'collision_exhausted' ? 'collision_exhausted' : `path_${e.code}`, { folder: gate.folder })
     throw e
   }
-  await setRun(ctx, it.id, { targetPath: path })
   // The listing took time: the POST itself must still start in the window.
   const w = scanWindow(ctx.now(), offset)
-  if (!w.open) throw new Defer(Math.ceil(w.waitMs / 1000), 'window closed before upload')
-  let media: StationMedia
+  if (!w.open) throw wait(Math.ceil(w.waitMs / 1000), 'window closed before upload', true)
   await assertNotPaused(ctx)
+  // Reserve the path with the attempt marker (DB clock) only now, right
+  // before the POST: a run parked by the window or the pause holds nothing.
+  try {
+    await ctx.db
+      .update(ingestRuns)
+      .set({ targetPath: path, uploadAttemptedAt: sql`now()`, updatedAt: new Date(ctx.now()) })
+      .where(eq(ingestRuns.itemId, it.id))
+  } catch (e) {
+    if (uniqueViolation(e)) throw wait(POLL_S, 'target path reserved by another run')
+    throw e
+  }
+  let media: StationMedia
   try {
     media = await ctx.azuracast.uploadFile(path, bytes, it.finalSha256)
   } catch (e) {
@@ -232,6 +267,51 @@ async function stageReady(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
     throw e
   }
   await recordUpload(ctx, it, path, media, chosen)
+}
+
+function uniqueViolation(e: unknown): boolean {
+  const code = (x: unknown) => (x && typeof x === 'object' ? (x as { code?: unknown }).code : undefined)
+  return code(e) === '23505' || code((e as { cause?: unknown } | null)?.cause) === '23505'
+}
+
+async function reservedPaths(ctx: P3Ctx, itemId: number): Promise<string[]> {
+  const rows = await ctx.db
+    .select({ path: ingestRuns.targetPath })
+    .from(ingestRuns)
+    .where(and(ne(ingestRuns.itemId, itemId), isNotNull(ingestRuns.targetPath), notInArray(ingestRuns.stage, ['live', 'failed'])))
+  return rows.map((r) => r.path!)
+}
+
+// The media row at the reserved path is this run's own upload only when ALL
+// hold: an upload was attempted (the marker is set when the path is
+// reserved, right before the POST); the entry is a scanned media row
+// (AzuraCast writes the row before the file, so an upload of ours always has
+// one); its file size is exactly final.mp3's; it was uploaded no earlier
+// than the attempt; its length matches the probe's duration when both are
+// known; and no other item or ingest run holds its media id.
+async function ownUpload(ctx: P3Ctx, it: Item, run: Run, size: number): Promise<StationMedia | null> {
+  const path = run.targetPath!
+  const entry = (await ctx.azuracast.listDirectory(dirname(path))).find((e) => e.path === path)
+  if (!entry) return null
+  const m = entry.media ?? null
+  const reasons: string[] = []
+  if (!run.uploadAttemptedAt) reasons.push('no_attempt_recorded')
+  if (!m) reasons.push('not_a_scanned_media_row')
+  if (entry.size !== size) reasons.push('size_mismatch')
+  if (m) {
+    const raw = (m as Record<string, unknown>).uploaded_at
+    const at = typeof raw === 'number' && Number.isFinite(raw) ? raw : typeof m.mtime === 'number' ? m.mtime : null
+    if (run.uploadAttemptedAt && (at === null || at * 1000 < run.uploadAttemptedAt.getTime() - ADOPT_CLOCK_SLACK_MS)) reasons.push('older_than_attempt')
+    if (typeof m.length === 'number' && typeof it.durationS === 'number' && Math.abs(m.length - it.durationS) > ADOPT_LENGTH_SLACK_S) reasons.push('length_mismatch')
+    const holders = await ctx.db.execute<{ n: number }>(sql`
+      SELECT (SELECT count(*) FROM items WHERE media_id = ${m.id} AND id <> ${it.id})
+           + (SELECT count(*) FROM ingest_runs WHERE media_id = ${m.id} AND item_id <> ${it.id}) AS n`)
+    if (Number((holders as unknown as { n: number }[])[0]?.n ?? 0) > 0) reasons.push('media_held_by_another_item')
+  }
+  if (reasons.length === 0) return m
+  await audit(ctx.db, { action: 'item.ingest.not_adopted', targetType: 'item', targetId: it.id, detail: { path, mediaId: m?.id ?? null, reasons } })
+  await ctx.alert(`item #${it.id}: a file at its reserved path is not its upload; picking another path`, { itemId: it.id, path, mediaId: m?.id ?? null, reasons })
+  return null
 }
 
 async function recordUpload(ctx: P3Ctx, it: Item, path: string, media: StationMedia, chosen: number[]) {
@@ -243,8 +323,18 @@ async function recordUpload(ctx: P3Ctx, it: Item, path: string, media: StationMe
 
 async function stageUploaded(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
   if (run.playlistIds.length > 0) {
-    await assertNotPaused(ctx)
-    await ctx.azuracast.setPlaylists(run.targetPath!, run.playlistIds, new Set(run.playlistIds))
+    // MERGE: the approved ids are added to whatever station memberships the
+    // row has by now; a REPLACE with the approved set would drop them. (A
+    // row that is gone or moved is left to stagePlaylists / the re-verify.)
+    const f = await getFileOrNull(ctx, run.mediaId!)
+    if (f && f.path === run.targetPath) {
+      const current = stationIdsOf(f, await stationPlaylistIds(ctx.db))
+      if (run.playlistIds.some((id) => !current.includes(id))) {
+        const ids = [...new Set([...current, ...run.playlistIds])].sort((a, b) => a - b)
+        await assertNotPaused(ctx)
+        await ctx.azuracast.setPlaylists(run.targetPath!, ids, new Set(ids))
+      }
+    }
   }
   await setRun(ctx, it.id, { stage: 'playlists' })
 }
@@ -328,7 +418,7 @@ export async function runIngest(ctx: P3Ctx, payload: { itemId: number }): Promis
           return // verifying / recovering (ingest_verify owns them), live, failed
       }
     }
-    throw new Defer(POLL_S, 'step budget')
+    throw wait(POLL_S, 'step budget')
   } catch (e) {
     if (e instanceof IngestFailure) return failIngest(ctx, itemId, e.reason, e.detail)
     if (!(e instanceof Defer)) await setRun(ctx, itemId, { lastError: (e instanceof Error ? `${e.name}: ${e.message}` : 'error').slice(0, 200) }).catch(() => {})
@@ -347,14 +437,26 @@ export async function runIngestVerify(ctx: P3Ctx, payload: { itemId: number }): 
   const snap = await ctx.db.query.mediaSnapshots.findFirst({ where: and(eq(mediaSnapshots.itemId, itemId), eq(mediaSnapshots.reason, 'ingest')), orderBy: desc(mediaSnapshots.id) })
   if (!snap) return failIngest(ctx, itemId, 'snapshot_missing')
 
+  // A portal mutation of this media after the ingest snapshot (a manager
+  // move, archive, playlist change or edit of a still-verifying song) owns
+  // its state now: that is not a lost row, and repairing towards the ingest
+  // snapshot would revert it. The song went live; the newer mutation's own
+  // re-verify (and recovery) takes over.
+  const newer = await ctx.db.query.mediaSnapshots.findFirst({ where: and(eq(mediaSnapshots.mediaId, snap.mediaId), gt(mediaSnapshots.id, snap.id)), orderBy: desc(mediaSnapshots.id) })
+  if (newer) {
+    await audit(ctx.db, { action: 'item.ingest.verify_superseded', targetType: 'item', targetId: itemId, detail: { snapshotId: snap.id, by: newer.id, reason: newer.reason } })
+    return goLive(ctx, run)
+  }
+
   if (run.stage === 'verifying') {
     const f = await getFileOrNull(ctx, run.mediaId!)
     if (f && f.path === run.targetPath) {
       const missing = missingPlaylists(f, run.playlistIds)
       if (missing.length === 0) return goLive(ctx, run)
       if (run.repairs >= MAX_REPAIRS) return failIngest(ctx, itemId, 'playlists_lost', { missing })
+      // Re-add only what is missing (merge): memberships added since stay.
       const stationIds = await stationPlaylistIds(ctx.db)
-      const ids = snap.playlistIds.filter((id) => stationIds.has(id))
+      const ids = [...new Set([...stationIdsOf(f, stationIds), ...snap.playlistIds.filter((id) => stationIds.has(id))])].sort((a, b) => a - b)
       await assertNotPaused(ctx)
       await ctx.azuracast.setPlaylists(run.targetPath!, ids, new Set(ids))
       await setRun(ctx, itemId, { repairs: run.repairs + 1, verifyDueAt: next(2) })

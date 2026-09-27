@@ -36,7 +36,10 @@ export async function reapplySnapshot(az: AzuraCastClient, mediaId: number, path
   return ids
 }
 
-// One transaction: every table that carries a media id.
+// One transaction: every table that carries a media id, and the payload of
+// every queued job that names it (set_playlists, apply_art, move, archive,
+// apply_edit, other re-verify chains), which would otherwise fail with
+// media_missing against the old id.
 export async function remapMediaId(db: DB, oldId: number, newId: number, uniqueId: string | null): Promise<void> {
   if (oldId === newId) return
   await db.transaction(async (tx) => {
@@ -48,5 +51,9 @@ export async function remapMediaId(db: DB, oldId: number, newId: number, uniqueI
     await tx.execute(sql`UPDATE archive SET media_id = ${newId}, unique_id = coalesce(${uniqueId}, unique_id) WHERE media_id = ${oldId}`)
     await tx.execute(sql`UPDATE media_snapshots SET media_id = ${newId}, unique_id = coalesce(${uniqueId}, unique_id) WHERE media_id = ${oldId}`)
     await tx.update(ingestRuns).set({ mediaId: newId, uniqueId, updatedAt: new Date() }).where(eq(ingestRuns.mediaId, oldId))
+    await tx.execute(
+      sql`UPDATE jobs SET payload = jsonb_set(payload, '{mediaId}', to_jsonb(${newId}::int)), updated_at = now()
+          WHERE status = 'queued' AND payload->>'mediaId' = ${String(oldId)}`,
+    )
   })
 }

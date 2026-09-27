@@ -18,7 +18,9 @@ import { clearItemArt, decideItem, editItemMetadata, setItemArt, submitBatch } f
 import { Defer } from '@/worker/handlers'
 import { runIngest, runIngestVerify } from '@/worker/ingest/pipeline'
 import { afterScans, pacingWaitMs, scanWindow, WindowConfigError } from '@/worker/ingest/window'
-import { artUrlFor, isLibraryPath, syncLibrary } from '@/worker/library/sync'
+import { artUrlFor, isLibraryPath, stationSet, syncLibrary } from '@/worker/library/sync'
+import { runJob } from '@/worker/main'
+import { setPlaylistsJob, type RequestsCtx } from '@/worker/requests/jobs'
 import { batchContractCheck, diskPush, finalCleanup, Scheduler } from '@/worker/scheduler'
 import { autoCloseSweep, batchSummary, summaryBody, summarySweep, ticketAutoclose, ticketItemEvent } from '@/worker/scheduler/tickets'
 import { ownerSql } from './helpers/db'
@@ -107,6 +109,21 @@ describe('scan window and pacing (clock only)', () => {
     expect(mainArtist('A, B')).toBe('A')
     expect(mainArtist('Jake Gallagher feat. Someone')).toBe('Jake Gallagher')
     expect(mainArtist('Malcolm X Band')).toBe('Malcolm X Band')
+  })
+
+  it('station playlist set: sync-owned, never shrinks by observation, alerts a new id once, drops only admin-foreign ids', () => {
+    const foreign = new Set([74, 75, 76, 77, 78])
+    // first sync: classified against the configured foreign list, silently
+    expect(stationSet({ prev: null, prevUnconfirmed: [], configured: [2], foreign, observed: new Set([2, 4, 74, 78]) })).toEqual({ station: [2, 4], unconfirmed: [], fresh: [] })
+    // 4 not seen this time: kept; 79 is new: counted as station 1, alerted, unconfirmed
+    const r1 = stationSet({ prev: [2, 4], prevUnconfirmed: [], configured: [2], foreign, observed: new Set([2, 79]) })
+    expect(r1).toEqual({ station: [2, 4, 79], unconfirmed: [79], fresh: [79] })
+    // next sync: no second alert for 79
+    expect(stationSet({ prev: r1.station, prevUnconfirmed: r1.unconfirmed, configured: [2], foreign, observed: new Set([2, 79]) }).fresh).toEqual([])
+    // an admin marks 79 foreign: it leaves the station set (and unconfirmed)
+    expect(stationSet({ prev: r1.station, prevUnconfirmed: r1.unconfirmed, configured: [2], foreign: new Set([...foreign, 79]), observed: new Set([2, 79]) })).toEqual({ station: [2, 4], unconfirmed: [], fresh: [] })
+    // a configured (assignable/default) id always stays station 1
+    expect(stationSet({ prev: [2], prevUnconfirmed: [], configured: [2], foreign: new Set([2]), observed: new Set([2]) }).station).toEqual([2])
   })
 
   it('library whitelist: Music/Artists/** only; UNRELEASED*, Removed/ and Portal-Test/ never', () => {
@@ -451,6 +468,164 @@ describe.skipIf(!DBENV() || !MOCKS())('ingest pipeline (station 1, Portal-Test/ 
     ctx.cleanup()
   })
 
+  // ING-1 / SEC-4: a path is reserved only right before the POST, other
+  // active runs' reservations count as taken, and a reserved path's row is
+  // adopted only when it is provably this run's upload.
+  function gatedAz(opts: { refuseNext?: { on: boolean }; fetchImpl?: typeof fetch } = {}) {
+    return new AzuraCastClient({
+      baseUrl: process.env.MOCKS_AZURACAST!,
+      apiKey: process.env.AZURACAST_API_KEY!,
+      profile: resolveProfile(PREFIX_ENV),
+      canaryStationId: 7,
+      env: PREFIX_ENV,
+      fetchImpl: opts.fetchImpl,
+      writeGate: async () => {
+        if (opts.refuseNext?.on) {
+          opts.refuseNext.on = false
+          throw new Error('queues paused')
+        }
+      },
+    })
+  }
+
+  it('ING-1: a run parked after reserving its path never adopts a duplicate’s upload; the duplicate takes the next name', async () => {
+    const refuse = { on: false }
+    const ctx = makeCtx(slot(30), { az: gatedAz({ refuseNext: refuse }) })
+    const owner = await mkUser()
+    const folder = `PT Twin ${uniq()}`
+    const artistId = await mkArtist(folder)
+    const b = await mkBatch(owner.id)
+    const a = await mkItem({ batchId: b, ownerId: owner.id, title: 'Twin', artist: folder, artistId })
+    const dup = await mkItem({ batchId: b, ownerId: owner.id, title: 'Twin', artist: folder, artistId })
+    for (const id of [a, dup]) {
+      await step(ctx, id)
+      await actAsProbe(ctx, id)
+    }
+    const P = `Portal-Test/Music/Artists/${folder}/${folder} - Twin.mp3`
+    // A reserves P, then the pause lands between its checks and the POST.
+    refuse.on = true
+    await expect(step(ctx, a)).rejects.toMatchObject({ code: 'refused_queues_paused' })
+    const ra = (await run(a))!
+    expect(ra).toMatchObject({ stage: 'ready', target_path: P })
+    expect(ra.upload_attempted_at).not.toBeNull()
+    expect(await uploadsTo(folder)).toHaveLength(0)
+    // The duplicate runs first: A's reservation counts as taken.
+    expect(await step(ctx, dup)).toBeNull()
+    expect(await item(dup)).toMatchObject({ status: 'verifying', target_path: P.replace(/\.mp3$/, ' (2).mp3') })
+    // A resumes after the pacing gap: nothing of its own at P, so it uploads there.
+    ctx.clock.t = slot(30, 3, 20)
+    expect(await step(ctx, a)).toBeNull()
+    const [ia, id2] = [await item(a), await item(dup)]
+    expect(ia).toMatchObject({ status: 'verifying', target_path: P })
+    expect(ia.media_id).not.toBe(id2.media_id)
+    expect((await azFile(P))!.id).toBe(ia.media_id)
+    expect(await uploadsTo(folder)).toHaveLength(2)
+    ctx.cleanup()
+  })
+
+  it('ING-1: a lost upload reply is adopted on retry (size, time, sole holder), so nothing is uploaded twice', async () => {
+    let drop = true
+    const lossy = (async (url: string, init: RequestInit) => {
+      if (drop && init.method === 'POST' && String(url).endsWith('/api/station/1/files')) {
+        drop = false
+        await fetch(url, init)
+        throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' })
+      }
+      return fetch(url, init)
+    }) as unknown as typeof fetch
+    const ctx = makeCtx(slot(31), { az: gatedAz({ fetchImpl: lossy }) })
+    const owner = await mkUser()
+    const folder = `PT Lost ${uniq()}`
+    const artistId = await mkArtist(folder)
+    const b = await mkBatch(owner.id)
+    const id = await mkItem({ batchId: b, ownerId: owner.id, title: 'Reply', artist: folder, artistId })
+    await step(ctx, id)
+    await actAsProbe(ctx, id)
+    await expect(step(ctx, id)).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(await uploadsTo(folder)).toHaveLength(1)
+    expect(await step(ctx, id)).toBeNull()
+    expect(await uploadsTo(folder)).toHaveLength(1)
+    const P = `Portal-Test/Music/Artists/${folder}/${folder} - Reply.mp3`
+    expect(await item(id)).toMatchObject({ status: 'verifying', target_path: P, media_id: (await azFile(P))!.id })
+    expect(ctx.alerts.filter((x) => x.title.includes('not its upload'))).toHaveLength(0)
+    ctx.cleanup()
+  })
+
+  it('ING-1: a row at the reserved path that another item holds (same bytes, even) or that is a different file is never adopted', async () => {
+    const ctx = makeCtx(slot(32))
+    const owner = await mkUser()
+    const folder = `PT Held ${uniq()}`
+    const artistId = await mkArtist(folder)
+    const b = await mkBatch(owner.id)
+    const bytes = Buffer.from(`identical final bytes ${uniq()}`)
+    const first = await mkItem({ batchId: b, ownerId: owner.id, title: 'Same', artist: folder, artistId })
+    await step(ctx, first)
+    await actAsProbe(ctx, first, { bytes })
+    expect(await step(ctx, first)).toBeNull()
+    const P = `Portal-Test/Music/Artists/${folder}/${folder} - Same.mp3`
+    expect((await item(first)).target_path).toBe(P)
+    await ownerSql()`UPDATE ingest_runs SET stage = 'live' WHERE item_id = ${first}`
+    // A duplicate with byte-identical final audio holds a reservation of P
+    // with an attempt marker (e.g. from before the migration): P's row has
+    // the right size and time, but it is the first item's media.
+    const second = await mkItem({ batchId: b, ownerId: owner.id, title: 'Same', artist: folder, artistId })
+    await step(ctx, second)
+    await actAsProbe(ctx, second, { bytes })
+    ctx.clock.t = slot(32, 0, 50) // window closed: finalizing → ready, then it waits
+    expect((await step(ctx, second))?.message).toBe('outside scan window')
+    await ownerSql()`UPDATE ingest_runs SET target_path = ${P}, upload_attempted_at = now() - interval '1 minute' WHERE item_id = ${second}`
+    ctx.clock.t = slot(32, 4, 55)
+    expect(await step(ctx, second)).toBeNull()
+    const [i1, i2] = [await item(first), await item(second)]
+    expect(i2.target_path).toBe(P.replace(/\.mp3$/, ' (2).mp3'))
+    expect(i2.media_id).not.toBe(i1.media_id)
+    expect(ctx.alerts.find((x) => x.title.includes('not its upload'))!.detail).toMatchObject({ reasons: ['media_held_by_another_item'] })
+    // A different file at a reserved path (an SFTP upload): size mismatch.
+    ctx.clock.t = slot(33, 1, 40)
+    const third = await mkItem({ batchId: b, ownerId: owner.id, title: 'Other', artist: folder, artistId })
+    await step(ctx, third)
+    await actAsProbe(ctx, third)
+    const Q = `Portal-Test/Music/Artists/${folder}/${folder} - Other.mp3`
+    await ownerSql()`UPDATE ingest_runs SET target_path = ${Q}, upload_attempted_at = now() WHERE item_id = ${third}`
+    await control('/__mock/az/seed', { files: [{ path: Q, title: 'Staff SFTP', artist: 'Someone', uploaded_at: Math.floor(Date.now() / 1000) + 5 }] })
+    const staff = (await azFile(Q))!
+    expect(await step(ctx, third)).toBeNull()
+    expect((await item(third)).target_path).toBe(Q.replace(/\.mp3$/, ' (2).mp3'))
+    expect((await azFile(Q))!).toMatchObject({ id: staff.id, title: 'Staff SFTP' }) // untouched
+    ctx.cleanup()
+  })
+
+  it('VER-1: a manager playlist change on a still-verifying song supersedes the ingest verify (no repair, no revert); it goes live', async () => {
+    await ownerSql()`INSERT INTO settings (key, value) VALUES ('station_playlist_ids', '[2,3,5]'::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    const ctx = makeCtx(slot(34))
+    const { id, path } = await ingestToVerifying(ctx)
+    const mediaId = (await item(id)).media_id as number
+    expect((await azFile(path))!.playlists.map((p) => p.id)).toEqual([2])
+    await setPlaylistsJob(ctx as unknown as RequestsCtx, { mediaId, chosen: [] })
+    expect((await azFile(path))!.playlists).toEqual([])
+    const before = ((await control('/__mock/az/calls')) as unknown[]).length
+    ctx.clock.t = slot(34, 11, 31)
+    expect(await verify(ctx, id)).toBeNull()
+    expect(await item(id)).toMatchObject({ status: 'live', media_id: mediaId })
+    expect((await azFile(path))!.playlists).toEqual([]) // the manager's change stands
+    const writes = ((await control('/__mock/az/calls')) as { method: string }[]).slice(before).filter((c) => c.method !== 'GET')
+    expect(writes).toHaveLength(0)
+    await ownerSql()`UPDATE jobs SET status = 'done' WHERE kind = 'reverify' AND payload->>'mediaId' = ${String(mediaId)} AND status = 'queued'`
+    ctx.cleanup()
+  })
+
+  it('F1: an ingest_verify wait that ages out fails the item (terminal state + ticket event), not just the job', async () => {
+    const ctx = makeCtx(slot(35))
+    const { id } = await ingestToVerifying(ctx)
+    const [j] = await ownerSql()`INSERT INTO jobs (kind, payload, status, attempts, created_at) VALUES ('ingest_verify', ${ownerSql().json({ itemId: id })}, 'running', 1, now() - interval '8 days') RETURNING id`
+    await runJob(ctx, { id: Number(j!.id), kind: 'ingest_verify', payload: { itemId: id }, attempts: 1, max_attempts: 8, age_s: 8 * 86_400 } as never)
+    expect((await ownerSql()`SELECT status FROM jobs WHERE id = ${j!.id}`)[0]!.status).toBe('dead')
+    expect(await item(id)).toMatchObject({ status: 'failed' })
+    expect((await run(id))!).toMatchObject({ stage: 'failed', last_error: 'wait_expired' })
+    expect((await ownerSql()`SELECT 1 FROM jobs WHERE dedupe_key = ${`ticket_item_event:item:${id}:failed`}`).length).toBe(1)
+    ctx.cleanup()
+  })
+
   it('artist gate: waits on a pending new-artist item, fails when it is denied or the artist is unknown', async () => {
     const ctx = makeCtx(slot(10))
     const owner = await mkUser()
@@ -605,6 +780,20 @@ describe.skipIf(!DBENV() || !MOCKS())('library sync, ticket posts, auto-close, s
     expect(ids).toContain(2)
     expect(ids).not.toContain(74)
     expect(ids).not.toContain(75)
+    // A playlist id never seen before (maybe a new Events playlist): counted as
+    // station 1, recorded as unconfirmed, alerted once (by this sync or the
+    // live worker's, whichever saw it first), never again.
+    const newId = 900_000 + (Number.parseInt(tag.slice(-5), 36) % 90_000)
+    await control('/__mock/az/seed', { files: [{ path: `Music/Artists/${lib}/${lib} - Three.mp3`, title: 'Three', artist: lib, playlists: [newId] }] })
+    await syncLibrary(ctx)
+    const setting = async (k: string) => (await ownerSql()`SELECT value FROM settings WHERE key = ${k}`)[0]!.value as number[]
+    expect(await setting('station_playlist_ids')).toContain(newId)
+    expect(await setting('unconfirmed_playlist_ids')).toContain(newId)
+    const alertsFor = () => ctx.alerts.filter((a) => a.title.includes(String(newId)))
+    expect(alertsFor().length).toBeLessThanOrEqual(1)
+    const seen = alertsFor().length
+    await syncLibrary(ctx)
+    expect(alertsFor()).toHaveLength(seen)
     const pages = ((await control('/__mock/az/calls')) as { method: string; path: string; query: Record<string, string> }[]).filter((c) => c.method === 'GET' && c.path === '/api/station/1/files')
     expect(pages.at(-1)!.query).toMatchObject({ per_page: '100' })
     ctx.cleanup()
