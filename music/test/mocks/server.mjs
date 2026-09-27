@@ -198,7 +198,9 @@ async function handleTickets(req, res, url) {
   const bodyBuf = req.method === 'GET' ? Buffer.alloc(0) : await readBody(req, 64 * 1024)
   const body = bodyBuf.length ? json(bodyBuf) : undefined
   state.tickets.calls.push({ method: req.method, path: p, headers: redact(req.headers), body })
-  const fail = state.tickets.failNext.shift()
+  // fail-next entries may name a path; they then apply only to that path.
+  const fi = state.tickets.failNext.findIndex((f) => !f.path || f.path === p)
+  const fail = fi >= 0 ? state.tickets.failNext.splice(fi, 1)[0] : undefined
   if (fail) return send(res, fail.status, { error: fail.error }, fail.retryAfter ? { 'retry-after': String(fail.retryAfter) } : {})
 
   const mm = /^\/api\/v1\/members\/(\d+)$/.exec(p)

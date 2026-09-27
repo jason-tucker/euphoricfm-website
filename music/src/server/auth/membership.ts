@@ -99,7 +99,9 @@ export async function ensureFreshMembership(deps: MembershipDeps, user: { id: st
   if (cached && cached.member && !cached.pending && now - cached.checkedAt.getTime() < TTL_MS[level]) {
     return { member: true, pending: false, roleIds: cached.roleIds, checkedAt: cached.checkedAt, source: cached.source }
   }
-  const key = user.id
+  // Keyed per level: an elevated caller must never await a member-level
+  // re-check (which may resolve through the 60-min stale fallback).
+  const key = `${user.id}:${level}`
   const existing = inflight.get(key)
   if (existing) return existing
   const p = recheck(deps, user, level, cached ?? null).finally(() => inflight.delete(key))

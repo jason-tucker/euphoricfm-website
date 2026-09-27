@@ -93,6 +93,45 @@ describe.skipIf(!E2E())('auth: Discord OAuth + guild membership gate', () => {
     expect((await req(jar, '/api/items/2147483000/decision', { json: { decision: 'deny', reason: 'x' } })).status).toBe(403)
   })
 
+  it('a demoted reviewer (cache 61 s old, still < 10 min) loses reviewer visibility on submit-level routes too', async () => {
+    const memberId = newId()
+    const member = await loginOk({ id: memberId })
+    const b = (await (await req(member, '/api/batches', { method: 'POST' })).json()) as { id: number }
+    expect((await req(member, `/api/batches/${b.id}/comments`, { json: { body: 'public note' } })).status).toBe(201)
+    const revId = newId()
+    const rev = await loginOk({ id: revId, roles: [REVIEWER_ROLE] })
+    expect((await req(rev, `/api/batches/${b.id}/comments`, { json: { body: 'staff only', visibility: 'staff' } })).status).toBe(201)
+    expect((await req(rev, `/api/batches/${b.id}`)).status).toBe(200)
+    await mockUser({ id: revId, roles: [] })
+    await ageMemberCache(revId, 61)
+    expect(((await (await me(rev)).json()) as { perms: string[] }).perms).toEqual(['request', 'submit'])
+    await ageMemberCache(revId, 61)
+    expect((await req(rev, `/api/batches/${b.id}`)).status).toBe(404)
+    await ageMemberCache(revId, 61)
+    expect((await req(rev, `/api/batches/${b.id}/comments`)).status).toBe(404)
+    await ageMemberCache(revId, 61)
+    expect((await req(rev, `/api/batches/${b.id}/comments`, { json: { body: 'x', visibility: 'staff' } })).status).toBe(404)
+    // the owner still sees only the public comment
+    const own = (await (await req(member, `/api/batches/${b.id}/comments`)).json()) as { visibility: string }[]
+    expect(own.map((c) => c.visibility)).toEqual(['all'])
+  })
+
+  it('with Discord AND the fallback down: review fails closed (503), and a submit-level Viewer carries no elevated perms', async () => {
+    const id = newId()
+    const jar = await loginOk({ id, roles: [REVIEWER_ROLE] })
+    await mockUser({ id, roles: [REVIEWER_ROLE], memberError: 503 })
+    await ageMemberCache(id, 61)
+    await control('/__mock/tickets/fail-next', { status: 503, error: 'bot_unavailable', path: `/api/v1/members/${id}` })
+    expect((await req(jar, '/api/items/2147483000/decision', { json: { decision: 'deny', reason: 'x' } })).status).toBe(503)
+    await control('/__mock/tickets/fail-next', { status: 503, error: 'bot_unavailable', path: `/api/v1/members/${id}` })
+    const m = await me(jar)
+    expect(m.status).toBe(200)
+    expect(((await m.json()) as { perms: string[] }).perms).toEqual(['request', 'submit'])
+    // once Discord answers again, review is back (fresh check)
+    await mockUser({ id, roles: [REVIEWER_ROLE], memberError: 0 })
+    expect(((await (await me(jar)).json()) as { perms: string[] }).perms).toContain('review')
+  })
+
   it('leaving the guild deletes every session of the user', async () => {
     const id = newId()
     await mockUser({ id })
