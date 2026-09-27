@@ -6,7 +6,7 @@ Modelled as internet-facing with untrusted, hostile users.
 
 | Component | Tech | Exposure | Trust |
 |---|---|---|---|
-| Static site | Astro 6 build, served by Caddy from `/srv/site` | Public `:80/:443` | content is build-time, trusted |
+| Static site | Astro 7 build, served by Caddy from `/srv/site` | Public `:80/:443` | content is build-time, trusted |
 | `efm-web` (Caddy) | Caddy 2, hardened container | Public ingress, terminates TLS | trusted edge |
 | `efm-requests` | Node 24, zero-dep `server/index.mjs` | **Internal only** (no host port), reached via Caddy `/requests/*` | semi-trusted (processes anonymous input) |
 | Pending store | `/data/pending.json`, ≤50 entries | container volume | data is attacker-influenced |

@@ -119,7 +119,7 @@ to a clean static look inside the iframe or when the Effects toggle is off.
 
 Locked — don't swap these without a deliberate decision:
 
-- **Astro 6** static (no SSR) · **Tailwind 4** (CSS-first `@theme` config, no
+- **Astro 7** static (no SSR) · **Tailwind 4** (CSS-first `@theme` config, no
   `tailwind.config.mjs`) · **TypeScript strict**
 - **Caddy 2** in front, serving the static build and terminating TLS
 - **Direct ingress** — Caddy binds the host's public 80/443 (no Cloudflare
