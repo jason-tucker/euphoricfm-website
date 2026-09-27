@@ -8,8 +8,9 @@
 //   1. magic bytes: RIFF....WAVE only (RF64 / BW64 / RIFX refused by name);
 //   2. a bounded RIFF chunk walk in JS, BEFORE any parser runs: every chunk
 //      inside the RIFF, the RIFF inside the file (truncated or lying sizes
-//      are refused), ≤64 chunks, exactly one 'fmt ' before exactly one
-//      'data', PCM / IEEE-float only (incl. WAVE_FORMAT_EXTENSIBLE carrying
+//      are refused), bytes after the RIFF all zero or chunks under the
+//      same rules (ffmpeg reads to EOF), ≤64 chunks, exactly one 'fmt '
+//      before exactly one 'data', PCM / IEEE-float only (incl. WAVE_FORMAT_EXTENSIBLE carrying
 //      them), sane channels / rate / block align, duration bounds; LIST/INFO
 //      sub-chunks must tile their LIST exactly, and an 'id3 ' chunk goes
 //      through the same ID3 pre-scan as an MP3's tag (≤5 MB, no compressed /
@@ -45,8 +46,9 @@ export const MAX_WAV_LIST_BYTES = 1024 * 1024
 export const MAX_WAV_INFO_ITEMS = 256
 export const MAX_WAV_OTHER_CHUNK_BYTES = 16 * 1024 * 1024
 export const MAX_WAV_FMT_BYTES = 1024
-// Bytes after the RIFF's declared end (a pad byte, a little junk some tools
-// append). Never parsed; more than this is refused.
+// Bytes after the RIFF's declared end (a pad byte, zero padding, a chunk some
+// tools append). ffmpeg parses them, so scanWav checks them (all zero, or
+// chunks under the in-RIFF rules); more than this is refused.
 export const MAX_WAV_TRAILING_BYTES = 64 * 1024
 
 export const OUT_BITRATE = 320_000
@@ -146,11 +148,25 @@ export function checkInfoList(body: Buffer): void {
 }
 
 // The bounded chunk walk. `readAt(offset, len)` reads the private copy.
+//
+// The walk goes to the END OF THE FILE, not just the RIFF: ffmpeg's wav
+// demuxer ignores the RIFF size and keeps reading chunks to EOF (music-
+// metadata stops at the RIFF end), so a chunk after the RIFF (an 'id3 ' tag
+// with a zlib bomb, a second id3 chunk, LIST, bext, …) would otherwise reach
+// ffmpeg's parsers unchecked. Bytes after the RIFF (≤ MAX_WAV_TRAILING_BYTES)
+// must therefore be either all zero (ffmpeg reads size-0 chunks of tag 0 and
+// ignores them) or chunks under exactly the rules inside the RIFF, sharing
+// the chunk count and the single-id3 rule; fewer than 8 bytes (a pad byte)
+// never form a chunk header and are not parsed by anyone.
 export async function scanWav(readAt: (offset: number, len: number) => Promise<Buffer>, fileSize: number): Promise<WavInfo> {
   if (fileSize < 44) throw new ProbeReject('wav_truncated')
   const head = await readAt(0, 12)
   if (sniffWav(head) !== 'wav') throw new ProbeReject('not_wav')
   const riffSize = head.readUInt32LE(4)
+  // 0 / 0xFFFFFFFF: a header written for a pipe or a live recording whose
+  // sizes were never filled in. Refused (as a truncated file would be) but
+  // with its own reason, so the member knows re-exporting fixes it.
+  if (riffSize === 0 || riffSize === 0xffffffff) throw new ProbeReject('wav_unfinalized')
   if (riffSize < 4) throw new ProbeReject('wav_bad_riff')
   const riffEnd = 8 + riffSize
   if (riffEnd > fileSize) throw new ProbeReject('wav_truncated')
@@ -161,16 +177,28 @@ export async function scanWav(readAt: (offset: number, len: number) => Promise<B
   let id3: { offset: number; size: number } | null = null
   const chunks: string[] = []
   let off = 12
-  while (off + 8 <= riffEnd) {
+  while (off + 8 <= fileSize) {
+    // A header not wholly inside the RIFF is in the trailing region (a
+    // header straddling riffEnd is read by ffmpeg exactly like one after it).
+    const trailing = off + 8 > riffEnd
+    if (trailing) {
+      const rest = await readAt(off, fileSize - off) // ≤ MAX_WAV_TRAILING_BYTES + 7
+      if (rest.length < fileSize - off) throw new ProbeReject('wav_truncated')
+      if (rest.every((b) => b === 0)) break
+    }
     const h = await readAt(off, 8)
     if (h.length < 8) throw new ProbeReject('wav_truncated')
     const id = chunkId(h)
-    if (id === null) throw new ProbeReject('wav_bad_chunk')
+    if (id === null) throw new ProbeReject(trailing ? 'wav_trailing_data' : 'wav_bad_chunk')
     const size = h.readUInt32LE(4)
     const body = off + 8
     const end = body + size
-    // A chunk may omit its pad byte only at the very end of the RIFF.
-    if (end > riffEnd) throw new ProbeReject('wav_truncated')
+    // A chunk may omit its pad byte only at the very end of the RIFF (or,
+    // after the RIFF, of the file).
+    if (end > (trailing ? fileSize : riffEnd)) {
+      if (id === 'data' && size === 0xffffffff) throw new ProbeReject('wav_unfinalized')
+      throw new ProbeReject(trailing ? 'wav_trailing_data' : 'wav_truncated')
+    }
     if (chunks.push(id) > MAX_WAV_CHUNKS) throw new ProbeReject('wav_too_many_chunks')
     if (id === 'fmt ') {
       if (fmt || data) throw new ProbeReject('wav_bad_fmt')

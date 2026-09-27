@@ -191,16 +191,37 @@ async function probeMp3(job: Job, copy: string, sha256: string, size: number): P
   }
 }
 
+// ffmpeg's ID3v2 reader (ff_id3v2_match) takes these 10 bytes for another tag.
+function looksLikeId3Header(b: Buffer): boolean {
+  return b.length >= 10 && b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33 && b[3] !== 0xff && b[4] !== 0xff && ((b[6]! | b[7]! | b[8]! | b[9]!) & 0x80) === 0
+}
+
 // The WAV's 'id3 ' chunk gets the MP3 tag's pre-scan before music-metadata.
+//
+// ffmpeg reads the chunk with its ID3v2 reader, which does not stop at the
+// first tag: it takes the next 10 bytes after each tag and parses another
+// tag whenever they look like an ID3 header (a header with an unsupported
+// version is skipped by its declared length and the loop goes on, so a
+// following chunk named "ID3x", or a pad byte 'I' in front of one named
+// "D3xx", could chain to an unscanned tag). So only ONE tag is allowed: the
+// rest of the chunk must be zero padding, and the bytes where ffmpeg looks
+// for a next tag (right after the tag, and after its v2.4 footer) must not
+// look like an ID3 header, wherever they are in the file.
 async function checkWavId3(read: (o: number, l: number) => Promise<Buffer>, info: WavInfo): Promise<void> {
   if (!info.id3) return
   const buf = await read(info.id3.offset, info.id3.size)
+  if (buf.length < info.id3.size) throw new ProbeReject('wav_truncated')
   const declared = id3v2TagSize(buf)
   if (declared === null) throw new ProbeReject('wav_bad_id3')
   if (declared === -1) throw new ProbeReject('bad_id3_header')
   if (declared > buf.length) throw new ProbeReject('wav_bad_id3')
   const v = scanId3(buf, declared)
   if (!v.ok) throw new ProbeReject(v.reason)
+  if (!buf.subarray(declared).every((b) => b === 0)) throw new ProbeReject('wav_bad_id3')
+  const body = declared - (buf[3] === 4 && buf[5]! & 0x10 ? 10 : 0) // without a v2.4 footer
+  for (const at of new Set([body, declared])) {
+    if (looksLikeId3Header(await read(info.id3.offset + at, 10))) throw new ProbeReject('wav_bad_id3')
+  }
 }
 
 async function probeWav(job: Job, copy: string, size: number): Promise<SpoolResult> {
@@ -272,9 +293,9 @@ async function probeWav(job: Job, copy: string, size: number): Promise<SpoolResu
 }
 
 // unlink never follows a symlink; the name is schema-checked (32 hex).
-async function releaseUpload(dirs: ProbeDirs, upload: string): Promise<boolean> {
+export async function releaseUpload(uploadsDir: string, upload: string): Promise<boolean> {
   try {
-    await unlink(join(dirs.uploads, upload))
+    await unlink(join(uploadsDir, upload))
     return true
   } catch (e) {
     return (e as NodeJS.ErrnoException).code === 'ENOENT'
@@ -299,7 +320,7 @@ export async function runProbe(req: ProbeRequest, dirs: ProbeDirs): Promise<Spoo
     return kind === 'wav' ? await probeWav(job, copy, size) : await probeMp3(job, copy, sha256, size)
   } catch (e) {
     if (job.publishedCover) await unlink(join(dirs.uploads, job.publishedCover)).catch(() => {})
-    const released = await releaseUpload(dirs, req.upload)
+    const released = await releaseUpload(dirs.uploads, req.upload)
     return { v: 1, id: req.id, type: 'probe', source: 'in-web', ok: false, error: e instanceof ProbeReject ? e.code : 'probe_failed', released }
   } finally {
     await rm(work, { recursive: true, force: true })

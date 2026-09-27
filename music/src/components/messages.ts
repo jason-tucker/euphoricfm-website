@@ -78,8 +78,10 @@ export const ERROR_TEXT: Record<string, string> = {
   content_length_required: 'The upload was malformed. Reload the page and try again.',
 
   // uploads (tus)
-  upload_too_large: 'That file is larger than 35 MB, the limit for MP3 files. (WAV files can be up to 250 MB.)',
-  wav_upload_too_large: 'That WAV file is larger than the 250 MB limit.',
+  // No numbers: the per-file caps are admin-lowerable. The submit flow shows
+  // the loaded limits through uploadErrorText.
+  upload_too_large: 'That file is larger than the upload limit for MP3 files. (WAV files may be larger.)',
+  wav_upload_too_large: 'That WAV file is larger than the WAV upload limit.',
   uploads_paused: 'Uploads are paused because the server is low on space. Try again later.',
   staging_full: 'Uploads are paused because the server is low on space. Try again later.',
   too_many_concurrent_uploads: 'You can upload 3 files at a time. The rest will start when these finish.',
@@ -115,7 +117,7 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   publish_mismatch: 'The file check failed. Upload the file again.',
   // WAV uploads (v0.3.0)
   not_wav: 'This is not a valid WAV file.',
-  wav_too_large: 'This WAV file is larger than the WAV upload limit (250 MB).',
+  wav_too_large: 'This WAV file is larger than the WAV upload limit.',
   wav_rf64_unsupported: 'RF64 / BW64 WAV files are not supported. Export a standard WAV or an MP3.',
   wav_unsupported: 'This kind of WAV file (big-endian RIFX) is not supported. Export a standard WAV or an MP3.',
   wav_codec_unsupported:
@@ -128,6 +130,8 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   wav_no_audio: 'The WAV file contains no audio.',
   wav_truncated: 'The WAV file is incomplete: its size does not match its header. Export or upload it again.',
   wav_trailing_data: 'The WAV file has unexpected data after its end. Export it again.',
+  wav_unfinalized:
+    "This WAV file's header was never finished (its sizes are unset, as in a file recorded live or written to a pipe). Open it in your audio editor and export it again as a normal WAV.",
   wav_bad_chunk: 'The WAV file is damaged (an invalid section header). Export it again.',
   wav_too_many_chunks: 'The WAV file has too many extra sections. Export it again without extra metadata.',
   wav_chunk_too_large: 'The WAV file contains an extra metadata section over 16 MB. Export it again without it.',
@@ -147,11 +151,21 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   bad_probe_result: 'The file check failed. Upload the file again.',
   wrong_result_source: 'The file check failed. Upload the file again.',
   probe_failed: 'The file check failed. Upload the file again.',
+  interrupted: 'The file check was interrupted by a server restart. Upload the file again.',
 }
 
 export function probeErrorText(code: string | null | undefined): string {
   if (!code) return 'The file was rejected.'
   return PROBE_ERROR_TEXT[code] ?? `The file was rejected (${code}).`
+}
+
+// tus refusals with the loaded per-file caps (bytes), which an admin may
+// have lowered below the defaults.
+export function uploadErrorText(code: string, status: number | undefined, limits: { mp3: number; wav: number }): string {
+  const mb = (n: number) => Math.round(n / 1024 / 1024)
+  if (code === 'upload_too_large') return `That file is larger than ${mb(limits.mp3)} MB, the limit for MP3 files. (WAV files can be up to ${mb(limits.wav)} MB.)`
+  if (code === 'wav_upload_too_large') return `That WAV file is larger than the ${mb(limits.wav)} MB limit for WAV files.`
+  return errorText(code, status)
 }
 
 export function errorText(code: string, status?: number): string {

@@ -38,6 +38,9 @@ function wavFixtures() {
   w('alaw.wav', [...tone(35, 44100), '-ac', '1', '-c:a', 'pcm_alaw'])
   w('short.wav', [...tone(10, 44100), '-ac', '2', '-c:a', 'pcm_s16le'])
   ff([...tone(35, 44100), '-ac', '2', '-c:a', 'pcm_s16le', '-rf64', 'always', '-f', 'wav', join(DIR, 'rf64.wav')])
+  // written to a pipe: the wav muxer cannot seek back, so RIFF / data sizes stay unset
+  const piped = execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...tone(35, 8000), '-ac', '1', '-c:a', 'pcm_s16le', '-f', 'wav', 'pipe:1'], { maxBuffer: 16 * 1024 * 1024 })
+  writeFileSync(join(DIR, 'piped.wav'), piped)
   // > 35 MB: 4 min 10 s of 16-bit 44.1 kHz stereo (~44 MB), with INFO tags
   w('big-44mb.wav', ['-f', 'lavfi', '-i', 'anoisesrc=color=pink:amplitude=0.2:duration=250:sample_rate=44100', ...meta, '-ac', '2', '-c:a', 'pcm_s16le'])
   // an MP3 over 35 MB: a real MP3 followed by padding (the magic check passes)

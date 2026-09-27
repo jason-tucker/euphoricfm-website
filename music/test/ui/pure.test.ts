@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { convertedLabel, playlistLabel, songName } from '@/components/format'
-import { errorText, PROBE_ERROR_TEXT, probeErrorText } from '@/components/messages'
+import { errorText, PROBE_ERROR_TEXT, probeErrorText, uploadErrorText } from '@/components/messages'
 import { ACCEPT, changedFields, declaredType, fileKind, precheck } from '@/components/submit/types'
 import { libraryArtUrl } from '@/server/ui/art'
 import { escapeLike, folderOf, libraryRoot, onLibrarySurface } from '@/server/ui/library'
@@ -73,13 +73,20 @@ describe('advisory client pre-checks', () => {
       'wav_bad_list', 'wav_bad_id3', 'wav_channels', 'wav_sample_rate', 'wav_header_mismatch', 'convert_timeout', 'convert_failed',
       'convert_invalid', 'converted_too_large', 'not_wav', 'wav_trailing_data', 'wav_chunk_too_large', 'wav_too_many_chunks',
       'wav_bad_fmt', 'wav_bad_data', 'wav_no_audio', 'wav_bad_riff', 'wav_bad_chunk', 'wav_not_single_stream', 'wav_unsupported',
+      'wav_unfinalized', 'interrupted',
     ]) {
       expect(PROBE_ERROR_TEXT[code], code).toBeTruthy()
     }
     expect(probeErrorText('wav_codec_unsupported')).toMatch(/ADPCM/)
     expect(probeErrorText('wav_too_long')).toMatch(/15 minutes/)
-    expect(errorText('wav_upload_too_large')).toMatch(/250 MB/)
-    expect(errorText('upload_too_large')).toMatch(/35 MB/)
+    expect(probeErrorText('wav_unfinalized')).toMatch(/export it again/)
+    // the caps are admin-lowerable: no hard-coded numbers, the loaded caps instead
+    for (const code of ['wav_upload_too_large', 'upload_too_large']) expect(errorText(code)).not.toMatch(/\d+ MB/)
+    expect(probeErrorText('wav_too_large')).not.toMatch(/\d+ MB/)
+    const MB = 1024 * 1024
+    expect(uploadErrorText('wav_upload_too_large', 413, { mp3: 35 * MB, wav: 100 * MB })).toMatch(/100 MB/)
+    expect(uploadErrorText('upload_too_large', 413, { mp3: 20 * MB, wav: 100 * MB })).toMatch(/20 MB, the limit for MP3 files.*100 MB/)
+    expect(uploadErrorText('staging_full', 503, { mp3: 1, wav: 1 })).toBe(errorText('staging_full'))
   })
 })
 

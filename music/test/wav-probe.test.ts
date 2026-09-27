@@ -4,7 +4,7 @@
 // WAV under the upload id; everything else is refused with a reason code,
 // and a refused upload's bytes are deleted (`released`).
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, truncateSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -13,12 +13,13 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { limitedArgv, NICE, TIMEOUT } from '@/probe/exec'
 import { runFinalize } from '@/probe/finalize'
 import { checkMp3Magic } from '@/probe/magic'
+import { clearStaleWork, recoverInterrupted } from '@/probe/main'
 import { runProbe } from '@/probe/probe'
 import { reader } from '@/probe/files'
 import { CONVERT_NICE, CONVERT_TIMEOUT_S, convertArgs, judgeWavFfprobe, MAX_WAV_DURATION_S, scanWav, sniffWav, targetRate, wavFfprobeArgs } from '@/probe/wav'
-import { MAX_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES, probeRequest, spoolResult } from '@/server/spool/protocol'
+import { MAX_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES, probeRequest, readSpoolResult, spoolResult } from '@/server/spool/protocol'
 import { fx, fxBuf } from './helpers/fixtures'
-import { apicV3, frameV3, tag, textV3, zlibBombFrame } from './helpers/id3'
+import { apicV3, frameV3, frameV4, tag, textV3, zlibBombFrame } from './helpers/id3'
 import { chunk, fmtBody, infoList, riff, simpleWav, sinePcm16 } from './helpers/wav'
 
 const MM = resolve('dist/probe/mm-child.mjs')
@@ -164,8 +165,11 @@ describe('WAV refusals (bounded, before any decoder where possible)', () => {
     ['BW64', () => Buffer.concat([Buffer.from('BW64'), fxBuf('s16-44k-stereo.wav').subarray(4)]), 'wav_rf64_unsupported'],
     ['RIFX (big-endian)', () => Buffer.concat([Buffer.from('RIFX'), fxBuf('s16-44k-stereo.wav').subarray(4)]), 'wav_unsupported'],
     ['truncated (half the file)', () => fxBuf('s16-44k-stereo.wav').subarray(0, 3_000_000), 'wav_truncated'],
-    ['RIFF size 0xFFFFFFF0 (streaming placeholder)', () => riff([fmt8k(), chunk('data', pcm())], 0xfffffff0), 'wav_truncated'],
-    ['data size 0xFFFFFFFF', () => riff([fmt8k(), chunk('data', pcm(), 0xffffffff)]), 'wav_truncated'],
+    ['RIFF size 0xFFFFFFF0', () => riff([fmt8k(), chunk('data', pcm())], 0xfffffff0), 'wav_truncated'],
+    ['RIFF size 0xFFFFFFFF (streaming placeholder)', () => riff([fmt8k(), chunk('data', pcm())], 0xffffffff), 'wav_unfinalized'],
+    ['RIFF size 0 (streaming placeholder)', () => riff([fmt8k(), chunk('data', pcm())], 0), 'wav_unfinalized'],
+    ['data size 0xFFFFFFFF (streaming placeholder)', () => riff([fmt8k(), chunk('data', pcm(), 0xffffffff)]), 'wav_unfinalized'],
+    ['a WAV ffmpeg wrote to a pipe (sizes never filled in)', () => fxBuf('piped.wav'), 'wav_unfinalized'],
     ['data size larger than the RIFF', () => riff([fmt8k(), chunk('data', pcm(), pcm().length + 4096)]), 'wav_truncated'],
     ['RIFF size far smaller than the file (100 KB of trailing data)', () => {
       const w = riff([fmt8k(), chunk('data', pcm())])
@@ -250,6 +254,144 @@ describe('WAV refusals (bounded, before any decoder where possible)', () => {
     const before = covers.length
     await probeBuf(simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', tag(4, [frameV3('APIC', apicV3('image/png', PNG())), zlibBombFrame(1024)]))] }))
     expect(readdirSync(dirs.uploads).filter((n) => n.startsWith('cover-')).length).toBe(before)
+  })
+})
+
+// Review findings (fix round 1). ffmpeg's wav demuxer reads chunks to EOF,
+// past the RIFF's declared end, and its ID3v2 reader keeps reading tags after
+// the first; every byte either parser reads must pass the pre-scan.
+describe('WAV: bytes after the RIFF and after the id3 tag are checked too', () => {
+  const base = () => simpleWav({ seconds: 31, rate: 8000, channels: 1 })
+  const bomb = () => tag(4, [frameV4('TIT2', textV3('TRAILTITLE')), zlibBombFrame(1024 * 1024)])
+  const benign = (t = 'benign') => tag(3, [frameV3('TIT2', textV3(t))])
+  // an 'ID3x' chunk: ffmpeg's ID3 reader takes its first 10 bytes ("ID3A",
+  // the chunk size, 2 body bytes) for a tag of an unsupported version and
+  // skips the syncsafe length it reads there (0 0 0 6 → 6 bytes), onto the bomb
+  const trampoline = () => chunk('ID3A', Buffer.concat([Buffer.from([0x00, 0x06]), Buffer.alloc(6), bomb()]))
+  // the tag must end on an even offset so no chunk pad byte sits between it
+  // and the next chunk
+  const evenTag = () => benign('benign1')
+
+  const refused: [string, () => Buffer, string][] = [
+    ["F1a: an 'id3 ' chunk with a zlib bomb after the RIFF end", () => Buffer.concat([base(), chunk('id3 ', bomb())]), 'id3_compressed_frame'],
+    ["F1b: an 'id3 ' chunk in the RIFF and an 'ID3 ' chunk after it", () => Buffer.concat([simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', benign())] }), chunk('ID3 ', benign('second'))]), 'wav_bad_id3'],
+    ['F1c: a LIST/INFO after the RIFF whose item overflows it', () => {
+      const item = Buffer.alloc(16)
+      item.write('INAM', 0, 'latin1')
+      item.writeUInt32LE(1024, 4)
+      return Buffer.concat([base(), chunk('LIST', Buffer.concat([Buffer.from('INFO'), item]))])
+    }, 'wav_bad_list'],
+    ['a second data chunk after the RIFF', () => Buffer.concat([base(), chunk('data', Buffer.alloc(64))]), 'wav_bad_data'],
+    ['bytes after the RIFF that are not a chunk', () => Buffer.concat([base(), Buffer.from('this is not a chunk header at all')]), 'wav_trailing_data'],
+    ['a chunk after the RIFF that runs past the end of the file', () => Buffer.concat([base(), chunk('bext', Buffer.alloc(16), 4096)]), 'wav_trailing_data'],
+    ['a chunk header straddling the RIFF end (the RIFF ends 4 bytes into it)', () => {
+      const w = Buffer.concat([base(), chunk('id3 ', bomb())])
+      w.writeUInt32LE(base().length - 8 + 4, 4)
+      return w
+    }, 'id3_compressed_frame'],
+    ['zero padding after the RIFF, then a chunk', () => Buffer.concat([base(), Buffer.alloc(8), chunk('id3 ', benign())]), 'wav_trailing_data'],
+    ["F2: a second ID3 tag (with a zlib bomb) inside the one 'id3 ' chunk", () => simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', Buffer.concat([benign(), bomb()]))] }), 'wav_bad_id3'],
+    ["non-zero bytes after the tag inside the 'id3 ' chunk", () => simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', Buffer.concat([benign(), Buffer.from('junk')]))] }), 'wav_bad_id3'],
+    ["an 'ID3x' chunk right after the tag (ffmpeg would read it as the next tag)", () => simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', evenTag()), trampoline()] }), 'wav_bad_id3'],
+    ['a v2.4 footer that is really the header of a second tag', () => {
+      const t = tag(4, [frameV4('TIT2', textV3('x'))])
+      t[5] = t[5]! | 0x10 // footer present
+      const footer = Buffer.from([0x49, 0x44, 0x33, 0x04, 0, 0, 0, 0, 0, 0])
+      return simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', Buffer.concat([t, footer]))] })
+    }, 'wav_bad_id3'],
+  ]
+  for (const [label, build, code] of refused) {
+    it(`${label} → ${code}`, async () => {
+      const { r, path } = await probeBuf(build())
+      expect(r).toMatchObject({ ok: false, type: 'probe', error: code, released: true })
+      expect(existsSync(path)).toBe(false)
+    })
+  }
+
+  const accepted: [string, () => Buffer][] = [
+    ['one pad byte after the RIFF', () => Buffer.concat([base(), Buffer.from([0x7a])])],
+    ['64 KiB of zero padding after the RIFF', () => Buffer.concat([base(), Buffer.alloc(64 * 1024)])],
+    ["a well-formed 'bext' chunk after the RIFF", () => Buffer.concat([base(), chunk('bext', Buffer.alloc(602))])],
+    ["an 'id3 ' chunk with zero padding after its tag", () => simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', Buffer.concat([benign('padded'), Buffer.alloc(100)]))] })],
+  ]
+  for (const [label, build] of accepted) {
+    it(`${label} is accepted`, async () => {
+      const { r } = await probeBuf(build())
+      expect(r).toMatchObject({ ok: true, inputFormat: 'wav', bitrate: 320000 })
+    })
+  }
+
+  it("the padded 'id3 ' tag still prefills", async () => {
+    const { r } = await probeBuf(simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', Buffer.concat([benign('padded'), Buffer.alloc(100)]))] }))
+    expect(r).toMatchObject({ ok: true, tags: { title: 'padded' } })
+  })
+
+  it('the trampoline chunk really does look like an ID3 header to ffmpeg (test self-check)', () => {
+    const c = trampoline()
+    expect(evenTag().length % 2).toBe(0)
+    expect(c.toString('latin1', 0, 3)).toBe('ID3') // ff_id3v2_match: magic,
+    expect(c[3] !== 0xff && c[4] !== 0xff).toBe(true) // version / flags ≠ 0xff,
+    expect([c[6], c[7], c[8], c[9]].every((b) => b! < 0x80)).toBe(true) // syncsafe size
+    expect(c.subarray(10 + 6, 10 + 6 + 3).toString('latin1')).toBe('ID3') // the skip lands on the bomb tag
+  })
+})
+
+// Review finding F3: a restart mid-job must not leak the job's private copy
+// (a WAV: up to 250 MB) in /staging/work, nor keep the rejected upload.
+describe('probe start-up after an interrupted job', () => {
+  it('removes every job dir left in the work dir, and nothing else (never through a symlink)', async () => {
+    const r = mkdtempSync(join(tmpdir(), 'stale-'))
+    const work = join(r, 'work')
+    mkdirSync(work)
+    const jobs = ['p', 'f', 'a'].map((k) => `${k}-${randomUUID()}-Ab3xYz`)
+    for (const j of jobs) {
+      mkdirSync(join(work, j))
+      writeFileSync(join(work, j, 'in.wav'), Buffer.alloc(1024))
+    }
+    const outside = join(r, 'outside')
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'precious'), 'x')
+    const link = `p-${randomUUID()}-L1nk00`
+    symlinkSync(outside, join(work, link))
+    writeFileSync(join(work, 'keep.txt'), 'x')
+    const other = `x-${randomUUID()}-Ab3xYz`
+    mkdirSync(join(work, other))
+    expect(await clearStaleWork(work)).toBe(4)
+    expect(readdirSync(work).sort()).toEqual(['keep.txt', other].sort())
+    expect(readFileSync(join(outside, 'precious'), 'utf8')).toBe('x')
+  })
+
+  it("an interrupted in-web probe is answered as a probe rejection and its upload released; an answered one and other types are left alone", async () => {
+    const r = mkdtempSync(join(tmpdir(), 'interrupt-'))
+    const spool = join(r, 'spool')
+    const uploads = join(r, 'uploads')
+    for (const d of [uploads, join(spool, 'claimed'), join(spool, 'out')]) mkdirSync(d, { recursive: true })
+    const up = () => {
+      const u = randomUUID().replace(/-/g, '')
+      writeFileSync(join(uploads, u), Buffer.alloc(4096))
+      return u
+    }
+    const claim = (inbox: string, req: { id: string } & Record<string, unknown>) => writeFileSync(join(spool, 'claimed', `${inbox}-${req.id}.json`), JSON.stringify(req))
+
+    const lost = { v: 1, id: randomUUID(), type: 'probe', upload: up(), expectedSize: 4096 }
+    claim('in-web', lost)
+    writeFileSync(join(uploads, `cover-${lost.id}.jpg`), 'jpg') // published just before the crash
+    // answered before the crash (the result was written, the claim not yet removed): its upload is in use
+    const answered = { v: 1, id: randomUUID(), type: 'probe', upload: up(), expectedSize: 4096 }
+    claim('in-web', answered)
+    writeFileSync(join(spool, 'out', `${answered.id}.json`), JSON.stringify({ v: 1, id: answered.id, source: 'in-web', type: 'probe', ok: false, error: 'not_mp3', released: false }))
+    const fin = { v: 1, id: randomUUID(), type: 'finalize', upload: up(), approvedSha256: '0'.repeat(64), tags: { title: 'a', artist: 'b', album: '', genre: '' }, cover: null }
+    claim('in-worker', fin)
+
+    await recoverInterrupted({ spool, uploads })
+    expect(await readSpoolResult(join(spool, 'out'), lost.id)).toMatchObject({ source: 'in-web', type: 'probe', ok: false, error: 'interrupted', released: true })
+    expect(existsSync(join(uploads, lost.upload))).toBe(false)
+    expect(existsSync(join(uploads, `cover-${lost.id}.jpg`))).toBe(false)
+    expect(await readSpoolResult(join(spool, 'out'), answered.id)).toMatchObject({ error: 'not_mp3' })
+    expect(existsSync(join(uploads, answered.upload))).toBe(true)
+    expect(await readSpoolResult(join(spool, 'out'), fin.id)).toMatchObject({ source: 'in-worker', ok: false, error: 'interrupted' })
+    expect(existsSync(join(uploads, fin.upload))).toBe(true)
+    expect(readdirSync(join(spool, 'claimed'))).toEqual([])
   })
 })
 

@@ -211,6 +211,12 @@ services:
     mem_limit: 256m
     memswap_limit: 256m # no swap on top of the limit (2 GB botvps)
     pids_limit: 128
+    # CPU weight under contention (cgroup v2 cpu.weight ~10 vs ~39 for a
+    # default container): a WAV conversion, and the copy / hash / publish of
+    # up to 250 MB around it, yield to the Discord bots on the 1-vCPU botvps.
+    # `nice -n 19` on ffmpeg only orders processes INSIDE this container's
+    # cgroup. No blkio / IO weight: it depends on the host's IO scheduler.
+    cpu_shares: 256
     # PINNED MOUNTS: only the staging subtrees the probe works on (not
     # /staging/fetch, which is P5's), plus /spool/probe; the inbox a request
     # arrives in decides which request types it may carry.

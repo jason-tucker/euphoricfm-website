@@ -10,11 +10,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as tus from 'tus-js-client'
 import type { UiItem } from '@/server/ui/queries'
 import { api, ApiError, messageFor } from '../api'
-import { errorText } from '../messages'
+import { errorText, uploadErrorText } from '../messages'
 import { Notice } from '../ui'
 import { FileCard } from './FileCard'
 import { SubmitPanel, type SummaryRow } from './SubmitPanel'
-import { ACCEPT, changedFields, declaredType, type Entry, type Fields, fieldsOf, precheck } from './types'
+import { ACCEPT, changedFields, declaredType, type Entry, type Fields, fieldsOf, type Limits, precheck } from './types'
 
 // The server allows 3 concurrent uploads per user; 2 leaves headroom for a
 // stale upload that has not expired yet.
@@ -38,7 +38,7 @@ function entryFromItem(it: UiItem): Entry {
   }
 }
 
-function tusErrorText(err: unknown): string {
+function tusErrorText(err: unknown, limits: Limits): string {
   const e = err as { originalResponse?: { getStatus(): number; getBody(): string } | null }
   const status = e.originalResponse?.getStatus() ?? 0
   if (!status) return errorText('network')
@@ -50,7 +50,7 @@ function tusErrorText(err: unknown): string {
   } catch {
     code = body.trim().split(/\s/)[0] ?? ''
   }
-  return code ? errorText(code, status) : errorText(`http_${status}`, status)
+  return code ? uploadErrorText(code, status, limits) : errorText(`http_${status}`, status)
 }
 
 export function SubmitFlow({
@@ -191,7 +191,7 @@ export function SubmitFlow({
         },
         onError: (err) => {
           active.current.delete(key)
-          if (mounted.current) update(key, { phase: 'error', error: tusErrorText(err) })
+          if (mounted.current) update(key, { phase: 'error', error: tusErrorText(err, { mp3: maxUploadBytes, wav: maxWavUploadBytes }) })
           pumpRef.current()
         },
         onSuccess: () => {
@@ -209,7 +209,7 @@ export function SubmitFlow({
       }
       up.start()
     },
-    [attach, chunkBytes, ensureBatch, update],
+    [attach, chunkBytes, ensureBatch, maxUploadBytes, maxWavUploadBytes, update],
   )
 
   const pump = useCallback(() => {

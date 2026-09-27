@@ -7,7 +7,7 @@
 // the wrong type is answered {ok:false, error:'type_not_allowed_in_inbox'}
 // and never executed. Every result records its source inbox.
 
-import { mkdir, readdir, rename, unlink } from 'node:fs/promises'
+import { lstat, mkdir, readdir, rename, rm, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { assertProbeEnvClean } from '../server/env'
 import {
@@ -23,7 +23,7 @@ import {
 import { findStraysAfterGrace, killAll, snapshotBaseline, type ProcInfo } from './containment'
 import { runArt, runArtRelease } from './art'
 import { runFinalize } from './finalize'
-import { runProbe } from './probe'
+import { releaseUpload, runProbe } from './probe'
 
 export const DIRS = {
   spool: '/spool/probe',
@@ -121,20 +121,75 @@ export async function processOne(inbox: Inbox, id: string, dirs = DIRS, strayChe
   return true
 }
 
-async function recoverInterrupted(dirs = DIRS) {
+// Requests claimed but never answered (the probe was restarted mid-job:
+// deploy, reboot, OOM of this process) are answered 'interrupted'. An
+// interrupted 'probe' from in-web is answered as a probe rejection whose
+// upload is released like any other (runProbe deletes a rejected upload's
+// bytes), so a WAV of up to 250 MB does not stay charged and on disk until
+// retention. Nothing is done for a request that already has a result: the
+// crash came after the answer, and that upload may be a converted MP3 in use.
+// The upload is deleted BEFORE the result is written, so a crash in between
+// only repeats this on the next start.
+export async function recoverInterrupted(dirs: Pick<typeof DIRS, 'spool' | 'uploads'> = DIRS) {
   const claimedDir = join(dirs.spool, 'claimed')
+  const outDir = join(dirs.spool, 'out')
   for (const name of await readdir(claimedDir)) {
+    const path = join(claimedDir, name)
     const m = /^(in-web|in-worker)-(.+)\.json$/.exec(name)
     if (m && UUID_RE.test(m[2]!)) {
-      await writeSpoolResultNoClobber(join(dirs.spool, 'out'), fail(m[2]!, m[1] as Inbox, 'unknown', 'interrupted')).catch(() => {})
+      const id = m[2]!
+      const inbox = m[1] as Inbox
+      const answered = await lstat(join(outDir, `${id}.json`)).then(
+        () => true,
+        () => false,
+      )
+      if (!answered) {
+        let result: SpoolResult = fail(id, inbox, 'unknown', 'interrupted')
+        const req = inbox === 'in-web' ? await readClaimedRequest(path) : null
+        if (req?.type === 'probe' && req.id === id) {
+          // runProbe publishes the cover last, just before its result
+          await unlink(join(dirs.uploads, `cover-${id}.jpg`)).catch(() => {})
+          const released = await releaseUpload(dirs.uploads, req.upload)
+          result = { v: 1, id, source: inbox, type: 'probe', ok: false, error: 'interrupted', released }
+        }
+        await writeSpoolResultNoClobber(outDir, result).catch(() => {})
+      }
     }
-    await unlink(join(claimedDir, name)).catch(() => {})
+    await unlink(path).catch(() => {})
   }
+}
+
+async function readClaimedRequest(path: string) {
+  try {
+    const text = await readSmallFileNoFollow(path)
+    return text === null ? null : spoolRequest.parse(JSON.parse(text))
+  } catch {
+    return null
+  }
+}
+
+// Per-job work dirs (runProbe p-, runFinalize f-, runArt a-) left behind by a
+// restart mid-job hold a private copy of the input (a WAV: up to 250 MB, plus
+// its MP3) on the persistent staging disk, outside the staging quota. Only
+// the probe writes /staging/work and no job runs at start-up, so every job
+// dir there is stale. rm removes a symlink itself, never its target.
+const WORK_DIR_RE = /^[pfa]-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[A-Za-z0-9]{6}$/
+
+export async function clearStaleWork(work = DIRS.work): Promise<number> {
+  let n = 0
+  for (const name of await readdir(work)) {
+    if (!WORK_DIR_RE.test(name)) continue
+    await rm(join(work, name), { recursive: true, force: true })
+    n++
+  }
+  return n
 }
 
 export async function main() {
   assertProbeEnvClean()
   for (const d of [join(DIRS.spool, 'claimed'), join(DIRS.spool, 'out'), DIRS.work, DIRS.final, DIRS.art]) await mkdir(d, { recursive: true, mode: 0o750 })
+  const stale = await clearStaleWork()
+  if (stale > 0) console.warn(`[probe] removed ${stale} job dir(s) left in ${DIRS.work} by an interrupted run`)
   await recoverInterrupted()
   // Start-up process table: tini (PID 1) and this process. Anything else
   // alive after a job is a stray (containment.ts).
