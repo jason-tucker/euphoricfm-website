@@ -1,0 +1,762 @@
+openapi: 3.0.0
+info:
+  title: 'AzuraCast (portal contract subset for tests)'
+  version: 0.21.0
+paths:
+  '/station/{station_id}/files':
+    get:
+      tags:
+        - 'Stations: Media'
+      summary: 'List all current uploaded files.'
+      operationId: getFiles
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Api_StationMedia'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '500':
+          $ref: '#/components/responses/GenericError'
+    post:
+      tags:
+        - 'Stations: Media'
+      summary: 'Upload a new file.'
+      operationId: addFile
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Api_UploadFile'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Api_StationMedia'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '500':
+          $ref: '#/components/responses/GenericError'
+  '/station/{station_id}/files/list':
+    get:
+      tags:
+        - 'Stations: Media'
+      summary: 'List files in the media directory by path.'
+      operationId: getStationFileList
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+        -
+          name: currentDirectory
+          in: query
+          required: true
+          schema:
+            type: string
+        -
+          name: searchPhrase
+          in: query
+          schema:
+            type: string
+            nullable: true
+        -
+          name: flushCache
+          in: query
+          schema:
+            type: boolean
+            default: false
+            nullable: true
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Api_FileList'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          $ref: '#/components/responses/RecordNotFound'
+        '500':
+          $ref: '#/components/responses/GenericError'
+  '/station/{station_id}/file/{id}':
+    get:
+      tags:
+        - 'Stations: Media'
+      summary: 'Retrieve details for a single file.'
+      operationId: getFile
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+        -
+          name: id
+          in: path
+          description: 'Media ID'
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Api_StationMedia'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          $ref: '#/components/responses/RecordNotFound'
+        '500':
+          $ref: '#/components/responses/GenericError'
+    put:
+      tags:
+        - 'Stations: Media'
+      summary: 'Update details of a single file.'
+      operationId: editFile
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+        -
+          name: id
+          in: path
+          description: 'Media ID'
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Api_StationMedia'
+      responses:
+        '200':
+          $ref: '#/components/responses/Success'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          $ref: '#/components/responses/RecordNotFound'
+        '500':
+          $ref: '#/components/responses/GenericError'
+    delete:
+      tags:
+        - 'Stations: Media'
+      summary: 'Delete a single file.'
+      operationId: deleteFile
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+        -
+          name: id
+          in: path
+          description: 'Media ID'
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          $ref: '#/components/responses/Success'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          $ref: '#/components/responses/RecordNotFound'
+        '500':
+          $ref: '#/components/responses/GenericError'
+  '/station/{station_id}/files/batch':
+    put:
+      tags:
+        - 'Stations: Media'
+      summary: 'Perform a batch action on a collection of files/directories.'
+      operationId: putStationFileBatchAction
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+      responses:
+        '200':
+          $ref: '#/components/responses/Success'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          $ref: '#/components/responses/RecordNotFound'
+        '500':
+          $ref: '#/components/responses/GenericError'
+  '/nowplaying/{station_id}':
+    get:
+      tags:
+        - 'Public: Now Playing'
+      description: "Returns a full summary of the specified station's current state."
+      operationId: getStationNowPlaying
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Api_NowPlaying'
+        '404':
+          $ref: '#/components/responses/RecordNotFound'
+      security: []
+components:
+  schemas:
+    Api_FileList:
+      type: object
+      allOf:
+        -
+          $ref: '#/components/schemas/HasLinks'
+        -
+          properties:
+            path:
+              type: string
+            path_short:
+              type: string
+            text:
+              type: string
+            type:
+              $ref: '#/components/schemas/FileTypes'
+            timestamp:
+              type: integer
+            size:
+              type: integer
+              nullable: true
+            media:
+              oneOf:
+                -
+                  $ref: '#/components/schemas/Api_StationMedia'
+              nullable: true
+            dir:
+              oneOf:
+                -
+                  $ref: '#/components/schemas/Api_FileListDir'
+              nullable: true
+          type: object
+    Api_FileListDir:
+      properties:
+        playlists:
+          type: array
+          items: {  }
+      type: object
+    Api_HasSongFields:
+      properties:
+        text:
+          description: 'The song title, usually "Artist - Title"'
+          type: string
+          example: 'Chet Porter - Aluko River'
+        artist:
+          description: 'The song artist.'
+          type: string
+          example: 'Chet Porter'
+          nullable: true
+        title:
+          description: 'The song title.'
+          type: string
+          example: 'Aluko River'
+          nullable: true
+        album:
+          description: 'The song album.'
+          type: string
+          example: 'Moving Castle'
+          nullable: true
+        genre:
+          description: 'The song genre.'
+          type: string
+          example: Rock
+          nullable: true
+        isrc:
+          description: 'The International Standard Recording Code (ISRC) of the file.'
+          type: string
+          example: US28E1600021
+          nullable: true
+        lyrics:
+          description: 'Lyrics to the song.'
+          type: string
+          example: ''
+          nullable: true
+      type: object
+    Api_NowPlaying:
+      required:
+        - station
+        - listeners
+        - live
+        - now_playing
+        - playing_next
+        - song_history
+        - is_online
+        - cache
+      properties:
+        station:
+          $ref: '#/components/schemas/Api_NowPlaying_Station'
+        listeners:
+          $ref: '#/components/schemas/Api_NowPlaying_Listeners'
+        live:
+          $ref: '#/components/schemas/Api_NowPlaying_Live'
+        now_playing:
+          oneOf:
+            -
+              $ref: '#/components/schemas/Api_NowPlaying_CurrentSong'
+          nullable: true
+        playing_next:
+          oneOf:
+            -
+              $ref: '#/components/schemas/Api_NowPlaying_StationQueue'
+          nullable: true
+        song_history:
+          type: array
+          items:
+            $ref: '#/components/schemas/Api_NowPlaying_SongHistory'
+        is_online:
+          description: 'Whether the stream is currently online.'
+          type: boolean
+          example: true
+        cache:
+          description: 'Debugging information about where the now playing data comes from.'
+          type: string
+          enum:
+            - hit
+            - database
+            - station
+          nullable: true
+      type: object
+    Api_NowPlaying_CurrentSong:
+      required:
+        - elapsed
+        - remaining
+      type: object
+      allOf:
+        -
+          $ref: '#/components/schemas/Api_NowPlaying_SongHistory'
+        -
+          properties:
+            elapsed:
+              description: "Elapsed time of the song's playback since it started."
+              type: integer
+              example: 25
+            remaining:
+              description: 'Remaining time in the song, in seconds.'
+              type: integer
+              example: 155
+          type: object
+    Api_NowPlaying_Listeners:
+      required:
+        - total
+        - unique
+        - current
+      properties:
+        total:
+          description: 'Total non-unique current listeners'
+          type: integer
+          example: 20
+        unique:
+          description: 'Total unique current listeners'
+          type: integer
+          example: 15
+        current:
+          description: 'Total non-unique current listeners (Legacy field, may be retired in the future.)'
+          type: integer
+          example: 20
+      type: object
+    Api_NowPlaying_Live:
+      required:
+        - is_live
+        - streamer_name
+        - broadcast_start
+        - art
+      properties:
+        is_live:
+          description: 'Whether the stream is known to currently have a live DJ.'
+          type: boolean
+          example: false
+        streamer_name:
+          description: 'The current active streamer/DJ, if one is available.'
+          type: string
+          example: 'DJ Jazzy Jeff'
+        broadcast_start:
+          description: 'The start timestamp of the current broadcast, if one is available.'
+          type: integer
+          example: '1591548318'
+          nullable: true
+        art:
+          description: 'URL to the streamer artwork (if available).'
+          type: string
+          example: 'https://picsum.photos/1200/1200'
+          nullable: true
+      type: object
+    Api_NowPlaying_SongHistory:
+      required:
+        - sh_id
+        - played_at
+        - duration
+        - playlist
+        - streamer
+        - is_request
+        - song
+      properties:
+        sh_id:
+          description: 'Song history unique identifier'
+          type: integer
+        played_at:
+          description: 'UNIX timestamp when playback started.'
+          type: integer
+          example: 1609480800
+        duration:
+          description: 'Duration of the song in seconds'
+          type: integer
+          example: 180
+        playlist:
+          description: 'Indicates the playlist that the song was played from, if available, or empty string if not.'
+          type: string
+          example: 'Top 100'
+          nullable: true
+        streamer:
+          description: 'Indicates the current streamer that was connected, if available, or empty string if not.'
+          type: string
+          example: 'Test DJ'
+          nullable: true
+        is_request:
+          description: 'Indicates whether the song is a listener request.'
+          type: boolean
+        song:
+          $ref: '#/components/schemas/Api_Song'
+      type: object
+    Api_NowPlaying_Station:
+      required:
+        - id
+        - name
+        - shortcode
+        - description
+        - frontend
+        - backend
+        - timezone
+        - listen_url
+        - url
+        - public_player_url
+        - playlist_pls_url
+        - playlist_m3u_url
+        - is_public
+        - mounts
+        - remotes
+        - hls_enabled
+        - hls_is_default
+        - hls_url
+        - hls_listeners
+      properties:
+        id:
+          description: 'Station ID'
+          type: integer
+          example: 1
+        name:
+          description: 'Station name'
+          type: string
+          example: 'AzuraTest Radio'
+        shortcode:
+          description: 'Station "short code", used for URL and folder paths'
+          type: string
+          example: azuratest_radio
+        description:
+          description: 'Station description'
+          type: string
+          example: 'An AzuraCast station!'
+        frontend:
+          description: 'Which broadcasting software (frontend) the station uses'
+          type: string
+          example: shoutcast2
+        backend:
+          description: 'Which AutoDJ software (backend) the station uses'
+          type: string
+          example: liquidsoap
+        timezone:
+          description: "The station's IANA time zone"
+          type: string
+          example: America/Chicago
+        listen_url:
+          description: 'The full URL to listen to the default mount of the station'
+          type: string
+          example: 'http://localhost:8000/radio.mp3'
+        url:
+          description: 'The public URL of the station.'
+          type: string
+          example: 'https://example.com/'
+          nullable: true
+        public_player_url:
+          description: 'The public player URL for the station.'
+          type: string
+          example: 'https://example.com/public/example_station'
+        playlist_pls_url:
+          description: 'The playlist download URL in PLS format.'
+          type: string
+          example: 'https://example.com/public/example_station/playlist.pls'
+        playlist_m3u_url:
+          description: 'The playlist download URL in M3U format.'
+          type: string
+          example: 'https://example.com/public/example_station/playlist.m3u'
+        is_public:
+          description: 'If the station is public (i.e. should be shown in listings of all stations)'
+          type: boolean
+          example: true
+        mounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Api_NowPlaying_StationMount'
+        remotes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Api_NowPlaying_StationRemote'
+        hls_enabled:
+          description: 'If the station has HLS streaming enabled.'
+          type: boolean
+          example: true
+        hls_is_default:
+          description: 'If the HLS stream should be the default one for the station.'
+          type: boolean
+          example: true
+        hls_url:
+          description: 'The full URL to listen to the HLS stream for the station.'
+          type: string
+          example: 'https://example.com/hls/azuratest_radio/live.m3u8'
+          nullable: true
+        hls_listeners:
+          description: 'HLS Listeners'
+          type: integer
+          example: 1
+      type: object
+    Api_NowPlaying_StationMount:
+      required:
+        - path
+        - is_default
+      type: object
+      allOf:
+        -
+          $ref: '#/components/schemas/Api_NowPlaying_StationRemote'
+        -
+          properties:
+            path:
+              description: 'The relative path that corresponds to this mount point'
+              type: string
+              example: /radio.mp3
+            is_default:
+              description: 'If the mount is the default mount for the parent station'
+              type: boolean
+              example: true
+          type: object
+    Api_NowPlaying_StationQueue:
+      required:
+        - cued_at
+        - played_at
+        - duration
+        - playlist
+        - is_request
+        - song
+      properties:
+        cued_at:
+          description: 'UNIX timestamp when the AutoDJ is expected to queue the song for playback.'
+          type: integer
+          example: 1609480800
+        played_at:
+          description: 'UNIX timestamp when playback is expected to start.'
+          type: integer
+          example: 1609480800
+          nullable: true
+        duration:
+          description: 'Duration of the song in seconds'
+          type: number
+          format: float
+          example: 180
+        playlist:
+          description: 'Indicates the playlist that the song was played from, if available, or empty string if not.'
+          type: string
+          example: 'Top 100'
+          nullable: true
+        is_request:
+          description: 'Indicates whether the song is a listener request.'
+          type: boolean
+        song:
+          $ref: '#/components/schemas/Api_Song'
+      type: object
+    Api_NowPlaying_StationRemote:
+      required:
+        - id
+        - name
+        - url
+        - bitrate
+        - format
+        - listeners
+      properties:
+        id:
+          description: 'Mount/Remote ID number.'
+          type: integer
+          example: 1
+        name:
+          description: 'Mount point name/URL'
+          type: string
+          example: /radio.mp3
+        url:
+          description: 'Full listening URL specific to this mount'
+          type: string
+          example: 'http://localhost:8000/radio.mp3'
+        bitrate:
+          description: 'Bitrate (kbps) of the broadcasted audio (if known)'
+          type: integer
+          example: 128
+          nullable: true
+        format:
+          description: 'Audio encoding format of broadcasted audio (if known)'
+          type: string
+          example: mp3
+          nullable: true
+        listeners:
+          $ref: '#/components/schemas/Api_NowPlaying_Listeners'
+      type: object
+    Api_Song:
+      type: object
+      allOf:
+        -
+          $ref: '#/components/schemas/Api_HasSongFields'
+        -
+          properties:
+            id:
+              description: "The song's 32-character unique identifier hash"
+              type: string
+              example: 9f33bbc912c19603e51be8e0987d076b
+            art:
+              description: 'URL to the album artwork (if available).'
+              type: string
+              example: 'https://picsum.photos/1200/1200'
+            custom_fields:
+              type: array
+              items:
+                type: string
+                example: custom_field_value
+          type: object
+    Api_StationMedia:
+      type: object
+      allOf:
+        -
+          $ref: '#/components/schemas/Api_HasSongFields'
+        -
+          $ref: '#/components/schemas/HasLinks'
+        -
+          properties:
+            id:
+              description: "The media's identifier."
+              type: integer
+              example: 1
+            unique_id:
+              description: 'A unique identifier associated with this record.'
+              type: string
+              example: 69b536afc7ebbf16457b8645
+            song_id:
+              description: "The media file's 32-character unique song identifier hash"
+              type: string
+              example: 9f33bbc912c19603e51be8e0987d076b
+            art:
+              description: 'URL to the album art.'
+              type: string
+              example: 'https://picsum.photos/1200/1200'
+            path:
+              description: 'The relative path of the media file.'
+              type: string
+              example: test.mp3
+            mtime:
+              description: 'The UNIX timestamp when the database was last modified.'
+              type: integer
+              example: 1609480800
+            uploaded_at:
+              description: 'The UNIX timestamp when the item was first imported into the database.'
+              type: integer
+              example: 1609480800
+            art_updated_at:
+              description: 'The latest time (UNIX timestamp) when album art was updated.'
+              type: integer
+              example: 1609480800
+            length:
+              description: 'The song duration in seconds.'
+              type: number
+              format: float
+              example: 240
+            length_text:
+              description: 'The formatted song duration (in mm:ss format)'
+              type: string
+              example: '4:00'
+            custom_fields:
+              $ref: '#/components/schemas/HashMap'
+            extra_metadata:
+              $ref: '#/components/schemas/HashMap'
+            playlists:
+              type: array
+              items:
+                oneOf:
+                  - { $ref: '#/components/schemas/Api_StationMediaPlaylist' }
+                  - { type: integer, writeOnly: true }
+          type: object
+    Api_StationMediaPlaylist:
+      properties:
+        id:
+          description: 'The playlist identifier.'
+          type: integer
+          example: 1
+        name:
+          type: string
+          readOnly: true
+        short_name:
+          type: string
+          readOnly: true
+        count:
+          type: integer
+          readOnly: true
+      type: object
+    Api_UploadFile:
+      required:
+        - path
+        - file
+      properties:
+        path:
+          description: 'The destination path of the uploaded file.'
+          type: string
+          example: relative/path/to/file.mp3
+        file:
+          description: 'The base64-encoded contents of the file to upload.'
+          type: string
+          example: ''
+      type: object
+    FileTypes:
+      type: string
+      enum:
+        - directory
+        - media
+        - cover_art
+        - unprocessable_file
+        - other
+      x-enumNames:
+        - Directory
+        - Media
+        - CoverArt
+        - UnprocessableFile
+        - Other
+    HasLinks:
+      properties:
+        links:
+          type: object
+          readOnly: true
+          additionalProperties:
+            type: string
+      type: object
+    HashMap:
+      description: 'A hash-map array represented as an object.'
+      type: object

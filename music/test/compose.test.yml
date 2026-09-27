@@ -1,0 +1,121 @@
+# Test harness overlay:  docker compose -f compose.yml -f test/compose.test.yml
+# (driven by test/run.sh). Builds every image locally, swaps each env_file for
+# test constants, points Discord / tickets / AzuraCast at test/mocks, and
+# replaces the two external networks with throwaway ones. The PINNED MOUNTS,
+# network_mode, memory limits and hardening come from compose.yml unchanged,
+# so the mount tests exercise the real definitions.
+#
+# Every value below is a TEST CONSTANT. No production credential is used.
+
+x-web-env: &web-env
+  DATABASE_URL: postgres://music_app:test-only-app-password-000000@music-db:5432/music
+  PORTAL_ORIGIN: https://music.euphoric.fm
+  AUTH_URL: https://music.euphoric.fm
+  AUTH_SECRET: test-only-auth-secret-not-real-000000000000
+  AUTH_DISCORD_ID: test-client-id
+  AUTH_DISCORD_SECRET: test-client-secret
+  APP_ENC_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  DISCORD_GUILD_ID: "915830850694815765"
+  PORTAL_OWNER_IDS: "117501528641634310"
+  DISCORD_API_BASE: http://mocks:4101/api/v10
+  DISCORD_AUTHORIZE_URL: http://mocks:4101/oauth2/authorize
+  DISCORD_TOKEN_URL: http://mocks:4101/api/oauth2/token
+  TICKETS_API_BASE: http://mocks:4102
+  TICKETS_GUILD_READ_KEY: test-tickets-web-key
+  TICKETS_WEBHOOK_SECRET: test-only-webhook-secret-not-real-0000000
+  ALLOW_TEST_ENDPOINTS: "1"
+  HOSTNAME: 0.0.0.0
+  NODE_OPTIONS: --max-old-space-size=160
+
+x-worker-env: &worker-env
+  DATABASE_URL: postgres://music_app:test-only-app-password-000000@music-db:5432/music
+  MUSIC_PROFILE: prod
+  STATION_ID: "1"
+  PORTAL_TEST_PREFIX: Portal-Test/
+  AZURACAST_BASE_URL: http://mocks:4103
+  AZURACAST_API_KEY: test-azuracast-key-0000
+  AZURACAST_CANARY_STATION_ID: "7"
+  PORTAL_ORIGIN: https://music.euphoric.fm
+  TICKETS_API_BASE: http://mocks:4102
+  TICKETS_WRITE_KEY: test-tickets-write-key
+  ALLOW_TEST_ENDPOINTS: "1"
+  NODE_OPTIONS: --max-old-space-size=96
+
+services:
+  music-init:
+    build: { context: ., target: worker }
+
+  music-db:
+    env_file: !reset []
+    environment:
+      POSTGRES_USER: music_owner
+      POSTGRES_PASSWORD: test-only-owner-password-00000
+      POSTGRES_DB: music
+
+  music-migrate:
+    build: { context: ., target: worker }
+    env_file: !reset []
+    environment:
+      DATABASE_OWNER_URL: postgres://music_owner:test-only-owner-password-00000@music-db:5432/music
+      MUSIC_APP_DB_PASSWORD: test-only-app-password-000000
+      SEED_REVIEW_ROLE_IDS: "1144462744456794153,917525862696489001,1145243342620327947"
+
+  music-web:
+    build: { context: ., target: web }
+    env_file: !reset []
+    environment: *web-env
+    depends_on:
+      mocks:
+        condition: service_started
+
+  music-worker:
+    build: { context: ., target: worker }
+    env_file: !reset []
+    environment: *worker-env
+    depends_on:
+      mocks:
+        condition: service_started
+
+  music-probe:
+    build: { context: ., target: probe }
+
+  mocks:
+    image: efm-music-test/test:local
+    build: { context: ., target: test }
+    command: ["node", "test/mocks/server.mjs"]
+    read_only: true
+    networks:
+      - efm-music-hooks
+      - efm-public-net
+      - worker-egress
+
+  tests:
+    image: efm-music-test/test:local
+    build: { context: ., target: test }
+    profiles: ["tests"]
+    environment:
+      <<: *web-env
+      REQUIRE_ALL: "1"
+      E2E_WEB_URL: http://music-web:3000
+      MOCKS_CONTROL: http://mocks:4100
+      MOCKS_DISCORD: http://mocks:4101
+      MOCKS_TICKETS: http://mocks:4102
+      MOCKS_AZURACAST: http://mocks:4103
+      TEST_OWNER_DATABASE_URL: postgres://music_owner:test-only-owner-password-00000@music-db:5432/music
+      TEST_APP_DATABASE_URL: postgres://music_app:test-only-app-password-000000@music-db:5432/music
+      TEST_DATA_DIR: /data
+      TICKETS_WRITE_KEY: test-tickets-write-key
+      AZURACAST_API_KEY: test-azuracast-key-0000
+    volumes:
+      - ${MUSIC_DATA_DIR:-./data}:/data
+    networks:
+      - music-int
+      - efm-music-hooks
+      - efm-public-net
+      - worker-egress
+
+networks:
+  efm-public-net: !override
+    name: efm-music-test-public
+  efm-music-hooks: !override
+    name: efm-music-test-hooks

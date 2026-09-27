@@ -1,0 +1,23 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/* Same Tailwind v4 CSS-first theme as the site (src/styles/global.css). */
+@theme {
+  --color-ink: rgb(var(--efm-ink-rgb));
+  --color-cream: rgb(var(--efm-cream-rgb));
+  --color-midnight: rgb(var(--efm-midnight-rgb));
+  --color-ruby: rgb(var(--efm-ruby-rgb));
+  --color-sunburst: rgb(var(--efm-sunburst-rgb));
+  --color-gold: rgb(var(--efm-gold-rgb));
+  --font-body: "Inter", system-ui, sans-serif;
+}
+
+@utility max-w-frame {
+  max-width: 64rem;
+}
+
+html, body {
+  background: var(--efm-surface);
+  color: var(--efm-text);
+  font-family: var(--font-body);
+}

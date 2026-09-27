@@ -1,0 +1,212 @@
+# EFM Music Portal — compose project `efm-music` (plan §3, P2 amendment).
+#
+# Deploy (botvps, as botuser, from this directory):
+#   set MUSIC_TAG=<git short sha> in ./.env, then
+#   docker compose -p efm-music up -d
+# Roll back: set the previous MUSIC_TAG and `up -d` again. Watchtower is OFF
+# for every service here, so each deploy is deliberate.
+#
+# Networks:
+#   music-int        internal (no egress): web, worker, db, migrate
+#   efm-music-hooks  EXTERNAL, web only: tickets-web → /api/hooks/tickets and
+#                    web → tickets-web guild:read; also web's egress to
+#                    discord.com for OAuth. Created by the main session at
+#                    P1-net/Deploy-1: docker network create --subnet 172.31.250.0/24 efm-music-hooks
+#   efm-public-net   EXTERNAL (existing), worker only: → tickets-web:3000/api/v1/*
+#   worker-egress    worker only: egress to euphoric.fm (AzuraCast), Kuma, Discord alerts
+#   probe            network_mode none
+#
+# DOCKER-USER egress rules (NOT applied by this file; P0b/Deploy-1 host work,
+# documented in README.md): drop RFC1918 / 169.254.0.0/16 / 100.64.0.0/10
+# from worker-egress except the tickets path, and from fetch-egress (P5).
+#
+# Secrets: one env_file per service, mode 600, owned by botuser; templates in
+# ./env/*.env.example. The probe gets no env_file at all.
+#
+# Memory (2 GB botvps, plan changelog "P2 execution amendment"): hard
+# mem_limit + Node heap caps; Postgres tuned small.
+
+name: efm-music
+
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  labels:
+    com.centurylinklabs.watchtower.enable: "false"
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # One-shot: create the spool/staging tree and chown it to uid 1000.
+  music-init:
+    image: ghcr.io/jason-tucker/euphoricfm-website-music:worker-${MUSIC_TAG:?set MUSIC_TAG in .env}
+    user: "0:0"
+    network_mode: none
+    entrypoint: ["/bin/sh", "/app/init-dirs.sh"]
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    volumes:
+      - ${MUSIC_DATA_DIR:-./data}:/data
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+    restart: "no"
+
+  music-db:
+    <<: *hardening
+    image: postgres:16-alpine
+    env_file: ./env/db.env
+    command:
+      - postgres
+      - -c
+      - shared_buffers=16MB
+      - -c
+      - max_connections=20
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=16MB
+      - -c
+      - effective_cache_size=48MB
+      - -c
+      - wal_buffers=1MB
+      - -c
+      - max_wal_size=256MB
+      - -c
+      - autovacuum_max_workers=1
+    # The postgres entrypoint chowns PGDATA and drops to the postgres user.
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+    tmpfs:
+      - /tmp:size=16m
+      - /var/run/postgresql:size=1m
+    shm_size: 32m
+    mem_limit: 96m
+    volumes:
+      - music-db-data:/var/lib/postgresql/data
+    networks:
+      - music-int
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: SQL migrations as the DB owner, least-privilege music_app role,
+  # default settings, one-time reviewer role seed.
+  music-migrate:
+    <<: *hardening
+    image: ghcr.io/jason-tucker/euphoricfm-website-music:worker-${MUSIC_TAG:?set MUSIC_TAG in .env}
+    command: ["node", "/app/migrate.mjs"]
+    env_file: ./env/migrate.env
+    restart: "no"
+    mem_limit: 128m
+    networks:
+      - music-int
+    depends_on:
+      music-db:
+        condition: service_healthy
+
+  music-web:
+    <<: *hardening
+    image: ghcr.io/jason-tucker/euphoricfm-website-music:web-${MUSIC_TAG:?set MUSIC_TAG in .env}
+    env_file: ./env/web.env
+    environment:
+      HOSTNAME: 0.0.0.0
+      NODE_OPTIONS: --max-old-space-size=160
+    ports:
+      - "127.0.0.1:6096:3000"
+    tmpfs:
+      - /tmp:size=16m
+      - /app/.next/cache:size=16m,uid=1000,gid=1000
+    mem_limit: 256m
+    # PINNED MOUNTS (plan §3): web writes only the tus dir and in-web.
+    volumes:
+      - ${MUSIC_DATA_DIR:-./data}/staging/uploads:/staging/uploads:rw
+      - ${MUSIC_DATA_DIR:-./data}/spool/probe/in-web:/spool/probe/in-web:rw
+      - ${MUSIC_DATA_DIR:-./data}/spool/probe/out:/spool/probe/out:ro
+    networks:
+      - music-int
+      - efm-music-hooks
+    depends_on:
+      music-init:
+        condition: service_completed_successfully
+      music-migrate:
+        condition: service_completed_successfully
+
+  music-worker:
+    <<: *hardening
+    image: ghcr.io/jason-tucker/euphoricfm-website-music:worker-${MUSIC_TAG:?set MUSIC_TAG in .env}
+    env_file: ./env/worker.env
+    environment:
+      NODE_OPTIONS: --max-old-space-size=96
+    tmpfs:
+      - /tmp:size=8m
+    mem_limit: 160m
+    # PINNED MOUNTS: final is read-only; the worker submits finalize/cover/
+    # fetch-probe requests via in-worker and reads results from out (ro).
+    volumes:
+      - ${MUSIC_DATA_DIR:-./data}/staging/final:/staging/final:ro
+      - ${MUSIC_DATA_DIR:-./data}/spool/probe/in-worker:/spool/probe/in-worker:rw
+      - ${MUSIC_DATA_DIR:-./data}/spool/fetch/in:/spool/fetch/in:rw
+      - ${MUSIC_DATA_DIR:-./data}/spool/probe/out:/spool/probe/out:ro
+      - ${MUSIC_DATA_DIR:-./data}/spool/fetch/out:/spool/fetch/out:ro
+    networks:
+      - music-int
+      - efm-public-net
+      - worker-egress
+    depends_on:
+      music-init:
+        condition: service_completed_successfully
+      music-migrate:
+        condition: service_completed_successfully
+
+  music-probe:
+    <<: *hardening
+    image: ghcr.io/jason-tucker/euphoricfm-website-music:probe-${MUSIC_TAG:?set MUSIC_TAG in .env}
+    # No network, no env_file, minimal env.
+    network_mode: none
+    environment:
+      HOME: /tmp
+    tmpfs:
+      - /tmp:size=32m
+    mem_limit: 256m
+    pids_limit: 64
+    # PINNED MOUNTS: the probe owns /staging and /spool/probe; the inbox a
+    # request arrives in decides which request types it may carry.
+    volumes:
+      - ${MUSIC_DATA_DIR:-./data}/staging:/staging:rw
+      - ${MUSIC_DATA_DIR:-./data}/spool/probe:/spool/probe:rw
+    depends_on:
+      music-init:
+        condition: service_completed_successfully
+
+networks:
+  music-int:
+    internal: true
+  worker-egress: {}
+  efm-public-net:
+    external: true
+  efm-music-hooks:
+    external: true
+
+volumes:
+  music-db-data: {}

@@ -1,0 +1,429 @@
+// music-db schema (plan §3.1). Runtime applies the committed SQL migrations in
+// ./drizzle (generated from this file, plus the hand-written append-only
+// trigger migration). Web and worker connect as the non-owner `music_app`
+// role, so they cannot ALTER/DISABLE the audit_log trigger or TRUNCATE.
+
+import { sql } from 'drizzle-orm'
+import {
+  bigserial,
+  boolean,
+  check,
+  index,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  primaryKey,
+  serial,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from 'drizzle-orm/pg-core'
+
+const ts = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' })
+
+// ------------------------------------------------------- Auth.js tables ---
+// Column names follow @auth/drizzle-adapter's expectations. discord_id is our
+// addition: the provider's profile() returns it, createUser persists it.
+
+export const users = pgTable('user', {
+  id: text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  name: text('name'),
+  email: text('email'),
+  emailVerified: ts('emailVerified'),
+  image: text('image'),
+  discordId: text('discord_id').notNull().unique(),
+  createdAt: ts('created_at').notNull().defaultNow(),
+})
+
+// access_token / refresh_token hold AES-256-GCM envelopes (src/server/auth/tokens.ts).
+export const accounts = pgTable(
+  'account',
+  {
+    userId: text('userId')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    provider: text('provider').notNull(),
+    providerAccountId: text('providerAccountId').notNull(),
+    refresh_token: text('refresh_token'),
+    access_token: text('access_token'),
+    expires_at: integer('expires_at'),
+    token_type: text('token_type'),
+    scope: text('scope'),
+    id_token: text('id_token'),
+    session_state: text('session_state'),
+  },
+  (t) => [primaryKey({ columns: [t.provider, t.providerAccountId] })],
+)
+
+export const sessions = pgTable(
+  'session',
+  {
+    sessionToken: text('sessionToken').primaryKey(),
+    userId: text('userId')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expires: ts('expires').notNull(),
+  },
+  (t) => [index('session_user_idx').on(t.userId)],
+)
+
+export const verificationTokens = pgTable(
+  'verificationToken',
+  {
+    identifier: text('identifier').notNull(),
+    token: text('token').notNull(),
+    expires: ts('expires').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.identifier, t.token] })],
+)
+
+// ------------------------------------------------------------ membership ---
+
+export const memberCache = pgTable('member_cache', {
+  discordId: text('discord_id').primaryKey(),
+  member: boolean('member').notNull(),
+  pending: boolean('pending').notNull().default(false),
+  roleIds: text('role_ids').array().notNull().default(sql`'{}'::text[]`),
+  source: text('source').notNull(), // 'discord' | 'tickets'
+  checkedAt: ts('checked_at').notNull(),
+})
+
+export const permissionEnum = pgEnum('role_permission', ['review', 'manage'])
+
+export const roleBindings = pgTable(
+  'role_bindings',
+  {
+    id: serial('id').primaryKey(),
+    roleId: text('role_id').notNull(),
+    permission: permissionEnum('permission').notNull(),
+    note: text('note'),
+    createdBy: text('created_by'), // discord id, or 'seed'
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('role_bindings_role_perm').on(t.roleId, t.permission)],
+)
+
+// Runtime config. station_id is deliberately NOT here (worker env only).
+export const settings = pgTable('settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').notNull(),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
+  updatedBy: text('updated_by'),
+})
+
+// --------------------------------------------------------------- library ---
+
+export const artistStatusEnum = pgEnum('artist_status', ['active', 'pending', 'denied', 'archived'])
+
+export const artists = pgTable(
+  'artists',
+  {
+    id: serial('id').primaryKey(),
+    name: text('name').notNull(),
+    folder: text('folder').notNull(), // verbatim folder name under Music/Artists/
+    aliases: text('aliases').array().notNull().default(sql`'{}'::text[]`),
+    status: artistStatusEnum('status').notNull().default('pending'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('artists_folder_uq').on(t.folder)],
+)
+
+export const libraryCache = pgTable(
+  'library_cache',
+  {
+    mediaId: integer('media_id').primaryKey(),
+    uniqueId: text('unique_id').notNull(),
+    path: text('path').notNull(),
+    title: text('title'),
+    artist: text('artist'),
+    album: text('album'),
+    genre: text('genre'),
+    playlistIds: integer('playlist_ids').array().notNull().default(sql`'{}'::int[]`),
+    lengthS: integer('length_s'),
+    mtime: integer('mtime'),
+    refreshedAt: ts('refreshed_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('library_cache_path_uq').on(t.path)],
+)
+
+// ----------------------------------------------------------- submissions ---
+
+export const batchStatusEnum = pgEnum('batch_status', ['draft', 'submitted', 'completed', 'closed', 'withdrawn'])
+
+export const batches = pgTable(
+  'batches',
+  {
+    id: serial('id').primaryKey(),
+    ownerUserId: text('owner_user_id')
+      .notNull()
+      .references(() => users.id),
+    status: batchStatusEnum('status').notNull().default('draft'),
+    attestedAt: ts('attested_at'),
+    submittedAt: ts('submitted_at'),
+    ticketId: integer('ticket_id'),
+    ticketNumber: integer('ticket_number'),
+    ticketWebUrl: text('ticket_web_url'),
+    ticketChannelUrl: text('ticket_channel_url'),
+    ticketStatus: text('ticket_status'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [index('batches_owner_idx').on(t.ownerUserId), uniqueIndex('batches_ticket_uq').on(t.ticketId)],
+)
+
+export const itemKindEnum = pgEnum('item_kind', ['song', 'new_artist'])
+export const itemSourceEnum = pgEnum('item_source', ['upload', 'soundcloud'])
+export const itemStatusEnum = pgEnum('item_status', [
+  'probing',
+  'rejected', // probe refused the file
+  'draft',
+  'pending',
+  'approved',
+  'denied',
+  'withdrawn',
+  'applying',
+  'verifying',
+  'live',
+  'failed',
+])
+
+export const items = pgTable(
+  'items',
+  {
+    id: serial('id').primaryKey(),
+    batchId: integer('batch_id')
+      .notNull()
+      .references(() => batches.id),
+    // Denormalised owner so every ownership predicate is a single-row check.
+    ownerUserId: text('owner_user_id')
+      .notNull()
+      .references(() => users.id),
+    kind: itemKindEnum('kind').notNull().default('song'),
+    source: itemSourceEnum('source').notNull().default('upload'),
+    status: itemStatusEnum('status').notNull(),
+    uploadId: text('upload_id'), // tus id under /staging/uploads
+    probeRequestId: uuid('probe_request_id'),
+    probeSha256: text('probe_sha256'),
+    probeError: text('probe_error'),
+    approvedSha256: text('approved_sha256'),
+    finalSha256: text('final_sha256'),
+    coverFile: text('cover_file'), // cover-<uuid>.jpg under /staging/uploads, written by probe
+    coverSha256: text('cover_sha256'),
+    durationS: integer('duration_s'),
+    bitrate: integer('bitrate'),
+    prefill: jsonb('prefill'),
+    title: text('title'),
+    artist: text('artist'),
+    album: text('album'),
+    genre: text('genre'),
+    artistId: integer('artist_id').references(() => artists.id),
+    newArtistName: text('new_artist_name'),
+    playlistIds: integer('playlist_ids').array(),
+    targetPath: text('target_path'),
+    mediaId: integer('media_id'),
+    denyReason: text('deny_reason'),
+    decidedBy: text('decided_by'),
+    decidedAt: ts('decided_at'),
+    selfApproved: boolean('self_approved').notNull().default(false),
+    liveAt: ts('live_at'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('items_batch_idx').on(t.batchId),
+    index('items_owner_idx').on(t.ownerUserId),
+    index('items_status_idx').on(t.status),
+    uniqueIndex('items_upload_uq').on(t.uploadId),
+    uniqueIndex('items_probe_req_uq').on(t.probeRequestId),
+  ],
+)
+
+export const requestKindEnum = pgEnum('request_kind', ['edit', 'removal'])
+export const requestStatusEnum = pgEnum('request_status', [
+  'pending',
+  'approved',
+  'denied',
+  'withdrawn',
+  'applying',
+  'verifying',
+  'done',
+  'failed',
+])
+
+export const requests = pgTable(
+  'requests',
+  {
+    id: serial('id').primaryKey(),
+    ownerUserId: text('owner_user_id')
+      .notNull()
+      .references(() => users.id),
+    kind: requestKindEnum('kind').notNull(),
+    mediaId: integer('media_id').notNull(),
+    targetPath: text('target_path').notNull(),
+    // zod-typed {title?, artist?, album?, genre?} (src/server/requests.ts)
+    proposed: jsonb('proposed'),
+    reason: text('reason'),
+    status: requestStatusEnum('status').notNull().default('pending'),
+    ticketId: integer('ticket_id'),
+    ticketNumber: integer('ticket_number'),
+    ticketWebUrl: text('ticket_web_url'),
+    ticketChannelUrl: text('ticket_channel_url'),
+    ticketStatus: text('ticket_status'),
+    decidedBy: text('decided_by'),
+    decidedAt: ts('decided_at'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [index('requests_owner_idx').on(t.ownerUserId), uniqueIndex('requests_ticket_uq').on(t.ticketId)],
+)
+
+export const visibilityEnum = pgEnum('comment_visibility', ['all', 'staff'])
+export const commentSourceEnum = pgEnum('comment_source', ['portal', 'ticket'])
+
+export const comments = pgTable(
+  'comments',
+  {
+    id: serial('id').primaryKey(),
+    batchId: integer('batch_id').references(() => batches.id),
+    itemId: integer('item_id').references(() => items.id),
+    requestId: integer('request_id').references(() => requests.id),
+    authorUserId: text('author_user_id').references(() => users.id),
+    authorDiscordId: text('author_discord_id'),
+    authorName: text('author_name'),
+    source: commentSourceEnum('source').notNull(),
+    visibility: visibilityEnum('visibility').notNull(),
+    body: text('body').notNull(),
+    // Set for comments that arrived through the tickets webhook.
+    deliveryId: text('delivery_id'),
+    // Set once a portal comment has been posted into the ticket.
+    ticketMessageId: text('ticket_message_id'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('comments_delivery_uq').on(t.deliveryId),
+    index('comments_batch_idx').on(t.batchId),
+    index('comments_request_idx').on(t.requestId),
+    check('comments_parent', sql`(${t.batchId} IS NOT NULL) <> (${t.requestId} IS NOT NULL)`),
+    // A staff comment can never be a ticket-originated comment, and it can
+    // never carry a ticket message id (it is never forwarded).
+    check('comments_staff_local', sql`${t.visibility} <> 'staff' OR (${t.source} = 'portal' AND ${t.ticketMessageId} IS NULL)`),
+  ],
+)
+
+// Signed-webhook delivery dedupe (plan §4.5 receiver rule 3).
+export const hookDeliveries = pgTable('hook_deliveries', {
+  deliveryId: uuid('delivery_id').primaryKey(),
+  event: text('event').notNull(),
+  ticketId: integer('ticket_id'),
+  receivedAt: ts('received_at').notNull().defaultNow(),
+})
+
+// ------------------------------------------------------------ uploads ---
+// Server-side record of every tus upload. `owner_user_id` is set from the
+// session at creation and is the ONLY ownership source (the tus .json sidecar
+// lives in a web-writable dir and client Upload-Metadata is discarded).
+
+export const uploadStatusEnum = pgEnum('upload_status', ['uploading', 'complete', 'attached', 'expired'])
+
+export const uploads = pgTable(
+  'uploads',
+  {
+    id: text('id').primaryKey(), // tus id, 32 hex
+    ownerUserId: text('owner_user_id')
+      .notNull()
+      .references(() => users.id),
+    length: integer('length').notNull(),
+    status: uploadStatusEnum('status').notNull().default('uploading'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    completedAt: ts('completed_at'),
+  },
+  (t) => [index('uploads_owner_status_idx').on(t.ownerUserId, t.status)],
+)
+
+// -------------------------------------------------------- media safety ---
+
+export const mediaSnapshots = pgTable(
+  'media_snapshots',
+  {
+    id: serial('id').primaryKey(),
+    mediaId: integer('media_id').notNull(),
+    uniqueId: text('unique_id'),
+    path: text('path').notNull(),
+    title: text('title'),
+    artist: text('artist'),
+    album: text('album'),
+    genre: text('genre'),
+    playlistIds: integer('playlist_ids').array().notNull().default(sql`'{}'::int[]`),
+    reason: text('reason').notNull(),
+    itemId: integer('item_id').references(() => items.id),
+    requestId: integer('request_id').references(() => requests.id),
+    takenAt: ts('taken_at').notNull().defaultNow(),
+  },
+  (t) => [index('media_snapshots_media_idx').on(t.mediaId)],
+)
+
+export const archiveStatusEnum = pgEnum('archive_status', ['archived', 'restored', 'failed'])
+
+export const archive = pgTable(
+  'archive',
+  {
+    id: serial('id').primaryKey(),
+    mediaId: integer('media_id').notNull(),
+    uniqueId: text('unique_id'),
+    originalPath: text('original_path').notNull(),
+    archivedPath: text('archived_path').notNull(),
+    snapshotId: integer('snapshot_id').references(() => mediaSnapshots.id),
+    requestId: integer('request_id').references(() => requests.id),
+    status: archiveStatusEnum('status').notNull().default('archived'),
+    archivedAt: ts('archived_at').notNull().defaultNow(),
+    restoredAt: ts('restored_at'),
+  },
+  (t) => [index('archive_media_idx').on(t.mediaId)],
+)
+
+export const jobStatusEnum = pgEnum('job_status', ['queued', 'running', 'done', 'failed', 'dead'])
+
+export const jobs = pgTable(
+  'jobs',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    kind: text('kind').notNull(),
+    payload: jsonb('payload').notNull().default(sql`'{}'::jsonb`),
+    status: jobStatusEnum('status').notNull().default('queued'),
+    runAfter: ts('run_after').notNull().defaultNow(),
+    attempts: integer('attempts').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(8),
+    lockedAt: ts('locked_at'),
+    lastError: text('last_error'),
+    dedupeKey: text('dedupe_key'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('jobs_ready_idx').on(t.status, t.runAfter),
+    uniqueIndex('jobs_dedupe_uq').on(t.dedupeKey),
+  ],
+)
+
+// Append-only; UPDATE/DELETE/TRUNCATE are refused by trigger (migration 0001).
+export const auditLog = pgTable(
+  'audit_log',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    at: ts('at').notNull().defaultNow(),
+    actorUserId: text('actor_user_id'),
+    actorDiscordId: text('actor_discord_id'),
+    action: text('action').notNull(),
+    targetType: text('target_type'),
+    targetId: text('target_id'),
+    detail: jsonb('detail'),
+    ip: text('ip'),
+  },
+  (t) => [index('audit_log_at_idx').on(t.at), index('audit_log_target_idx').on(t.targetType, t.targetId)],
+)
