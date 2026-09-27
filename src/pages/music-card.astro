@@ -1,0 +1,153 @@
+---
+// In-game "music submissions happen in your browser" card.
+//
+// The music portal (music.euphoric.fm) is browser-only: Discord OAuth can't
+// complete inside the FiveM phone's CEF iframe. Caddy serves THIS page for
+// info.euphoric.fm/music(/…) whenever the request is framed
+// (Sec-Fetch-Dest: iframe) or comes from in-game (CitizenFX user agent), and
+// 302s everyone else to the portal. It is also reachable directly at
+// /music-card/.
+//
+// Deliberately a standalone shell instead of BaseLayout: no now-playing
+// polling, no effects blobs, no runtime-config script — just the brand styles.
+// CEF-safe per CLAUDE.md rule 5: no filter/backdrop-filter, no framebusting,
+// no window.top — the page renders inside whatever frame loaded it. Framing is
+// allowed by the site-wide CSP (frame-ancestors *).
+//
+// The QR code is generated at BUILD time (qrcode → inline SVG); no external
+// service is ever contacted, at build or at view time.
+import '../styles/tokens.css';
+import '../styles/global.css';
+import QRCode from 'qrcode';
+import Header from '../components/Header.astro';
+import { site } from '../site.config';
+
+const { music } = site;
+
+// Light modules transparent + dark modules via currentColor, so the colours
+// come from the token-based classes on the wrapper instead of hex literals.
+const qrSvg = (
+  await QRCode.toString(music.portalUrl, {
+    type: 'svg',
+    errorCorrectionLevel: 'M',
+    margin: 2,
+    color: { dark: '#000000ff', light: '#00000000' },
+  })
+)
+  .replace(/stroke="#000000"/g, 'stroke="currentColor"')
+  .replace('<svg ', '<svg role="img" aria-label="QR code for music.euphoric.fm" ');
+
+const title = `${music.card.title} — ${site.name}`;
+---
+
+<!doctype html>
+<html lang="en" class="bg-ink">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="robots" content="noindex" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title}</title>
+    <meta name="description" content={`${music.card.heading} ${music.card.body}`} />
+  </head>
+  <body class="overflow-x-hidden">
+    <main id="main" class="phone flex flex-col items-center pb-8">
+      <Header />
+
+      <section
+        class="w-full max-w-md mt-2 rounded-2xl border border-cream/10 bg-cream/[0.05] text-center"
+        style="padding: clamp(1rem, 3vw, 1.5rem);"
+      >
+        <p class="uppercase text-sunburst text-[11px] font-semibold" style="letter-spacing: 0.2em;">{music.card.eyebrow}</p>
+        <h2 class="mt-2 text-lg font-bold text-cream leading-snug">{music.card.heading}</h2>
+        <p class="mt-1 text-sm text-cream/70">{music.card.body}</p>
+
+        <p class="mt-5 text-[11px] uppercase text-cream/50" style="letter-spacing: 0.15em;">{music.card.urlLabel}</p>
+        <div class="mt-2 flex items-stretch gap-2">
+          <output
+            id="music-url"
+            class="efm-music-url flex-1 flex items-center justify-center rounded-xl border border-sunburst/45 bg-sunburst/10 px-3 font-bold text-sunburst break-all"
+          >{music.portalHost}</output>
+          <button
+            type="button"
+            id="music-copy"
+            class="btn btn-sunburst shrink-0"
+            data-copied={music.card.copied}
+            data-failed={music.card.copyFailed}
+            data-label={music.card.copy}
+          >{music.card.copy}</button>
+        </div>
+        <p id="music-copy-msg" class="mt-2 min-h-[1rem] text-xs text-cream/60" aria-live="polite"></p>
+
+        <p class="mt-3 text-[11px] uppercase text-cream/50" style="letter-spacing: 0.15em;">{music.card.qrLabel}</p>
+        <div class="efm-music-qr mx-auto mt-2 rounded-xl bg-cream text-ink p-2" set:html={qrSvg} />
+      </section>
+
+      <a href="/" class="btn btn-midnight mt-4 w-full max-w-md">{music.card.back}</a>
+    </main>
+
+    <script is:inline>
+      (function () {
+        var btn = document.getElementById('music-copy');
+        var url = document.getElementById('music-url');
+        var msg = document.getElementById('music-copy-msg');
+        if (!btn || !url || !msg) return;
+
+        // Select the address so a manual Ctrl+C works even where the
+        // clipboard APIs are blocked (CEF, sandboxed iframes).
+        var selectUrl = function () {
+          try {
+            var range = document.createRange();
+            range.selectNodeContents(url);
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          } catch (e) { /* selection unsupported — nothing else to do */ }
+        };
+        var say = function (text) {
+          msg.textContent = text;
+        };
+        var legacyCopy = function () {
+          selectUrl();
+          var ok = false;
+          try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+          say(ok ? btn.dataset.copied : btn.dataset.failed);
+        };
+
+        url.addEventListener('click', selectUrl);
+        btn.addEventListener('click', function () {
+          var text = url.textContent.trim();
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () {
+              say(btn.dataset.copied);
+            }, legacyCopy);
+          } else {
+            legacyCopy();
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>
+
+<style>
+  /* Large, copyable address: user-select:all makes one click/tap select the
+     whole host. Sized to stay on one line at ~360px. */
+  .efm-music-url {
+    min-height: 48px;
+    font-size: clamp(1.05rem, 5vw, 1.5rem);
+    user-select: all;
+    -webkit-user-select: all;
+    cursor: text;
+  }
+  .efm-music-qr {
+    width: min(100%, 11rem);
+  }
+  .efm-music-qr :global(svg) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+</style>
