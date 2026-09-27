@@ -25,6 +25,11 @@ export const START_MARGIN_S = 20
 export const END_MARGIN_S = 30
 // Plan §3.7: if offset + 20 s exceeds 150 s, stop and ask Jason.
 export const MAX_START_S = 150
+// Age bound (from job creation) for the mechanical waits below and the
+// ingest's pacing. It must outlast the longest legitimate wait before them
+// (a song waiting up to 30 days for its new-artist decision, or a long
+// queues_paused), or such a job would die at its first window wait.
+export const MUTATION_WAIT_MAX_AGE_S = 40 * 24 * 3600
 
 export class WindowConfigError extends Error {
   constructor(readonly offsetS: number) {
@@ -76,11 +81,11 @@ export async function assertMutationWindow(db: DB, nowMs: number, alert?: (title
   } catch (e) {
     if (e instanceof WindowConfigError) {
       await alert?.('scan window misconfigured: AzuraCast mutations held (stop and ask Jason)', { offset })
-      throw new RetryLater(3600, e.message)
+      throw new RetryLater(3600, e.message, { maxAgeS: MUTATION_WAIT_MAX_AGE_S })
     }
     throw e
   }
-  if (!w.open) throw new RetryLater(Math.max(1, Math.ceil(w.waitMs / 1000)), 'outside scan window')
+  if (!w.open) throw new RetryLater(Math.max(1, Math.ceil(w.waitMs / 1000)), 'outside scan window', { maxAgeS: MUTATION_WAIT_MAX_AGE_S, exact: true })
   return offset
 }
 
@@ -119,9 +124,9 @@ export async function assertNotOnAir(db: DB, az: AzuraCastClient, media: Station
     np = await az.nowPlaying(shortcode)
   } catch {
     // Unknown is not "safe": wait and look again.
-    throw new RetryLater(60, 'nowplaying unavailable')
+    throw new RetryLater(60, 'nowplaying unavailable', { maxAgeS: MUTATION_WAIT_MAX_AGE_S })
   }
-  if (isOnAir(np, media)) throw new RetryLater(60, 'now playing')
+  if (isOnAir(np, media)) throw new RetryLater(60, 'now playing', { maxAgeS: MUTATION_WAIT_MAX_AGE_S })
 }
 
 export async function getCaps(db: DB): Promise<Caps> {

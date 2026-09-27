@@ -25,8 +25,11 @@ export type WorkerCtx = {
 // A wait on something outside the job (a ticket not open yet, a busy or
 // unavailable tickets bot, a scan window): the job is rescheduled WITHOUT
 // spending one of its attempts. It is bounded by AGE instead: once the job is
-// older than `maxAgeS` (default 7 days) it goes dead and alerts. The delay
-// grows with the job's age (see runJob), so a long outage is polled gently.
+// older than `maxAgeS` (default 7 days) it goes dead, alerts, and its item or
+// request is failed (runJob). The delay grows with the job's age (see
+// runJob), so a long outage is polled gently; an `exact` wait (the scan
+// window, pacing: the moment it may run is known) is always honoured as
+// given, so an old job never lands on the same closed phase every time.
 // `Defer` is the same class: P3/P4 "reschedule without an attempt" waits
 // should use it.
 export const RETRY_MAX_AGE_S = 7 * 24 * 3600
@@ -34,14 +37,16 @@ export const TRANSIENT_MAX_AGE_S = 24 * 3600
 
 export class RetryLater extends Error {
   readonly maxAgeS: number
+  readonly exact: boolean
   constructor(
     readonly delayS: number,
     message = 'retry later',
-    opts: { maxAgeS?: number } = {},
+    opts: { maxAgeS?: number; exact?: boolean } = {},
   ) {
     super(message)
     this.name = 'RetryLater'
     this.maxAgeS = opts.maxAgeS ?? RETRY_MAX_AGE_S
+    this.exact = opts.exact ?? false
   }
 }
 

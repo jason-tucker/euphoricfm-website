@@ -18,6 +18,7 @@ import { assertQueuesNotPaused, MUTATING_JOB_KINDS, PAUSED_SQL, QueuesPausedErro
 import { TicketsClient } from '../server/tickets/client'
 import { isP3Ctx, type P3Ctx } from './ingest/context'
 import { P3_JOBS } from './ingest/jobs'
+import { failIngest } from './ingest/pipeline'
 import { Scheduler } from './scheduler'
 import {
   collectProbeResults,
@@ -29,7 +30,7 @@ import {
   ticketOpen,
   type WorkerCtx,
 } from './handlers'
-import { isRequestsCtx, REQUEST_JOB_KINDS, runRequestJob, sweepParkedRequests } from './requests/jobs'
+import { failRequest, isRequestsCtx, REQUEST_JOB_KINDS, runRequestJob, sweepParkedRequests } from './requests/jobs'
 
 export type StartupDeps = { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch }
 
@@ -148,9 +149,14 @@ export async function runJob(ctx: WorkerCtx, job: JobRow): Promise<void> {
       if (age > e.maxAgeS) {
         await ctx.db.execute(sql`UPDATE jobs SET status = 'dead', updated_at = now(), last_error = ${msg} WHERE id = ${job.id}`)
         await ctx.alert(`job ${job.kind} #${job.id} gave up after waiting ${Math.round(age / 3600)} h`, { error: msg })
+        await failOwner(ctx, job, e.message)
         return
       }
-      const delay = Math.max(1, Math.min(86_400, Math.ceil(Math.max(e.delayS, Math.min(1800, age / 20)))))
+      // An exact wait (scan window, pacing) runs when it says: an age floor
+      // of 1800 s (6 × the 300 s scan period) would bring an old job back at
+      // the same, possibly closed, phase every time.
+      const floor = e.exact ? 0 : Math.min(1800, age / 20)
+      const delay = Math.max(1, Math.min(86_400, Math.ceil(Math.max(e.delayS, floor))))
       await ctx.db.execute(
         sql`UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = GREATEST(attempts - 1, 0), updated_at = now(), last_error = ${msg}, run_after = now() + make_interval(secs => ${delay}) WHERE id = ${job.id}`,
       )
@@ -165,6 +171,21 @@ export async function runJob(ctx: WorkerCtx, job: JobRow): Promise<void> {
     await ctx.db.execute(
       sql`UPDATE jobs SET status = 'queued', locked_at = NULL, updated_at = now(), last_error = ${msg}, run_after = now() + make_interval(secs => ${delay}) WHERE id = ${job.id}`,
     )
+  }
+}
+
+// A wait that aged out is a failure of the thing the job was doing: the
+// request or item reaches its terminal state (status, ticket post, alert)
+// through the domain failure path instead of staying approved/applying.
+async function failOwner(ctx: WorkerCtx, job: JobRow, wait: string): Promise<void> {
+  const p = job.payload
+  const detail = { jobId: job.id, kind: job.kind, wait: wait.slice(0, 200) }
+  if (REQUEST_JOB_KINDS.has(job.kind) && job.kind !== 'request_ticket_open' && job.kind !== 'request_ticket_post') {
+    if (isRequestsCtx(ctx) && typeof p.requestId === 'number') await failRequest(ctx, p.requestId, 'wait_expired', detail)
+    return
+  }
+  if ((job.kind === 'ingest' || job.kind === 'ingest_verify') && isP3Ctx(ctx) && typeof p.itemId === 'number') {
+    await failIngest(ctx, p.itemId, 'wait_expired', detail)
   }
 }
 
