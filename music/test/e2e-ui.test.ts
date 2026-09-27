@@ -5,6 +5,7 @@
 // of the member's HTML.
 import { describe, expect, it } from 'vitest'
 import { loginOk } from './helpers/auth'
+import { ownerSql } from './helpers/db'
 import { has } from './helpers/env'
 import { fxBuf } from './helpers/fixtures'
 import { Jar, req } from './helpers/http'
@@ -140,5 +141,41 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     expect(((await lost.json()) as { error: string }).error).toBe('state_changed')
     const decided = await page(admin, `/review/items/${item.id}`)
     expect(decided.html).toContain('no longer pending')
+  })
+
+  it('P4 pages: library browse and song detail, archived list, request review', async () => {
+    const mediaId = 900000 + (Date.now() % 90000)
+    const sql = ownerSql()
+    await sql`INSERT INTO library_cache (media_id, unique_id, path, title, artist, album, genre, playlist_ids, length_s)
+              VALUES (${mediaId}, ${'u' + mediaId}, ${`Music/Artists/GRIM/GRIM - Smoke ${mediaId}.mp3`}, ${`Smoke ${mediaId}`}, 'GRIM', 'Night', 'House', '{2,77}', 200)`
+    await sql`INSERT INTO library_cache (media_id, unique_id, path, title, artist)
+              VALUES (${mediaId + 1}, ${'u' + (mediaId + 1)}, ${`UNRELEASED-DO NOT ADD TO ROTATION/Hidden ${mediaId}.mp3`}, ${`Hidden ${mediaId}`}, 'X')`
+    const member = await loginOk({ id: newId() })
+    const admin = await loginOk({ id: OWNER })
+    const [u] = await sql<{ id: string }[]>`SELECT id FROM "user" WHERE discord_id = ${OWNER}`
+    await sql`INSERT INTO requests (owner_user_id, kind, media_id, target_path, proposed, reason)
+              VALUES (${u!.id}, 'edit', ${mediaId}, ${`Music/Artists/GRIM/GRIM - Smoke ${mediaId}.mp3`}, ${sql.json({ title: 'Smoke Fixed' })}, 'typo')`
+
+    const lib = await page(member, `/library?q=${mediaId}`)
+    expect(lib.status).toBe(200)
+    expect(lib.html).toContain(`Smoke ${mediaId}`)
+    expect((await page(member, `/library?q=Hidden`)).html).not.toContain(`Hidden ${mediaId}`)
+    const song = await page(member, `/library/${mediaId}`)
+    expect(song.status).toBe(200)
+    expect(song.html).toContain('Suggest an edit')
+    expect(song.html).not.toContain('Manager tools')
+    expect(song.html).not.toContain('1General Rotation') // playlists are staff-only
+    expect((await page(member, `/library/${mediaId + 1}`)).status).toBe(404) // outside Music/Artists/**
+    expect((await page(member, '/library/archived')).status).toBe(404)
+    expect((await page(member, '/review/requests')).status).toBe(404)
+
+    const adminSong = await page(admin, `/library/${mediaId}`)
+    expect(adminSong.html).toContain('Manager tools')
+    expect(adminSong.html).toContain('Playlist #77') // non-assignable membership shown as kept
+    expect((await page(admin, '/library/archived')).status).toBe(200)
+    const rq = await page(admin, '/review/requests')
+    expect(rq.status).toBe(200)
+    expect(rq.html).toContain('Smoke Fixed')
+    expect(rq.html).toContain('typo')
   })
 })
