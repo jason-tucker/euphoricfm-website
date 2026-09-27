@@ -15,6 +15,37 @@ function rawMp3(name: string, seconds: number, kbps: number, freq = 440) {
   ff(['-f', 'lavfi', '-i', `sine=frequency=${freq}:duration=${seconds}`, '-ac', '2', '-ar', '44100', '-b:a', `${kbps}k`, '-id3v2_version', '0', '-write_xing', '0', join(DIR, name)])
 }
 
+// v0.3.0 WAV inputs: real encoder output (ffmpeg's wav muxer writes
+// WAVE_FORMAT_EXTENSIBLE for >2 channels, >16 bits or >48 kHz) plus the
+// compressed codecs the probe must refuse. Crafted structures (lying sizes,
+// id3 chunks, hostile LIST/INFO) are built in the tests (helpers/wav.ts).
+function wavFixtures() {
+  const tone = (d: number, r: number) => ['-f', 'lavfi', '-i', `sine=frequency=440:duration=${d}:sample_rate=${r}`]
+  const meta = ['-metadata', 'title=Wav Title', '-metadata', 'artist=Wav Artist', '-metadata', 'album=Wav Album', '-metadata', 'genre=House', '-metadata', 'date=2024']
+  const w = (name: string, args: string[]) => ff([...args, '-f', 'wav', join(DIR, name)])
+  w('s16-44k-stereo.wav', [...tone(35, 44100), ...meta, '-ac', '2', '-c:a', 'pcm_s16le'])
+  w('s24-48k-stereo.wav', [...tone(35, 48000), '-ac', '2', '-c:a', 'pcm_s24le'])
+  w('s24-96k-stereo.wav', [...tone(35, 96000), '-ac', '2', '-c:a', 'pcm_s24le'])
+  w('s16-88k-stereo.wav', [...tone(35, 88200), '-ac', '2', '-c:a', 'pcm_s16le'])
+  w('s16-22k-mono.wav', [...tone(35, 22050), '-ac', '1', '-c:a', 'pcm_s16le'])
+  w('s32-44k-stereo.wav', [...tone(35, 44100), '-ac', '2', '-c:a', 'pcm_s32le'])
+  w('u8-44k-mono.wav', [...tone(35, 44100), '-ac', '1', '-c:a', 'pcm_u8'])
+  w('f32-48k-stereo.wav', [...tone(35, 48000), '-ac', '2', '-c:a', 'pcm_f32le'])
+  w('f64-44k-stereo.wav', [...tone(35, 44100), '-ac', '2', '-c:a', 'pcm_f64le'])
+  w('s16-48k-5.1.wav', [...tone(35, 48000), '-af', 'pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0', '-c:a', 'pcm_s16le'])
+  w('adpcm.wav', [...tone(35, 44100), '-ac', '2', '-c:a', 'adpcm_ms'])
+  w('mp3-in.wav', [...tone(35, 44100), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '192k'])
+  w('alaw.wav', [...tone(35, 44100), '-ac', '1', '-c:a', 'pcm_alaw'])
+  w('short.wav', [...tone(10, 44100), '-ac', '2', '-c:a', 'pcm_s16le'])
+  ff([...tone(35, 44100), '-ac', '2', '-c:a', 'pcm_s16le', '-rf64', 'always', '-f', 'wav', join(DIR, 'rf64.wav')])
+  // > 35 MB: 4 min 10 s of 16-bit 44.1 kHz stereo (~44 MB), with INFO tags
+  w('big-44mb.wav', ['-f', 'lavfi', '-i', 'anoisesrc=color=pink:amplitude=0.2:duration=250:sample_rate=44100', ...meta, '-ac', '2', '-c:a', 'pcm_s16le'])
+  // an MP3 over 35 MB: a real MP3 followed by padding (the magic check passes)
+  const mp3 = readFileSync(join(DIR, 'raw35.mp3'))
+  writeFileSync(join(DIR, 'big-36mb.mp3'), Buffer.concat([mp3, Buffer.alloc(36 * 1024 * 1024 - mp3.length + 1024)]))
+  writeFileSync(join(DIR, '.done-wav'), '')
+}
+
 export default async function setup() {
   if (!existsSync(join(DIR, '.done'))) {
     mkdirSync(DIR, { recursive: true })
@@ -58,6 +89,7 @@ export default async function setup() {
     writeFileSync(join(DIR, '.done-art'), '')
     writeFileSync(join(DIR, '.done'), '')
   }
+  if (!existsSync(join(DIR, '.done-wav'))) wavFixtures()
 
   if (process.env.REQUIRE_ALL === '1' && process.env.E2E_WEB_URL) {
     const deadline = Date.now() + 120_000

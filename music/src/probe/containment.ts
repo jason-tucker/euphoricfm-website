@@ -12,7 +12,8 @@
 // Docker restarts the container and the kernel tears down the whole PID
 // namespace (nothing a stray process did can survive the restart).
 //
-// Residual (documented in README): during the job itself (≤ ~45 s) a
+// Residual (documented in README): during the job itself (≤ ~45 s; a WAV
+// conversion job up to ~6 min) a
 // compromised parser has the probe uid's write access to the probe mounts.
 // Dropping parsers to a second uid needs CAP_SETUID/SETGID in the probe
 // (today: cap_drop ALL + no-new-privileges), and Landlock is not available
