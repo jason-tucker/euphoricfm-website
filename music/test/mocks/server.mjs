@@ -321,7 +321,7 @@ function azMedia(f) {
     genre: f.genre ?? null,
     isrc: null,
     lyrics: null,
-    art: null,
+    art: f.art ?? null,
     custom_fields: {},
     extra_metadata: {},
     // Aggregates memberships from EVERY station on the storage (P0d-B (d)).
@@ -517,6 +517,11 @@ async function handleControl(req, res, url) {
   if (p === '/__mock/az/calls') return send(res, 200, state.az.calls)
   if (p === '/__mock/az/seed' && req.method === 'POST') {
     azSeed(body.files ?? [])
+    return send(res, 200, { ok: true })
+  }
+  // Simulates CheckMediaTask dropping a row whose file it missed (P3 recovery tests).
+  if (p === '/__mock/az/drop' && req.method === 'POST') {
+    state.az.files.delete(body.path)
     return send(res, 200, { ok: true })
   }
   if (p === '/__mock/az/unscanned' && req.method === 'POST') {
