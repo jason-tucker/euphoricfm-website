@@ -31,7 +31,7 @@ const DAY = 86_400_000
 // and alerts. Not auto-cleared: an operator must clear settings.queues_paused.
 async function pauseAndAlert(ctx: P3Ctx, reason: string, detail: Record<string, unknown>) {
   const value = await pauseQueues(ctx.db, reason, detail)
-  await ctx.alert(`AzuraCast ${reason.replace(/_/g, ' ')}: mutating jobs (ingest, move, archive, restore, edits) are paused until an operator clears settings.queues_paused`, value)
+  await ctx.alert(`AzuraCast ${reason.replace(/_/g, ' ')}: queues paused (ingest, move, archive, restore, edits) until an operator clears settings.queues_paused`, value)
 }
 
 // ------------------------------------------------------- final cleanup --

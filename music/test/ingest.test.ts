@@ -12,6 +12,7 @@ import { resolveProfile } from '@/server/azuracast/guard'
 import { closeDb } from '@/server/db/client'
 import type { Viewer } from '@/server/authz/predicates'
 import { HttpError } from '@/server/http/errors'
+import { QueuesPausedError } from '@/server/pause'
 import { mainArtist } from '@/server/library/artists'
 import { clearItemArt, decideItem, editItemMetadata, setItemArt, submitBatch } from '@/server/submissions'
 import { Defer } from '@/worker/handlers'
@@ -439,7 +440,8 @@ describe.skipIf(!DBENV() || !MOCKS())('ingest pipeline (station 1, Portal-Test/ 
     await actAsProbe(ctx, id)
     await ownerSql()`UPDATE settings SET value = '{"reason":"test"}'::jsonb WHERE key = 'queues_paused'`
     try {
-      expect(await step(ctx, id)).toMatchObject({ message: 'queues paused', delayS: 600 })
+      // The foundation's pause: QueuesPausedError parks the job without an attempt.
+      await expect(step(ctx, id)).rejects.toBeInstanceOf(QueuesPausedError)
       expect(await uploadsTo(folder)).toHaveLength(0)
     } finally {
       await ownerSql()`UPDATE settings SET value = 'null'::jsonb WHERE key = 'queues_paused'`
@@ -869,14 +871,16 @@ describe.skipIf(!DBENV() || !MOCKS())('album art (art contract): item art, final
     const tag = uniq()
     await control('/__mock/az/seed', {
       files: [
-        { path: `Music/Artists/ArtLib ${tag}/a.mp3`, artist: `ArtLib ${tag}`, art: `https://euphoric.fm/api/station/euphoricfm/art/x${tag}.jpg` },
+        { path: `Music/Artists/ArtLib ${tag}/a.mp3`, artist: `ArtLib ${tag}` },
         { path: `Music/Artists/ArtLib ${tag}/b.mp3`, artist: `ArtLib ${tag}` },
       ],
     })
     await syncLibrary(ctx)
+    // The mock, like AzuraCast, always lists `art` as the public art route
+    // (<unique_id>-<art_updated_at>.jpg); the fallback is covered above.
     const rows = await ownerSql()`SELECT path, unique_id, art_url FROM library_cache WHERE path LIKE ${`%ArtLib ${tag}%`} ORDER BY path`
-    expect(rows[0]!.art_url).toBe(`https://euphoric.fm/api/station/euphoricfm/art/x${tag}.jpg`)
-    expect(rows[1]!.art_url).toBe(`https://euphoric.fm/api/station/euphoricfm/art/${rows[1]!.unique_id}`)
+    expect(rows).toHaveLength(2)
+    for (const r of rows) expect(r.art_url).toBe(`https://euphoric.fm/api/station/euphoricfm/art/${r.unique_id}-0.jpg`)
     ctx.cleanup()
   })
 })

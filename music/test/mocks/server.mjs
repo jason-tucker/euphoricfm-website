@@ -359,7 +359,6 @@ function azMedia(f) {
     genre: f.genre ?? null,
     isrc: null,
     lyrics: null,
-    art: f.art ?? null,
     custom_fields: {},
     extra_metadata: {},
     // unix seconds; 0 = no custom art (P4 verifies uploads by this moving)
