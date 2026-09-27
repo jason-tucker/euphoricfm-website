@@ -27,6 +27,15 @@ export class RetryLater extends Error {
   }
 }
 
+// A planned wait (scan window, pacing, probe still working, re-verify due):
+// the job is rescheduled WITHOUT spending one of its attempts.
+export class Defer extends Error {
+  constructor(readonly delayS: number, message = 'deferred') {
+    super(message)
+    this.name = 'Defer'
+  }
+}
+
 export class Permanent extends Error {
   constructor(message: string) {
     super(message)
@@ -112,7 +121,7 @@ export async function ticketOpen(ctx: WorkerCtx, payload: { batchId: number }) {
   const lines = its
     .filter((i) => i.status === 'pending')
     .slice(0, 24)
-    .map((i) => `#${i.id} ${i.artist ?? '?'} - ${i.title ?? '?'}`.slice(0, 200))
+    .map((i) => (i.kind === 'new_artist' ? `#${i.id} New artist: ${i.newArtistName ?? '?'}` : `#${i.id} ${i.artist ?? '?'} - ${i.title ?? '?'}`).slice(0, 200))
   let res
   try {
     res = await ctx.tickets.openTicket({
@@ -157,7 +166,7 @@ export async function ticketDecision(ctx: WorkerCtx, payload: { itemId: number }
   if (it.status !== 'approved' && it.status !== 'denied') return
   const b = await ctx.db.query.batches.findFirst({ where: eq(batches.id, it.batchId) })
   if (!b?.ticketId) throw new RetryLater(60, 'ticket not open yet')
-  const name = `${it.artist ?? '?'} - ${it.title ?? '?'}`
+  const name = it.kind === 'new_artist' ? `new artist ${it.newArtistName ?? '?'}` : `${it.artist ?? '?'} - ${it.title ?? '?'}`
   const body = it.status === 'approved' ? `Approved: ${name}` : `Denied: ${name}\nReason: ${it.denyReason ?? ''}`
   try {
     await ctx.tickets.postMessage(b.ticketId, { kind: 'system', body: body.slice(0, 1800), itemRef: `item:${it.id}` }, `decision:item:${it.id}:${it.status}`)

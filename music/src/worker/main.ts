@@ -13,9 +13,13 @@ import { closeDb, getDb, type DB } from '../server/db/client'
 import { loadWorkerEnv, type WorkerEnv } from '../server/env'
 import { enqueue } from '../server/jobs'
 import { TicketsClient } from '../server/tickets/client'
+import { isP3Ctx, type P3Ctx } from './ingest/context'
+import { P3_JOBS } from './ingest/jobs'
+import { Scheduler } from './scheduler'
 import {
   collectProbeResults,
   contractProbe,
+  Defer,
   Permanent,
   RetryLater,
   ticketComment,
@@ -97,12 +101,23 @@ export async function runJob(ctx: WorkerCtx, job: JobRow): Promise<void> {
       case 'contract_probe':
         await contractProbe(ctx)
         break
-      default:
-        throw new Permanent(`unknown job kind ${job.kind}`)
+      default: {
+        const handler = P3_JOBS[job.kind]
+        if (!handler) throw new Permanent(`unknown job kind ${job.kind}`)
+        if (!isP3Ctx(ctx)) throw new Permanent(`job kind ${job.kind} needs the P3 context`)
+        await handler(ctx, job.payload)
+      }
     }
     await ctx.db.execute(sql`UPDATE jobs SET status = 'done', updated_at = now(), last_error = NULL WHERE id = ${job.id}`)
   } catch (e) {
     const msg = e instanceof Error ? `${e.name}: ${e.message}`.slice(0, 500) : 'error'
+    if (e instanceof Defer) {
+      const delay = Math.max(1, Math.min(86_400, Math.ceil(e.delayS)))
+      await ctx.db.execute(
+        sql`UPDATE jobs SET status = 'queued', locked_at = NULL, updated_at = now(), attempts = greatest(attempts - 1, 0), last_error = ${msg}, run_after = now() + make_interval(secs => ${delay}) WHERE id = ${job.id}`,
+      )
+      return
+    }
     if (e instanceof Permanent || job.attempts >= job.max_attempts) {
       await ctx.db.execute(sql`UPDATE jobs SET status = 'dead', updated_at = now(), last_error = ${msg} WHERE id = ${job.id}`)
       await ctx.alert(`job ${job.kind} #${job.id} failed permanently`, { error: msg })
@@ -119,14 +134,21 @@ export async function main() {
   const { env, profile, azuracast } = await startupChecks()
   console.log(`[worker] profile=${profile.profile} station=${profile.stationId} prefix=${profile.testPrefix || '(none)'} self-check ok`)
   const db = getDb(env.DATABASE_URL, 3)
-  const ctx: WorkerCtx = {
+  const ctx: P3Ctx = {
     db,
     azuracast,
     tickets: new TicketsClient({ baseUrl: env.TICKETS_API_BASE, key: env.TICKETS_WRITE_KEY, portalOrigin: env.PORTAL_ORIGIN }),
     portalOrigin: env.PORTAL_ORIGIN,
     spoolOutDir: env.SPOOL_PROBE_OUT_DIR,
     alert: await makeAlert(env),
+    root: profile.testPrefix,
+    spoolInDir: env.SPOOL_PROBE_IN_DIR,
+    finalDir: env.STAGING_FINAL_DIR,
+    now: Date.now,
+    kumaDiskPushUrl: env.KUMA_DISK_PUSH_URL,
+    contractFixture: env.PORTAL_CONTRACT_FIXTURE,
   }
+  const scheduler = new Scheduler()
   try {
     await contractProbe(ctx)
   } catch (e) {
@@ -140,6 +162,7 @@ export async function main() {
   while (!stopping) {
     try {
       await collectProbeResults(ctx)
+      await scheduler.tick(ctx)
       if (Date.now() - lastDaily > 24 * 3600_000) {
         lastDaily = Date.now()
         await enqueue(db, 'contract_probe', {}, { dedupeKey: `contract_probe:${new Date().toISOString().slice(0, 10)}` })
