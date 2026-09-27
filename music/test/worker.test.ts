@@ -165,3 +165,49 @@ describe.skipIf(!DBENV())('staging retention sweep', () => {
     expect(by[freshTus]).toBe('uploading')
   })
 })
+
+describe.skipIf(!DBENV())('draft retention (plan §3.4 "drafts after 7 days")', () => {
+  it('expires items of a never-submitted draft after 7 days: files deleted, upload expired, audited; fresh drafts and submitted batches untouched', async () => {
+    const db = getDb(process.env.TEST_APP_DATABASE_URL, 2)
+    const dir = mkdtempSync(join(tmpdir(), 'sweep-draft-'))
+    const [u] = await ownerSql()`INSERT INTO "user" (id, discord_id) VALUES (${randomUUID()}, ${'6' + String(Date.now()).padStart(17, '0')}) RETURNING id`
+    const mkItem = async (batchId: number, age: string, status: string) => {
+      const up = randomUUID().replace(/-/g, '')
+      const cover = `cover-${randomUUID()}.jpg`
+      writeFileSync(join(dir, up), 'x')
+      writeFileSync(join(dir, `${up}.json`), '{}')
+      writeFileSync(join(dir, cover), 'j')
+      await ownerSql()`INSERT INTO uploads (id, owner_user_id, length, status, created_at) VALUES (${up}, ${u!.id}, 100, 'attached', now() - ${age}::interval)`
+      const [it] = await ownerSql()`INSERT INTO items (batch_id, owner_user_id, status, upload_id, cover_file, created_at)
+        VALUES (${batchId}, ${u!.id}, ${status}::item_status, ${up}, ${cover}, now() - ${age}::interval) RETURNING id`
+      return { id: it!.id as number, up, cover }
+    }
+    const [oldDraft] = await ownerSql()`INSERT INTO batches (owner_user_id, status, created_at) VALUES (${u!.id}, 'draft', now() - interval '9 days') RETURNING id`
+    const [freshDraft] = await ownerSql()`INSERT INTO batches (owner_user_id, status) VALUES (${u!.id}, 'draft') RETURNING id`
+    const [submitted] = await ownerSql()`INSERT INTO batches (owner_user_id, status, attested_at, submitted_at, created_at) VALUES (${u!.id}, 'submitted', now(), now(), now() - interval '9 days') RETURNING id`
+    const pendingOld = await mkItem(oldDraft!.id, '8 days', 'pending')
+    const probingOld = await mkItem(oldDraft!.id, '8 days', 'probing')
+    const fresh = await mkItem(freshDraft!.id, '1 day', 'pending')
+    const inReview = await mkItem(submitted!.id, '8 days', 'pending')
+
+    const staged = async () => Number((await ownerSql()`SELECT COALESCE(SUM(length),0)::bigint AS n FROM uploads WHERE owner_user_id = ${u!.id} AND status IN ('uploading','complete','attached')`)[0]!.n)
+    expect(await staged()).toBe(400)
+    await sweepStaging(db, dir)
+    for (const x of [pendingOld, probingOld]) {
+      expect(existsSync(join(dir, x.up))).toBe(false)
+      expect(existsSync(join(dir, `${x.up}.json`))).toBe(false)
+      expect(existsSync(join(dir, x.cover))).toBe(false)
+      const [row] = await ownerSql()`SELECT status, probe_error, upload_id FROM items WHERE id = ${x.id}`
+      expect(row).toMatchObject({ status: 'withdrawn', probe_error: 'draft_expired', upload_id: null })
+      expect((await ownerSql()`SELECT status FROM uploads WHERE id = ${x.up}`)[0]!.status).toBe('expired')
+      expect((await ownerSql()`SELECT count(*)::int AS n FROM audit_log WHERE action = 'item.draft_expired' AND target_id = ${String(x.id)}`)[0]!.n).toBe(1)
+    }
+    for (const x of [fresh, inReview]) {
+      expect(existsSync(join(dir, x.up))).toBe(true)
+      expect((await ownerSql()`SELECT status FROM items WHERE id = ${x.id}`)[0]!.status).toBe('pending')
+    }
+    expect((await ownerSql()`SELECT status FROM batches WHERE id = ${oldDraft!.id}`)[0]!.status).toBe('withdrawn')
+    expect((await ownerSql()`SELECT status FROM batches WHERE id = ${freshDraft!.id}`)[0]!.status).toBe('draft')
+    expect(await staged()).toBe(200) // no longer counts toward the staging caps
+  })
+})

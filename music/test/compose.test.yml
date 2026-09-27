@@ -24,6 +24,9 @@ x-web-env: &web-env
   TICKETS_GUILD_READ_KEY: test-tickets-web-key
   TICKETS_WEBHOOK_SECRET: test-only-webhook-secret-not-real-0000000
   ALLOW_TEST_ENDPOINTS: "1"
+  # The retention tests call sweepStaging directly; the web's own hourly
+  # sweeper would race them on the shared DB.
+  MUSIC_DISABLE_SWEEPER: "1"
   HOSTNAME: 0.0.0.0
   NODE_OPTIONS: --max-old-space-size=160
 
