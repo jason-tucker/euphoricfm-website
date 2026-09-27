@@ -80,7 +80,7 @@ services:
     build: { context: ., target: probe }
 
   mocks:
-    image: efm-music-test/test:local
+    image: ${MUSIC_TEST_PROJECT:-efm-music-test}/test:local
     build: { context: ., target: test }
     command: ["node", "test/mocks/server.mjs"]
     read_only: true
@@ -90,7 +90,7 @@ services:
       - worker-egress
 
   tests:
-    image: efm-music-test/test:local
+    image: ${MUSIC_TEST_PROJECT:-efm-music-test}/test:local
     build: { context: ., target: test }
     profiles: ["tests"]
     environment:
@@ -116,6 +116,6 @@ services:
 
 networks:
   efm-public-net: !override
-    name: efm-music-test-public
+    name: ${MUSIC_TEST_PROJECT:-efm-music-test}-public
   efm-music-hooks: !override
-    name: efm-music-test-hooks
+    name: ${MUSIC_TEST_PROJECT:-efm-music-test}-hooks

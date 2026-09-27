@@ -6,11 +6,15 @@
 # Usage: test/run.sh            (from music/ or anywhere)
 # Env:   DOCKER_COMPOSE="docker compose" (override the compose command)
 #        KEEP=1 to leave the stack up afterwards.
+#        MUSIC_TEST_PROJECT / MUSIC_TEST_TAG isolate parallel runs (compose
+#        project, networks, image tags); defaults efm-music-test / local-test.
 set -eu
 cd "$(dirname "$0")/.."
-export MUSIC_TAG=local-test
+export MUSIC_TEST_PROJECT="${MUSIC_TEST_PROJECT:-efm-music-test}"
+export MUSIC_TAG="${MUSIC_TEST_TAG:-local-test}"
+P=$MUSIC_TEST_PROJECT
 export MUSIC_DATA_DIR=./test/.out/data
-DC="${DOCKER_COMPOSE:-docker compose} -p efm-music-test -f compose.yml -f test/compose.test.yml"
+DC="${DOCKER_COMPOSE:-docker compose} -p $P -f compose.yml -f test/compose.test.yml"
 
 cleanup() {
   if [ "${KEEP:-0}" != "1" ]; then
@@ -70,7 +74,7 @@ guard "web secret in worker env refuses"   "another service" -e AUTH_SECRET=x
 echo "== idle memory (docker stats)"
 sleep 20
 docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}' \
-  efm-music-test-music-web-1 efm-music-test-music-worker-1 efm-music-test-music-probe-1 efm-music-test-music-db-1 | tee test/.out/stats.txt
+  $P-music-web-1 $P-music-worker-1 $P-music-probe-1 $P-music-db-1 | tee test/.out/stats.txt
 
 if [ $status -ne 0 ]; then
   echo "== logs (failure)"
