@@ -1,5 +1,39 @@
 # Changelog — EFM Music Portal (`music/`)
 
+## [0.3.0] — 2026-09-27 — WAV uploads
+
+Members can upload WAV files as well as MP3s. The network-less probe converts a WAV to a CBR 320 kbps MP3, which replaces the WAV under the same upload id; everything downstream (prefill, review, finalize with ID3 + APIC, the AzuraCast upload, the library, edit and removal requests) is unchanged and only ever sees that MP3. WAV only (no FLAC, AIFF or M4A).
+
+### Added
+- **Probe WAV path** (`src/probe/wav.ts`, `probe.ts`). The type comes from the magic bytes of the probe's private copy (`RIFF....WAVE`), never from the name or the declared type; RF64 / BW64 (`wav_rf64_unsupported`) and RIFX (`wav_unsupported`) are refused. A bounded RIFF chunk walk runs in JS before any parser: every chunk inside the RIFF and the RIFF inside the file (a truncated file or a lying RIFF / data size → `wav_truncated`, more than 64 KiB after the RIFF → `wav_trailing_data`), at most 64 chunks, exactly one `fmt ` before exactly one `data`, a LIST ≤ 1 MiB whose INFO items tile it exactly (`wav_bad_list`; music-metadata reads every INFO value into memory), other chunks ≤ 16 MiB, at most one `id3 ` chunk, which gets the MP3 tag's pre-scan (≤ 5 MB, no compressed / encrypted frames). PCM only: integer 8/16/24/32-bit and float 32/64-bit, plain or WAVE_FORMAT_EXTENSIBLE with the PCM / IEEE-float GUID; ADPCM, MP3-in-WAV, A-law, µ-law, GSM and anything else are `wav_codec_unsupported`. 1–8 channels, 8–192 kHz, a consistent block align and byte rate, 30 s to 15 min. `ffprobe -f wav -protocol_whitelist file,pipe -threads 1` must agree with the header (one audio stream; only an `id3 ` APIC may appear as an attached picture; same channels, rate and duration ±1 s). music-metadata (heap-capped child, parser chosen by the copy's `.wav` name) pre-fills title / artist / album / genre / year from LIST/INFO and the `id3 ` chunk through the same `clipTag`; an APIC takes the same hardened cover path. The conversion is `ffmpeg -f wav … -map 0:a:0 -map_metadata -1 [-ac 2] [-ar 44100|48000] -c:a libmp3lame -b:a 320k -threads 1` under `prlimit` (256 MiB address space) → `timeout` (300 s) → `nice -n 19`, in its own process group. The MP3 is then checked like an upload (magic + second frame, no ID3, `ffprobe -f mp3`, exactly 320 kbps, duration within 1 s of the WAV's, ≤ 35 MB) before it replaces the WAV (tmp + rename, re-hashed); the cover is published last.
+- **Upload caps by type.** New cap `maxWavUploadBytes` (250 MB; admins may lower it). The tus creation is capped by the type its Upload-Metadata `filetype` declares (audio/wav, x-wav, wave, vnd.wave → WAV; anything missing, malformed, repeated or else → MP3): the route checks the compiled limits (`413 upload_too_large` / `wav_upload_too_large`), `admitUpload` the loaded caps; tus `maxSize` is 250 MB. The probe request carries the loaded WAV cap (`maxWavBytes`, optional in the schema) and the probe caps by the ACTUAL type: an MP3 over 35 MB is `mp3_too_large` whatever it was declared as, a WAV over the WAV cap `wav_too_large`.
+- **Staging accounting.** A WAV counts at its full length toward the per-user in-flight and the global staging caps; when the worker collects a converted result (`inputFormat: 'wav'`) it re-charges the upload row at the MP3's size in the same transaction as the item's move to pending. `items.input_format` records `mp3` / `wav` (migration `0006_v030_wav_input`).
+- **UI.** The submit page accepts `.wav` / audio/wav / audio/x-wav / audio/wave, checks each file against its own type's limit, declares the type to tus, says "converting it to a 320 kbps MP3" while a WAV is checked, and shows "Converted from WAV (320 kbps MP3)" on the item (submit and review pages). Every WAV rejection code has a human message (`messages.ts`).
+
+### Changed
+- **A rejected upload's bytes are deleted at once.** On any refusal the probe unlinks the staged upload (and any cover it had published for it) and reports `released: true` (optional in the failure schema); the worker marks the upload `expired`, releasing its bytes from the staging quota. Before, a refused upload stayed on disk and counted toward the global staging cap for 7 days, which a 250 MB WAV would make a cheap way to fill staging. A failure without `released` (e.g. `interrupted`) keeps the old behaviour.
+- The probe's `sha256File` and `publishFile` stream in 1 MiB steps (no whole-file buffers in the 256 MB probe) and `sha256File` no longer follows a symlink. `runLimited` takes an optional `nice` (1–19), placed between `timeout` and the tool (`/bin/nice`, busybox).
+- An MP3 over 35 MB is now refused `mp3_too_large` after the magic check (it was `input_size` from the copy); `input_size` now means empty or over the hard 250 MB input cap.
+
+### Measured (real probe image, compose limits, `docker --cpus 1` on a 2.1 GHz Xeon E5-2620 v4)
+| Input | Job (copy → result) | ffmpeg | ffmpeg peak RSS | cgroup anon peak | Output |
+|---|---|---|---|---|---|
+| 250 MB, 24-bit 96 kHz stereo, 7.6 min | 19.5 s | 13.7 s | 40 MiB | 33 MiB | 18.2 MB, 48 kHz |
+| 247 MB, 24-bit 48 kHz 5.1, 5 min | 13.7 s | 8.3 s | 40 MiB | 34 MiB | 12.0 MB, stereo |
+| 249 MB, 32-bit float 48 kHz, 11.3 min | 24.3 s | 18.8 s | 39 MiB | 32 MiB | 27.2 MB |
+| 151 MB, 16-bit 44.1 kHz, 15 min (longest) | 26.2 s | 22.3 s | 41 MiB | 31 MiB | 36.0 MB |
+
+`memory.current` reaches the 256 MB limit through page cache (reclaimed; `oom_kill 0`). The 300 s conversion timeout leaves >10x headroom for a slower or busier vCPU.
+
+### Tests
+- `test/wav-probe.test.ts` (in-process, real ffmpeg): 10 accepted encodings (16/24/32-bit, u8, float 32/64, 22.05 / 44.1 / 48 / 88.2 / 96 kHz, mono / stereo / 5.1, EXTENSIBLE), INFO and `id3 ` tags + APIC through finalize, a >35 MB WAV, hand-built float and EXTENSIBLE-float files, and 39 refusals (ADPCM, MP3-in-WAV, A-law, GSM, foreign GUIDs, RF64 / BW64 / RIFX, truncated and lying sizes, trailing data, huge / malformed LIST, huge chunks, too many chunks, chunk order, lying block align / byte rate, channel and rate bounds, 12-bit, too short / too long, zlib-bomb / oversized / fake / overlong / duplicate `id3 ` chunks), each with the bytes released; the admin-lowered cap; an MP3 over 35 MB; the 250 MB hard cap.
+- `test/wav-accounting.test.ts` (DB): admission by declared type and loaded caps, WAV bytes in the in-flight cap, re-charge at the MP3 size, release on a refusal.
+- `test/e2e-wav.test.ts` (real containers): tus caps by declared type (incl. an admin-lowered cap); a 44 MB WAV with an `id3 ` chunk → probe conversion → prefill → preview → edit / submit / approve → finalize → mock AzuraCast receives the 320 kbps MP3 with ID3 + APIC → ticket summary; a WAV declared as MP3 is converted, an MP3 declared as WAV stays an MP3, a 36 MB MP3 declared as WAV and an ADPCM WAV are refused and released.
+- UI: `test/ui/wav.test.tsx` (picker, per-type limits, declared tus type, the converted label, a message for every WAV code) and the pre-check tests; `primitives.test.ts` for the Upload-Metadata parsing.
+- `e2e-flow`: the draft-comment test now waits for the worker to mark the ticket job done (the handler stores the message id first, so it could read `running`).
+
+**Deploy note:** migration `0006_v030_wav_input` adds a nullable column (no rewrite). Older probe results without `inputFormat` are read as MP3. A probe request spooled by an older web (no `maxWavBytes`) gets the compiled 250 MB cap.
+
 ## [0.2.2] — 2026-09-27 — v0.2.1 verification follow-ups
 
 ### Worker
