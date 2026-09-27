@@ -70,9 +70,9 @@ export function FileCard({
             {e.fileName}
           </p>
           <p className="text-xs text-cream/50">
-            {(e.size / 1024 / 1024).toFixed(1)} MB
-            {e.item?.durationS ? ` · ${duration(e.item.durationS)}` : ''}
-            {e.item?.bitrate ? ` · ${Math.round(e.item.bitrate / 1000)} kbps` : ''}
+            {[e.size ? `${(e.size / 1024 / 1024).toFixed(1)} MB` : null, e.item?.durationS ? duration(e.item.durationS) : null, e.item?.bitrate ? `${Math.round(e.item.bitrate / 1000)} kbps` : null]
+              .filter(Boolean)
+              .join(' · ')}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
