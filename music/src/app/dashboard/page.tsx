@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { songName, when } from '@/components/format'
 import { probeErrorText } from '@/components/messages'
+import { RequestWithdrawButton } from '@/components/requests/RequestWithdrawButton'
 import { BatchStatusChip, ItemStatusChip, NewArtistBadge, PageTitle, RequestStatusChip, TicketLink } from '@/components/ui'
 import { getDb } from '@/server/db/client'
 import { pageViewer } from '@/server/ui/page'
@@ -83,9 +84,16 @@ export default async function Dashboard() {
         </ul>
       )}
 
-      <section className="mt-10">
-        <h2 className="mb-1 text-lg font-bold">Edit and removal requests</h2>
-        <p className="mb-3 text-sm text-cream/60">Requests you have filed about songs already in the library.</p>
+      <section className="mt-10" id="requests">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 className="mb-1 text-lg font-bold">Edit and removal requests</h2>
+            <p className="text-sm text-cream/60">Requests you have filed about songs already in the library.</p>
+          </div>
+          <Link href="/library" className="btn btn-secondary btn-sm">
+            Request a change
+          </Link>
+        </div>
         {requests.length === 0 ? (
           <p className="card text-sm text-cream/60">You haven&apos;t filed any requests.</p>
         ) : (
@@ -108,7 +116,8 @@ export default async function Dashboard() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <RequestStatusChip status={r.status} />
-                  <TicketLink ticket={r.ticket} />
+                  <TicketLink ticket={r.ticket} empty="Ticket is being opened…" />
+                  {r.status === 'pending' ? <RequestWithdrawButton id={r.id} /> : null}
                 </div>
               </li>
             ))}

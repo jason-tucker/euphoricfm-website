@@ -11,6 +11,7 @@ export function navFor(perms: ReadonlySet<string>): NavItem[] {
   if (perms.has('submit')) {
     items.push({ href: '/dashboard', label: 'My music' })
     items.push({ href: '/submit', label: 'Submit' })
+    items.push({ href: '/library', label: 'Library' })
   }
   if (perms.has('review')) items.push({ href: '/review', label: 'Review' })
   if (perms.has('admin')) items.push({ href: '/admin', label: 'Admin' })

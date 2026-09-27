@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { playlistLabel } from '@/components/format'
 import { QueueList } from '@/components/review/QueueList'
+import { ReviewTabs } from '@/components/review/ReviewTabs'
 import { PageTitle } from '@/components/ui'
 import { getDb } from '@/server/db/client'
 import { pageViewer } from '@/server/ui/page'
@@ -31,7 +32,8 @@ export default async function ReviewPage({ searchParams }: { searchParams: Promi
 
   return (
     <section>
-      <PageTitle title="Review queue" sub={`${total} pending item${total === 1 ? '' : 's'}, oldest first.`} />
+      <PageTitle title="Review" sub={`${total} pending item${total === 1 ? '' : 's'}, oldest first.`} />
+      <ReviewTabs active="submissions" />
 
       <form method="get" className="card mb-5 grid gap-3 sm:grid-cols-[1fr_auto_auto_auto_auto] sm:items-end" role="search">
         <div>

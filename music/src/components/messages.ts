@@ -99,6 +99,7 @@ export const ITEM_STATUS: Record<string, { label: string; tone: ChipTone; help: 
   denied: { label: 'Denied', tone: 'bad', help: 'A manager declined this song.' },
   withdrawn: { label: 'Withdrawn', tone: 'muted', help: 'You withdrew this song.' },
   failed: { label: 'Failed', tone: 'bad', help: 'Adding it to the station failed; managers have been alerted.' },
+  ingest_failed: { label: 'Ingest failed', tone: 'bad', help: 'Adding it to the station failed; managers have been alerted.' },
 }
 
 export const BATCH_STATUS: Record<string, { label: string; tone: ChipTone }> = {
