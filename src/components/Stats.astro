@@ -3,7 +3,7 @@
 // (KPI numbers, chart SVGs, table rows, top lists, detail overlay content)
 // is built by scripts/stats.ts into the containers identified by id below.
 // Starts `hidden`; stats.ts unhides #stats-section only after a successful
-// /stats/summary fetch with totals.plays > 0 (graceful degradation when the
+// /stats/summary fetch with any recorded songs (graceful degradation when the
 // sidecar/backfill has no data yet, e.g. `pnpm dev` with no sidecar running).
 import { site } from '../site.config';
 const s = site.stats;
@@ -15,7 +15,7 @@ const s = site.stats;
   <p id="stats-coverage" class="mt-1 text-xs text-cream/50"></p>
 
   <!-- Primary range row — the ONE synced selection that scopes the KPI grid
-       plus the Listeners/Plays cards' own rows below it (all three render
+       plus the Listeners/Listens cards' own rows below it (all three render
        the same eligible presets and stay in lockstep, see stats.ts
        renderRangeTabs()/setRange()). JS-rendered only: coverage gates which
        presets exist, so there is nothing safe to pre-render here. -->
@@ -61,7 +61,7 @@ const s = site.stats;
     </details>
   </div>
 
-  <!-- 3. Plays card — same two-row header; #stats-plays-sub flips between
+  <!-- 3. Listens card (listener-weighted plays, ids keep "plays") — same two-row header; #stats-plays-sub flips between
        "per day"/"per week" copy depending on the active range's bucketing. -->
   <div class="card mt-3">
     <h3 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65">{s.plays.title}</h3>
@@ -78,7 +78,7 @@ const s = site.stats;
   </div>
 
   <!-- 4. Rhythm card — PERCENTAGE HEATMAP (7×24 day×hour, all-time, not
-       synced to the range above). Basis tabs pick plays vs. avg listeners as
+       synced to the range above). Basis tabs pick listens vs. avg listeners as
        the cell metric; stats.ts hides the Listeners button entirely when no
        listener sample exists anywhere. No `.efm-stats-chart` height class on
        the chart container — a CSS-grid heatmap sizes itself from content,

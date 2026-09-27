@@ -5,6 +5,15 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.17.0] — 2026-09-26 — Stats count listens instead of plays
+
+### Changed
+- **"Plays" are now listens.** Each song play counts as the number of listeners tuned in when it started (the history row's `listeners_start`; on the live 30s poll, `listeners.current` — the now-playing row is first seen within ~30s of its start). A song with 3 listeners followed by one with 2 is 5 listens. Applies to every play-derived number: the total, per-day chart, rhythm heatmap, top tracks/artists and the per-month drill-downs. API field names (`plays`, `p`, `n`) are unchanged and now carry listens.
+- **Ads don't count.** Rows from the `2Ads`, `3EFM/Free Ads`, `5Local Ads`, `Go Vote` and `4EuphoricFM` playlists are skipped on every ingest path (live, gap sync, backfill); override with the new `STATS_EXCLUDE_PLAYLISTS` env var. Rows with no title and no artist (untagged ~25s imaging clips, 817 in the history) are skipped the same way — they were not songs and would otherwise rank near the top by listens.
+- **Requests KPI** still counts requested songs, but its sub-line is now "{pct}% of songs played" — requests ÷ raw songs played (new `totals.songs` / per-day `s` in `/stats/summary`), not ÷ listens.
+- All user-facing "Plays" copy in the stats section now says "Listens".
+- **Stats store schema 1 → 2.** A schema-1 `stats.json` is not loaded into the new semantics: the sidecar starts fresh and first copies the old file to `stats.json.schema1.bak` (never overwritten). The full history is rebuilt offline by replaying AzuraCast history rows (with `listeners_start` + `playlist`) through `ingestNowPlaying`.
+
 ## [0.16.1] — 2026-08-20 — Merge day-crossover events into one calendar entry
 
 ### Fixed

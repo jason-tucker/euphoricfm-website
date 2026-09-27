@@ -116,6 +116,10 @@ services:
       # recover from a bad backfill without volume surgery (read_only fs):
       # wipes play-derived stats.json fields but keeps listener sample data.
       STATS_BACKFILL_RESET: ${STATS_BACKFILL_RESET:-}
+      # Ad/ID playlists excluded from listens (comma-separated, case-
+      # insensitive exact names). Empty = the built-in default list in
+      # server/stats.mjs (2Ads, 3EFM/Free Ads, 5Local Ads, Go Vote, 4EuphoricFM).
+      STATS_EXCLUDE_PLAYLISTS: ${STATS_EXCLUDE_PLAYLISTS:-}
     volumes:
       - efm_requests_data:/data
     security_opt:

@@ -72,7 +72,11 @@ function row(id, playedAt, opts = {}) {
   };
 }
 
-function nowPlayingPayload({ nowPlaying, history = [], listeners = 5, isOnline = true } = {}) {
+// Default listeners = 1: since schema 2 a live row with no listener count of
+// its own weighs listeners.current, so 1 keeps "one row = one listen" in the
+// tests that aren't about weighting. The listens-specific tests below pass
+// explicit counts.
+function nowPlayingPayload({ nowPlaying, history = [], listeners = 1, isOnline = true } = {}) {
   return {
     is_online: isOnline,
     listeners: { current: listeners },
@@ -111,11 +115,13 @@ test('live ingest aggregates plays/requests/days/hours/dow/tracks/months; same h
     s.stats.ingestNowPlaying(payload);
     s.stats.ingestNowPlaying(payload); // same now_playing row again — watermark must dedupe
 
-    assert.equal(s.stats.state.totals.plays, 1);
+    // listens: the row's own listeners_at_start (10) is its weight.
+    assert.equal(s.stats.state.totals.plays, 10);
+    assert.equal(s.stats.state.totals.songs, 1);
     assert.equal(s.stats.state.totals.requests, 1);
     assert.equal(s.stats.state.totals.uniqueTracks, 1);
     const t = s.stats.state.tracks['song-a'];
-    assert.equal(t.n, 1);
+    assert.equal(t.n, 10);
     assert.equal(t.rq, 1);
   } finally {
     await s.close();
@@ -209,7 +215,7 @@ test('played_at 03:00 UTC buckets to the PREVIOUS station-TZ day; month key matc
     // the withServer clock, a different calendar day) doesn't also touch
     // days[] and confuse this assertion — this test is about play bucketing.
     const ts = Date.parse('2026-01-15T03:00:00Z') / 1000;
-    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('x', ts), isOnline: false }));
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('x', ts, { listeners: 1 }), isOnline: false }));
     assert.ok(s.stats.state.days['2026-01-14']);
     assert.equal(s.stats.state.days['2026-01-14'].p, 1);
     assert.ok(!s.stats.state.days['2026-01-15']);
@@ -267,7 +273,7 @@ test('backfill: boundary freezes once, multiple windows execute, forward/over-re
     s.clockRef.t += 31_000;
 
     // Retrying window 2 with the SAME row ingests it exactly once.
-    const retryRow = row('bf-retry', Date.parse('2026-01-09T17:00:00Z') / 1000, { shId: 102 });
+    const retryRow = row('bf-retry', Date.parse('2026-01-09T17:00:00Z') / 1000, { shId: 102, listeners: 1 });
     await s.stats.backfillStep(fakeFetchJson([retryRow]));
     assert.equal(s.stats.state.tracks['bf-retry'].n, 1);
     assert.equal(s.stats.state.backfill.cursor, '2026-01-17'); // window 2 done, cursor moved to window 3
@@ -412,9 +418,9 @@ test('backfill: never re-ingests rows syncRecent already covered (boundary is th
   try {
     // Rows across three days; syncRecent's first run returns ALL of them
     // (generous window), establishing forward floor=r1, head=r3.
-    const r1 = row('ov-1', Date.parse('2026-01-13T17:00:00Z') / 1000, { shId: 11 });
-    const r2 = row('ov-2', Date.parse('2026-01-14T17:00:00Z') / 1000, { shId: 12 });
-    const r3 = row('ov-3', Date.parse('2026-01-15T12:00:00Z') / 1000, { shId: 13 });
+    const r1 = row('ov-1', Date.parse('2026-01-13T17:00:00Z') / 1000, { shId: 11, listeners: 1 });
+    const r2 = row('ov-2', Date.parse('2026-01-14T17:00:00Z') / 1000, { shId: 12, listeners: 1 });
+    const r3 = row('ov-3', Date.parse('2026-01-15T12:00:00Z') / 1000, { shId: 13, listeners: 1 });
     await s.stats.tick(async (url) => {
       if (url.includes('/history')) return { ok: true, status: 200, json: async () => [r1, r2, r3] };
       return { ok: true, status: 200, json: async () => nowPlayingPayload({ nowPlaying: r3 }) };
@@ -427,7 +433,7 @@ test('backfill: never re-ingests rows syncRecent already covered (boundary is th
 
     // Backfill windows now re-deliver the same rows (over-returning API).
     // None may double-count; older-than-floor rows DO count, exactly once.
-    const older = row('ov-0', Date.parse('2026-01-05T17:00:00Z') / 1000, { shId: 10 });
+    const older = row('ov-0', Date.parse('2026-01-05T17:00:00Z') / 1000, { shId: 10, listeners: 1 });
     let guard = 0;
     while (!s.stats.state.backfill.done && guard < 20) {
       await s.stats.backfillStep(fakeFetchJson([older, r1, r2, r3]));
@@ -459,7 +465,7 @@ test('concurrent backfillStep calls: the second returns immediately via the busy
     const slowFetch = async () => {
       fetchCalls += 1;
       await gate;
-      return { ok: true, status: 200, json: async () => [row('slow-1', Date.parse('2026-01-02T17:00:00Z') / 1000)] };
+      return { ok: true, status: 200, json: async () => [row('slow-1', Date.parse('2026-01-02T17:00:00Z') / 1000, { listeners: 1 })] };
     };
 
     const first = s.stats.backfillStep(slowFetch);
@@ -591,7 +597,7 @@ test('syncRecent gap-fill: only rows newer than the watermark are ingested; a la
     s.stats.state.watermark = { playedAt: T_NOON, shId: 5 };
 
     const before = row('too-old', T_NOON - 100, { shId: 1 });
-    const gapRow = row('gap-1', T_NOON + 50, { shId: 6 });
+    const gapRow = row('gap-1', T_NOON + 50, { shId: 6, listeners: 1 });
     const dup = row('base', T_NOON, { shId: 5 }); // exact watermark row, must not double count
 
     const fetchImpl = async (url) => {
@@ -685,15 +691,19 @@ test('GET /stats/summary: dense days incl. zero-filled gap day, top lists sorted
     assert.equal(r.status, 200);
     const body = await r.json();
     assert.equal(body.ok, true);
-    assert.equal(body.totals.plays, 3);
+    assert.equal(body.totals.plays, 60); // listens: 20 + 30 + 10
+    assert.equal(body.totals.songs, 3);
     const byDay = Object.fromEntries(body.days.map((d) => [d.d, d]));
     assert.ok(byDay['2026-01-10']);
     assert.ok(byDay['2026-01-11']); // zero-filled gap day present
     assert.equal(byDay['2026-01-11'].p, 0);
+    assert.equal(byDay['2026-01-11'].s, 0);
+    assert.equal(byDay['2026-01-12'].p, 40);
+    assert.equal(byDay['2026-01-12'].s, 2);
     assert.equal(byDay['2026-01-11'].lavg, null);
     assert.ok(byDay['2026-01-12']);
     assert.equal(body.topTracks[0].id, 'pop-1');
-    assert.equal(body.topTracks[0].plays, 2);
+    assert.equal(body.topTracks[0].plays, 50);
     assert.ok(body.topTracks[0].plays >= body.topTracks[1].plays);
   } finally {
     await s.close();
@@ -947,7 +957,8 @@ test('STATS_BACKFILL_RESET wipes plays and day/hour/dow listener aggregates but 
     // zeroed by reset, or a post-reset re-backfill would double-fold them.
     s1.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('reset-1', T_NOON, { listeners: 15 }), listeners: 15 }));
     s1.save();
-    assert.equal(s1.state.totals.plays, 1);
+    assert.equal(s1.state.totals.plays, 15); // one song x 15 listeners
+    assert.equal(s1.state.totals.songs, 1);
     const peakBefore = s1.state.totals.peak.value;
     assert.ok(peakBefore > 0);
     const dayBefore = s1.state.days[Object.keys(s1.state.days)[0]];
@@ -955,6 +966,7 @@ test('STATS_BACKFILL_RESET wipes plays and day/hour/dow listener aggregates but 
 
     const s2 = createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt, now: () => clockRef.t, backfillReset: 'v1' });
     assert.equal(s2.state.totals.plays, 0);
+    assert.equal(s2.state.totals.songs, 0);
     assert.equal(Object.keys(s2.state.tracks).length, 0);
     assert.equal(s2.state.totals.peak.value, peakBefore); // min5/hourly-ring-derived peak survives
     assert.equal(s2.state.backfill.resetToken, 'v1');
@@ -962,6 +974,8 @@ test('STATS_BACKFILL_RESET wipes plays and day/hour/dow listener aggregates but 
     // counters (they used to survive, so a post-reset re-backfill folded
     // every history row's listeners_at_start reading a second time).
     for (const d of Object.values(s2.state.days)) {
+      assert.equal(d.p, 0);
+      assert.equal(d.s, 0);
       assert.equal(d.lsum, 0);
       assert.equal(d.lcnt, 0);
       assert.equal(d.lmax, 0);
@@ -996,7 +1010,7 @@ test('grid (T3): a play lands in the right dow*24+hour cell across a station-TZ 
     // withServer clock, a different calendar day) doesn't also touch the
     // grid and confuse this assertion.
     const ts = Date.parse('2026-01-15T03:00:00Z') / 1000;
-    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('grid-x', ts), isOnline: false }));
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('grid-x', ts, { listeners: 1 }), isOnline: false }));
 
     // dow of 2026-01-14 (Wednesday) via the same UTC-date-string method the
     // implementation uses, hour 22 (ET) — cell index dow*24+hour.
@@ -1062,7 +1076,7 @@ test('grid (T3): /stats/summary always emits a 168-entry grid shaped { w, h, p, 
       assert.equal(body.grid[i].h, i % 24);
     }
     const totalP = body.grid.reduce((sum, c) => sum + c.p, 0);
-    assert.equal(totalP, 1);
+    assert.equal(totalP, 4); // one song x 4 listeners
     const nonEmpty = body.grid.filter((c) => c.lavg !== null);
     assert.ok(nonEmpty.length >= 1);
   } finally {
@@ -1237,5 +1251,316 @@ test('listeners series are served sorted with duplicate-t buckets merged (clock-
     assert.equal(merged.max, 67);
   } finally {
     await s.close();
+  }
+});
+
+// ---- 14. Listens (schema 2) -----------------------------------------------------
+
+// Offline-replay row shape (the historical rebuild feeds exactly this through
+// ingestNowPlaying({ is_online: false, song_history })).
+function replayRow(id, playedAt, { listeners, playlist = 'Default', isRequest = false, artist } = {}) {
+  const r = {
+    sh_id: playedAt,
+    played_at: playedAt,
+    is_request: isRequest,
+    playlist,
+    song: { id, title: `Title ${id}`, artist: artist ?? `Artist ${id}`, text: `${artist ?? `Artist ${id}`} - Title ${id}`, art: '' },
+  };
+  if (listeners !== undefined) r.listeners_at_start = listeners;
+  return r;
+}
+
+test('listens: a song with 3 listeners then one with 2 is 5 listens (totals, day, track, artist), 2 songs', async () => {
+  const s = await withServer();
+  try {
+    const a = row('ls-a', T_NOON, { shId: 1, listeners: 3, artist: 'Same Artist' });
+    const b = row('ls-b', T_NOON + 200, { shId: 2, listeners: 2, artist: 'Same Artist' });
+    // listeners.current (99) must NOT override the rows' own counts.
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: b, history: [a], listeners: 99 }));
+
+    const st = s.stats.state;
+    assert.equal(st.totals.plays, 5);
+    assert.equal(st.totals.songs, 2);
+    assert.equal(st.days['2026-01-15'].p, 5);
+    assert.equal(st.days['2026-01-15'].s, 2);
+    assert.equal(st.tracks['ls-a'].n, 3);
+    assert.equal(st.tracks['ls-b'].n, 2);
+    assert.equal(st.tracks['ls-a'].m['2026-01'], 3);
+    assert.equal(st.hours.reduce((x, h) => x + h.p, 0), 5);
+    assert.equal(st.dow.reduce((x, w) => x + w.p, 0), 5);
+    assert.equal(st.grid.reduce((x, g) => x + g.p, 0), 5);
+
+    const r = await fetch(`${s.base}/stats/artist?name=${encodeURIComponent('same artist')}`);
+    const body = await r.json();
+    assert.equal(body.artist.plays, 5);
+    assert.deepEqual(body.artist.months, [{ m: '2026-01', p: 5 }]);
+
+    const sum = await (await fetch(`${s.base}/stats/summary`)).json();
+    assert.equal(sum.totals.plays, 5);
+    assert.equal(sum.totals.songs, 2);
+    const day = sum.days.find((d) => d.d === '2026-01-15');
+    assert.equal(day.p, 5);
+    assert.equal(day.s, 2);
+  } finally {
+    await s.close();
+  }
+});
+
+test('listens: live poll rows without their own count weigh listeners.current; offline polls weigh 0', async () => {
+  const s = await withServer();
+  try {
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('live-1', T_NOON, { shId: 1 }), listeners: 7 }));
+    assert.equal(s.stats.state.tracks['live-1'].n, 7);
+    assert.equal(s.stats.state.totals.plays, 7);
+
+    // listeners_start (the history API's field name) is honoured too.
+    const hs = { ...row('live-2', T_NOON + 100, { shId: 2 }), listeners_at_start: undefined, listeners_start: 4 };
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: hs, listeners: 7 }));
+    assert.equal(s.stats.state.tracks['live-2'].n, 4);
+
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('live-3', T_NOON + 200, { shId: 3 }), listeners: 7, isOnline: false }));
+    assert.equal(s.stats.state.tracks['live-3'].n, 0);
+    assert.equal(s.stats.state.totals.plays, 11);
+    assert.equal(s.stats.state.totals.songs, 3);
+  } finally {
+    await s.close();
+  }
+});
+
+test('listens: ad-playlist rows are never recorded but the watermark still advances past them (live, sync, backfill)', async () => {
+  const s = await withServer();
+  try {
+    const ad = { ...row('ad-1', T_NOON, { shId: 1, listeners: 9 }), playlist: '2Ads' };
+    const adObj = { ...row('ad-2', T_NOON + 30, { shId: 2, listeners: 9 }), playlist: { name: ' 5local ADS ' } };
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: adObj, history: [ad], listeners: 9 }));
+    assert.ok(!s.stats.state.tracks['ad-1']);
+    assert.ok(!s.stats.state.tracks['ad-2']);
+    assert.equal(s.stats.state.totals.plays, 0);
+    assert.equal(s.stats.state.totals.songs, 0);
+    assert.deepEqual(s.stats.state.watermark, { playedAt: T_NOON + 30, shId: 2 });
+    assert.equal(s.stats.state.coveredFrom, null);
+
+    // Re-delivery is a no-op; the next real song counts.
+    const song = { ...row('real-1', T_NOON + 60, { shId: 3, listeners: 2 }), playlist: 'Default' };
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: song, history: [ad, adObj], listeners: 9 }));
+    assert.equal(s.stats.state.totals.plays, 2);
+    assert.equal(s.stats.state.totals.songs, 1);
+    assert.deepEqual(s.stats.state.watermark, { playedAt: T_NOON + 60, shId: 3 });
+  } finally {
+    await s.close();
+  }
+
+  // syncRecent + backfill share the exclusion; a custom list replaces the default.
+  const s2 = await withServer({ apiKey: 'k', backfillStart: '2026-01-01', excludePlaylists: 'Jingles, Promo' });
+  try {
+    s2.stats.state.watermark = { playedAt: T_NOON, shId: 5 };
+    const jingle = { ...row('jingle', T_NOON + 10, { shId: 6, listeners: 3 }), playlist: 'jingles' };
+    const adNotExcluded = { ...row('ads-now-ok', T_NOON + 20, { shId: 7, listeners: 3 }), playlist: '2Ads' };
+    await s2.stats.tick(async (url) => {
+      if (url.includes('/history')) return { ok: true, status: 200, json: async () => [jingle, adNotExcluded] };
+      return { ok: true, status: 200, json: async () => nowPlayingPayload({}) };
+    });
+    assert.ok(!s2.stats.state.tracks['jingle']);
+    assert.ok(s2.stats.state.tracks['ads-now-ok']);
+    assert.equal(s2.stats.state.watermark.playedAt, T_NOON + 20);
+
+    seedForward(s2, Date.parse('2026-01-20T17:00:00Z') / 1000, T_NOON + 20);
+    s2.stats.state.backfill.boundary = null;
+    await s2.stats.backfillStep(fakeFetchJson([])); // freeze boundary
+    const oldPromo = { ...row('old-promo', Date.parse('2026-01-02T17:00:00Z') / 1000, { listeners: 4 }), playlist: 'Promo' };
+    const oldSong = { ...row('old-song', Date.parse('2026-01-02T18:00:00Z') / 1000, { listeners: 4 }), playlist: 'Default' };
+    await s2.stats.backfillStep(fakeFetchJson([oldPromo, oldSong]));
+    assert.ok(!s2.stats.state.tracks['old-promo']);
+    assert.equal(s2.stats.state.tracks['old-song'].n, 4);
+    assert.equal(s2.stats.state.backfill.halted, false);
+  } finally {
+    await s2.close();
+  }
+});
+
+test('listens: a zero-weight row still creates the track and counts as a song', async () => {
+  const s = await withServer();
+  try {
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('zero-1', T_NOON, { shId: 1, listeners: 0 }), listeners: 5 }));
+    const t = s.stats.state.tracks['zero-1'];
+    assert.ok(t);
+    assert.equal(t.n, 0);
+    assert.equal(t.first, T_NOON);
+    assert.equal(t.a, 'Artist zero-1');
+    assert.equal(s.stats.state.totals.uniqueTracks, 1);
+    assert.equal(s.stats.state.totals.songs, 1);
+    assert.equal(s.stats.state.totals.plays, 0);
+    assert.equal(s.stats.state.days['2026-01-15'].s, 1);
+    assert.equal(s.stats.state.days['2026-01-15'].p, 0);
+  } finally {
+    await s.close();
+  }
+});
+
+test('listens: requests stay raw counts, so the requests % basis is songs, not listens', async () => {
+  const s = await withServer();
+  try {
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('rq-1', T_NOON, { shId: 1, listeners: 10, isRequest: true }) }));
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('rq-2', T_NOON + 100, { shId: 2, listeners: 10 }) }));
+    const sum = await (await fetch(`${s.base}/stats/summary`)).json();
+    assert.equal(sum.totals.plays, 20);
+    assert.equal(sum.totals.songs, 2);
+    assert.equal(sum.totals.requests, 1);
+    const day = sum.days.find((d) => d.d === '2026-01-15');
+    assert.equal(day.r, 1);
+    assert.equal(day.s, 2);
+    // The KPI sub is Σr / Σs over the range — 50%, not 1/20 = 5%.
+    assert.equal((day.r / day.s) * 100, 50);
+    assert.equal(s.stats.state.tracks['rq-1'].rq, 1);
+    const health = await (await fetch(`${s.base}/stats/health`)).json();
+    assert.equal(health.songs, 2);
+  } finally {
+    await s.close();
+  }
+});
+
+test('schema: a schema-1 store is not loaded — starts fresh and keeps a one-time .bak that is never overwritten', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'efm-stats-schema-'));
+  const storePath = join(dir, 'stats.json');
+  const { writeFileSync, existsSync } = await import('node:fs');
+  try {
+    const v1 = JSON.stringify({ schema: 1, totals: { plays: 12345, requests: 3, uniqueTracks: 9 }, days: {}, tracks: { x: { n: 5 } } });
+    writeFileSync(storePath, v1);
+    const s1 = createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt });
+    assert.equal(s1.state.schema, 2);
+    assert.equal(s1.state.totals.plays, 0);
+    assert.equal(s1.state.totals.songs, 0);
+    assert.equal(Object.keys(s1.state.tracks).length, 0);
+    const bak = `${storePath}.schema1.bak`;
+    assert.ok(existsSync(bak));
+    assert.equal(readFileSync(bak, 'utf8'), v1);
+
+    // A second old-schema boot must not clobber the first backup.
+    writeFileSync(storePath, JSON.stringify({ schema: 1, totals: { plays: 1 } }));
+    createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt });
+    assert.equal(readFileSync(bak, 'utf8'), v1);
+
+    // No schema field at all -> ".schemaunknown.bak".
+    writeFileSync(storePath, JSON.stringify({ totals: { plays: 1 } }));
+    createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt });
+    assert.ok(existsSync(`${storePath}.schemaunknown.bak`));
+
+    // A current-schema store loads normally and writes no backup.
+    s1.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('cur-1', T_NOON, { listeners: 3 }) }));
+    s1.save();
+    const s2 = createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt });
+    assert.equal(s2.state.totals.plays, 3);
+    assert.ok(!existsSync(`${storePath}.schema2.bak`));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reset + load: STATS_BACKFILL_RESET zeroes songs/s; a schema-2 store missing them loads with defaults', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'efm-stats-reset2-'));
+  const storePath = join(dir, 'stats.json');
+  const { writeFileSync } = await import('node:fs');
+  try {
+    const s1 = createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt });
+    s1.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('rs-1', T_NOON, { listeners: 3 }) }));
+    s1.save();
+    assert.equal(s1.state.totals.songs, 1);
+    const s2 = createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt, backfillReset: 'r2' });
+    assert.equal(s2.state.totals.songs, 0);
+    assert.equal(s2.state.totals.plays, 0);
+    for (const d of Object.values(s2.state.days)) assert.equal(d.s, 0);
+
+    // Hand-trimmed schema-2 file without the new counters.
+    writeFileSync(storePath, JSON.stringify({ schema: 2, totals: { plays: 4 }, days: { '2026-01-15': { p: 4, r: 0, lsum: 0, lcnt: 0, lmax: 0 } } }));
+    const s3 = createStats({ storePath, timezone: TZ, sanitizeText, sanitizeArt });
+    assert.equal(s3.state.totals.songs, 0);
+    s3.ingestNowPlaying(nowPlayingPayload({ nowPlaying: row('rs-2', T_NOON, { listeners: 2 }), isOnline: false }));
+    assert.equal(s3.state.totals.songs, 1);
+    assert.equal(s3.state.days['2026-01-15'].s, 1);
+    assert.equal(s3.state.days['2026-01-15'].p, 6);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('offline replay: is_online:false + song_history rows with listeners_at_start/playlist rebuild listens exactly', async () => {
+  const s = await withServer();
+  try {
+    const base = Date.parse('2026-01-10T17:00:00Z') / 1000;
+    const rows = [
+      replayRow('rp-a', base, { listeners: 3, artist: 'Replay Artist' }),
+      replayRow('ad', base + 180, { listeners: 3, playlist: '3EFM/Free Ads' }),
+      replayRow('rp-b', base + 200, { listeners: 2, artist: 'Replay Artist', isRequest: true }),
+      replayRow('id', base + 380, { listeners: 2, playlist: '4EuphoricFM' }),
+      replayRow('rp-a', base + 400, { artist: 'Replay Artist' }), // listener count unknown -> 0
+      replayRow('rp-c', base + 86_400, { listeners: 6, playlist: 'Night' }),
+      replayRow('vote', base + 86_500, { listeners: 6, playlist: 'go vote' }),
+    ];
+    // Delivered in chunks, out of order, with a replayed overlap — same as
+    // a batched offline rebuild might.
+    s.stats.ingestNowPlaying({ is_online: false, song_history: rows.slice(0, 4).reverse() });
+    s.stats.ingestNowPlaying({ is_online: false, song_history: rows.slice(2) });
+
+    const st = s.stats.state;
+    assert.equal(st.totals.plays, 11); // 3 + 2 + 0 + 6
+    assert.equal(st.totals.songs, 4);
+    assert.equal(st.totals.requests, 1);
+    assert.equal(st.totals.uniqueTracks, 3);
+    assert.equal(st.tracks['rp-a'].n, 3);
+    assert.equal(st.tracks['rp-b'].n, 2);
+    assert.equal(st.tracks['rp-c'].n, 6);
+    assert.ok(!st.tracks['ad'] && !st.tracks['id'] && !st.tracks['vote']);
+    assert.equal(st.days['2026-01-10'].p, 5);
+    assert.equal(st.days['2026-01-10'].s, 3);
+    assert.equal(st.days['2026-01-11'].p, 6);
+    // Offline replay adds no live samples: only the rows' own readings fold.
+    assert.equal(st.min5.length, 0);
+    assert.equal(st.days['2026-01-10'].lcnt, 2);
+    assert.equal(st.watermark.playedAt, base + 86_500);
+
+    const artist = await (await fetch(`${s.base}/stats/artist?name=replay%20artist`)).json();
+    assert.equal(artist.artist.plays, 5);
+  } finally {
+    await s.close();
+  }
+});
+
+test('blank rows (no title AND no artist, text empty or " - ") are not songs: skipped live (watermark advances) and in backfill', async () => {
+  const blank = (id, playedAt, text, extra = {}) => ({
+    sh_id: playedAt, played_at: playedAt, is_request: false, listeners_at_start: 9, playlist: 'Default',
+    song: { id, title: '  ', artist: '', text, art: '' }, ...extra,
+  });
+  const s = await withServer();
+  try {
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: blank('blank-2', T_NOON + 30, ' - '), history: [blank('blank-1', T_NOON, '')] }));
+    assert.ok(!s.stats.state.tracks['blank-1'] && !s.stats.state.tracks['blank-2']);
+    assert.equal(s.stats.state.totals.plays, 0);
+    assert.equal(s.stats.state.totals.songs, 0);
+    assert.deepEqual(s.stats.state.watermark, { playedAt: T_NOON + 30, shId: T_NOON + 30 });
+
+    // Title-only / artist-only / text-only rows are still songs.
+    const titled = row('titled', T_NOON + 60, { listeners: 2, artist: '' });
+    const textOnly = { ...blank('text-only', T_NOON + 90, 'Someone - Something'), listeners_at_start: 3 };
+    s.stats.ingestNowPlaying(nowPlayingPayload({ nowPlaying: textOnly, history: [titled] }));
+    assert.equal(s.stats.state.tracks['titled'].n, 2);
+    assert.equal(s.stats.state.tracks['text-only'].n, 3);
+    assert.equal(s.stats.state.totals.songs, 2);
+  } finally {
+    await s.close();
+  }
+
+  const s2 = await withServer({ apiKey: 'k', backfillStart: '2026-01-01' });
+  try {
+    seedForward(s2, Date.parse('2026-01-20T17:00:00Z') / 1000);
+    await s2.stats.backfillStep(fakeFetchJson([])); // freeze boundary
+    const oldBlank = blank('old-blank', Date.parse('2026-01-02T17:00:00Z') / 1000, ' - ');
+    const oldSong = row('old-real', Date.parse('2026-01-02T18:00:00Z') / 1000, { listeners: 4 });
+    await s2.stats.backfillStep(fakeFetchJson([oldBlank, oldSong]));
+    assert.ok(!s2.stats.state.tracks['old-blank']);
+    assert.equal(s2.stats.state.tracks['old-real'].n, 4);
+    assert.equal(s2.stats.state.backfill.halted, false);
+    assert.equal(s2.stats.state.backfill.cursor, '2026-01-09');
+  } finally {
+    await s2.close();
   }
 });

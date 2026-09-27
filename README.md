@@ -173,6 +173,7 @@ webhook URL is ever baked into the static bundle. Set them in `.env` on the host
 | `STATS_TZ` | `efm-requests`/stats.mjs — station timezone for day/hour/month bucketing (default `America/New_York`) |
 | `STATS_BACKFILL_START` | `efm-requests`/stats.mjs — earliest date to backfill (default `2023-01-01`) |
 | `STATS_BACKFILL_RESET` | `efm-requests`/stats.mjs — set to any new value + `docker compose up -d` to wipe and re-backfill |
+| `STATS_EXCLUDE_PLAYLISTS` | `efm-requests`/stats.mjs — comma-separated playlist names (ads/IDs) never counted as listens (empty = default `2Ads,3EFM/Free Ads,5Local Ads,Go Vote,4EuphoricFM`) |
 | `TICKETS_GG_HOSTNAME` | second reverse-proxied host (`tickets.euphoric.gg`) |
 
 To change a webhook without rebuilding the image, edit `.env` on the host and run
