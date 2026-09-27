@@ -70,6 +70,9 @@ const webSchema = z.object({
   STAGING_UPLOADS_DIR: z.string().default('/staging/uploads'),
   SPOOL_PROBE_IN_DIR: z.string().default('/spool/probe/in-web'),
   SPOOL_PROBE_OUT_DIR: z.string().default('/spool/probe/out'),
+  // Required: with trustHost, Auth.js would otherwise derive its base URL
+  // (redirect_uri, callback checks) from request headers.
+  AUTH_URL: z.string().url(),
   ALLOW_TEST_ENDPOINTS: boolFlag,
 })
 
@@ -93,7 +96,7 @@ export function loadWebEnv(env: Record<string, string | undefined> = process.env
   assertHttps('DISCORD_AUTHORIZE_URL', parsed.DISCORD_AUTHORIZE_URL, parsed.ALLOW_TEST_ENDPOINTS)
   assertHttps('DISCORD_TOKEN_URL', parsed.DISCORD_TOKEN_URL, parsed.ALLOW_TEST_ENDPOINTS)
   assertHttps('PORTAL_ORIGIN', parsed.PORTAL_ORIGIN, parsed.ALLOW_TEST_ENDPOINTS)
-  if (env.AUTH_URL && new URL(env.AUTH_URL).origin !== parsed.PORTAL_ORIGIN) {
+  if (new URL(parsed.AUTH_URL).origin !== parsed.PORTAL_ORIGIN) {
     throw new Error('AUTH_URL must have the same origin as PORTAL_ORIGIN')
   }
   return parsed

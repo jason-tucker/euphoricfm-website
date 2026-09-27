@@ -4,7 +4,10 @@
 //
 // Order: size cap → signature (raw bytes, before parsing) → delivery-id dedupe
 // (in the same transaction as the effect) → parse → apply, anchored ONLY to
-// the batch/request bound to that ticket id. Unknown tickets are ignored.
+// the batch/request bound to that ticket id. Unknown tickets are ignored,
+// except one whose externalRef names a submitted batch (or a request) that is
+// still waiting for its ticket id: that answers 409 WITHOUT recording the
+// delivery, so tickets-web retries it.
 
 import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
@@ -24,7 +27,10 @@ const messageEvent = z.object({
   occurredAt: z.string().optional(),
   message: z.object({
     id: z.string(),
-    source: z.string(),
+    // INTEGRATION_API: only these sources are ever delivered; anything else
+    // (e.g. an internal staff note) is acknowledged and ignored, never stored
+    // as a member-visible comment.
+    source: z.enum(['discord', 'web', 'system']),
     body: z.string(),
     createdAt: z.string().optional(),
     author,
@@ -73,10 +79,35 @@ export async function handleTicketsHook(req: Request, deps: HookDeps): Promise<{
     return { status: 200, body: { ok: true, ignored: 'unrecognised' } }
   }
 
+  try {
+    return await applyDelivery(deps, deliveryId!, payload)
+  } catch (e) {
+    if (e instanceof RetryDelivery) return { status: 409, body: { error: 'ticket_not_bound_yet' } }
+    throw e
+  }
+}
+
+class RetryDelivery extends Error {}
+
+// A batch/request named by externalRef that has no ticket id yet, but is in
+// a state where the worker is opening its ticket.
+async function awaitingBinding(tx: Pick<DB, 'query'>, ref: string | null | undefined): Promise<boolean> {
+  const m = /^(batch|request):(\d{1,9})$/.exec(ref ?? '')
+  if (!m) return false
+  const id = Number(m[2])
+  if (m[1] === 'batch') {
+    const b = await tx.query.batches.findFirst({ where: eq(batches.id, id) })
+    return !!b && b.ticketId === null && b.status === 'submitted'
+  }
+  const r = await tx.query.requests.findFirst({ where: eq(requests.id, id) })
+  return !!r && r.ticketId === null
+}
+
+async function applyDelivery(deps: HookDeps, deliveryId: string, payload: z.infer<typeof payloadSchema>): Promise<{ status: number; body: Record<string, unknown> }> {
   return deps.db.transaction(async (tx) => {
     const fresh = await tx
       .insert(hookDeliveries)
-      .values({ deliveryId: deliveryId!, event: payload.event, ticketId: payload.ticketId })
+      .values({ deliveryId, event: payload.event, ticketId: payload.ticketId })
       .onConflictDoNothing()
       .returning({ id: hookDeliveries.deliveryId })
     if (fresh.length === 0) return { status: 200, body: { ok: true, duplicate: true } }
@@ -84,6 +115,11 @@ export async function handleTicketsHook(req: Request, deps: HookDeps): Promise<{
     const batch = await tx.query.batches.findFirst({ where: eq(batches.ticketId, payload.ticketId) })
     const request = batch ? undefined : await tx.query.requests.findFirst({ where: eq(requests.ticketId, payload.ticketId) })
     const expectedRef = batch ? `batch:${batch.id}` : request ? `request:${request.id}` : null
+    if (!expectedRef && (await awaitingBinding(tx, payload.externalRef))) {
+      // The worker has opened this ticket but not stored its id yet. Do not
+      // record the delivery (the transaction rolls back); ask for a retry.
+      throw new RetryDelivery()
+    }
     if (!expectedRef || (payload.externalRef && payload.externalRef !== expectedRef)) {
       return { status: 200, body: { ok: true, ignored: 'unknown_ticket' } }
     }
@@ -109,7 +145,7 @@ export async function handleTicketsHook(req: Request, deps: HookDeps): Promise<{
         body: body.slice(0, 4000),
         authorDiscordId: payload.message.author?.discordId ?? null,
         authorName: payload.message.author?.name?.slice(0, 100) ?? null,
-        deliveryId: deliveryId!,
+        deliveryId,
       })
       return { status: 200, body: { ok: true } }
     }

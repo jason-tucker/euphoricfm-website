@@ -82,6 +82,10 @@ export async function addUploadToBatch(db: DB, v: Viewer, batchId: number, uploa
   if (b.status !== 'draft') throw conflict('batch_not_draft')
   const probeRequestId = randomUUID()
   const item = await db.transaction(async (tx) => {
+    // Lock the batch row: a concurrent submit (which takes the same lock)
+    // either sees this item or this add sees the submitted batch.
+    const [locked] = await tx.select({ status: batches.status }).from(batches).where(eq(batches.id, b.id)).for('update')
+    if (locked?.status !== 'draft') throw conflict('batch_not_draft')
     const [{ n } = { n: 0 }] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(items)
@@ -116,6 +120,7 @@ export async function submitBatch(db: DB, v: Viewer, batchId: number, attest: un
   const b = await loadBatchVisible(db, v, batchId)
   if (!isOwner(v, b)) throw notFound()
   return db.transaction(async (tx) => {
+    await tx.select({ id: batches.id }).from(batches).where(eq(batches.id, b.id)).for('update')
     const its = await tx.query.items.findMany({ where: eq(items.batchId, b.id) })
     if (its.some((i) => i.status === 'probing')) throw conflict('items_still_probing')
     if (!its.some((i) => i.status === 'pending')) throw conflict('nothing_to_submit')

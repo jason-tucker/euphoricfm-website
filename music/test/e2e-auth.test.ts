@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { E2E } from './helpers/env'
 import { login, loginOk, mockUser } from './helpers/auth'
 import { ageMemberCache, ownerSql } from './helpers/db'
-import { control, Jar, req } from './helpers/http'
+import { control, freshIp, Jar, req } from './helpers/http'
 
 const REVIEWER_ROLE = '1144462744456794153'
 const OWNER = '117501528641634310'
@@ -20,6 +20,12 @@ async function me(jar: Jar) {
 }
 
 describe.skipIf(!E2E())('auth: Discord OAuth + guild membership gate', () => {
+  it('unsafe /api/auth/* requests must declare Content-Length (chunked bodies are refused)', async () => {
+    const { reqFresh } = await import('./helpers/http')
+    const r = await reqFresh(null, '/api/auth/signin/discord', { chunks: [Buffer.alloc(64 * 1024, 0x61), Buffer.alloc(64 * 1024, 0x61)], headers: { 'content-type': 'application/x-www-form-urlencoded' } })
+    expect(r.status).toBe(411)
+  })
+
   it('a member signs in; cookies are __Host-, HttpOnly, Secure, SameSite=Lax; tokens encrypted at rest', async () => {
     const id = newId()
     await mockUser({ id })
@@ -184,11 +190,13 @@ describe.skipIf(!E2E())('auth: Discord OAuth + guild membership gate', () => {
   })
 
   it('/api/auth/* is rate-limited to 20/min per cf-connecting-ip', async () => {
-    const ip = `2001:db8::${Math.floor(Math.random() * 0xffff).toString(16)}:${Date.now().toString(16).slice(-4)}`
+    const ip = freshIp()
     const statuses: number[] = []
     for (let i = 0; i < 22; i++) statuses.push((await req(null, '/api/auth/csrf', { ip })).status)
     expect(statuses.slice(0, 20).every((s) => s === 200)).toBe(true)
     expect(statuses.slice(20)).toEqual([429, 429])
-    expect((await req(null, '/api/auth/csrf', { ip: `${ip}1` })).status).toBe(200)
+    expect((await req(null, '/api/auth/csrf', { ip: freshIp() })).status).toBe(200)
+    // another address in the SAME /64 shares the bucket
+    expect((await req(null, '/api/auth/csrf', { ip: ip.replace(/::[0-9a-f]+$/, '::beef') })).status).toBe(429)
   })
 })

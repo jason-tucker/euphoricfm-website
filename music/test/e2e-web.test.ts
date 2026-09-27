@@ -5,7 +5,7 @@ import { E2E } from './helpers/env'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
 import { fxBuf } from './helpers/fixtures'
-import { req, reqFresh } from './helpers/http'
+import { freshIp, req, reqFresh } from './helpers/http'
 import { tusCreate, tusHead, tusPatch, tusUpload } from './helpers/tus'
 import { waitFor } from './helpers/wait'
 
@@ -79,7 +79,7 @@ describe.skipIf(!E2E())('CSRF (exact Origin + Sec-Fetch-Site) and body caps', ()
 
   it('mutations are rate-limited to 30/min per cf-connecting-ip', async () => {
     const jar = await loginOk({ id: newId() })
-    const ip = `2001:db8::${Math.floor(Math.random() * 0xffff).toString(16)}:${Date.now().toString(16).slice(-4)}`
+    const ip = freshIp()
     const codes: number[] = []
     for (let i = 0; i < 31; i++) codes.push((await req(jar, '/api/batches', { method: 'POST', ip })).status)
     expect(codes.slice(0, 30).every((c) => c === 201)).toBe(true)

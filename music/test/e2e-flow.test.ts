@@ -283,6 +283,27 @@ describe.skipIf(!E2E())('submission flow through the real containers', () => {
     expect(view).toContainEqual(expect.objectContaining({ body, source: 'ticket' }))
   })
 
+  it('webhook: an unknown message source (e.g. an internal note) is never stored; a delivery that beats the ticket binding is retried, not dropped', async () => {
+    const ticketId = (await ownerSql()`SELECT ticket_id FROM batches WHERE id = ${batchId}`)[0]!.ticket_id as number
+    const secret = `internal ${randomUUID()}`
+    const internal = await hook({ event: 'message.created', ticketId, externalRef: `batch:${batchId}`, message: { id: randomUUID(), source: 'internal', body: secret, author: null } })
+    expect(internal.body).toMatchObject({ ignored: 'unrecognised' })
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM comments WHERE body = ${secret}`)[0]!.n).toBe(0)
+
+    const uid = (await ownerSql()`SELECT owner_user_id FROM batches WHERE id = ${batchId}`)[0]!.owner_user_id as string
+    const [nb] = await ownerSql()`INSERT INTO batches (owner_user_id, status, attested_at, submitted_at) VALUES (${uid}, 'submitted', now(), now()) RETURNING id`
+    const newTicket = 700000 + Math.floor(Math.random() * 99999)
+    const early = `early ${randomUUID()}`
+    const payload = { event: 'message.created', ticketId: newTicket, externalRef: `batch:${nb!.id}`, message: { id: randomUUID(), source: 'discord', body: early, author: null } }
+    const first = await hook(payload)
+    expect(first.status).toBe(409)
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM hook_deliveries WHERE delivery_id = ${first.deliveryId}`)[0]!.n).toBe(0)
+    await ownerSql()`UPDATE batches SET ticket_id = ${newTicket} WHERE id = ${nb!.id}`
+    const retry = await hook(payload, { deliveryId: first.deliveryId })
+    expect(retry).toMatchObject({ status: 200, body: { ok: true } })
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM comments WHERE body = ${early} AND batch_id = ${nb!.id}`)[0]!.n).toBe(1)
+  })
+
   it('webhook anchoring is scoped to the ticket’s own batch', async () => {
     const ticketId = (await ownerSql()`SELECT ticket_id FROM batches WHERE id = ${batchId}`)[0]!.ticket_id as number
     const foreignBatch = await createBatch(other)

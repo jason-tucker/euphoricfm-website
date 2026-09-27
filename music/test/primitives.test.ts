@@ -59,6 +59,13 @@ describe('rate limiter', () => {
     expect(clientKey(H({ 'cf-connecting-ip': '203.0.113.9', 'x-forwarded-for': '1.1.1.1' }))).toBe('203.0.113.9')
     expect(clientKey(H({ 'x-forwarded-for': '1.1.1.1' }))).toBe('no-cf-ip')
     expect(clientKey(H({ 'cf-connecting-ip': 'x; drop' }))).toBe('no-cf-ip')
+    // IPv6: one bucket per /64; IPv4-mapped → IPv4
+    expect(clientKey(H({ 'cf-connecting-ip': '2001:db8:1:2:aaaa::1' }))).toBe('2001:db8:1:2::/64')
+    expect(clientKey(H({ 'cf-connecting-ip': '2001:db8:1:2:bbbb:cccc:dddd:eeee' }))).toBe('2001:db8:1:2::/64')
+    expect(clientKey(H({ 'cf-connecting-ip': '2001:db8:1:3::1' }))).not.toBe('2001:db8:1:2::/64')
+    expect(clientKey(H({ 'cf-connecting-ip': '::ffff:203.0.113.9' }))).toBe('203.0.113.9')
+    expect(clientKey(H({ 'cf-connecting-ip': '::1' }))).toBe('0:0:0:0::/64')
+    expect(clientKey(H({ 'cf-connecting-ip': '1:2:3:4:5:6:7:8:9' }))).toBe('no-cf-ip')
   })
 })
 
@@ -170,7 +177,7 @@ describe('tickets webhook signature (receiver side)', () => {
 describe('service env isolation', () => {
   const web = {
     DATABASE_URL: 'postgres://x', AUTH_SECRET: 'a'.repeat(40), AUTH_DISCORD_ID: 'i', AUTH_DISCORD_SECRET: 's',
-    APP_ENC_KEY: '0'.repeat(64), TICKETS_WEBHOOK_SECRET: 'w'.repeat(40),
+    APP_ENC_KEY: '0'.repeat(64), TICKETS_WEBHOOK_SECRET: 'w'.repeat(40), AUTH_URL: 'https://music.euphoric.fm',
   }
   it('web refuses worker secrets and non-https Discord endpoints', () => {
     expect(() => loadWebEnv(web)).not.toThrow()
@@ -178,6 +185,7 @@ describe('service env isolation', () => {
     expect(() => loadWebEnv({ ...web, TICKETS_WRITE_KEY: 'x' })).toThrow(/another service/)
     expect(() => loadWebEnv({ ...web, DISCORD_TOKEN_URL: 'http://evil/token' })).toThrow(/https/)
     expect(() => loadWebEnv({ ...web, AUTH_URL: 'https://evil.example' })).toThrow(/AUTH_URL/)
+    expect(() => loadWebEnv({ ...web, AUTH_URL: undefined })).toThrow(/AUTH_URL/)
   })
   it('worker refuses web secrets', () => {
     const w = { DATABASE_URL: 'postgres://x', AZURACAST_API_KEY: 'k'.repeat(20), TICKETS_WRITE_KEY: 't' }

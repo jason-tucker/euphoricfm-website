@@ -38,6 +38,12 @@ export function middleware(req: NextRequest) {
   if (unsafe && readBodyLimitHeaderOnly(req.headers) === 'too_large') {
     return json(413, 'payload_too_large', { Connection: 'close' })
   }
+  // The Auth.js handlers read their body without a stream cap, so on
+  // /api/auth/* an unsafe request must declare its length (the header cap
+  // above then applies). Browsers always send Content-Length for forms.
+  if (unsafe && pathname.startsWith('/api/auth/') && (req.headers.get('content-length') === null || req.headers.has('transfer-encoding'))) {
+    return json(411, 'length_required', { Connection: 'close' })
+  }
 
   const key = clientKey(req.headers)
   const limit = pathname.startsWith('/api/auth/') ? LIMITS.auth : unsafe && !isHook ? LIMITS.mutation : null
