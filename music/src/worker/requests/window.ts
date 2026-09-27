@@ -105,3 +105,11 @@ export async function assertNotOnAir(db: DB, az: AzuraCastClient, media: Station
   }
   if (isOnAir(np, media)) throw new Deferred(60, 'now_playing')
 }
+
+// Contract drift (or an operator) pauses the mutating queues via
+// settings.queues_paused. Re-checked right before each AzuraCast write, so a
+// pause that lands mid-job still stops it.
+export async function assertQueuesRunning(db: DB): Promise<void> {
+  const v = await getSetting(db, 'queues_paused')
+  if (v !== null && v !== undefined && v !== false) throw new Deferred(300, 'queues_paused')
+}

@@ -65,6 +65,10 @@ services:
     build: { context: ., target: web }
     env_file: !reset []
     environment: *web-env
+    # Tests reach the web over the compose network; the host port only has
+    # to be free (parallel runs set MUSIC_TEST_WEB_PORT).
+    ports: !override
+      - "127.0.0.1:${MUSIC_TEST_WEB_PORT:-6096}:3000"
     depends_on:
       mocks:
         condition: service_started

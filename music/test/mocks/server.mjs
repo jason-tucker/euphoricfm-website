@@ -75,6 +75,8 @@ function reset() {
       ]),
       superadmin: false,
       drift: false,
+      nowplaying: null, // P4: {now_playing, playing_next} override
+      failNextMove: null, // P4: error string for the next do=move file
     },
     canary: [],
   }
@@ -394,7 +396,7 @@ async function handleAzuraCast(req, res, url) {
     return send(res, 200, spec, { 'content-type': 'application/x-yaml' })
   }
   const np = /^\/api\/nowplaying\/([a-z0-9_]+)$/.exec(p)
-  if (req.method === 'GET' && np) return send(res, 200, { station: { shortcode: np[1] }, now_playing: { song: { id: 'x' } }, playing_next: null })
+  if (req.method === 'GET' && np) return send(res, 200, { station: { shortcode: np[1] }, now_playing: { song: { id: 'x' } }, playing_next: null, ...(state.az.nowplaying ?? {}) })
 
   const sm = /^\/api\/station\/(\d+)(\/.*)$/.exec(p)
   if (!sm) return send(res, 404, { code: 404, message: 'Record not found' })
@@ -470,7 +472,10 @@ async function handleAzuraCast(req, res, url) {
         const f = state.az.files.get(fp)
         const dest = `${body.directory}/${fp.split('/').pop()}`
         if (!f) errors.push(`${fp}: File not found.`)
-        else if (state.az.files.has(dest)) errors.push(`${fp}: Destination already exists.`)
+        else if (state.az.failNextMove) {
+          errors.push(`${fp}: ${state.az.failNextMove}`)
+          state.az.failNextMove = null
+        } else if (state.az.files.has(dest)) errors.push(`${fp}: Destination already exists.`)
         else {
           state.az.files.delete(fp)
           f.path = dest
@@ -526,6 +531,23 @@ async function handleControl(req, res, url) {
   if (p === '/__mock/az/mode' && req.method === 'POST') {
     Object.assign(state.az, { superadmin: Boolean(body.superadmin), drift: Boolean(body.drift) })
     return send(res, 200, { ok: true })
+  }
+  if (p === '/__mock/az/nowplaying' && req.method === 'POST') {
+    state.az.nowplaying = body && Object.keys(body).length ? body : null
+    return send(res, 200, { ok: true })
+  }
+  if (p === '/__mock/az/fail-next-move' && req.method === 'POST') {
+    state.az.failNextMove = body?.error ?? 'Filesystem error.'
+    return send(res, 200, { ok: true })
+  }
+  // A scan that lost the row and re-imported the file from disk: new id,
+  // metadata read back from the (unchanged) tags, no playlist memberships.
+  if (p === '/__mock/az/lose-row' && req.method === 'POST') {
+    const old = state.az.files.get(body.path)
+    if (!old) return send(res, 404, { error: 'no such path' })
+    state.az.files.delete(body.path)
+    azSeed([{ path: body.path, title: body.title ?? 'Scanned Title', artist: body.artist ?? 'Scanned Artist', album: body.album ?? null, genre: body.genre ?? null, playlists: [] }])
+    return send(res, 200, azMedia(state.az.files.get(body.path)))
   }
   if (p === '/__mock/az/files') return send(res, 200, [...state.az.files.values()].map(azMedia))
   if (p === '/__mock/canary/hits') return send(res, 200, state.canary)

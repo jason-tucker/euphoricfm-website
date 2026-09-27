@@ -43,7 +43,7 @@ import { getIntList } from '../../server/settings'
 import { TicketsApiError } from '../../server/tickets/client'
 import { Permanent, RetryLater, type WorkerCtx } from '../handlers'
 import { OpFailed, remapMediaId, sameIds, snapshotMeta, stationIds, stationPlaylistSet, takeSnapshot, upsertLibrary, type Snapshot } from './media'
-import { afterScansMs, assertMutationWindow, assertNotOnAir, Deferred, scanOffset } from './window'
+import { afterScansMs, assertMutationWindow, assertNotOnAir, assertQueuesRunning, Deferred, scanOffset } from './window'
 
 export type RequestsCtx = WorkerCtx & {
   root: string // PORTAL_TEST_PREFIX or ''
@@ -258,7 +258,10 @@ export async function applyEdit(ctx: RequestsCtx, payload: ApplyEditPayload) {
   // Strict {title, artist, album, genre} body, built field by field by the
   // wrapper. AzuraCast's tag write may fail silently (TXXX mp3, m4a): the
   // API still reports success and the DB values are the truth.
-  if (!sameMeta(current, next)) await ctx.azuracast.updateMetadata(mediaId, next)
+  if (!sameMeta(current, next)) {
+    await assertQueuesRunning(ctx.db)
+    await ctx.azuracast.updateMetadata(mediaId, next)
+  }
   const after = await getFile(ctx, mediaId)
   if (!sameMeta(metaOf(after), next)) throw new OpFailed('metadata_verify_failed')
   await upsertLibrary(ctx.db, after)
@@ -297,6 +300,7 @@ export async function move(ctx: RequestsCtx, payload: MovePayload) {
     }
     const pre = await takeSnapshot(ctx.db, media, station, 'before_move', { requestId: req?.id })
     expected = pre.playlistIds
+    await assertQueuesRunning(ctx.db)
     try {
       await ctx.azuracast.moveFile(media.path, payload.toDir)
     } catch (e) {
@@ -307,6 +311,7 @@ export async function move(ctx: RequestsCtx, payload: MovePayload) {
   let after = await getFile(ctx, payload.mediaId)
   if (after.path !== dest) throw new OpFailed('move_verify_failed', { path: after.path })
   if (expected && !sameIds(stationIds(after, station), expected)) {
+    // Completes the move just made (not a new mutation): no pause check.
     await ctx.azuracast.setPlaylists(dest, expected, new Set(expected))
     after = await getFile(ctx, payload.mediaId)
     if (!sameIds(stationIds(after, station), expected)) throw new OpFailed('playlists_verify_failed')
@@ -361,6 +366,9 @@ export async function archiveMedia(ctx: RequestsCtx, payload: ArchivePayload) {
   }
 
   // 1. clear every membership (REPLACE with []), 2. verify zero memberships.
+  // The pause is checked once, before the first write: clear + move (+ the
+  // rollback) is one unit and is never left half done.
+  await assertQueuesRunning(ctx.db)
   await ctx.azuracast.setPlaylists(media.path, [], allowed)
   const cleared = await getFile(ctx, mediaId)
   if (playlistCount(cleared) !== 0) {
@@ -414,6 +422,7 @@ export async function restoreMedia(ctx: RequestsCtx, payload: Actor & { archiveI
   if (!snap) throw new OpFailed('archive_snapshot_missing')
   const station = await stationPlaylistSet(ctx.db)
   await takeSnapshot(ctx.db, media, station, 'before_restore')
+  await assertQueuesRunning(ctx.db)
   try {
     await ctx.azuracast.moveFile(media.path, dir)
   } catch (e) {
@@ -455,6 +464,7 @@ export async function setPlaylistsJob(ctx: RequestsCtx, payload: Actor & { media
   const before = stationIds(media, station)
   await takeSnapshot(ctx.db, media, station, 'before_playlists')
   const allowed = new Set([...assignable, ...before])
+  await assertQueuesRunning(ctx.db)
   await ctx.azuracast.setPlaylists(media.path, merged, allowed)
   const after = await getFile(ctx, payload.mediaId)
   if (!sameIds(stationIds(after, station), merged)) throw new OpFailed('playlists_verify_failed')
@@ -471,6 +481,7 @@ type ReverifyPayload = { mediaId: number; snapshotId: number; requestId?: number
 
 async function reapplyState(ctx: RequestsCtx, id: number, snap: Snapshot, station: ReadonlySet<number>, media: StationMedia) {
   if (!patterns(ctx.root).artistFile.test(snap.path)) return // archived: no metadata/playlist writes under Removed/
+  await assertQueuesRunning(ctx.db)
   if (!sameMeta(metaOf(media), snapshotMeta(snap))) await ctx.azuracast.updateMetadata(id, snapshotMeta(snap))
   if (!sameIds(stationIds(media, station), snap.playlistIds)) await ctx.azuracast.setPlaylists(snap.path, snap.playlistIds, new Set(snap.playlistIds))
 }

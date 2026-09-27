@@ -6,8 +6,9 @@
 # Usage: test/run.sh            (from music/ or anywhere)
 # Env:   DOCKER_COMPOSE="docker compose" (override the compose command)
 #        KEEP=1 to leave the stack up afterwards.
-#        MUSIC_TEST_PROJECT / MUSIC_TEST_TAG isolate parallel runs (compose
-#        project, networks, image tags); defaults efm-music-test / local-test.
+#        MUSIC_TEST_PROJECT / MUSIC_TEST_TAG / MUSIC_TEST_WEB_PORT isolate
+#        parallel runs (compose project, networks, image tags, host port);
+#        defaults efm-music-test / local-test / 6096.
 set -eu
 cd "$(dirname "$0")/.."
 export MUSIC_TEST_PROJECT="${MUSIC_TEST_PROJECT:-efm-music-test}"
