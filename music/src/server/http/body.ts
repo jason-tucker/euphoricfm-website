@@ -6,6 +6,14 @@ import { HttpError, tooLarge } from './errors'
 import { DEFAULT_BODY_LIMIT } from './limits'
 export { DEFAULT_BODY_LIMIT }
 
+// Once the cap is exceeded the rest of the body is READ AND DISCARDED (up to
+// DRAIN_FACTOR x the limit) rather than cancelled: cancelling raced Next's
+// request-stream plumbing (an unhandled AbortError and a reset keep-alive
+// socket). A stream that errors or ends early is never parsed as a complete
+// body: an error is 413 if the cap was already exceeded, else 400 bad_body.
+// The 413 carries `Connection: close` so the peer does not reuse the socket.
+const DRAIN_FACTOR = 8
+
 export async function readBodyLimited(req: Request, limit = DEFAULT_BODY_LIMIT): Promise<Buffer> {
   const cl = req.headers.get('content-length')
   if (cl !== null) {
@@ -16,16 +24,28 @@ export async function readBodyLimited(req: Request, limit = DEFAULT_BODY_LIMIT):
   const reader = req.body.getReader()
   const chunks: Buffer[] = []
   let total = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    total += value.byteLength
-    if (total > limit) {
-      await reader.cancel().catch(() => {})
-      throw tooLarge()
+  let over = false
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (!over && total > limit) {
+        over = true
+        chunks.length = 0
+      }
+      if (!over) chunks.push(Buffer.from(value))
+      else if (total > limit * DRAIN_FACTOR) {
+        // Stop reading an abusive stream; the 413 closes the connection.
+        reader.releaseLock()
+        break
+      }
     }
-    chunks.push(Buffer.from(value))
+  } catch {
+    throw over ? tooLarge() : new HttpError(400, 'bad_body')
   }
+  if (over) throw tooLarge()
+  if (cl !== null && total !== Number(cl)) throw new HttpError(400, 'bad_body')
   return Buffer.concat(chunks, total)
 }
 

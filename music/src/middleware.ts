@@ -36,7 +36,7 @@ export function middleware(req: NextRequest) {
   const isHook = pathname === '/api/hooks/tickets'
 
   if (unsafe && readBodyLimitHeaderOnly(req.headers) === 'too_large') {
-    return json(413, 'payload_too_large')
+    return json(413, 'payload_too_large', { Connection: 'close' })
   }
 
   const key = clientKey(req.headers)

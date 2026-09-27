@@ -5,7 +5,7 @@ import { E2E } from './helpers/env'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
 import { fxBuf } from './helpers/fixtures'
-import { req } from './helpers/http'
+import { req, reqFresh } from './helpers/http'
 import { tusCreate, tusHead, tusPatch, tusUpload } from './helpers/tus'
 import { waitFor } from './helpers/wait'
 
@@ -66,16 +66,15 @@ describe.skipIf(!E2E())('CSRF (exact Origin + Sec-Fetch-Site) and body caps', ()
   it('1 MB body cap on non-upload routes (declared and chunked)', async () => {
     const jar = await loginOk({ id: newId() })
     const b = (await (await req(jar, '/api/batches', { method: 'POST' })).json()) as { id: number }
+    // Each oversized request uses its own connection (see reqFresh).
     const big = JSON.stringify({ body: 'x'.repeat(1024 * 1024 + 10) })
-    expect((await req(jar, `/api/batches/${b.id}/comments`, { body: big, headers: { 'content-type': 'application/json' } })).status).toBe(413)
-    const stream = new ReadableStream({
-      start(c) {
-        for (let i = 0; i < 20; i++) c.enqueue(new TextEncoder().encode('x'.repeat(64 * 1024)))
-        c.close()
-      },
-    })
-    const r = await req(jar, `/api/batches/${b.id}/comments`, { body: stream, headers: { 'content-type': 'application/json' } })
-    expect(r.status).toBe(413)
+    const declared = await reqFresh(jar, `/api/batches/${b.id}/comments`, { body: big, headers: { 'content-type': 'application/json' } })
+    expect(declared.status).toBe(413)
+    const chunks = Array.from({ length: 20 }, () => Buffer.from('x'.repeat(64 * 1024)))
+    const chunked = await reqFresh(jar, `/api/batches/${b.id}/comments`, { chunks, headers: { 'content-type': 'application/json' } })
+    expect(chunked.status).toBe(413)
+    // and a normal request right after still works
+    expect((await req(jar, `/api/batches/${b.id}/comments`, { json: { body: 'after the cap' } })).status).toBe(201)
   })
 
   it('mutations are rate-limited to 30/min per cf-connecting-ip', async () => {

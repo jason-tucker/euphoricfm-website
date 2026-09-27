@@ -19,6 +19,8 @@ export const forbidden = (code = 'forbidden') => new HttpError(403, code)
 export const notFound = () => new HttpError(404, 'not_found')
 export const conflict = (code = 'conflict') => new HttpError(409, code)
 export const badRequest = (code = 'bad_request', extra?: Record<string, unknown>) => new HttpError(400, code, extra)
-export const tooLarge = () => new HttpError(413, 'payload_too_large')
+// Connection: close: the rest of an oversized body must not poison a pooled
+// keep-alive socket.
+export const tooLarge = () => new HttpError(413, 'payload_too_large', undefined, { Connection: 'close' })
 export const unavailable = (code = 'unavailable', retryAfterS?: number) =>
   new HttpError(503, code, undefined, retryAfterS ? { 'Retry-After': String(retryAfterS) } : undefined)
