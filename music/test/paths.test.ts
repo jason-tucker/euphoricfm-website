@@ -151,3 +151,13 @@ describe('path builder: collision resolution (P0d-B: any entry at the exact path
     await expect(resolveIngestPath('', 'GRIM', 'GRIM', 'Song', async () => true)).rejects.toThrow('collision_exhausted')
   })
 })
+
+describe('segment hardening (review minor 3)', () => {
+  it('refuses dot/space-only segments, edge whitespace and any \\p{C} code point', () => {
+    for (const bad of ['Music/Artists/../x.mp3', 'Music/Artists/.. /x.mp3', 'Music/Artists/ ../x.mp3', 'Music/Artists/.../x.mp3', 'Music/Artists/ /x.mp3', 'Music/Artists/A /x.mp3', 'Music/Artists/ A/x.mp3', 'Music/Artists/A/x.mp3 ', 'Music/Artists/A\uE000/x.mp3', 'Music/Artists/A\uFFFE/x.mp3', 'Music/Artists/A\u200B/x.mp3']) {
+      expect(() => assertSafePath(bad), JSON.stringify(bad)).toThrow(PathError)
+    }
+    expect(() => assertSafePath('Music/Artists/Mr. T./Mr. T. - Song.mp3')).not.toThrow()
+    for (const bad of ['Foo ', ' Foo', '...', '. .']) expect(() => assertExistingFolder(bad), bad).toThrow(PathError)
+  })
+})

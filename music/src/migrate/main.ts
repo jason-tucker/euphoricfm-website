@@ -26,6 +26,13 @@ export function parseSeedRoleIds(raw: string | undefined): string[] {
   return ids
 }
 
+// The seed runs exactly once. Seeding zero roles would mark it done with no
+// reviewers and no way to bootstrap them by fixing the env, so the migrate
+// one-shot fails instead (web and worker then never start).
+export function assertSeedable(alreadySeeded: boolean, roles: readonly string[]): void {
+  if (!alreadySeeded && roles.length === 0) throw new Error('SEED_REVIEW_ROLE_IDS must name at least one role for the first (one-time) seed')
+}
+
 // ALTER ROLE … PASSWORD takes no bind parameters, so the value is embedded as
 // a literal. Restrict it to a charset that needs no escaping at all.
 export function assertSafePassword(pw: string | undefined): string {
@@ -70,6 +77,7 @@ export async function runMigrate(): Promise<void> {
     // Seed reviewer roles exactly once: after an admin edits role_bindings,
     // a redeploy must not silently re-add a binding they removed.
     const seeded = await sql`SELECT 1 FROM settings WHERE key = 'role_bindings_seeded'`
+    assertSeedable(seeded.length > 0, seedRoles)
     if (seeded.length === 0) {
       await sql.begin(async (tx) => {
         for (const roleId of seedRoles) {

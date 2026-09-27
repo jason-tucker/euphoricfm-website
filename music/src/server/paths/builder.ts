@@ -14,7 +14,13 @@ export class PathError extends Error {
   }
 }
 
-const CONTROL = /[\p{Cc}\p{Cf}\u2028\u2029]/u
+// All of \p{C} (Cc, Cf, Cs, Co, Cn): Flysystem v3's path normalizer rejects
+// these, and v1 stripped them (which could turn a segment into '..').
+const CONTROL = /[\p{C}\u2028\u2029]/u
+// A segment must not rely on the server keeping edge whitespace, and must not
+// be made only of dots and spaces (e.g. '...', '.. ', ' ').
+const EDGE_SPACE = /^\s|\s$/u
+const DOTS_SPACES = /^[.\s]+$/u
 const DISALLOWED = /[^\p{L}\p{N} \-_.,'()&!]/gu
 export const MAX_COMPONENT_BYTES = 150
 
@@ -66,7 +72,7 @@ export function assertSafePath(path: string): void {
   if (path.includes('://')) throw new PathError('scheme')
   if (path !== path.normalize('NFC')) throw new PathError('not_nfc')
   for (const seg of path.split('/')) {
-    if (seg === '' || seg === '.' || seg === '..') throw new PathError('bad_segment')
+    if (seg === '' || DOTS_SPACES.test(seg) || EDGE_SPACE.test(seg)) throw new PathError('bad_segment')
   }
 }
 
@@ -78,6 +84,7 @@ export function assertExistingFolder(folder: string): string {
   if (folder.includes('/') || folder.includes('\\')) throw new PathError('folder_separator')
   if (folder.includes('\0') || CONTROL.test(folder)) throw new PathError('folder_control_char')
   if (folder === '.' || folder === '..' || folder.startsWith('.')) throw new PathError('folder_dot')
+  if (DOTS_SPACES.test(folder) || EDGE_SPACE.test(folder)) throw new PathError('folder_edge_space')
   if (utf8Bytes(folder) > 255) throw new PathError('folder_too_long')
   return folder
 }

@@ -11,6 +11,7 @@ import { canComment, canSeeComment, canViewOwned, type Viewer } from '@/server/a
 import { verifyTicketsSignature } from '@/server/hooks/signature'
 import { signMediaUrl, verifyMediaSig } from '@/server/media/signing'
 import { assertProbeEnvClean, loadWebEnv, loadWorkerEnv } from '@/server/env'
+import { assertSeedable } from '@/migrate/main'
 import { encryptAccountTokens } from '@/server/auth/tokens'
 import { checkCreateHeaders, checkPatchHeaders } from '@/server/uploads/caps'
 
@@ -221,5 +222,13 @@ describe('tus header admission', () => {
     expect(checkPatchHeaders(H({ 'content-length': String(8 * 1024 * 1024 + 1) }))).toMatchObject({ status: 413 })
     expect(checkPatchHeaders(H({}))).toMatchObject({ status: 411 })
     expect(checkPatchHeaders(H({ 'content-length': '100' }))).toBeNull()
+  })
+})
+
+describe('one-time reviewer seed', () => {
+  it('refuses to mark the seed done with zero roles; later runs do not need roles', () => {
+    expect(() => assertSeedable(false, [])).toThrow(/at least one role/)
+    expect(() => assertSeedable(false, ['1144462744456794153'])).not.toThrow()
+    expect(() => assertSeedable(true, [])).not.toThrow()
   })
 })
