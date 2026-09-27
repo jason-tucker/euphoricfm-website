@@ -75,7 +75,7 @@ export async function getCaps(db: DB): Promise<Caps> {
 // ingestPerHour uploads in any trailing hour. Returns 0 (go) or ms to wait.
 // Only uploads in (now − 1 h, now] count, so a row stamped by a test clock
 // in the future never blocks a real run.
-export function pacingWaitMs(uploadsInLastHour: readonly number[], nowMs: number, caps: Pick<Caps, 'ingestSpacingS' | 'ingestPerHour'>): number {
+export function pacingWaitMs(uploadsInLastHour: readonly number[], nowMs: number, caps: { ingestSpacingS: number; ingestPerHour: number }): number {
   const sorted = [...uploadsInLastHour].filter((t) => t <= nowMs && t > nowMs - 3600_000).sort((a, b) => a - b)
   let wait = 0
   const last = sorted.at(-1)
@@ -88,10 +88,11 @@ export function pacingWaitMs(uploadsInLastHour: readonly number[], nowMs: number
 }
 
 export async function pacingWait(db: DB, nowMs: number, caps: Caps): Promise<number> {
-  const now = new Date(nowMs)
-  const hourAgo = new Date(nowMs - 3600_000)
+  // Raw sql params go to postgres-js untyped: pass ISO strings and cast.
+  const now = new Date(nowMs).toISOString()
+  const hourAgo = new Date(nowMs - 3600_000).toISOString()
   const rows = await db.execute<{ t: Date | string }>(
-    sql`SELECT uploaded_at AS t FROM ingest_runs WHERE uploaded_at > ${hourAgo} AND uploaded_at <= ${now}`,
+    sql`SELECT uploaded_at AS t FROM ingest_runs WHERE uploaded_at > ${hourAgo}::timestamptz AND uploaded_at <= ${now}::timestamptz`,
   )
   const times = (rows as unknown as { t: Date | string }[]).map((r) => new Date(r.t).getTime())
   return pacingWaitMs(times, nowMs, caps)

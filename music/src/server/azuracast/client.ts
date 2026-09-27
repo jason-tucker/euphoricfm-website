@@ -416,6 +416,25 @@ export class AzuraCastClient {
     await this.batch(body)
   }
 
+  // P3 behavioural contract check for PUT /files/batch (no requestBody schema
+  // in the spec, P0d-A): the SAME do=playlist request as setPlaylists,
+  // through the same send()/validate(), but the raw reply is returned
+  // (parsed JSON or null) so a changed reply shape can be reported as drift.
+  async setPlaylistsReply(filePath: string, playlistIds: readonly number[], allowedIds: ReadonlySet<number>): Promise<{ status: number; reply: unknown }> {
+    for (const id of playlistIds) {
+      if (!Number.isSafeInteger(id) || id <= 0 || !allowedIds.has(id)) throw new AzuraCastError('refused_playlist_id', { id })
+    }
+    const body = { do: 'playlist' as const, files: [filePath], dirs: [], currentDirectory: dirname(filePath), playlists: [...playlistIds] }
+    const { status, text } = await this.send('PUT', this.sidPath('/files/batch'), { body })
+    let reply: unknown = null
+    try {
+      reply = JSON.parse(text)
+    } catch {
+      reply = null
+    }
+    return { status, reply }
+  }
+
   async moveFile(filePath: string, directory: string): Promise<void> {
     const body = { do: 'move' as const, files: [filePath], dirs: [], currentDirectory: dirname(filePath), directory }
     await this.batch(body)

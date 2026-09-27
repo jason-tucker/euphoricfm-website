@@ -17,6 +17,7 @@ import { audit } from '../../server/audit'
 import { ingestRuns, items, settings } from '../../server/db/schema'
 import { enqueue } from '../../server/jobs'
 import { dirname, patterns } from '../../server/paths/builder'
+import { getSetting } from '../../server/settings'
 import { writeSpoolRequest } from '../../server/spool/protocol'
 import type { P3Ctx } from '../ingest/context'
 import { getCaps } from '../ingest/window'
@@ -83,7 +84,7 @@ export async function diskPush(ctx: P3Ctx): Promise<{ pushed: boolean; percent?:
 
 // ------------------------------------------------ batch contract check --
 
-const batchReply = z.object({ success: z.boolean(), errors: z.array(z.string()), files: z.array(z.string()) }).passthrough()
+const batchReply = z.object({ success: z.boolean(), errors: z.array(z.string()), files: z.array(z.string()).optional() }).passthrough()
 
 // PUT /files/batch has no requestBody schema in the spec (P0d-A), so the
 // hash probe cannot see its drift. This re-applies the fixture's CURRENT
@@ -106,22 +107,21 @@ export async function batchContractCheck(ctx: P3Ctx): Promise<'ok' | 'skipped' |
     console.log(`[worker] batch contract check skipped (fixture not found: ${fixture})`)
     return 'skipped'
   }
+  if (await getSetting(ctx.db, 'queues_paused')) {
+    console.log('[worker] batch contract check skipped (queues paused)')
+    return 'skipped'
+  }
   const stationIds = await stationPlaylistIds(ctx.db)
   const current = stationIdsOf(entry.media, stationIds)
-  const body = { do: 'playlist', files: [fixture], dirs: [], currentDirectory: dirname(fixture), playlists: current }
-  const res = await ctx.azuracast.send('PUT', `/api/station/${ctx.azuracast.stationId}/files/batch`, { body })
+  const res = await ctx.azuracast.setPlaylistsReply(fixture, current, new Set(current))
   const problems: string[] = []
   let parsed: z.infer<typeof batchReply> | null = null
-  try {
-    const r = batchReply.safeParse(JSON.parse(res.text))
-    if (r.success) parsed = r.data
-    else problems.push('reply shape changed')
-  } catch {
-    problems.push('reply is not JSON')
-  }
+  const r = batchReply.safeParse(res.reply)
+  if (r.success) parsed = r.data
+  else problems.push(res.reply === null ? 'reply is not JSON' : 'reply shape changed')
   if (res.status !== 200) problems.push(`HTTP ${res.status}`)
   if (parsed && (!parsed.success || parsed.errors.length > 0)) problems.push('reply reports errors')
-  if (parsed && (parsed.files.length !== 1 || parsed.files[0] !== fixture)) problems.push('files echo changed')
+  if (parsed && (parsed.files?.length !== 1 || parsed.files[0] !== fixture)) problems.push('files echo changed')
   const after = await ctx.azuracast.getFile(entry.media.id).catch(() => null)
   if (!after || after.path !== fixture) problems.push('fixture path changed')
   else if (JSON.stringify(stationIdsOf(after, stationIds)) !== JSON.stringify(current)) problems.push('memberships changed')

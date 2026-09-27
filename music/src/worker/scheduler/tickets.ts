@@ -146,11 +146,11 @@ const LAST_ACTIVITY = sql`greatest(b.updated_at, coalesce((SELECT max(c.created_
 
 export async function autoCloseSweep(ctx: P3Ctx): Promise<number> {
   const days = await autoCloseDays(ctx)
-  const cutoff = new Date(ctx.now() - days * 86_400_000)
+  const cutoff = new Date(ctx.now() - days * 86_400_000).toISOString()
   const rows = (await ctx.db.execute<{ id: number; last: Date | string }>(sql`
     SELECT b.id, ${LAST_ACTIVITY} AS last FROM batches b
     WHERE b.status = 'completed' AND b.ticket_id IS NOT NULL AND coalesce(b.ticket_status, '') <> 'closed'
-      AND ${LAST_ACTIVITY} < ${cutoff}
+      AND ${LAST_ACTIVITY} < ${cutoff}::timestamptz
     ORDER BY b.id LIMIT 50`)) as unknown as { id: number; last: Date | string }[]
   for (const r of rows) {
     const last = new Date(r.last).getTime()
@@ -161,11 +161,11 @@ export async function autoCloseSweep(ctx: P3Ctx): Promise<number> {
 
 export async function ticketAutoclose(ctx: P3Ctx, payload: { batchId: number }) {
   const days = await autoCloseDays(ctx)
-  const cutoff = new Date(ctx.now() - days * 86_400_000)
+  const cutoff = new Date(ctx.now() - days * 86_400_000).toISOString()
   const [row] = (await ctx.db.execute<{ id: number; ticket_id: number }>(sql`
     SELECT b.id, b.ticket_id FROM batches b
     WHERE b.id = ${payload.batchId} AND b.status = 'completed' AND b.ticket_id IS NOT NULL
-      AND coalesce(b.ticket_status, '') <> 'closed' AND ${LAST_ACTIVITY} < ${cutoff}`)) as unknown as { id: number; ticket_id: number }[]
+      AND coalesce(b.ticket_status, '') <> 'closed' AND ${LAST_ACTIVITY} < ${cutoff}::timestamptz`)) as unknown as { id: number; ticket_id: number }[]
   if (!row) return // activity since the sweep, or already closed
   try {
     await ctx.tickets.closeTicket(row.ticket_id, { reason: `Closed automatically after ${days} days without activity.` })

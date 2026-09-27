@@ -20,7 +20,8 @@ import type { P3Ctx } from '../ingest/context'
 const EXCLUDED_SEGMENT = /^(UNRELEASED|Removed$|Portal-Test)/i
 
 export function isLibraryPath(path: string): boolean {
-  if (!isLibrarySurface('', path)) return false
+  // Music/Artists/<folder>/<file…>: a file directly in Music/Artists has no artist folder.
+  if (!isLibrarySurface('', path) || path.split('/').length < 4) return false
   return !path.split('/').some((seg) => EXCLUDED_SEGMENT.test(seg))
 }
 
@@ -61,6 +62,23 @@ async function putSetting(ctx: P3Ctx, key: string, value: unknown) {
     .onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: new Date(), updatedBy: 'worker' } })
 }
 
+// Current art for a library song (art contract): AzuraCast's own `art` URL
+// when it is on the public AzuraCast origin (the CSP allows only that),
+// else /api/station/<shortcode>/art/<unique_id> there.
+export const ART_ORIGIN = 'https://euphoric.fm'
+
+export function artUrlFor(m: Pick<StationMedia, 'unique_id'> & { art?: unknown }, shortcode: string): string {
+  if (typeof m.art === 'string') {
+    try {
+      const u = new URL(m.art)
+      if (u.origin === ART_ORIGIN && u.pathname.startsWith('/api/')) return u.href
+    } catch {
+      // fall through
+    }
+  }
+  return `${ART_ORIGIN}/api/station/${encodeURIComponent(shortcode)}/art/${encodeURIComponent(m.unique_id)}`
+}
+
 export type SyncResult = { total: number; library: number; removed: number; artistsAdded: number; stationPlaylistIds: number[] }
 
 export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
@@ -80,6 +98,9 @@ export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
   // than a real mass removal: keep the old rows and alert.
   const prune = !(existing > 20 && rows.length < existing / 2)
   if (!prune) await ctx.alert('library sync: listing shrank by more than half; stale rows kept', { existing, now: rows.length })
+
+  const sc = await getSetting(ctx.db, 'nowplaying_shortcode')
+  const shortcode = typeof sc === 'string' && /^[a-z0-9_]{1,64}$/.test(sc) ? sc : 'euphoricfm'
 
   let removed = 0
   await ctx.db.transaction(async (tx) => {
@@ -110,6 +131,7 @@ export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
             playlistIds: r.playlists.map((p) => p.id).filter((id) => !foreign.has(id)),
             lengthS: typeof r.length === 'number' ? Math.round(r.length) : null,
             mtime: typeof r.mtime === 'number' ? Math.round(r.mtime) : null,
+            artUrl: artUrlFor(r, shortcode),
             refreshedAt: new Date(ctx.now()),
           })),
         )
@@ -125,6 +147,7 @@ export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
             playlistIds: sql`excluded.playlist_ids`,
             lengthS: sql`excluded.length_s`,
             mtime: sql`excluded.mtime`,
+            artUrl: sql`excluded.art_url`,
             refreshedAt: sql`excluded.refreshed_at`,
           },
         })
