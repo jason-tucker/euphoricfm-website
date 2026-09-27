@@ -37,6 +37,7 @@ export type UiSettings = {
   inviteUrl: string | null
   playlistNames: Record<string, string>
   assignablePlaylistIds: number[]
+  stationPlaylistIds: number[]
   defaultPlaylistIds: number[]
   autoCloseDays: number
   caps: Caps
@@ -53,7 +54,7 @@ export async function inviteUrl(db: DB): Promise<string | null> {
 }
 
 export async function uiSettings(db: DB): Promise<UiSettings> {
-  const [rights, invite, namesRaw, assignable, defaults, autoClose, capsRaw] = await Promise.all([
+  const [rights, invite, namesRaw, assignable, defaults, autoClose, capsRaw, station] = await Promise.all([
     rightsText(db),
     inviteUrl(db),
     getSetting(db, UI_SETTING_KEYS.playlistNames),
@@ -61,6 +62,7 @@ export async function uiSettings(db: DB): Promise<UiSettings> {
     getIntList(db, 'default_playlist_ids'),
     getSetting(db, 'auto_close_days'),
     getSetting(db, 'caps'),
+    getIntList(db, 'station_playlist_ids'),
   ])
   const names = namesSchema.safeParse(namesRaw)
   const caps = z.object({}).passthrough().safeParse(capsRaw)
@@ -69,6 +71,7 @@ export async function uiSettings(db: DB): Promise<UiSettings> {
     inviteUrl: invite,
     playlistNames: { ...DEFAULT_PLAYLIST_NAMES, ...(names.success ? names.data : {}) },
     assignablePlaylistIds: assignable,
+    stationPlaylistIds: station,
     defaultPlaylistIds: defaults,
     autoCloseDays: typeof autoClose === 'number' && Number.isInteger(autoClose) ? autoClose : 7,
     caps: { ...DEFAULT_CAPS, ...(caps.success ? (caps.data as Partial<Caps>) : {}) } as Caps,

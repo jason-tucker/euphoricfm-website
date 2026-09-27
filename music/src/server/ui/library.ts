@@ -8,19 +8,43 @@ import { and, asc, eq, ilike, inArray, ne, or, sql } from 'drizzle-orm'
 import { isReviewer, type Viewer } from '../authz/predicates'
 import type { DB } from '../db/client'
 import { artists, items, libraryCache } from '../db/schema'
-import { isLibrarySurface, newArtistFolder, PathError } from '../paths/builder'
-
-// The web process has no path prefix: it only ever reads the production
-// library layout (the Portal-Test/ prefix lives in the worker).
-const ROOT = ''
-const SURFACE_LIKE = 'Music/Artists/%'
+import { assertSafePath, newArtistFolder, PathError, patterns, TEST_PREFIX_RE } from '../paths/builder'
 
 export function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (c) => `\\${c}`)
 }
 
-export function onLibrarySurface(path: string): boolean {
-  return isLibrarySurface(ROOT, path)
+// Library root: '' in production, PORTAL_TEST_PREFIX in the prefix profile
+// (the same rule and env the P4 request APIs use). An invalid prefix fails
+// closed.
+export function libraryRoot(env: Record<string, string | undefined> = process.env): string {
+  const p = env.PORTAL_TEST_PREFIX ?? ''
+  if (p !== '' && !TEST_PREFIX_RE.test(p)) throw new Error('PORTAL_TEST_PREFIX invalid')
+  return p
+}
+
+// The portal surface is exactly `<root>Music/Artists/<folder>/<file>`: one
+// artist folder deep, nothing nested, nothing outside (ADS/, Events/,
+// UNRELEASED-*, Removed/ and, in production, Portal-Test/). Same rule as
+// P4's isRequestTarget.
+export function onLibrarySurface(path: string, root = libraryRoot()): boolean {
+  try {
+    assertSafePath(path)
+    return patterns(root).artistFile.test(path)
+  } catch {
+    return false
+  }
+}
+
+// SQL pre-filter with the same depth: `<root>Music/Artists/<a>/<b>` and no
+// deeper. The JS predicate above is still applied to every row.
+export function surfaceSql(path: typeof libraryCache.path, root = libraryRoot()) {
+  const base = `${escapeLike(root)}Music/Artists/`
+  return sql`(${path} LIKE ${base + '%/%'} AND ${path} NOT LIKE ${base + '%/%/%'})`
+}
+
+export function folderOf(path: string, root = libraryRoot()): string {
+  return path.slice(`${root}Music/Artists/`.length).split('/')[0] ?? ''
 }
 
 export type ArtistHit = { id: number; name: string; folder: string }
@@ -48,7 +72,7 @@ export async function searchAlbums(db: DB, q: string, limit = 10): Promise<Album
   const rows = await db
     .select({ album: libraryCache.album, artist: libraryCache.artist, path: libraryCache.path })
     .from(libraryCache)
-    .where(and(sql`${libraryCache.path} LIKE ${SURFACE_LIKE}`, ilike(libraryCache.album, pat)))
+    .where(and(surfaceSql(libraryCache.path), ilike(libraryCache.album, pat)))
     .orderBy(asc(libraryCache.album))
     .limit(200)
   const seen = new Set<string>()
@@ -118,7 +142,7 @@ export async function findDuplicates(db: DB, v: Viewer, title: string, artist: s
   const lib = await db
     .select({ title: libraryCache.title, artist: libraryCache.artist, album: libraryCache.album, path: libraryCache.path })
     .from(libraryCache)
-    .where(and(sql`${libraryCache.path} LIKE ${SURFACE_LIKE}`, sql`lower(${libraryCache.title}) = lower(${t})`, sql`lower(${libraryCache.artist}) = lower(${a})`))
+    .where(and(surfaceSql(libraryCache.path), sql`lower(${libraryCache.title}) = lower(${t})`, sql`lower(${libraryCache.artist}) = lower(${a})`))
     .limit(5)
   const conds = [
     sql`lower(${items.title}) = lower(${t})`,

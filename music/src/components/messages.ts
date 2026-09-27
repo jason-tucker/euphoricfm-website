@@ -34,6 +34,29 @@ export const ERROR_TEXT: Record<string, string> = {
   invalid_comment: 'Comments cannot be empty, and must be under 2,000 characters.',
   item_not_in_batch: 'That song is not part of this batch.',
 
+  // P4 requests, library and admin
+  daily_cap: "You've reached today's limit for this kind of request. Try again tomorrow.",
+  duplicate_request: 'You already have an open request for this song. Withdraw it first to file a different one.',
+  no_change: 'Nothing would change: the proposed values are the same as the current ones.',
+  invalid_request: 'The request is incomplete. Titles and artists cannot be blank, and a removal needs a reason.',
+  invalid_edit: 'The edit is not valid. Titles and artists cannot be blank.',
+  invalid_playlists: 'The playlist selection is not valid.',
+  invalid_archive: 'The archive request is not valid.',
+  artist_not_active: "That artist isn't approved in the library yet. Approve the new artist first, or pick an existing artist.",
+  not_archived: 'This song is no longer archived. Reload to see its status.',
+  unknown_setting: 'That setting does not exist on the server.',
+  invalid_setting: 'That value is not allowed for this setting.',
+  default_not_assignable: 'Default playlists must be among the assignable playlists.',
+  binding_exists: 'That role already has this permission.',
+  invalid_binding: 'Enter a Discord role id (17–20 digits) and choose review or manage.',
+
+  // album art
+  art_too_large: 'That image is larger than 5 MB.',
+  art_type: 'Use a JPEG, PNG or WebP image.',
+  art_rejected: "That image couldn't be used. Try a different JPEG, PNG or WebP file.",
+  art_not_ready: 'The image is still being processed. Wait a moment and try again.',
+  art_timeout: 'Processing the image took too long. Try again.',
+
   // uploads (tus)
   upload_too_large: 'That file is larger than 35 MB.',
   uploads_paused: 'Uploads are paused because the server is low on space. Try again later.',

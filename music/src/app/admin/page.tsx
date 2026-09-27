@@ -1,4 +1,5 @@
 import { HealthPanel } from '@/components/admin/HealthPanel'
+import { RoleBindings } from '@/components/admin/RoleBindings'
 import { SettingsForm } from '@/components/admin/SettingsForm'
 import { bytes, when } from '@/components/format'
 import { ITEM_STATUS } from '@/components/messages'
@@ -54,6 +55,7 @@ export default async function AdminPage() {
         <SettingsForm
           initial={{
             assignablePlaylistIds: s.assignablePlaylistIds,
+            stationPlaylistIds: s.stationPlaylistIds,
             defaultPlaylistIds: s.defaultPlaylistIds,
             playlistNames: s.playlistNames,
             autoCloseDays: s.autoCloseDays,
@@ -95,39 +97,9 @@ export default async function AdminPage() {
           Reviewer roles
         </h2>
         <p className="text-sm text-cream/65">
-          Discord roles that grant review or manage access. Admin access comes only from the portal owner list on the server. This list is read-only here.
+          Discord roles that grant review or manage access. Admin access comes only from the portal owner list on the server.
         </p>
-        {o.bindings.length === 0 ? (
-          <p className="text-sm text-cream/60">No role bindings.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="text-xs text-cream/50">
-                  <th className="py-1 pr-3">Discord role id</th>
-                  <th className="py-1 pr-3">Grants</th>
-                  <th className="py-1 pr-3">Note</th>
-                  <th className="py-1">Added</th>
-                </tr>
-              </thead>
-              <tbody>
-                {o.bindings.map((b) => (
-                  <tr key={b.id} className="border-t border-cream/10">
-                    <td className="py-2 pr-3 font-mono">{b.roleId}</td>
-                    <td className="py-2 pr-3">
-                      <span className={`chip ${b.permission === 'manage' ? 'chip-live' : 'chip-pending'}`}>{b.permission}</span>
-                    </td>
-                    <td className="py-2 pr-3 text-cream/70">{b.note ?? ''}</td>
-                    <td className="py-2 text-xs text-cream/55">
-                      {when(b.createdAt)}
-                      {b.createdBy ? ` by ${b.createdBy}` : ''}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <RoleBindings bindings={o.bindings} />
       </section>
     </section>
   )
