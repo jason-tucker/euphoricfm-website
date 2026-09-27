@@ -1,11 +1,15 @@
 // Generates audio / hostile fixtures with ffmpeg (test image only), and under
 // REQUIRE_ALL waits for the running stack.
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apicV3, frameV3, tag, textV3, zlibBombFrame } from '../helpers/id3'
 
-const DIR = '/tmp/efm-fixtures'
+// A private, per-run directory (mkdtemp, mode 0700) rather than a fixed /tmp
+// path another user could pre-create or symlink. Test files find it through
+// EFM_FX_DIR, which the forked test workers inherit from this process.
+let DIR = ''
 
 function ff(args: string[]) {
   execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args])
@@ -46,12 +50,12 @@ function wavFixtures() {
   // an MP3 over 35 MB: a real MP3 followed by padding (the magic check passes)
   const mp3 = readFileSync(join(DIR, 'raw35.mp3'))
   writeFileSync(join(DIR, 'big-36mb.mp3'), Buffer.concat([mp3, Buffer.alloc(36 * 1024 * 1024 - mp3.length + 1024)]))
-  writeFileSync(join(DIR, '.done-wav'), '')
 }
 
 export default async function setup() {
-  if (!existsSync(join(DIR, '.done'))) {
-    mkdirSync(DIR, { recursive: true })
+  DIR = mkdtempSync(join(tmpdir(), 'efm-fixtures-'))
+  process.env.EFM_FX_DIR = DIR
+  {
     rawMp3('raw35.mp3', 35, 128)
     rawMp3('raw35b.mp3', 35, 128, 660)
     rawMp3('raw35c.mp3', 35, 128, 880)
@@ -89,10 +93,8 @@ export default async function setup() {
     ff(['-f', 'lavfi', '-i', 'testsrc2=s=800x800', '-frames:v', '1', '-q:v', '3', join(DIR, 'art.jpg')])
     ff(['-f', 'lavfi', '-i', 'testsrc2=s=640x480', '-frames:v', '1', '-c:v', 'libwebp', join(DIR, 'art.webp')])
     ff(['-f', 'lavfi', '-i', 'testsrc2=s=64x64', '-frames:v', '1', join(DIR, 'art.gif')])
-    writeFileSync(join(DIR, '.done-art'), '')
-    writeFileSync(join(DIR, '.done'), '')
   }
-  if (!existsSync(join(DIR, '.done-wav'))) wavFixtures()
+  wavFixtures()
 
   if (process.env.REQUIRE_ALL === '1' && process.env.E2E_WEB_URL) {
     const deadline = Date.now() + 120_000

@@ -25,6 +25,7 @@ import { batchContractCheck, diskPush, finalCleanup, Scheduler } from '@/worker/
 import { autoCloseSweep, batchSummary, summaryBody, summarySweep, ticketAutoclose, ticketItemEvent } from '@/worker/scheduler/tickets'
 import { ownerSql } from './helpers/db'
 import { DBENV, MOCKS } from './helpers/env'
+import { fx } from './helpers/fixtures'
 import { control } from './helpers/http'
 import { actAsProbe, item, makeCtx, mkArtist, mkBatch, mkItem, mkUser, PREFIX_ENV, run, slot, uniq, type TestCtx } from './helpers/p3'
 
@@ -1115,12 +1116,12 @@ describe.skipIf(!DBENV() || !MOCKS())('album art (art contract): item art, final
     const dirs = { uploads: join(root, 'uploads'), work: join(root, 'work'), final: join(root, 'final'), art: join(root, 'art') }
     for (const d of Object.values(dirs)) mkdirSync(d)
     const upload = randomUUID().replace(/-/g, '')
-    copyFileSync('/tmp/efm-fixtures/raw35.mp3', join(dirs.uploads, upload))
+    copyFileSync(fx('raw35.mp3'), join(dirs.uploads, upload))
     const mp3Sha = createHash('sha256').update(readFileSync(join(dirs.uploads, upload))).digest('hex')
     const artId = randomUUID()
     mkdirSync(join(dirs.art, artId))
     const jpg = join(dirs.art, artId, 'cover.jpg')
-    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', '/tmp/efm-fixtures/cover.png', '-vf', 'scale=320:-1', jpg])
+    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', fx('cover.png'), '-vf', 'scale=320:-1', jpg])
     const jpgBytes = readFileSync(jpg)
     const jpgSha = createHash('sha256').update(jpgBytes).digest('hex')
     const base = { v: 1 as const, type: 'finalize' as const, upload, approvedSha256: mp3Sha, tags: { title: 'Art Song', artist: 'Band', album: '', genre: '' } }
