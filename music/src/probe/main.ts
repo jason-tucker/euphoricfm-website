@@ -60,6 +60,18 @@ export async function handleClaimed(inbox: Inbox, id: string, claimedPath: strin
       return runProbe(req, { uploads: dirs.uploads, work: dirs.work, mmChild: dirs.mmChild })
     case 'finalize':
       return runFinalize(req, { uploads: dirs.uploads, work: dirs.work, final: dirs.final })
+    case 'cleanup_final': {
+      // unlink removes a symlink itself, never its target; the name is
+      // pattern-checked by the schema (no separators, no dots but .mp3).
+      let removed = true
+      try {
+        await unlink(join(dirs.final, req.file))
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return fail(id, inbox, req.type, 'cleanup_failed')
+        removed = false
+      }
+      return { v: 1, id, source: inbox, type: 'cleanup_final', ok: true, removed }
+    }
     default:
       return fail(id, inbox, req.type, 'not_implemented') // P5 SoundCloud types
   }

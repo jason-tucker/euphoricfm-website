@@ -28,7 +28,7 @@ export type Inbox = 'in-web' | 'in-worker'
 
 export const INBOX_TYPES: Record<Inbox, readonly string[]> = {
   'in-web': ['probe'],
-  'in-worker': ['finalize', 'cover', 'probe_fetch'],
+  'in-worker': ['finalize', 'cover', 'probe_fetch', 'cleanup_final'],
 }
 
 const tagString = z
@@ -67,7 +67,14 @@ export const probeFetchRequest = z
   .object({ v: z.literal(1), id: z.string().regex(UUID_RE), type: z.literal('probe_fetch'), input: z.string().max(200) })
   .strict()
 
-export const spoolRequest = z.discriminatedUnion('type', [probeRequest, finalizeRequest, coverRequest, probeFetchRequest])
+// P3: the worker mounts /staging/final read-only, so it asks the probe to
+// remove a finalized file (live or failed + 7 days). Name pattern only.
+export const FINAL_FILE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.mp3$/
+export const cleanupFinalRequest = z
+  .object({ v: z.literal(1), id: z.string().regex(UUID_RE), type: z.literal('cleanup_final'), file: z.string().regex(FINAL_FILE_RE) })
+  .strict()
+
+export const spoolRequest = z.discriminatedUnion('type', [probeRequest, finalizeRequest, coverRequest, probeFetchRequest, cleanupFinalRequest])
 export type SpoolRequest = z.infer<typeof spoolRequest>
 export type ProbeRequest = z.infer<typeof probeRequest>
 export type FinalizeRequest = z.infer<typeof finalizeRequest>
@@ -79,6 +86,8 @@ export const probeTags = z.object({
   artist: z.string().max(200).nullable(),
   album: z.string().max(200).nullable(),
   genre: z.string().max(200).nullable(),
+  // Prefill only (shown to the submitter); not written by finalize.
+  year: z.string().regex(/^\d{1,4}$/).nullable().optional(),
 })
 
 export const probeOk = z.object({
@@ -110,7 +119,14 @@ export const spoolFailure = z.object({
   error: z.string().max(64),
 })
 
-export const spoolResult = z.union([probeOk, finalizeOk, spoolFailure])
+export const cleanupOk = z.object({
+  ...resultBase,
+  type: z.literal('cleanup_final'),
+  ok: z.literal(true),
+  removed: z.boolean(),
+})
+
+export const spoolResult = z.union([probeOk, finalizeOk, cleanupOk, spoolFailure])
 export type SpoolResult = z.infer<typeof spoolResult>
 
 // Exclusive-create a tmp file (O_CREAT|O_EXCL never follows a symlink), then
