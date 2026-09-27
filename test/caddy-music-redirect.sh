@@ -100,6 +100,10 @@ echo "$H" | grep -qi '^cache-control: no-store' || { echo "FAIL card cache-contr
 echo "$H" | grep -qi '^vary: .*Sec-Fetch-Dest.*User-Agent' || { echo "FAIL card vary"; FAIL=1; }
 echo "$H" | grep -qi 'frame-ancestors \*' || { echo "FAIL card CSP frame-ancestors"; FAIL=1; }
 echo "$H" | grep -qi '^x-frame-options' && { echo "FAIL card has X-Frame-Options"; FAIL=1; }
+# The song-submission webhook must no longer be handed out to visitors.
+RC=$(curl -s "http://127.0.0.1:$PORT/efm-runtime-config.js" -H 'Host: info.euphoric.fm')
+echo "Runtime config: $RC"
+echo "$RC" | grep -q requestWebhook && { echo "FAIL runtime config still serves requestWebhook"; FAIL=1; }
 grep -q 'window.top' dist/music-card/index.html && { echo "FAIL card references window.top"; FAIL=1; }
 rm -f /tmp/efm-body.$$
 [ "$FAIL" = 0 ] && echo "ALL PASS" || { echo "SOME CHECKS FAILED"; exit 1; }

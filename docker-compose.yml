@@ -34,7 +34,6 @@ services:
       # Webhook URLs are injected at runtime by Caddy templating
       # /efm-runtime-config.js from these env vars. They live in .env on the
       # host; editing them is `docker compose up -d`, no rebuild needed.
-      PUBLIC_DISCORD_REQUEST_WEBHOOK: ${PUBLIC_DISCORD_REQUEST_WEBHOOK:-}
       PUBLIC_DISCORD_CONTACT_WEBHOOK: ${PUBLIC_DISCORD_CONTACT_WEBHOOK:-}
     # PUBLIC binding: Caddy needs :80 (ACME HTTP-01 challenge + http→https
     # redirect) and :443 (TLS). HTTP/3 over UDP/443 is opt-in; we leave it

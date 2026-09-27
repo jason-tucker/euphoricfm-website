@@ -19,8 +19,11 @@ leaving the phone:
 - **Station stats** — a full stats area (below About) with interactive area
   graphs, KPI tiles, rhythm charts, and clickable top-tracks/top-artists with
   drill-down, covering the station's history back to 2023 where data permits.
-- **Submit a song / Contact us** — forms that post to Discord webhooks for
-  artist submissions and general contact.
+- **Submit music** — a button that opens the browser-only music portal at
+  [music.euphoric.fm](https://music.euphoric.fm) (Discord login). Inside the
+  in-game phone it shows a card instead ("open music.euphoric.fm on your PC or
+  phone"); `info.euphoric.fm/music` redirects to the portal the same way.
+- **Contact us** — a form that posts to a Discord webhook.
 - **Euphoric FM Events** (`/events`) — a page for booking curated music and
   radio programming for an event, with a live on-air/"On the Calendar" status
   card driven by the Euphoric Events station's public schedule, and an inquiry
@@ -45,6 +48,9 @@ src/
                               effects backdrop + client scripts
   pages/index.astro           composes the single page top-to-bottom
   pages/events.astro          composes the Euphoric FM Events page
+  pages/music-card.astro      in-game "submit music in your browser" card
+                              (build-time QR); Caddy serves it for framed/CEF
+                              requests to /music
   site.config.ts              one source of truth for editable strings + URLs
                                (includes the `events` copy block)
   lib/azuracast.ts            TS types + URL helpers for the AzuraCast API
@@ -69,14 +75,15 @@ src/
     PlayerCard.astro          live player: now-playing, progress, play/volume,
                               up-next, Web Audio analyser feeding --efm-* vars
     ListenButton.astro        HTML5 audio + volume (merged into PlayerCard)
-    ActionRow.astro           four CTAs that dispatch efm:open-* events
+    ActionRow.astro           CTAs: modal openers (efm:open-* events) + the
+                              Events link + "Submit music" (portal link;
+                              in-game it opens /music-card/ in-frame)
     RecentlyPlayed.astro      list skeleton, hydrated by nowplaying.ts
     RequestedSongs.astro      shared pending-requests card, hydrated client-side
     Stats.astro               station stats section skeleton, hydrated by
                               scripts/stats.ts
     About.astro               "What is EuphoricFM?" blurb (aboutText)
     RequestModal.astro        AzuraCast library search + same-origin POST
-    SubmitSongModal.astro     Discord webhook — artist song submission
     ContactModal.astro        Discord webhook — general contact form
     BusinessAdModal.astro     static pricing + perks
     EventsHero.astro          /events hero + CTAs
@@ -165,7 +172,6 @@ webhook URL is ever baked into the static bundle. Set them in `.env` on the host
 
 | Env var | Used by |
 | --- | --- |
-| `PUBLIC_DISCORD_REQUEST_WEBHOOK` | "Submit a song" modal |
 | `PUBLIC_DISCORD_CONTACT_WEBHOOK` | "Contact us" modal |
 | `SITE_HOSTNAME` | hostname Caddy serves + provisions a Let's Encrypt cert for |
 | `AZURACAST_API_KEY` | `efm-requests`/stats.mjs — enables full-history backfill (empty = live-only accumulation, never exposed to clients) |
@@ -231,7 +237,7 @@ This site is embedded inside the in-game phone's CEF iframe browser, so:
 
 ### Discord webhooks
 
-The "Submit a song" and "Contact us" modals POST directly to the configured
+The "Contact us" modal (and the /events inquiry form) POST directly to the configured
 Discord webhooks (read from `window.__EFM_CONFIG__.discord.*` at submit time).
 The payload matches the embed shape AzuraCast's own button uses —
 `username`, `avatar_url`, `thread_name`, and

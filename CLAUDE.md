@@ -63,7 +63,7 @@ hover-only affordances. Use the `.phone` container utility for max-width.
 ### 7. Editable copy stays in `src/site.config.ts`; webhook URLs are runtime env-injected
 About text, business AD info, station name, `discord.avatarUrl`, and other editable strings live in `src/site.config.ts`. Don't sprinkle copy across components.
 
-Webhook URLs (`PUBLIC_DISCORD_REQUEST_WEBHOOK`, `PUBLIC_DISCORD_CONTACT_WEBHOOK`) are **never** hardcoded or build-time inlined. Caddy templates them into `/efm-runtime-config.js` at request time from the container's env vars (set in `.env` on the host). The modals read them off `window.__EFM_CONFIG__.discord.{requestWebhook,contactWebhook}`. To rotate a webhook: edit `.env` + `docker compose up -d` — no rebuild needed.
+Webhook URLs (`PUBLIC_DISCORD_CONTACT_WEBHOOK` — the only one left since song submission moved to the music portal) are **never** hardcoded or build-time inlined. Caddy templates them into `/efm-runtime-config.js` at request time from the container's env vars (set in `.env` on the host). The modals read them off `window.__EFM_CONFIG__.discord.contactWebhook`. To rotate a webhook: edit `.env` + `docker compose up -d` — no rebuild needed.
 
 ## Architecture
 
@@ -71,6 +71,9 @@ Webhook URLs (`PUBLIC_DISCORD_REQUEST_WEBHOOK`, `PUBLIC_DISCORD_CONTACT_WEBHOOK`
 src/
   layouts/BaseLayout.astro     window.__EFM_CONFIG__ injected here; imports nowplaying.ts + effects.ts
   pages/index.astro            composes the page top-to-bottom
+  pages/music-card.astro       static in-game card for the browser-only music portal
+                               (music.euphoric.fm); Caddy serves it for framed/CEF
+                               /music requests, 302s everyone else to the portal
   pages/events.astro           composes the Euphoric FM Events page (Header → EventsHero →
                                EventsHowItWorks → EventsServices → EventStatus → Footer,
                                EventInquiryModal outside .phone)
@@ -176,9 +179,12 @@ There is **no `typecheck` script** in `package.json`. Type-checking runs as `pnp
 
 ## Discord webhooks
 
-The "submit a song" and "contact us" forms POST to Discord webhooks. Webhook URLs are
+The "contact us" form (and the /events inquiry form) POST to a Discord webhook. Song
+submission is NOT a form any more: the "Submit music" button opens the browser-only portal at
+music.euphoric.fm, and `/music` redirects there (in-game → the `/music-card/` page; see the
+Caddyfile "Music portal entry" block). Webhook URLs are
 **runtime env-injected** (see Rule 7): Caddy serves `/efm-runtime-config.js` which templates
-`PUBLIC_DISCORD_REQUEST_WEBHOOK` and `PUBLIC_DISCORD_CONTACT_WEBHOOK` from the container env into
+`PUBLIC_DISCORD_CONTACT_WEBHOOK` from the container env into
 `window.__EFM_CONFIG__.discord`. The modals read them at submit time from that object. They are
 never baked into the static build. Match the embed shape that AzuraCast's existing button uses —
 `username`, `avatar_url`, `thread_name`, `embeds[{ title, description, fields,

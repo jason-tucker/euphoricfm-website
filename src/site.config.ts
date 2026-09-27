@@ -33,7 +33,7 @@ export const site = {
   // Webhook URLs are NEVER hardcoded or build-time inlined. They're served at
   // runtime by Caddy from `/runtime-config.js`, which templates them out of the
   // container's env vars (see Caddyfile + docker-compose.yml). The modals read
-  // them off `window.__EFM_CONFIG__.discord.{requestWebhook,contactWebhook}`.
+  // them off `window.__EFM_CONFIG__.discord.contactWebhook`.
   discord: {
     avatarUrl: 'https://euphoric.fm/static/android-chrome-192x192.png',
   },
@@ -62,9 +62,10 @@ San Andreas is not only our home; it's also the source of incredible talent wait
   music: {
     portalUrl: 'https://music.euphoric.fm/',
     portalHost: 'music.euphoric.fm',
-    // Same-origin path the in-game button navigates to; Caddy answers it with
-    // the card for framed/CEF requests.
-    cardPath: '/music',
+    // Where the homepage "Submit music" button goes INSIDE the in-game phone
+    // (html.efm-cef): the card page itself, directly, so it never depends on
+    // CEF sending the headers Caddy's /music routing keys on.
+    cardPath: '/music-card/',
     button: 'Submit music',
     card: {
       title: 'Submit music',
