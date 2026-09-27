@@ -42,7 +42,7 @@ export type ReqOpts = {
 
 export async function req(jar: Jar | null, path: string, o: ReqOpts = {}): Promise<Response> {
   const method = (o.method ?? (o.json !== undefined || o.body ? 'POST' : 'GET')).toUpperCase()
-  const headers: Record<string, string> = { 'cf-connecting-ip': o.ip ?? '203.0.113.10', ...(o.headers ?? {}) }
+  const headers: Record<string, string> = { 'cf-connecting-ip': o.ip ?? freshIp(), ...(o.headers ?? {}) }
   const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(method)
   if (o.sameOrigin ?? unsafe) {
     headers.origin ??= ORIGIN

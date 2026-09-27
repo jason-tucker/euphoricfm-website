@@ -1,0 +1,31 @@
+import { readFileSync } from 'node:fs'
+import { describe, expect, it } from 'vitest'
+import { BASELINE, checkContract } from '@/server/azuracast/contract'
+
+const spec = readFileSync(new URL('./fixtures/openapi-min.yml', import.meta.url), 'utf8')
+
+describe('AzuraCast contract drift probe', () => {
+  it('the fixture spec reproduces the P0d baseline hashes exactly', () => {
+    expect(Object.keys(BASELINE.paths)).toHaveLength(5)
+    expect(checkContract(spec)).toEqual({ ok: true, drift: [] })
+  })
+
+  it('detects a changed path object', () => {
+    const r = checkContract(spec.replace("summary: 'Upload a new file.'", "summary: 'Upload a new file!'"))
+    expect(r.ok).toBe(false)
+    expect(r.drift.map((d) => d.name)).toContain('path /station/{station_id}/files')
+  })
+
+  it('detects a changed referenced schema', () => {
+    const changed = spec.replace("description: 'The destination path of the uploaded file.'\n          type: string", "description: 'The destination path of the uploaded file.'\n          type: integer")
+    expect(changed).not.toBe(spec)
+    const r = checkContract(changed)
+    expect(r.ok).toBe(false)
+    expect(r.drift.map((d) => d.name)).toEqual(expect.arrayContaining(['schemas bundle', 'schema Api_UploadFile']))
+  })
+
+  it('detects a removed path', () => {
+    const r = checkContract(spec.replace("  '/station/{station_id}/files/batch':", "  '/station/{station_id}/files/batch2':"))
+    expect(r.drift).toContainEqual(expect.objectContaining({ name: 'path /station/{station_id}/files/batch', actual: null }))
+  })
+})

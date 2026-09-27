@@ -117,7 +117,7 @@ describe('AzuraCast wrapper refusals (no request leaves the process)', () => {
     await refused(c.send('GET', '/api/station/1/files/list?currentDirectory=Music&flushCache=true&searchPhrase=x'), 'refused_query')
     await refused(c.send('GET', '/api/station/1/files/list?currentDirectory=../x&flushCache=true'), 'refused_query')
     await refused(c.send('GET', 'https://evil.example/api/openapi.yml'), 'refused_path')
-    await refused(c.send('GET', '/api/station/1/file/%35'), 'refused_not_allowlisted')
+    await refused(c.send('GET', '/api/station/1/file/%35'), 'refused_encoded_path')
     expect(calls).toHaveLength(0)
   })
 
@@ -211,9 +211,10 @@ describe.skipIf(!MOCKS())('AzuraCast wrapper against the P0d-B mock', () => {
     const listed = (await c.listDirectory(src.slice(0, src.lastIndexOf('/'))))[0]!
     expect(listed.media!.playlists.map((p) => p.id).sort()).toEqual([2, 3, 74]) // station-14 id 74 still aggregated
     await c.updateMetadata(listed.media!.id, { title: 'New', artist: 'A', album: '', genre: '' })
-    await c.moveFile(src, 'Portal-Test/Removed/77')
+    const removed = `Portal-Test/Removed/${Date.now()}`
+    await c.moveFile(src, removed)
     const moved = await c.getFile(listed.media!.id)
-    expect(moved.path).toBe('Portal-Test/Removed/77/x.mp3')
+    expect(moved.path).toBe(`${removed}/x.mp3`)
     // A file outside the prefix (or outside Music/Artists) cannot be edited by id.
     await control('/__mock/az/seed', { files: [{ path: 'Music/Artists/GRIM/luvusm.mp3', title: 'Luv U SM', artist: 'GRIM' }] })
     const real = (await (await fetch(`${process.env.MOCKS_CONTROL}/__mock/az/files`)).json()) as { id: number; path: string }[]
@@ -228,7 +229,8 @@ describe.skipIf(!MOCKS())('AzuraCast wrapper against the P0d-B mock', () => {
     const all = await client().listAllFiles(2)
     expect(all.length).toBeGreaterThan(0)
     const calls = (await control('/__mock/az/calls')) as { path: string; query: Record<string, string> }[]
-    const pages = calls.filter((x) => x.path === '/api/station/1/files')
+    const pages = calls.filter((x) => (x as { method?: string }).method === 'GET' && x.path === '/api/station/1/files')
+    expect(pages.length).toBeGreaterThan(1)
     expect(pages.every((x) => x.query.per_page === '2' && x.query.page)).toBe(true)
   })
 })

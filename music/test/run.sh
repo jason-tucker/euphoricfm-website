@@ -20,6 +20,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+$DC --profile tests down -v --remove-orphans >/dev/null 2>&1 || true
 mkdir -p test/.out/data
 docker run --rm -v "$PWD/test/.out:/o" alpine:3 sh -c 'rm -rf /o/data && mkdir -p /o/data' >/dev/null
 
@@ -31,7 +32,8 @@ $DC up -d --wait music-web music-worker music-probe mocks || { $DC logs --no-col
 
 status=0
 echo "== vitest"
-$DC --profile tests run --rm tests pnpm exec vitest run --reporter=default 2>&1 | tee test/.out/vitest.log || status=1
+$DC --profile tests run --rm tests pnpm exec vitest run --reporter=default > test/.out/vitest.log 2>&1 || status=1
+cat test/.out/vitest.log
 
 echo "== mount checks (real compose mounts)"
 mc=0
