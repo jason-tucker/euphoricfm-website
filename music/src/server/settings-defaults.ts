@@ -5,6 +5,10 @@ export const MB = 1024 * 1024
 
 export const DEFAULT_CAPS = {
   maxUploadBytes: 35 * MB,
+  // v0.3.0: WAV uploads (converted to a 320 kbps MP3 by the probe). The tus
+  // creation caps by the DECLARED type (Upload-Metadata filetype), the probe
+  // again by the ACTUAL type; admins may lower it (never above 250 MB).
+  maxWavUploadBytes: 250 * MB,
   chunkBytes: 8 * MB,
   maxInflightBytesPerUser: 1024 * MB,
   maxConcurrentUploadsPerUser: 3,

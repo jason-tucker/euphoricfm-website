@@ -7,10 +7,10 @@ import type { AzuraCastClient } from '../server/azuracast/client'
 import { checkContract } from '../server/azuracast/contract'
 import { audit } from '../server/audit'
 import type { DB } from '../server/db/client'
-import { batches, comments, items, memberCache, roleBindings, users } from '../server/db/schema'
+import { batches, comments, items, memberCache, roleBindings, uploads, users } from '../server/db/schema'
 import { enqueue } from '../server/jobs'
 import { getQueuesPaused, pauseQueues, resumeQueuesIf } from '../server/pause'
-import { readSpoolResult } from '../server/spool/protocol'
+import { MAX_UPLOAD_BYTES, readSpoolResult } from '../server/spool/protocol'
 import { TicketsApiError, type TicketsClient } from '../server/tickets/client'
 
 export type WorkerCtx = {
@@ -73,6 +73,12 @@ function fromTickets(e: unknown): never {
 // Items in 'probing' get their result from /spool/probe/out (read-only
 // mount). Only a result that the probe stamped as coming from the in-web
 // inbox with type 'probe' is accepted for an upload item.
+//
+// Staging accounting (v0.3.0): a WAV the probe converted was replaced by its
+// MP3, so the upload row's `length` (what the per-user and global staging
+// caps sum) becomes the MP3's size; a rejection whose bytes the probe deleted
+// (`released`) marks the upload expired. Both only in the same transaction
+// as the item's own probing → pending/rejected transition.
 export async function collectProbeResults(ctx: WorkerCtx): Promise<number> {
   const probing = await ctx.db.query.items.findMany({ where: eq(items.status, 'probing'), limit: 50 })
   let n = 0
@@ -98,28 +104,44 @@ export async function collectProbeResults(ctx: WorkerCtx): Promise<number> {
       continue
     }
     if (r.ok && 'sha256' in r) {
-      await ctx.db
-        .update(items)
-        .set({
-          status: 'pending',
-          probeSha256: r.sha256,
-          durationS: Math.round(r.durationS),
-          bitrate: r.bitrate,
-          prefill: r.tags,
-          title: r.tags.title,
-          artist: r.tags.artist,
-          album: r.tags.album,
-          genre: r.tags.genre,
-          coverFile: r.cover?.file ?? null,
-          coverSha256: r.cover?.sha256 ?? null,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(items.id, it.id), eq(items.status, 'probing')))
+      const ok = r
+      await ctx.db.transaction(async (tx) => {
+        const moved = await tx
+          .update(items)
+          .set({
+            status: 'pending',
+            probeSha256: ok.sha256,
+            durationS: Math.round(ok.durationS),
+            bitrate: ok.bitrate,
+            inputFormat: ok.inputFormat ?? 'mp3',
+            prefill: ok.tags,
+            title: ok.tags.title,
+            artist: ok.tags.artist,
+            album: ok.tags.album,
+            genre: ok.tags.genre,
+            coverFile: ok.cover?.file ?? null,
+            coverSha256: ok.cover?.sha256 ?? null,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(items.id, it.id), eq(items.status, 'probing')))
+          .returning({ id: items.id })
+        // Only a plausible MP3 size (what finalize accepts) re-charges the row.
+        if (moved.length === 1 && ok.inputFormat === 'wav' && it.uploadId && ok.size >= 1 && ok.size <= MAX_UPLOAD_BYTES) {
+          await tx.update(uploads).set({ length: ok.size }).where(and(eq(uploads.id, it.uploadId), eq(uploads.status, 'attached')))
+        }
+      })
     } else {
-      await ctx.db
-        .update(items)
-        .set({ status: 'rejected', probeError: 'error' in r ? r.error : 'probe_failed', updatedAt: new Date() })
-        .where(and(eq(items.id, it.id), eq(items.status, 'probing')))
+      const released = !r.ok && 'released' in r && r.released === true
+      await ctx.db.transaction(async (tx) => {
+        const moved = await tx
+          .update(items)
+          .set({ status: 'rejected', probeError: 'error' in r ? r.error : 'probe_failed', updatedAt: new Date() })
+          .where(and(eq(items.id, it.id), eq(items.status, 'probing')))
+          .returning({ id: items.id })
+        if (moved.length === 1 && released && it.uploadId) {
+          await tx.update(uploads).set({ status: 'expired' }).where(and(eq(uploads.id, it.uploadId), eq(uploads.status, 'attached')))
+        }
+      })
     }
     n++
   }

@@ -17,9 +17,9 @@ import { afterApprove, ensureNewArtistItems } from './library/artists'
 import { mayHaveCover } from './media/cover'
 import { signMediaUrl } from './media/signing'
 import { metaText } from './requests/common'
-import { getIntList, getSetting } from './settings'
+import { getIntList, getSetting, loadCaps } from './settings'
 import { DEFAULT_CAPS, type Caps } from './settings-defaults'
-import { writeSpoolRequest } from './spool/protocol'
+import { MAX_WAV_UPLOAD_BYTES, writeSpoolRequest } from './spool/protocol'
 
 const text = (max: number) =>
   z
@@ -56,6 +56,7 @@ function itemView(v: Viewer, it: typeof items.$inferSelect) {
     prefill: it.prefill,
     probeError: it.probeError,
     denyReason: it.denyReason,
+    inputFormat: it.inputFormat,
     hasCover: Boolean(it.coverFile),
     customArtId: it.customArtId,
     playlistIds: it.playlistIds,
@@ -114,7 +115,10 @@ export async function addUploadToBatch(db: DB, v: Viewer, batchId: number, uploa
     return { row: row!, length: up.length }
   })
   try {
-    await writeSpoolRequest(spoolInDir, { v: 1, id: probeRequestId, type: 'probe', upload: uploadId, expectedSize: item.length })
+    // maxWavBytes: the loaded (possibly admin-lowered) WAV cap, which the
+    // probe applies to an upload that turns out to be a WAV (v0.3.0).
+    const maxWavBytes = Math.min((await loadCaps(db)).maxWavUploadBytes, MAX_WAV_UPLOAD_BYTES)
+    await writeSpoolRequest(spoolInDir, { v: 1, id: probeRequestId, type: 'probe', upload: uploadId, expectedSize: item.length, maxWavBytes })
   } catch {
     await db.update(items).set({ status: 'rejected', probeError: 'spool_unavailable', updatedAt: new Date() }).where(eq(items.id, item.row.id))
     throw new HttpError(503, 'probe_unavailable')

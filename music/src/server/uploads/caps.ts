@@ -1,4 +1,5 @@
-// Upload admission (plan §3.4): Upload-Length 1..35 MB, no defer-length, no
+// Upload admission (plan §3.4): Upload-Length 1..35 MB (1..250 MB for an
+// upload DECLARED as a WAV, v0.3.0), no defer-length, no
 // concatenation, no creation-with-upload body; per user ≤1 GB in flight
 // (uploading + complete + attached-but-undecided bytes) and
 // ≤3 concurrent uploads; ≤5 GB staged globally (album art included, v0.2.1);
@@ -11,12 +12,47 @@ import { sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { artUploads, uploads } from '../db/schema'
 import { DEFAULT_CAPS, type Caps } from '../settings-defaults'
+import { MAX_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES } from '../spool/protocol'
 
 export type Refusal = { status: number; code: string; retryAfterS?: number }
 
 export const UPLOAD_ID_RE = /^[0-9a-f]{32}$/
 
-export function checkCreateHeaders(h: Headers, caps: Caps = DEFAULT_CAPS): Refusal | { length: number } {
+// v0.3.0: the type a tus creation DECLARES, from its Upload-Metadata
+// `filetype` (tus-js-client sends `filetype <base64>`). It only chooses the
+// size cap; it is never trusted for anything else (the probe decides the real
+// type by magic bytes and applies that type's cap too). Anything missing,
+// malformed, repeated or unknown counts as MP3, the smaller cap.
+export type DeclaredKind = 'mp3' | 'wav'
+export const WAV_MIME_TYPES = new Set(['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave'])
+const B64_RE = /^[A-Za-z0-9+/]{0,256}={0,2}$/
+
+export function declaredKind(h: Headers): DeclaredKind {
+  const raw = h.get('upload-metadata')
+  if (raw === null || raw.length > 4096) return 'mp3'
+  let found: string | null = null
+  for (const pair of raw.split(',')) {
+    const parts = pair.trim().split(' ')
+    if (parts[0] !== 'filetype') continue
+    if (found !== null || parts.length !== 2 || !B64_RE.test(parts[1]!)) return 'mp3'
+    found = Buffer.from(parts[1]!, 'base64').toString('latin1')
+  }
+  if (found === null) return 'mp3'
+  const mime = found.split(';')[0]!.trim().toLowerCase()
+  return WAV_MIME_TYPES.has(mime) ? 'wav' : 'mp3'
+}
+
+// Per-file cap for a declared type: the (possibly admin-lowered) setting,
+// never above the compiled limit.
+export function maxBytesFor(kind: DeclaredKind, caps: Caps = DEFAULT_CAPS): number {
+  return kind === 'wav' ? Math.min(caps.maxWavUploadBytes, MAX_WAV_UPLOAD_BYTES) : Math.min(caps.maxUploadBytes, MAX_UPLOAD_BYTES)
+}
+
+export function tooLarge(kind: DeclaredKind): Refusal {
+  return { status: 413, code: kind === 'wav' ? 'wav_upload_too_large' : 'upload_too_large' }
+}
+
+export function checkCreateHeaders(h: Headers, caps: Caps = DEFAULT_CAPS): Refusal | { length: number; kind: DeclaredKind } {
   if (h.has('upload-defer-length')) return { status: 400, code: 'defer_length_disabled' }
   if (h.has('upload-concat')) return { status: 400, code: 'concatenation_disabled' }
   const cl = h.get('content-length')
@@ -25,8 +61,9 @@ export function checkCreateHeaders(h: Headers, caps: Caps = DEFAULT_CAPS): Refus
   if (raw === null || !/^\d{1,12}$/.test(raw)) return { status: 400, code: 'upload_length_required' }
   const length = Number(raw)
   if (length < 1) return { status: 400, code: 'upload_length_invalid' }
-  if (length > caps.maxUploadBytes) return { status: 413, code: 'upload_too_large' }
-  return { length }
+  const kind = declaredKind(h)
+  if (length > maxBytesFor(kind, caps)) return tooLarge(kind)
+  return { length, kind }
 }
 
 export function checkPatchHeaders(h: Headers, caps: Caps = DEFAULT_CAPS): Refusal | null {
@@ -71,7 +108,12 @@ export async function stagedBytes(q: Pick<DB, 'execute'>): Promise<{ uploads: nu
 }
 
 // Reserve quota and record the upload row (owner from the SESSION only).
-export async function admitUpload(db: DB, userId: string, id: string, length: number, caps: Caps = DEFAULT_CAPS): Promise<Refusal | null> {
+// `kind` is the declared type: its per-file cap is checked again here with
+// the LOADED caps (an admin may have lowered maxWavUploadBytes). A WAV is
+// charged at its full length until the probe's MP3 replaces it (the worker
+// then sets `length` to the MP3's size) or a rejection releases it.
+export async function admitUpload(db: DB, userId: string, id: string, length: number, caps: Caps = DEFAULT_CAPS, kind: DeclaredKind = 'mp3'): Promise<Refusal | null> {
+  if (length > maxBytesFor(kind, caps)) return tooLarge(kind)
   return db.transaction(async (tx) => {
     await lockStaging(tx)
     const staged = await stagedBytes(tx)
