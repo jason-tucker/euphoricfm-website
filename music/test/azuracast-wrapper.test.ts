@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { AzuraCastClient, AzuraCastError, base64JsonStream, mergePlaylists } from '@/server/azuracast/client'
+import { AzuraCastClient, AzuraCastError, base64JsonStream, mergePlaylists, TEST_SEND } from '@/server/azuracast/client'
 import { resolveProfile } from '@/server/azuracast/guard'
 import { MOCKS } from './helpers/env'
 import { control } from './helpers/http'
@@ -18,6 +18,10 @@ function fakeClient(env: Record<string, string> = PREFIX_ENV) {
   return { c, calls }
 }
 
+// The transport is private; tests reach it only through the seam, which runs
+// the same validate().
+const send = (c: AzuraCastClient, ...a: Parameters<AzuraCastClient[typeof TEST_SEND]>) => c[TEST_SEND](...a)
+
 async function refused(p: Promise<unknown>, code: string) {
   await expect(p).rejects.toBeInstanceOf(AzuraCastError)
   await expect(p).rejects.toMatchObject({ code })
@@ -27,7 +31,7 @@ describe('AzuraCast wrapper refusals (no request leaves the process)', () => {
   it('forbidden batch actions: delete, queue, immediate, reprocess, anything else', async () => {
     const { c, calls } = fakeClient()
     for (const action of ['delete', 'queue', 'immediate', 'reprocess', 'clear', 'playlist_add']) {
-      await refused(c.send('PUT', '/api/station/1/files/batch', { body: { do: action, files: ['Portal-Test/Music/Artists/A/a.mp3'], currentDirectory: 'Portal-Test/Music/Artists/A' } }), 'refused_batch_action')
+      await refused(send(c, 'PUT', '/api/station/1/files/batch', { body: { do: action, files: ['Portal-Test/Music/Artists/A/a.mp3'], currentDirectory: 'Portal-Test/Music/Artists/A' } }), 'refused_batch_action')
     }
     expect(calls).toHaveLength(0)
   })
@@ -35,7 +39,7 @@ describe('AzuraCast wrapper refusals (no request leaves the process)', () => {
   it('non-empty dirs is refused (folder moves / folder playlist links)', async () => {
     const { c, calls } = fakeClient()
     await refused(
-      c.send('PUT', '/api/station/1/files/batch', { body: { do: 'move', files: ['Portal-Test/Music/Artists/A/a.mp3'], dirs: ['Portal-Test/Music'], currentDirectory: 'Portal-Test/Music/Artists/A', directory: 'Portal-Test/Removed/1' } }),
+      send(c, 'PUT', '/api/station/1/files/batch', { body: { do: 'move', files: ['Portal-Test/Music/Artists/A/a.mp3'], dirs: ['Portal-Test/Music'], currentDirectory: 'Portal-Test/Music/Artists/A', directory: 'Portal-Test/Removed/1' } }),
       'refused_batch_dirs',
     )
     expect(calls).toHaveLength(0)
@@ -44,33 +48,82 @@ describe('AzuraCast wrapper refusals (no request leaves the process)', () => {
   it('`path` or `playlists` in a file PUT is refused', async () => {
     const { c, calls } = fakeClient()
     const m = { title: 't', artist: 'a', album: '', genre: '' }
-    await refused(c.send('PUT', '/api/station/1/file/5', { body: { ...m, path: 'Portal-Test/Music/Artists/B/x.mp3' } }), 'refused_metadata_body')
-    await refused(c.send('PUT', '/api/station/1/file/5', { body: { ...m, playlists: [2] } }), 'refused_metadata_body')
-    await refused(c.send('PUT', '/api/station/1/file/5', { body: { title: 't' } }), 'refused_metadata_body')
+    await refused(send(c, 'PUT', '/api/station/1/file/5', { body: { ...m, path: 'Portal-Test/Music/Artists/B/x.mp3' } }), 'refused_metadata_body')
+    await refused(send(c, 'PUT', '/api/station/1/file/5', { body: { ...m, playlists: [2] } }), 'refused_metadata_body')
+    await refused(send(c, 'PUT', '/api/station/1/file/5', { body: { title: 't' } }), 'refused_metadata_body')
     expect(calls).toHaveLength(0)
+  })
+
+  it('the raw transport is not public; the seam refuses outside vitest', async () => {
+    const { c, calls } = fakeClient()
+    expect((c as unknown as Record<string, unknown>).send).toBeUndefined()
+    const prev = process.env.VITEST
+    process.env.VITEST = 'false'
+    try {
+      await refused(send(c, 'GET', '/api/openapi.yml'), 'test_seam_disabled')
+    } finally {
+      process.env.VITEST = prev
+    }
+    expect(calls).toHaveLength(0)
+  })
+
+  it('a raw metadata PUT on an id outside the prefix / Music/Artists makes ZERO PUT calls', async () => {
+    const calls: { url: string; method: string }[] = []
+    const paths: Record<string, string> = { '1103': 'Events/Show/x.mp3', '1104': 'Music/Artists/GRIM/luvusm.mp3', '1105': 'Portal-Test/ADS/x.mp3', '1106': 'Portal-Test/Music/Artists/A/ok.mp3' }
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, method: String(init.method) })
+      const id = /\/file\/(\d+)$/.exec(url)?.[1]
+      if (init.method === 'GET' && id && paths[id]) return new Response(JSON.stringify({ id: Number(id), unique_id: 'u', path: paths[id], playlists: [] }), { status: 200 })
+      return new Response(JSON.stringify({ success: true }), { status: 200 })
+    }) as unknown as typeof fetch
+    const c = new AzuraCastClient({ baseUrl: 'https://az.invalid', apiKey: 'k'.repeat(20), profile: resolveProfile(PREFIX_ENV), canaryStationId: 7, fetchImpl, env: PREFIX_ENV })
+    const body = { title: 't', artist: 'a', album: '', genre: '' }
+    await refused(send(c, 'PUT', '/api/station/1/file/1103', { body }), 'refused_test_prefix')
+    await refused(send(c, 'PUT', '/api/station/1/file/1104', { body }), 'refused_test_prefix')
+    await refused(send(c, 'PUT', '/api/station/1/file/1105', { body }), 'refused_metadata_target')
+    await refused(c.updateMetadata(1103, body), 'refused_test_prefix')
+    expect(calls.filter((x) => x.method === 'PUT')).toHaveLength(0)
+    // In prod (no prefix) the Music/Artists pattern still applies.
+    const prod = new AzuraCastClient({ baseUrl: 'https://az.invalid', apiKey: 'k'.repeat(20), profile: resolveProfile(PROD_ENV), canaryStationId: 7, fetchImpl, env: PROD_ENV })
+    await refused(send(prod, 'PUT', '/api/station/1/file/1103', { body }), 'refused_metadata_target')
+    expect(calls.filter((x) => x.method === 'PUT')).toHaveLength(0)
+    // A file on the surface passes: GET then PUT.
+    await send(c, 'PUT', '/api/station/1/file/1106', { body })
+    expect(calls.filter((x) => x.method === 'PUT')).toHaveLength(1)
+  })
+
+  it('a raw playlist batch needs an allowed set, and every id must be in it', async () => {
+    const { c, calls } = fakeClient(PROD_ENV)
+    const body = { do: 'playlist', files: ['Music/Artists/A/x.mp3'], dirs: [], currentDirectory: 'Music/Artists/A', playlists: [2, 99] }
+    await refused(send(c, 'PUT', '/api/station/1/files/batch', { body }), 'refused_playlist_set_missing')
+    await refused(send(c, 'PUT', '/api/station/1/files/batch', { body, allowedPlaylistIds: new Set([2]) }), 'refused_playlist_id')
+    await refused(send(c, 'GET', '/api/openapi.yml', { allowedPlaylistIds: new Set([2]) }), 'refused_playlist_set_misuse')
+    expect(calls).toHaveLength(0)
+    await send(c, 'PUT', '/api/station/1/files/batch', { body, allowedPlaylistIds: new Set([2, 99]) })
+    expect(calls).toHaveLength(1)
   })
 
   it('a wrong station id is refused on every route', async () => {
     const { c, calls } = fakeClient()
-    await refused(c.send('GET', '/api/station/7/files/list?currentDirectory=&flushCache=true'), 'refused_station')
-    await refused(c.send('GET', '/api/station/14/file/1'), 'refused_station')
-    await refused(c.send('PUT', '/api/station/2/files/batch', { body: {} }), 'refused_station')
-    await refused(c.send('POST', '/api/station/7/files', { uploadBytes: Buffer.from('x'), uploadPath: 'Portal-Test/Music/Artists/A/a.mp3' }), 'refused_station')
+    await refused(send(c, 'GET', '/api/station/7/files/list?currentDirectory=&flushCache=true'), 'refused_station')
+    await refused(send(c, 'GET', '/api/station/14/file/1'), 'refused_station')
+    await refused(send(c, 'PUT', '/api/station/2/files/batch', { body: {} }), 'refused_station')
+    await refused(send(c, 'POST', '/api/station/7/files', { uploadBytes: Buffer.from('x'), uploadPath: 'Portal-Test/Music/Artists/A/a.mp3' }), 'refused_station')
     expect(calls).toHaveLength(0)
   })
 
   it('the canary exception is GET files/list on the canary station only', async () => {
     const { c, calls } = fakeClient()
-    await refused(c.send('GET', '/api/station/7/file/1', { canary: true }), 'refused_station')
-    await refused(c.send('GET', '/api/station/14/files/list?currentDirectory=&flushCache=true', { canary: true }), 'refused_station')
+    await refused(send(c, 'GET', '/api/station/7/file/1', { canary: true }), 'refused_station')
+    await refused(send(c, 'GET', '/api/station/14/files/list?currentDirectory=&flushCache=true', { canary: true }), 'refused_station')
     expect(calls).toHaveLength(0)
   })
 
   it('PORTAL_TEST_PREFIX: every write path must start with it', async () => {
     const { c, calls } = fakeClient()
-    await refused(c.send('POST', '/api/station/1/files', { uploadBytes: Buffer.from('x'), uploadPath: 'Music/Artists/A/a.mp3' }), 'refused_test_prefix')
+    await refused(send(c, 'POST', '/api/station/1/files', { uploadBytes: Buffer.from('x'), uploadPath: 'Music/Artists/A/a.mp3' }), 'refused_test_prefix')
     await refused(
-      c.send('PUT', '/api/station/1/files/batch', { body: { do: 'move', files: ['Music/Artists/A/a.mp3'], dirs: [], currentDirectory: 'Music/Artists/A', directory: 'Removed/1' } }),
+      send(c, 'PUT', '/api/station/1/files/batch', { body: { do: 'move', files: ['Music/Artists/A/a.mp3'], dirs: [], currentDirectory: 'Music/Artists/A', directory: 'Removed/1' } }),
       'refused_batch_body',
     )
     await refused(c.moveFile('Music/Artists/A/a.mp3', 'Removed/1'), 'refused_batch_body')
@@ -81,11 +134,11 @@ describe('AzuraCast wrapper refusals (no request leaves the process)', () => {
   it('upload path must match the ingest pattern (no traversal, mp3 only)', async () => {
     const { c, calls } = fakeClient()
     for (const p of ['Portal-Test/Music/Artists/../../ADS/x.mp3', 'Portal-Test/ADS/x.mp3', 'Portal-Test/Music/Artists/A/x.m4a', 'Portal-Test/Music/Artists/A/b/x.mp3', 'Portal-Test/Music/Artists/A/.x.mp3/..']) {
-      await expect(c.send('POST', '/api/station/1/files', { uploadBytes: Buffer.from('x'), uploadPath: p })).rejects.toBeInstanceOf(AzuraCastError)
+      await expect(send(c, 'POST', '/api/station/1/files', { uploadBytes: Buffer.from('x'), uploadPath: p })).rejects.toBeInstanceOf(AzuraCastError)
     }
     const { c: prod, calls: prodCalls } = fakeClient(PROD_ENV)
-    await refused(prod.send('POST', '/api/station/1/files', { uploadBytes: Buffer.from('x'), uploadPath: 'Music/Artists/../ADS/x.mp3' }), 'refused_unsafe_path')
-    await refused(prod.send('POST', '/api/station/1/files', { uploadBytes: Buffer.from('x'), uploadPath: 'ADS/x.mp3' }), 'refused_ingest_path')
+    await refused(send(prod, 'POST', '/api/station/1/files', { uploadBytes: Buffer.from('x'), uploadPath: 'Music/Artists/../ADS/x.mp3' }), 'refused_unsafe_path')
+    await refused(send(prod, 'POST', '/api/station/1/files', { uploadBytes: Buffer.from('x'), uploadPath: 'ADS/x.mp3' }), 'refused_ingest_path')
     expect(calls).toHaveLength(0)
     expect(prodCalls).toHaveLength(0)
   })
@@ -102,22 +155,22 @@ describe('AzuraCast wrapper refusals (no request leaves the process)', () => {
   it('playlists must be integer ids from the allowed set ("new" would create one)', async () => {
     const { c, calls } = fakeClient(PROD_ENV)
     await refused(c.setPlaylists('Music/Artists/A/x.mp3', [3], new Set([2])), 'refused_playlist_id')
-    await refused(c.send('PUT', '/api/station/1/files/batch', { body: { do: 'playlist', files: ['Music/Artists/A/x.mp3'], currentDirectory: 'Music/Artists/A', playlists: ['new'], new_playlist_name: 'x' } }), 'refused_batch_body')
-    await refused(c.send('PUT', '/api/station/1/files/batch', { body: { do: 'playlist', files: ['Music/Artists/A/x.mp3', 'Music/Artists/A/y.mp3'], currentDirectory: 'Music/Artists/A', playlists: [2] } }), 'refused_batch_body')
+    await refused(send(c, 'PUT', '/api/station/1/files/batch', { body: { do: 'playlist', files: ['Music/Artists/A/x.mp3'], currentDirectory: 'Music/Artists/A', playlists: ['new'], new_playlist_name: 'x' } }), 'refused_batch_body')
+    await refused(send(c, 'PUT', '/api/station/1/files/batch', { body: { do: 'playlist', files: ['Music/Artists/A/x.mp3', 'Music/Artists/A/y.mp3'], currentDirectory: 'Music/Artists/A', playlists: [2] } }), 'refused_batch_body')
     expect(calls).toHaveLength(0)
   })
 
   it('anything off the allowlist is refused (DELETE, other paths, extra query keys)', async () => {
     const { c, calls } = fakeClient(PROD_ENV)
-    await refused(c.send('DELETE', '/api/station/1/file/5'), 'refused_not_allowlisted')
-    await refused(c.send('GET', '/api/admin/users'), 'refused_not_allowlisted')
-    await refused(c.send('GET', '/api/station/1/playlists'), 'refused_not_allowlisted')
-    await refused(c.send('POST', '/api/station/1/files/upload'), 'refused_not_allowlisted')
-    await refused(c.send('GET', '/api/station/1/files/list?currentDirectory=Music'), 'refused_query_missing')
-    await refused(c.send('GET', '/api/station/1/files/list?currentDirectory=Music&flushCache=true&searchPhrase=x'), 'refused_query')
-    await refused(c.send('GET', '/api/station/1/files/list?currentDirectory=../x&flushCache=true'), 'refused_query')
-    await refused(c.send('GET', 'https://evil.example/api/openapi.yml'), 'refused_path')
-    await refused(c.send('GET', '/api/station/1/file/%35'), 'refused_encoded_path')
+    await refused(send(c, 'DELETE', '/api/station/1/file/5'), 'refused_not_allowlisted')
+    await refused(send(c, 'GET', '/api/admin/users'), 'refused_not_allowlisted')
+    await refused(send(c, 'GET', '/api/station/1/playlists'), 'refused_not_allowlisted')
+    await refused(send(c, 'POST', '/api/station/1/files/upload'), 'refused_not_allowlisted')
+    await refused(send(c, 'GET', '/api/station/1/files/list?currentDirectory=Music'), 'refused_query_missing')
+    await refused(send(c, 'GET', '/api/station/1/files/list?currentDirectory=Music&flushCache=true&searchPhrase=x'), 'refused_query')
+    await refused(send(c, 'GET', '/api/station/1/files/list?currentDirectory=../x&flushCache=true'), 'refused_query')
+    await refused(send(c, 'GET', 'https://evil.example/api/openapi.yml'), 'refused_path')
+    await refused(send(c, 'GET', '/api/station/1/file/%35'), 'refused_encoded_path')
     expect(calls).toHaveLength(0)
   })
 

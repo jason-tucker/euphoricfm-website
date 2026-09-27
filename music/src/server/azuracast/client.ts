@@ -1,16 +1,32 @@
-// The ONLY AzuraCast HTTP client (plan §3.7). Every request, whatever public
-// method built it, passes through send(), which enforces:
+// The ONLY AzuraCast HTTP client (plan §3.7). The raw transport (#send) is
+// PRIVATE: every request is built by one of the typed methods below, and
+// each one passes through the async validate() before any I/O. validate()
+// enforces:
 //
 //  * the allowlist of (method, path template, query keys, body schema);
 //  * sid == STATION_ID on every station route (the one exception is the
 //    startup self-check's GET on the canary station, which must 403);
 //  * the profile pairing (re-asserted per call against the live env);
 //  * PORTAL_TEST_PREFIX: when set, every path a write names must start with
-//    it (a metadata PUT, which names an id, first GETs the id and checks its
-//    path);
+//    it;
+//  * a metadata PUT names only an id, so validate() GETs that id first and
+//    requires its path to pass the prefix guard AND the Music/Artists file
+//    pattern: every metadata PUT gets this, whichever method built it;
+//  * a do=playlist batch: every playlist id must be in the caller's allowed
+//    set (passed in the request options; a batch without one is refused);
 //  * forbidden shapes: do ∈ {delete, queue, immediate, reprocess, …}, a
 //    non-empty `dirs`, `path`/`playlists` in a file PUT, string playlist ids
 //    ("new" creates a playlist, P0d-B (d)).
+//
+// Batch requests are reachable only through setPlaylists() and moveFile().
+// moveFile() adds its own live checks, because AzuraCast's doMove does NOT:
+// the source must be an exact media entry and the destination path must be
+// free (any entry type), both read with flushCache=true, and the moved id is
+// re-read afterwards (a batch 200 proves nothing: upstream silently skips a
+// source with no DB record and rename()s over an occupied destination).
+//
+// Tests reach the transport only through the TEST_SEND seam, which runs the
+// same validate() and refuses outside vitest.
 //
 // P0d-B contracts built in: files/list is cached 300 s per directory, so every
 // listing sends flushCache=true; unscanned files are listed as
@@ -20,7 +36,7 @@
 
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { assertSafePath, dirname, patterns, PathError } from '../paths/builder'
+import { assertSafePath, basename, dirname, patterns, PathError } from '../paths/builder'
 import { reassertProfile, type EnvLike, type Profile } from './guard'
 
 export class AzuraCastError extends Error {
@@ -34,6 +50,9 @@ export class AzuraCastError extends Error {
 }
 
 const SID_ROUTE = /^\/api\/station\/(\d+)\//
+
+// Test-only transport seam (see header).
+export const TEST_SEND = Symbol('azuracast.testSend')
 
 // --------------------------------------------------------------- schemas ---
 
@@ -192,6 +211,7 @@ type SendOpts = {
   uploadBytes?: Buffer // POST /files: streamed as {"path":…,"file":"<base64>"}
   uploadPath?: string
   canary?: boolean // self-check only
+  allowedPlaylistIds?: ReadonlySet<number> // required for a do=playlist batch
   timeoutMs?: number
   maxResponseBytes?: number
 }
@@ -212,10 +232,18 @@ export class AzuraCastClient {
 
   // ------------------------------------------------------------ core ---
 
-  // Validates everything, then performs the request. Public so tests can
-  // prove that a hand-built forbidden request is refused before any I/O.
-  async send(method: string, pathAndQuery: string, opts: SendOpts = {}): Promise<{ status: number; text: string }> {
-    this.validate(method, pathAndQuery, opts)
+  // Test-only seam: the same validate() + transport as every typed method,
+  // so tests can prove a hand-built forbidden request is refused before any
+  // I/O. Refuses outside vitest.
+  async [TEST_SEND](method: string, pathAndQuery: string, opts: SendOpts = {}): Promise<{ status: number; text: string }> {
+    if (process.env.VITEST !== 'true') throw new AzuraCastError('test_seam_disabled')
+    return this.#send(method, pathAndQuery, opts)
+  }
+
+  // Validates everything, then performs the request. Private: only the typed
+  // methods of this class can build a request.
+  async #send(method: string, pathAndQuery: string, opts: SendOpts = {}): Promise<{ status: number; text: string }> {
+    await this.validate(method, pathAndQuery, opts)
     const url = `${this.deps.baseUrl}${pathAndQuery}`
     const headers: Record<string, string> = { 'X-API-Key': this.deps.apiKey, Accept: 'application/json' }
     let body: BodyInit | undefined
@@ -241,7 +269,7 @@ export class AzuraCastClient {
     return { status: res.status, text }
   }
 
-  private validate(method: string, pathAndQuery: string, opts: SendOpts): void {
+  private async validate(method: string, pathAndQuery: string, opts: SendOpts): Promise<void> {
     reassertProfile(this.deps.profile, this.deps.env ?? process.env)
     const u = new URL(pathAndQuery, 'http://x')
     if (u.origin !== 'http://x' || !pathAndQuery.startsWith('/api/')) throw new AzuraCastError('refused_path')
@@ -267,6 +295,7 @@ export class AzuraCastClient {
       if (sid !== this.deps.profile.stationId && !canaryOk) throw new AzuraCastError('refused_station', { sid })
     }
     if (opts.canary && !sidMatch) throw new AzuraCastError('refused_canary')
+    if (opts.allowedPlaylistIds && entry.kind !== 'batch') throw new AzuraCastError('refused_playlist_set_misuse')
 
     // Bodies.
     if (entry.kind === 'read') {
@@ -287,6 +316,13 @@ export class AzuraCastClient {
     if (entry.kind === 'metadata') {
       const r = MetadataBody.safeParse(opts.body)
       if (!r.success) throw new AzuraCastError('refused_metadata_body', r.error.issues.map((i) => i.message))
+      // The PUT names only an id: resolve it through the (validated) read
+      // path and require the file to sit on the Music/Artists/** surface,
+      // under the test prefix when set. Runs for EVERY metadata PUT.
+      const id = Number(entry.re.exec(path)![2])
+      const current = await this.getFile(id)
+      this.assertWritePath(current.path)
+      if (!patterns(this.root).artistFile.test(current.path)) throw new AzuraCastError('refused_metadata_target', { path: current.path })
       return
     }
     // batch
@@ -301,6 +337,11 @@ export class AzuraCastClient {
     this.assertWritePath(b.files[0])
     this.assertWritePath(b.currentDirectory)
     if (b.do === 'move') this.assertWritePath(b.directory)
+    if (b.do === 'playlist') {
+      const allowed = opts.allowedPlaylistIds
+      if (!allowed) throw new AzuraCastError('refused_playlist_set_missing')
+      for (const id of b.playlists) if (!allowed.has(id)) throw new AzuraCastError('refused_playlist_id', { id })
+    }
   }
 
   // Prefix guard: when PORTAL_TEST_PREFIX is set, every path a write names
@@ -336,7 +377,7 @@ export class AzuraCastClient {
   // ------------------------------------------------------------ reads ---
 
   async listFilesPage(page: number, perPage = 100): Promise<z.infer<typeof pageSchema>> {
-    const { status, text } = await this.send('GET', `${this.sidPath('/files')}?per_page=${perPage}&page=${page}`, { timeoutMs: 60_000 })
+    const { status, text } = await this.#send('GET', `${this.sidPath('/files')}?per_page=${perPage}&page=${page}`, { timeoutMs: 60_000 })
     return this.json(status, text, pageSchema, 'files')
   }
 
@@ -354,7 +395,7 @@ export class AzuraCastClient {
 
   async listDirectory(dir: string): Promise<ListEntry[]> {
     const q = new URLSearchParams({ currentDirectory: dir, flushCache: 'true' })
-    const { status, text } = await this.send('GET', `${this.sidPath('/files/list')}?${q}`)
+    const { status, text } = await this.#send('GET', `${this.sidPath('/files/list')}?${q}`)
     return this.json(status, text, z.array(listEntrySchema), 'files/list')
   }
 
@@ -366,17 +407,17 @@ export class AzuraCastClient {
 
   async getFile(id: number): Promise<StationMedia> {
     if (!Number.isSafeInteger(id) || id <= 0) throw new AzuraCastError('bad_id')
-    const { status, text } = await this.send('GET', this.sidPath(`/file/${id}`))
+    const { status, text } = await this.#send('GET', this.sidPath(`/file/${id}`))
     return this.json(status, text, mediaSchema, 'file')
   }
 
   async nowPlaying(shortcode: string): Promise<unknown> {
-    const { status, text } = await this.send('GET', `/api/nowplaying/${shortcode}`)
+    const { status, text } = await this.#send('GET', `/api/nowplaying/${shortcode}`)
     return this.json(status, text, z.unknown(), 'nowplaying')
   }
 
   async openapi(): Promise<string> {
-    const { status, text } = await this.send('GET', '/api/openapi.yml', { maxResponseBytes: 4 * 1024 * 1024 })
+    const { status, text } = await this.#send('GET', '/api/openapi.yml', { maxResponseBytes: 4 * 1024 * 1024 })
     if (status !== 200) throw new AzuraCastError('http_error', { what: 'openapi', status })
     return text
   }
@@ -386,7 +427,7 @@ export class AzuraCastClient {
   async uploadFile(path: string, bytes: Buffer, expectedSha256: string): Promise<StationMedia> {
     const actual = createHash('sha256').update(bytes).digest('hex')
     if (actual !== expectedSha256) throw new AzuraCastError('sha_mismatch')
-    const { status, text } = await this.send('POST', this.sidPath('/files'), { uploadBytes: bytes, uploadPath: path, timeoutMs: 120_000 })
+    const { status, text } = await this.#send('POST', this.sidPath('/files'), { uploadBytes: bytes, uploadPath: path, timeoutMs: 120_000 })
     const media = this.json(status, text, mediaSchema, 'upload')
     if (media.path !== path) throw new AzuraCastError('upload_path_mismatch', { expected: path, actual: media.path })
     return media
@@ -394,13 +435,11 @@ export class AzuraCastClient {
 
   // Body is built field by field — never by spreading user input.
   async updateMetadata(id: number, m: Metadata): Promise<void> {
+    if (!Number.isSafeInteger(id) || id <= 0) throw new AzuraCastError('bad_id')
     const body: Metadata = { title: m.title, artist: m.artist, album: m.album, genre: m.genre }
-    // The PUT names only an id, so resolve it first: the file must sit on the
-    // Music/Artists/** surface (and under the test prefix when set).
-    const current = await this.getFile(id)
-    this.assertWritePath(current.path)
-    if (!patterns(this.root).artistFile.test(current.path)) throw new AzuraCastError('refused_metadata_target', { path: current.path })
-    const { status, text } = await this.send('PUT', this.sidPath(`/file/${id}`), { body })
+    // validate() resolves the id and applies the prefix + Music/Artists
+    // target checks before this PUT leaves the process.
+    const { status, text } = await this.#send('PUT', this.sidPath(`/file/${id}`), { body })
     const r = this.json(status, text, statusResponseSchema, 'metadata')
     if (!r.success) throw new AzuraCastError('metadata_failed')
   }
@@ -413,7 +452,7 @@ export class AzuraCastClient {
       if (!Number.isSafeInteger(id) || id <= 0 || !allowedIds.has(id)) throw new AzuraCastError('refused_playlist_id', { id })
     }
     const body = { do: 'playlist' as const, files: [filePath], dirs: [], currentDirectory: dirname(filePath), playlists: [...playlistIds] }
-    await this.batch(body)
+    await this.batch(body, allowedIds)
   }
 
   async moveFile(filePath: string, directory: string): Promise<void> {
@@ -421,8 +460,8 @@ export class AzuraCastClient {
     await this.batch(body)
   }
 
-  private async batch(body: Record<string, unknown>): Promise<void> {
-    const { status, text } = await this.send('PUT', this.sidPath('/files/batch'), { body })
+  private async batch(body: Record<string, unknown>, allowedPlaylistIds?: ReadonlySet<number>): Promise<void> {
+    const { status, text } = await this.#send('PUT', this.sidPath('/files/batch'), { body, ...(allowedPlaylistIds ? { allowedPlaylistIds } : {}) })
     const r = this.json(status, text, batchResponseSchema, 'batch')
     // HTTP 200 does not mean every file succeeded (P0d-B (e)).
     if (!r.success || r.errors.length > 0) throw new AzuraCastError('batch_errors', r.errors.slice(0, 10))
@@ -434,9 +473,9 @@ export class AzuraCastClient {
   // station must be refused (403), proving the key is not a super-admin key.
   async selfCheck(): Promise<void> {
     const q = new URLSearchParams({ currentDirectory: '', flushCache: 'true' })
-    const own = await this.send('GET', `${this.sidPath('/files/list')}?${q}`)
+    const own = await this.#send('GET', `${this.sidPath('/files/list')}?${q}`)
     if (own.status !== 200) throw new AzuraCastError('self_check_own_station', { status: own.status })
-    const canary = await this.send('GET', `/api/station/${this.deps.canaryStationId}/files/list?${q}`, { canary: true })
+    const canary = await this.#send('GET', `/api/station/${this.deps.canaryStationId}/files/list?${q}`, { canary: true })
     if (canary.status !== 403) throw new AzuraCastError('self_check_canary_not_403', { status: canary.status })
   }
 }
