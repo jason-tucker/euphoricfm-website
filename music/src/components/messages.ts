@@ -41,7 +41,7 @@ export const ERROR_TEXT: Record<string, string> = {
   duplicate_request: 'You already have an open request for this song. Withdraw it first to file a different one.',
   no_change: 'Nothing would change: the proposed values are the same as the current ones.',
   invalid_request: 'The request is incomplete. Titles and artists cannot be blank, and a removal needs a reason.',
-  invalid_edit: 'The edit is not valid. Titles and artists cannot be blank.',
+  invalid_edit: 'The edit is not valid. Titles and artists cannot be blank, and text cannot contain line breaks, tabs or invisible formatting characters.',
   invalid_playlists: 'The playlist selection is not valid.',
   invalid_archive: 'The archive request is not valid.',
   artist_not_active: "That artist isn't approved in the library yet. Approve the new artist first, or pick an existing artist.",
@@ -66,6 +66,13 @@ export const ERROR_TEXT: Record<string, string> = {
   exactly_one_art_field: 'Upload one image at a time.',
   empty_file: 'That image file is empty.',
   too_many_art_uploads_processing: 'A few images are still being processed. Wait a moment and try again.',
+  art_upload_in_progress: 'Your previous image is still uploading. Wait for it to finish, then try again.',
+  art_uploads_busy: 'Several images are uploading right now. Try again in a few seconds.',
+  art_daily_quota: "You've reached today's limit for album art uploads. Try again tomorrow.",
+  art_storage_full: 'Album art uploads are paused because the server is low on space. Try again later.',
+  art_write_failed: "The image couldn't be saved. Try again in a minute.",
+  body_timeout: 'The upload took too long. Check your connection and try again.',
+  content_length_required: 'The upload was malformed. Reload the page and try again.',
 
   // uploads (tus)
   upload_too_large: 'That file is larger than 35 MB.',

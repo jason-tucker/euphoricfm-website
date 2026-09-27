@@ -6,9 +6,12 @@
 //                                  unsupported_image_type / multipart_required,
 //                                  422 unreadable_image_header / image_too_large
 //                                  / image_truncated, 400 exactly_one_art_field
-//                                  / empty_file, 429 too_many_art_uploads_processing
+//                                  / empty_file, 411 content_length_required,
+//                                  408 body_timeout, 429 too_many_art_uploads_processing
+//                                  / art_upload_in_progress / art_daily_quota
 //                                  or rate_limited, 503 probe_unavailable /
-//                                  uploads_paused.
+//                                  uploads_paused / art_uploads_busy /
+//                                  art_storage_full / staging_full / art_write_failed.
 //   GET  /api/uploads/art/:artId   {artId, status:'processing'|'ready'|'rejected'
 //                                  |'expired', reason?, previewUrl?, width?, height?}
 //   PUT / DELETE /api/items/:id/art           (item art)

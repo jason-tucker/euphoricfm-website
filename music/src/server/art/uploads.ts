@@ -13,6 +13,24 @@
 // The status call collects the probe's result, re-hashes the published JPEG
 // and records its sha256; the preview is a signed, short-lived URL served as
 // image/jpeg with nosniff + CSP sandbox.
+//
+// Memory and quotas (v0.2.1, review SEC-1 / SEC-2). music-web runs with
+// mem_limit 256m, so a POST reads its body only after it has
+//   1. taken an in-flight slot: at most ART_INFLIGHT_PER_USER (1) per user
+//      and ART_INFLIGHT_GLOBAL (3) in this process (429 / 503 otherwise);
+//   2. passed the quota pre-check (processing count, daily count and bytes,
+//      global art bytes, staging bytes) with nothing read yet.
+// The body is then read into ONE buffer of its Content-Length (≤5 MB + 64
+// KB, 411 without one), the multipart part is a view into that buffer and
+// is validated and written to disk from it: no further copies. Worst case
+// ≈ ART_INFLIGHT_GLOBAL x ART_BODY_LIMIT ≈ 15.2 MB of bodies, plus one
+// stream chunk per request; a request waiting on a refusal holds only its
+// headers (and whatever the socket had buffered). The slot is released in
+// a finally, and a sender slower than ART_BODY_DEADLINE_MS gets 408 so it
+// cannot hold a slot indefinitely.
+// Before the row exists, the byte caps are checked again with the real size
+// under the staging advisory lock (admitArtUpload), which also inserts the
+// row, so concurrent uploads cannot overshoot any cap.
 
 import { randomUUID } from 'node:crypto'
 import { constants as FS } from 'node:fs'
@@ -23,12 +41,15 @@ import { audit } from '../audit'
 import { isReviewer, type Viewer } from '../authz/predicates'
 import type { DB } from '../db/client'
 import { artUploads } from '../db/schema'
-import { readBodyLimited } from '../http/body'
+import { readBodyExact } from '../http/body'
 import { HttpError, notFound } from '../http/errors'
 import { signMediaUrl } from '../media/signing'
+import { DEFAULT_CAPS, type Caps } from '../settings-defaults'
+import { lockStaging, stagedBytes, type Refusal } from '../uploads/caps'
 import { sha256File } from '../../probe/files'
 import { dimsAcceptable, imageComplete, imageDims, sniffImage } from '../../probe/cover'
 import { ART_JPEG_FILE, MAX_ART_BYTES, readSpoolResult, UUID_RE, writeSpoolRequest } from '../spool/protocol'
+import { multipartBoundary, singlePart } from './multipart'
 
 export type ArtDirs = { artIn: string; art: string; spoolIn: string; spoolOut: string }
 
@@ -36,29 +57,113 @@ export const ART_UPLOAD_KINDS = new Set(['jpeg', 'png', 'webp'])
 // Multipart framing around a 5 MB file stays far below 64 KB.
 export const ART_BODY_LIMIT = MAX_ART_BYTES + 64 * 1024
 export const MAX_PROCESSING_ART_PER_USER = 5
+// In-flight POST bodies in this process (memory bound above). Not settings:
+// they size music-web's memory, not a member's quota.
+export const ART_INFLIGHT_PER_USER = 1
+export const ART_INFLIGHT_GLOBAL = 3
+// 5 MB in 120 s is ~350 kbit/s; slower senders retry.
+export const ART_BODY_DEADLINE_MS = 120_000
 
 export function artJpegPath(artDir: string, artId: string): string {
   return join(artDir, artId, ART_JPEG_FILE)
 }
 
-// Parses and checks the multipart body; returns the raw image bytes.
+// Refusals sent before the body is read carry Connection: close, so the
+// unread rest cannot be taken for the next request on a keep-alive socket.
+function refusalError(r: Refusal, beforeBody = false): HttpError {
+  return new HttpError(r.status, r.code, undefined, {
+    ...(r.retryAfterS ? { 'Retry-After': String(r.retryAfterS) } : {}),
+    ...(beforeBody ? { Connection: 'close' } : {}),
+  })
+}
+
+// Counting semaphore per user and for the process. acquire() never waits:
+// a full gate refuses at once (the client retries after Retry-After).
+export class ArtGate {
+  private readonly byUser = new Map<string, number>()
+  private total = 0
+  constructor(
+    readonly perUser = ART_INFLIGHT_PER_USER,
+    readonly global = ART_INFLIGHT_GLOBAL,
+  ) {}
+
+  acquire(userId: string): () => void {
+    const mine = this.byUser.get(userId) ?? 0
+    if (mine >= this.perUser) throw refusalError({ status: 429, code: 'art_upload_in_progress', retryAfterS: 10 }, true)
+    if (this.total >= this.global) throw refusalError({ status: 503, code: 'art_uploads_busy', retryAfterS: 10 }, true)
+    this.byUser.set(userId, mine + 1)
+    this.total++
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.total--
+      const n = (this.byUser.get(userId) ?? 1) - 1
+      if (n > 0) this.byUser.set(userId, n)
+      else this.byUser.delete(userId)
+    }
+  }
+
+  get inFlight(): number {
+    return this.total
+  }
+}
+
+// One gate per process (survives module re-evaluation, like the tus server).
+const g = globalThis as unknown as { __efmArtGate?: ArtGate }
+export function artGate(): ArtGate {
+  return (g.__efmArtGate ??= new ArtGate())
+}
+
+type Q = Pick<DB, 'execute'>
+
+// Every art cap for one more upload of `length` bytes by `userId`.
+// Pre-check (before the body): length 1, no lock. Admission: the real size,
+// under lockStaging, in the transaction that inserts the row.
+export async function artQuotaRefusal(q: Q, userId: string, length: number, caps: Caps = DEFAULT_CAPS): Promise<Refusal | null> {
+  const [u] = await q.execute<{ processing: number; day_n: number; day_bytes: string }>(
+    sql`SELECT
+          COUNT(*) FILTER (WHERE status = 'processing')::int AS processing,
+          COUNT(*) FILTER (WHERE created_at > now() - interval '24 hours')::int AS day_n,
+          COALESCE(SUM(raw_size) FILTER (WHERE created_at > now() - interval '24 hours'), 0)::bigint AS day_bytes
+        FROM ${artUploads}
+        WHERE owner = ${userId} AND (status = 'processing' OR created_at > now() - interval '24 hours')`,
+  )
+  if (Number(u?.processing ?? 0) >= MAX_PROCESSING_ART_PER_USER) return { status: 429, code: 'too_many_art_uploads_processing', retryAfterS: 30 }
+  if (Number(u?.day_n ?? 0) >= caps.artUploadsPerUserPerDay) return { status: 429, code: 'art_daily_quota', retryAfterS: 3600 }
+  if (Number(u?.day_bytes ?? 0) + length > caps.artBytesPerUserPerDay) return { status: 429, code: 'art_daily_quota', retryAfterS: 3600 }
+  const staged = await stagedBytes(q)
+  if (staged.art + length > caps.maxArtBytes) return { status: 503, code: 'art_storage_full', retryAfterS: 600 }
+  if (staged.uploads + staged.art + length > caps.maxStagingBytes) return { status: 503, code: 'staging_full', retryAfterS: 600 }
+  return null
+}
+
+// Checks every cap with the real size and inserts the 'processing' row, in
+// one transaction under the staging lock.
+export async function admitArtUpload(db: DB, userId: string, artId: string, rawPath: string, length: number, caps: Caps = DEFAULT_CAPS): Promise<Refusal | null> {
+  return db.transaction(async (tx) => {
+    await lockStaging(tx)
+    const refusal = await artQuotaRefusal(tx, userId, length, caps)
+    if (refusal) return refusal
+    await tx.insert(artUploads).values({ id: artId, owner: userId, status: 'processing', rawPath, rawSize: length })
+    return null
+  })
+}
+
+// Reads and checks the multipart body; returns the image bytes as a view
+// into the single body buffer (see the memory note above).
 export async function readArtUpload(req: Request): Promise<Buffer> {
   const ct = req.headers.get('content-type') ?? ''
   if (!/^multipart\/form-data;\s*boundary=/i.test(ct)) throw new HttpError(415, 'multipart_required')
-  const raw = await readBodyLimited(req, ART_BODY_LIMIT)
-  let form: FormData
-  try {
-    form = await new Response(new Uint8Array(raw), { headers: { 'content-type': ct } }).formData()
-  } catch {
-    throw new HttpError(400, 'bad_multipart')
-  }
-  const entries = [...form.entries()]
-  if (entries.length !== 1 || entries[0]![0] !== 'art') throw new HttpError(400, 'exactly_one_art_field')
-  const file = entries[0]![1]
-  if (typeof file === 'string') throw new HttpError(400, 'art_must_be_a_file')
-  if (file.size < 1) throw new HttpError(400, 'empty_file')
-  if (file.size > MAX_ART_BYTES) throw new HttpError(413, 'art_too_large')
-  const bytes = Buffer.from(await file.arrayBuffer())
+  const boundary = multipartBoundary(ct)
+  if (!boundary) throw new HttpError(400, 'bad_multipart')
+  const raw = await readBodyExact(req, ART_BODY_LIMIT, ART_BODY_DEADLINE_MS)
+  const part = singlePart(raw, boundary)
+  if (part.name !== 'art') throw new HttpError(400, 'exactly_one_art_field')
+  if (!part.isFile) throw new HttpError(400, 'art_must_be_a_file')
+  const bytes = part.data
+  if (bytes.length < 1) throw new HttpError(400, 'empty_file')
+  if (bytes.length > MAX_ART_BYTES) throw new HttpError(413, 'art_too_large')
   const kind = sniffImage(bytes)
   if (!kind || !ART_UPLOAD_KINDS.has(kind)) throw new HttpError(415, 'unsupported_image_type')
   const dims = imageDims(bytes, kind)
@@ -68,29 +173,56 @@ export async function readArtUpload(req: Request): Promise<Buffer> {
   return bytes
 }
 
-export async function createArtUpload(db: DB, v: Viewer, bytes: Buffer, dirs: ArtDirs): Promise<{ artId: string; status: 'processing' }> {
-  const [{ n } = { n: 0 }] = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(artUploads)
-    .where(and(eq(artUploads.owner, v.userId), eq(artUploads.status, 'processing')))
-  if (n >= MAX_PROCESSING_ART_PER_USER) throw new HttpError(429, 'too_many_art_uploads_processing', undefined, { 'Retry-After': '30' })
+// The whole POST after authentication: slot, pre-check, body, admission.
+export async function acceptArtUpload(db: DB, v: Viewer, req: Request, dirs: ArtDirs, caps: Caps = DEFAULT_CAPS, gate: ArtGate = artGate()) {
+  const release = gate.acquire(v.userId)
+  try {
+    const pre = await artQuotaRefusal(db, v.userId, 1, caps)
+    if (pre) throw refusalError(pre, true)
+    const bytes = await readArtUpload(req)
+    return await createArtUpload(db, v, bytes, dirs, caps)
+  } finally {
+    release()
+  }
+}
+
+export async function createArtUpload(db: DB, v: Viewer, bytes: Buffer, dirs: ArtDirs, caps: Caps = DEFAULT_CAPS): Promise<{ artId: string; status: 'processing' }> {
   const artId = randomUUID()
   const rawPath = join(dirs.artIn, artId)
-  const fh = await open(rawPath, FS.O_WRONLY | FS.O_CREAT | FS.O_EXCL | FS.O_NOFOLLOW, 0o640)
+  const refusal = await admitArtUpload(db, v.userId, artId, rawPath, bytes.length, caps)
+  if (refusal) throw refusalError(refusal)
+  // The row exists from here on (admission inserted it), so every later
+  // failure must take it out of 'processing' (it counts toward the
+  // processing limit and staged bytes until the 24 h sweep otherwise):
+  // write, audit and spool share one catch that marks the row rejected and
+  // removes the raw file, best effort, never masking the original error.
+  let stage: 'write' | 'audit' | 'spool' = 'write'
   try {
-    await fh.writeFile(bytes)
-    await fh.sync()
-  } finally {
-    await fh.close()
-  }
-  await db.insert(artUploads).values({ id: artId, owner: v.userId, status: 'processing', rawPath, rawSize: bytes.length })
-  await audit(db, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'art.upload', targetType: 'art', targetId: artId, detail: { size: bytes.length } })
-  try {
+    const fh = await open(rawPath, FS.O_WRONLY | FS.O_CREAT | FS.O_EXCL | FS.O_NOFOLLOW, 0o640)
+    try {
+      await fh.writeFile(bytes)
+      await fh.sync()
+    } finally {
+      await fh.close()
+    }
+    stage = 'audit'
+    await audit(db, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'art.upload', targetType: 'art', targetId: artId, detail: { size: bytes.length } })
+    stage = 'spool'
     await writeSpoolRequest(dirs.spoolIn, { v: 1, id: artId, type: 'art', expectedSize: bytes.length })
-  } catch {
-    await db.update(artUploads).set({ status: 'rejected', reason: 'probe_unavailable', updatedAt: new Date() }).where(eq(artUploads.id, artId))
+  } catch (err) {
+    const reason = stage === 'write' ? 'write_failed' : stage === 'audit' ? 'audit_failed' : 'probe_unavailable'
+    try {
+      await db
+        .update(artUploads)
+        .set({ status: 'rejected', reason, updatedAt: new Date() })
+        .where(and(eq(artUploads.id, artId), eq(artUploads.status, 'processing')))
+    } catch (e) {
+      console.error('[art] could not reject', artId, e instanceof Error ? e.message : e)
+    }
     await unlink(rawPath).catch(() => {})
-    throw new HttpError(503, 'probe_unavailable')
+    if (stage === 'write') throw new HttpError(503, 'art_write_failed', undefined, { 'Retry-After': '60' })
+    if (stage === 'spool') throw new HttpError(503, 'probe_unavailable')
+    throw err
   }
   return { artId, status: 'processing' }
 }

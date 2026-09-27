@@ -11,6 +11,7 @@ import { and, eq, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import type { DB } from '../db/client'
 import { artists } from '../db/schema'
+import { META_DISALLOWED_RE } from '../../probe/tags'
 import { assertSafePath, patterns } from '../paths/builder'
 import { UUID_RE } from '../spool/protocol'
 
@@ -18,13 +19,22 @@ export const META_KEYS = ['title', 'artist', 'album', 'genre'] as const
 export type MetaKey = (typeof META_KEYS)[number]
 export type Meta = Record<MetaKey, string>
 
+// Song metadata text, wherever a member or reviewer sets it (edit requests
+// here, the item PATCH in submissions.ts): NFC, trimmed, at most `max`
+// characters after normalization, and none of META_DISALLOWED_RE (controls
+// incl. \n and \t, \p{Cf} bidi / zero-width, U+2028 / U+2029). The probe
+// cleans pre-filled tags with the same rule (probe/tags.ts clipTag).
+export const metaText = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .transform((s) => s.normalize('NFC').trim())
+    .refine((s) => s.length <= max, 'too long')
+    .refine((s) => !META_DISALLOWED_RE.test(s), 'control characters')
+
 // Same character rules as the AzuraCast wrapper's metadata body (≤255, no
 // control characters), trimmed, and title/artist may not be blank.
-const metaValue = z
-  .string()
-  .max(255)
-  .transform((s) => s.normalize('NFC').trim())
-  .refine((s) => !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(s), 'control characters')
+const metaValue = metaText(255)
 
 // art_uploads id (contract: artId): the foundation's art ids are v4 UUIDs.
 export const ArtIdSchema = z.string().regex(UUID_RE)

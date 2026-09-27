@@ -112,8 +112,12 @@ services:
       - music-db-data:/var/lib/postgresql/data
     networks:
       - music-int
+    # TCP, not the socket: on a fresh volume the entrypoint's temporary
+    # initdb server listens on the socket only, and a socket check could pass
+    # before the real server is up (music-migrate would then fail its first
+    # connect; it also retries for up to 60 s, see migrate/main.ts).
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       timeout: 5s
       retries: 10

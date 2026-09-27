@@ -1,14 +1,15 @@
 // Upload admission (plan §3.4): Upload-Length 1..35 MB, no defer-length, no
 // concatenation, no creation-with-upload body; per user ≤1 GB in flight
 // (uploading + complete + attached-but-undecided bytes) and
-// ≤3 concurrent uploads; ≤5 GB staged globally; pause above 85 % disk use.
+// ≤3 concurrent uploads; ≤5 GB staged globally (album art included, v0.2.1);
+// pause above 85 % disk use.
 // Header rules are pure (unit-tested); quota rules run in one transaction
 // under advisory locks so concurrent creates cannot overshoot.
 
 import { statfs } from 'node:fs/promises'
 import { sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
-import { uploads } from '../db/schema'
+import { artUploads, uploads } from '../db/schema'
 import { DEFAULT_CAPS, type Caps } from '../settings-defaults'
 
 export type Refusal = { status: number; code: string; retryAfterS?: number }
@@ -46,13 +47,34 @@ export async function diskPaused(dir: string, caps: Caps = DEFAULT_CAPS): Promis
   }
 }
 
+type Tx = Parameters<Parameters<DB['transaction']>[0]>[0]
+
+// One lock for every admission that adds staged bytes (tus uploads here, art
+// uploads in art/uploads.ts), so the shared maxStagingBytes cannot be
+// overshot by the two racing each other.
+export async function lockStaging(tx: Tx): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('efm-music:uploads'))`)
+}
+
+// Staged bytes on the shared staging disk: tus uploads not yet released,
+// plus album art (review SEC-2) while it is processing (raw bytes in
+// art-in) or ready (the probe's JPEG, kept 7 days). Art is charged at its
+// uploaded size: the row does not record the JPEG's, which is ≤1000 px and
+// in practice smaller; the per-user daily count bounds any exception.
+export async function stagedBytes(q: Pick<DB, 'execute'>): Promise<{ uploads: number; art: number }> {
+  const [g] = await q.execute<{ uploads: string; art: string }>(
+    sql`SELECT
+          (SELECT COALESCE(SUM(length), 0) FROM ${uploads} WHERE status IN ('uploading','complete','attached'))::bigint AS uploads,
+          (SELECT COALESCE(SUM(raw_size), 0) FROM ${artUploads} WHERE status IN ('processing','ready'))::bigint AS art`,
+  )
+  return { uploads: Number(g?.uploads ?? 0), art: Number(g?.art ?? 0) }
+}
+
 // Reserve quota and record the upload row (owner from the SESSION only).
 export async function admitUpload(db: DB, userId: string, id: string, length: number, caps: Caps = DEFAULT_CAPS): Promise<Refusal | null> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('efm-music:uploads'))`)
-    const [g] = await tx.execute<{ staged: string }>(
-      sql`SELECT COALESCE(SUM(length), 0)::bigint AS staged FROM ${uploads} WHERE status IN ('uploading','complete','attached')`,
-    )
+    await lockStaging(tx)
+    const staged = await stagedBytes(tx)
     // Per-user "in flight" = every staged byte the user still holds that no
     // decision has released: uploads being written or finished but not
     // attached, plus attached uploads whose item is still undecided
@@ -67,7 +89,7 @@ export async function admitUpload(db: DB, userId: string, id: string, length: nu
             COUNT(*) FILTER (WHERE up.status = 'uploading')::int AS n
           FROM ${uploads} up WHERE up.owner_user_id = ${userId}`,
     )
-    if (Number(g?.staged ?? 0) + length > caps.maxStagingBytes) return { status: 503, code: 'staging_full', retryAfterS: 600 }
+    if (staged.uploads + staged.art + length > caps.maxStagingBytes) return { status: 503, code: 'staging_full', retryAfterS: 600 }
     if (Number(u?.n ?? 0) >= caps.maxConcurrentUploadsPerUser) return { status: 429, code: 'too_many_concurrent_uploads', retryAfterS: 30 }
     if (Number(u?.inflight ?? 0) + length > caps.maxInflightBytesPerUser) return { status: 429, code: 'inflight_quota', retryAfterS: 60 }
     await tx.insert(uploads).values({ id, ownerUserId: userId, length, status: 'uploading' })
