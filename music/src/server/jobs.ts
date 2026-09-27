@@ -29,6 +29,9 @@ export const JOB_KINDS = [
   'restore',
   'set_playlists',
   'reverify',
+  // v0.2.2: finishes or rolls back an 'archiving' / 'restoring' row whose
+  // job is gone (requests/jobs.ts reconcileArchive).
+  'reconcile_archive',
 ] as const
 export type JobKind = (typeof JOB_KINDS)[number]
 

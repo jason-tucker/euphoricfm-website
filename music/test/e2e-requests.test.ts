@@ -217,6 +217,8 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
     expect((await req(reviewer, `/api/library/${s.id}/playlists`, { method: 'PUT', json: { playlistIds: [] } })).status).toBe(202)
     await waitFor(async () => ((await byId(s.id))?.playlists ?? [{ id: 0 }]).length === 0)
     expect((await req(reviewer, '/api/archive/999999/restore', { method: 'POST' })).status).toBe(404)
+    expect((await req(member, '/api/archive/999999/reconcile', { method: 'POST' })).status).toBe(403)
+    expect((await req(reviewer, '/api/archive/999999/reconcile', { method: 'POST' })).status).toBe(404)
     expect((await req(reviewer, '/api/archive')).status).toBe(200)
     const audits = await ownerSql()`SELECT action FROM audit_log WHERE target_id = ${String(s.id)} AND action LIKE 'library.%'`
     expect(new Set(audits.map((a) => a.action))).toEqual(new Set(['library.edit', 'library.playlists']))
@@ -237,6 +239,7 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
     expect((await file(member, { kind: 'edit', mediaId: s.id, proposed: { title: 'x' } })).status).toBe(404) // archived: not requestable
     const list = await json<{ id: number }[]>(await req(reviewer, '/api/archive'))
     expect(list.some((x) => x.id === a.id)).toBe(true)
+    expect((await req(reviewer, `/api/archive/${a.id}/reconcile`, { method: 'POST' })).status).toBe(409) // archived: nothing in progress
     expect((await req(reviewer, `/api/archive/${a.id}/restore`, { method: 'POST' })).status).toBe(202)
   })
 

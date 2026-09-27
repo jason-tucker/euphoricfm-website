@@ -8,6 +8,8 @@
 //                     failed) for 7 days, via the probe (worker mount is ro)
 //   disk push         every 5 min, only if KUMA_DISK_PUSH_URL is set
 //   batch contract    at start and daily: behavioural /files/batch check
+//   archive reconcile every 10 min: stale 'archiving' / 'restoring' rows with
+//                     no live job get a reconcile_archive job (P4)
 
 import { randomUUID } from 'node:crypto'
 import { statfs } from 'node:fs/promises'
@@ -22,6 +24,7 @@ import type { P3Ctx } from '../ingest/context'
 import { getCaps } from '../ingest/window'
 import { stationIdsOf } from '../library/recovery'
 import { stationPlaylistIds } from '../library/playlists'
+import { sweepStaleArchiveRows } from '../requests/jobs'
 import { autoCloseSweep, summarySweep } from './tickets'
 
 const MIN = 60_000
@@ -141,6 +144,7 @@ export const TASKS: readonly Task[] = [
   { name: 'final_cleanup', everyMs: 60 * MIN, run: finalCleanup },
   { name: 'disk_push', everyMs: 5 * MIN, run: diskPush },
   { name: 'batch_contract', everyMs: DAY, run: batchContractCheck },
+  { name: 'archive_reconcile', everyMs: 10 * MIN, run: sweepStaleArchiveRows },
 ]
 
 export class Scheduler {

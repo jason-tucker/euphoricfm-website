@@ -33,6 +33,7 @@ export const MUTATING_JOB_KINDS: readonly string[] = [
   'set_playlists',
   'recovery',
   'reverify',
+  'reconcile_archive',
 ]
 
 export type PauseState = { reason: string; at: string; [k: string]: unknown }

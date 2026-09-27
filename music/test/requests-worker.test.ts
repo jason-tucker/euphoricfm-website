@@ -9,8 +9,10 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { AzuraCastClient, type StationMedia } from '@/server/azuracast/client'
 import { resolveProfile } from '@/server/azuracast/guard'
+import type { Viewer } from '@/server/authz/predicates'
 import { closeDb, getDb } from '@/server/db/client'
 import { QueuesPausedError } from '@/server/pause'
+import { directEdit, listArchived, reconcileArchiveRow, restoreSong } from '@/server/requests/manage'
 import { TicketsClient } from '@/server/tickets/client'
 import { RetryLater } from '@/worker/handlers'
 import { runJob } from '@/worker/main'
@@ -19,15 +21,17 @@ import {
   applyEdit,
   archiveMedia,
   move,
+  reconcileArchive,
   requestFailureText,
   restoreMedia,
   reverify,
   runRequestJob,
   setPlaylistsJob,
   sweepParkedRequests,
+  sweepStaleArchiveRows,
   type RequestsCtx,
 } from '@/worker/requests/jobs'
-import { OpFailed } from '@/worker/requests/media'
+import { OpFailed, upsertLibrary } from '@/worker/requests/media'
 import { DBENV, MOCKS } from './helpers/env'
 import { insertArt, ownerSql } from './helpers/db'
 import { control } from './helpers/http'
@@ -190,8 +194,9 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
     await reverify(ctx, take('reverify').payload as never)
     expect(await reqRow(id)).toMatchObject({ status: 'done' })
     const snaps = await ownerSql()`SELECT reason, path, playlist_ids FROM media_snapshots WHERE media_id = ${m.id} ORDER BY id`
-    expect(snaps.map((s) => s.reason)).toEqual(['before_edit', 'before_move', 'after_move'])
-    expect(snaps[1]!.playlist_ids).toEqual([2, 3]) // station ids only (74 is the Events station's)
+    // after_edit: the metadata change applied before the move was queued (v0.2.2 #4)
+    expect(snaps.map((s) => s.reason)).toEqual(['before_edit', 'after_edit', 'before_move', 'after_move'])
+    expect(snaps[2]!.playlist_ids).toEqual([2, 3]) // station ids only (74 is the Events station's)
   })
 
   it('a featured-artist-only change neither moves the file nor creates an artist', async () => {
@@ -441,6 +446,289 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
     expect(await fileById(m.id)).toMatchObject({ path: m.path, title: 'Back' })
     expect(ids(await fileById(m.id))).toEqual([2, 3])
     expect((await archiveRow(m.id))!.status).toBe('restored')
+  })
+
+  // ------------------------------------------------ v0.2.2 follow-ups ---
+
+  const manager = (): Viewer => ({ userId: ownerId, discordId: '500000000000000001', name: null, perms: new Set(['submit', 'request', 'review', 'manage']) as Viewer['perms'] })
+  // A web action that queues a worker job, run while the queues are paused
+  // so the live music-worker never claims the job; the job is taken out of
+  // the table (status done) and handed back to run in-process.
+  async function webQueued<T>(fn: () => Promise<T>, kind: string): Promise<{ result: T; payload: Record<string, unknown> }> {
+    const max = ((await ownerSql()`SELECT coalesce(max(id), 0)::bigint AS max FROM jobs`)[0]!.max as string | number).toString()
+    await ownerSql()`INSERT INTO settings (key, value) VALUES ('queues_paused', '{"reason":"test_web_enqueue"}'::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    try {
+      const result = await fn()
+      const rows = await ownerSql()`UPDATE jobs SET status = 'done' WHERE id > ${max}::bigint AND kind = ${kind} AND status = 'queued' RETURNING payload`
+      expect(rows).toHaveLength(1)
+      return { result, payload: rows[0]!.payload as Record<string, unknown> }
+    } finally {
+      await ownerSql()`UPDATE settings SET value = 'null'::jsonb WHERE key = 'queues_paused'`
+    }
+  }
+  const backdate = (archiveId: unknown) => ownerSql()`UPDATE archive SET updated_at = now() - interval '31 minutes' WHERE id = ${archiveId as number}`
+  // The attempt that performed the move ends in a non-transient error (a 403
+  // on the read after the move): runRequestJob fails the request and
+  // completes the job, the row stays 'archiving', the file is in Removed/.
+  async function strandInRemoved(path: string, playlists: number[]) {
+    const m = await seed(path, { playlists })
+    const id = await request('removal', m, null)
+    let moved = false
+    const forbidden = ctxWith(async (url, init) => {
+      if (batchOf(url, init) === 'move') {
+        const r = await fetch(url, init)
+        moved = true
+        return r
+      }
+      if (moved && init.method === 'GET' && url.endsWith(`/api/station/1/file/${m.id}`)) {
+        return new Response(JSON.stringify({ code: 403, type: 'PermissionDeniedException', message: 'You do not have permission to access this portion of the site.' }), {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return fetch(url, init)
+    })
+    await runRequestJob(forbidden, { id: 1, kind: 'archive', payload: { requestId: id }, attempts: 1, max_attempts: 8 })
+    return { m, id }
+  }
+  // An archive attempt that cleared the memberships, then lost the read
+  // before the move (transient): row 'archiving', file at its original path.
+  async function clearedNotMoved(m: StationMedia, payload: { requestId?: number; mediaId?: number }) {
+    let cleared = false
+    let failed = false
+    const flaky = ctxWith(async (url, init) => {
+      if (batchOf(url, init) === 'playlist') {
+        const r = await fetch(url, init)
+        cleared = true
+        return r
+      }
+      if (cleared && !failed && init.method === 'GET' && url.endsWith(`/api/station/1/file/${m.id}`)) {
+        failed = true
+        throw new TypeError('fetch failed')
+      }
+      return fetch(url, init)
+    })
+    await expect(archiveMedia(flaky, payload)).rejects.toBeInstanceOf(TypeError)
+    expect(await fileById(m.id)).toMatchObject({ path: m.path, playlists: [] })
+    expect(await archiveRow(m.id)).toMatchObject({ status: 'archiving' })
+  }
+
+  it('v0.2.2 #1: an archive whose move landed but whose attempt then failed for good is listed for managers, and Restore finishes it, then restores it', async () => {
+    const folder = `STUCK1-${RUN}`
+    await artist(`Stuck One ${RUN}`, folder)
+    const { m, id } = await strandInRemoved(`${art(folder)}/stranded.mp3`, [2, 3])
+    expect((await fileById(m.id))!.path).toBe(`${PREFIX}Removed/${m.id}/stranded.mp3`)
+    expect(await reqRow(id)).toMatchObject({ status: 'failed', error: 'azuracast_forbidden' })
+    const row = (await archiveRow(m.id))!
+    expect(row.status).toBe('archiving')
+    take('request_ticket_post')
+    // Managers see it (with its state) and can act on it.
+    expect((await listArchived(ctx.db, manager())).find((x) => x.id === row.id)).toMatchObject({ status: 'archiving', archivedPath: `${PREFIX}Removed/${m.id}/stranded.mp3` })
+    const { result, payload } = await webQueued(() => restoreSong(ctx.db, manager(), row.id as number), 'reconcile_archive')
+    expect(result).toMatchObject({ queued: 'reconcile_archive', archiveId: row.id })
+    expect(payload).toMatchObject({ archiveId: row.id, manual: true, restoreAfter: true })
+    await reconcileArchive(ctx, payload as never)
+    // The move happened: the archive is finished and the request applied after all.
+    expect(await archiveRow(m.id)).toMatchObject({ status: 'archived' })
+    expect(await reqRow(id)).toMatchObject({ status: 'verifying', error: null })
+    expect(take('request_ticket_post').payload).toMatchObject({ requestId: id, event: 'applied' })
+    take('reverify')
+    expect(alerts.some((a) => a.includes(`archive #${row.id} reconciled`))).toBe(true)
+    await restoreMedia(ctx, take('restore').payload as never)
+    expect(await fileById(m.id)).toMatchObject({ path: m.path })
+    expect(ids(await fileById(m.id))).toEqual([2, 3])
+    expect(await archiveRow(m.id)).toMatchObject({ status: 'restored' })
+  })
+
+  it('v0.2.2 #1: the scheduled sweep reconciles a stale stranded row that no job holds (and leaves a row a live job holds)', async () => {
+    const folder = `STUCK2-${RUN}`
+    await artist(`Stuck Two ${RUN}`, folder)
+    const a = await strandInRemoved(`${art(folder)}/a.mp3`, [3])
+    const b = await strandInRemoved(`${art(folder)}/b.mp3`, [2])
+    scheduled = []
+    const [rowA, rowB] = [(await archiveRow(a.m.id))!, (await archiveRow(b.m.id))!]
+    // Fresh rows are left alone, even by a direct run.
+    await sweepStaleArchiveRows(ctx)
+    expect(scheduled.filter((x) => x.kind === 'reconcile_archive' && [rowA.id, rowB.id].includes(x.payload.archiveId as number))).toHaveLength(0)
+    await reconcileArchive(ctx, { archiveId: rowA.id as number })
+    expect(await archiveRow(a.m.id)).toMatchObject({ status: 'archiving' })
+    // Both stale; a manager queued the archive of b again (that job resumes
+    // the row itself, so neither the sweep nor the reconciler touch it).
+    await backdate(rowA.id)
+    await backdate(rowB.id)
+    const [j] = await ownerSql()`INSERT INTO jobs (kind, payload, status, run_after) VALUES ('archive', ${ownerSql().json({ mediaId: b.m.id })}, 'queued', now() + interval '30 days') RETURNING id`
+    try {
+      await sweepStaleArchiveRows(ctx)
+      const mine = scheduled.filter((x) => x.kind === 'reconcile_archive' && [rowA.id, rowB.id].includes(x.payload.archiveId as number))
+      expect(mine.map((x) => x.payload)).toEqual([{ archiveId: rowA.id }])
+      expect(mine[0]!.opts.dedupeKey).toMatch(new RegExp(`^reconcile_archive:${rowA.id}:\\d+$`))
+      scheduled = []
+      await reconcileArchive(ctx, mine[0]!.payload as never)
+      expect(await archiveRow(a.m.id)).toMatchObject({ status: 'archived' })
+      expect(await reqRow(a.id)).toMatchObject({ status: 'verifying' })
+      // a job-held row is skipped by the reconciler too
+      await reconcileArchive(ctx, { archiveId: rowB.id as number })
+      expect(await archiveRow(b.m.id)).toMatchObject({ status: 'archiving' })
+    } finally {
+      await ownerSql()`UPDATE jobs SET status = 'done' WHERE id = ${j!.id}`
+    }
+    // That archive job finishes b (the file is where it is).
+    await archiveMedia(ctx, { mediaId: b.m.id })
+    expect(await archiveRow(b.m.id)).toMatchObject({ status: 'archived' })
+  })
+
+  it('v0.2.2 #2: while an archive is open, edits, moves, playlist/art changes and re-verify repairs wait; the reconciler rolls it back and a later archive starts from a fresh snapshot', async () => {
+    const f1 = `OPEN1-${RUN}`
+    const f2 = `OPEN2-${RUN}`
+    await artist(`Open One ${RUN}`, f1)
+    await artist(`Open Two ${RUN}`, f2)
+    const m = await seed(`${art(f1)}/o.mp3`, { title: 'Open', artist: `Open One ${RUN}`, playlists: [2, 3] })
+    await upsertLibrary(ctx.db, m)
+    const e0 = await request('edit', m, { title: 'Open Edited' })
+    await applyEdit(ctx, { requestId: e0 })
+    const rv0 = take('reverify')
+    take('request_ticket_post')
+    const r = await request('removal', (await fileById(m.id))!, null)
+    await clearedNotMoved(m, { requestId: r })
+    const row = (await archiveRow(m.id))!
+    const up = await insertArt(ownerId, 'ready', artDir)
+    const before = await writes()
+    for (const run of [
+      () => move(ctx, { mediaId: m.id, toDir: art(f2) }),
+      () => applyEdit(ctx, { mediaId: m.id, proposed: { artist: `Open Two ${RUN}` }, beforeArtist: `Open One ${RUN}` }),
+      () => setPlaylistsJob(ctx, { mediaId: m.id, chosen: [2] }),
+      () => applyArt(ctx, { mediaId: m.id, artId: up.id }),
+      () => reverify(ctx, rv0.payload as never),
+    ]) {
+      const e = await run().catch((x) => x)
+      expect(e).toBeInstanceOf(RetryLater)
+      expect(e.message).toMatch(/archive operation in progress/)
+    }
+    expect(await writes()).toBe(before)
+    expect(await fileById(m.id)).toMatchObject({ path: m.path, playlists: [] })
+    expect(scheduled).toHaveLength(0)
+    // The web says so up front (the archive itself may still be queued: it resumes).
+    await expect(directEdit(ctx.db, manager(), PREFIX, m.id, { title: 'y' })).rejects.toMatchObject({ status: 409, code: 'archive_in_progress' })
+    // Its job is gone (the request's job gave up): the row goes stale, and
+    // the reconciler puts the memberships back and closes it.
+    await backdate(row.id)
+    await sweepStaleArchiveRows(ctx)
+    await reconcileArchive(ctx, take('reconcile_archive').payload as never)
+    expect(await fileById(m.id)).toMatchObject({ path: m.path })
+    expect(ids(await fileById(m.id))).toEqual([2, 3])
+    expect(await archiveRow(m.id)).toMatchObject({ id: row.id, status: 'failed' })
+    expect(await reqRow(r)).toMatchObject({ status: 'failed', error: 'archive_rolled_back' })
+    take('request_ticket_post')
+    // Now the waiting move runs, with the memberships.
+    await move(ctx, { mediaId: m.id, toDir: art(f2) })
+    expect(await fileById(m.id)).toMatchObject({ path: `${art(f2)}/o.mp3` })
+    expect(ids(await fileById(m.id))).toEqual([2, 3])
+    take('reverify')
+    // A later archive starts fresh: a new row and a NEW before_archive
+    // snapshot of the current state, never the closed attempt's.
+    await archiveMedia(ctx, { mediaId: m.id })
+    const again = (await archiveRow(m.id))!
+    expect(again.id).not.toBe(row.id)
+    expect(again.snapshot_id).not.toBe(row.snapshot_id)
+    expect(again).toMatchObject({ status: 'archived', original_path: `${art(f2)}/o.mp3` })
+    expect((await ownerSql()`SELECT path, playlist_ids FROM media_snapshots WHERE id = ${again.snapshot_id}`)[0]).toMatchObject({ path: `${art(f2)}/o.mp3`, playlist_ids: [2, 3] })
+    await restoreMedia(ctx, { archiveId: again.id as number })
+    expect(await fileById(m.id)).toMatchObject({ path: `${art(f2)}/o.mp3` })
+    expect(ids(await fileById(m.id))).toEqual([2, 3])
+  })
+
+  it('v0.2.2 #1/#2: Resolve on an open row (manager) runs the reconciler now; a restore that never moved the file is archived again', async () => {
+    const folder = `RESOLVE-${RUN}`
+    await artist(`Resolve ${RUN}`, folder)
+    const m = await seed(`${art(folder)}/r.mp3`, { title: 'R', artist: `Resolve ${RUN}`, playlists: [3] })
+    await clearedNotMoved(m, { mediaId: m.id })
+    const row = (await archiveRow(m.id))!
+    const { payload } = await webQueued(() => reconcileArchiveRow(ctx.db, manager(), row.id as number), 'reconcile_archive')
+    expect(payload).toMatchObject({ archiveId: row.id, manual: true })
+    await reconcileArchive(ctx, payload as never) // not stale: manual runs anyway
+    expect(ids(await fileById(m.id))).toEqual([3])
+    expect(await archiveRow(m.id)).toMatchObject({ status: 'failed' })
+    await expect(reconcileArchiveRow(ctx.db, manager(), row.id as number)).rejects.toMatchObject({ status: 409, code: 'not_in_progress' })
+    // A restore that stopped after 'restoring' but before the move.
+    await archiveMedia(ctx, { mediaId: m.id })
+    const a = (await archiveRow(m.id))!
+    await ownerSql()`UPDATE archive SET status = 'restoring' WHERE id = ${a.id}`
+    await backdate(a.id)
+    await sweepStaleArchiveRows(ctx)
+    await reconcileArchive(ctx, take('reconcile_archive').payload as never)
+    expect(await archiveRow(m.id)).toMatchObject({ id: a.id, status: 'archived' })
+    expect((await fileById(m.id))!.path).toBe(`${PREFIX}Removed/${m.id}/r.mp3`)
+    await restoreMedia(ctx, { archiveId: a.id as number })
+    expect(ids(await fileById(m.id))).toEqual([3])
+  })
+
+  it('v0.2.2 #3: a resumed archive repeats the Events refusal before any further write: memberships back, nothing moved, request failed', async () => {
+    const folder = `EVT3-${RUN}`
+    await artist(`Evt Three ${RUN}`, folder)
+    const m = await seed(`${art(folder)}/ev3.mp3`, { playlists: [2, 3] })
+    const id = await request('removal', m, null)
+    await clearedNotMoved(m, { requestId: id })
+    // Between the attempts someone put the song in an Events playlist.
+    await control('/__mock/az/station14', { path: m.path, playlists: [77] })
+    const n0 = (await azCalls()).length
+    await runRequestJob(ctx, { id: 1, kind: 'archive', payload: { requestId: id }, attempts: 2, max_attempts: 8 })
+    const after = await fileById(m.id)
+    expect(after!.path).toBe(m.path)
+    expect(ids(after)).toEqual([2, 3, 77])
+    const sent = (await azCalls()).slice(n0).filter((c) => c.method !== 'GET')
+    expect(sent.map((c) => c.body?.do)).toEqual(['playlist']) // only the rollback: no clear, no move
+    expect(sent[0]!.body).toMatchObject({ playlists: [2, 3] })
+    expect(await archiveRow(m.id)).toMatchObject({ status: 'failed' })
+    expect(await reqRow(id)).toMatchObject({ status: 'failed', error: 'in_events_playlists: 77' })
+    await control('/__mock/az/station14', { path: m.path, playlists: [] })
+  })
+
+  it('v0.2.2 #4: a failed operation’s before_* snapshot never supersedes an older re-verify chain', async () => {
+    await ownerSql()`UPDATE settings SET value = '[2,5,9]'::jsonb WHERE key = 'assignable_playlist_ids'`
+    await ownerSql()`UPDATE settings SET value = '[2,3,5,9]'::jsonb WHERE key = 'station_playlist_ids'`
+    try {
+      const folder = `VER4-${RUN}`
+      await artist(`Ver Four ${RUN}`, folder)
+      const m = await seed(`${art(folder)}/v4.mp3`, { title: 'Orig', artist: `Ver Four ${RUN}`, playlists: [2] })
+      const e0 = await request('edit', m, { title: 'Edited' })
+      await applyEdit(ctx, { requestId: e0 })
+      const rv0 = take('reverify')
+      take('request_ticket_post')
+      // A manager playlist change whose batch AzuraCast acknowledged but did
+      // not apply: it fails its verify after its before_playlists snapshot.
+      const silent = ctxWith(async (url, init) =>
+        batchOf(url, init) === 'playlist' ? new Response(JSON.stringify({ success: true, errors: [], files: [m.path] }), { status: 200 }) : fetch(url, init),
+      )
+      await expect(setPlaylistsJob(silent, { mediaId: m.id, chosen: [2, 9] })).rejects.toMatchObject({ code: 'playlists_verify_failed' })
+      expect(scheduled.some((x) => x.kind === 'reverify')).toBe(false)
+      // The edit is reverted behind the portal's back.
+      await ctx.azuracast.updateMetadata(m.id, { title: 'Orig', artist: `Ver Four ${RUN}`, album: 'Al', genre: 'G' })
+      await reverify(ctx, rv0.payload as never)
+      expect((await fileById(m.id))!.title).toBe('Edited') // checked and repaired, not "superseded"
+      expect(await reqRow(e0)).toMatchObject({ status: 'verifying' })
+      await reverify(ctx, take('reverify').payload as never)
+      expect(await reqRow(e0)).toMatchObject({ status: 'done' })
+    } finally {
+      await ownerSql()`UPDATE settings SET value = '[2]'::jsonb WHERE key = 'assignable_playlist_ids'`
+      await ownerSql()`UPDATE settings SET value = '[2,3,5]'::jsonb WHERE key = 'station_playlist_ids'`
+    }
+  })
+
+  it('v0.2.2 #4: lost-row recovery re-applies the latest APPLIED snapshot, never a later failed operation’s before_* state', async () => {
+    const folder = `LOST4-${RUN}`
+    await artist(`Lost Four ${RUN}`, folder)
+    const m = await seed(`${art(folder)}/l4.mp3`, { title: 'Before', artist: `Lost Four ${RUN}`, playlists: [2, 3] })
+    const id = await request('edit', m, { title: 'After Edit' })
+    await applyEdit(ctx, { requestId: id })
+    const rv = take('reverify')
+    // A later operation that failed after its before_* snapshot.
+    await ownerSql()`INSERT INTO media_snapshots (media_id, path, title, artist, album, genre, playlist_ids, reason) VALUES (${m.id}, ${m.path}, 'Stale', ${`Lost Four ${RUN}`}, 'Al', 'G', '{2}', 'before_playlists')`
+    const fresh = (await control('/__mock/az/lose-row', { path: m.path })) as StationMedia
+    await reverify(ctx, rv.payload as never)
+    const now = await fileById(fresh.id)
+    expect(now).toMatchObject({ path: m.path, title: 'After Edit' })
+    expect(ids(now)).toEqual([2, 3])
+    expect(await reqRow(id)).toMatchObject({ status: 'done', media_id: fresh.id })
   })
 
   it('re-verify never reverts a later change: set_playlists after an edit keeps its new id; overlapping edits do not ping-pong', async () => {

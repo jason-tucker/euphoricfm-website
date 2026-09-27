@@ -38,10 +38,12 @@ import { isUsableArt, loadArt } from '../../server/library/art'
 import { resolveArtistGate } from '../../server/library/artists'
 import { dirname, PathError, resolveIngestPath } from '../../server/paths/builder'
 import { assertQueuesNotPaused } from '../../server/pause'
+import { archiveOpInProgress } from '../../server/requests/archive-state'
 import { FINAL_FILE_RE, readSpoolResult, writeSpoolRequest, type FinalizeRequest } from '../../server/spool/protocol'
 import { Defer, Permanent } from '../handlers'
 import { findMediaByPath, reapplySnapshot, RECOVERY_MIN_MS, RECOVERY_MIN_POLLS, remapMediaId, stationIdsOf } from '../library/recovery'
 import { ingestPlaylistIds, stationPlaylistIds } from '../library/playlists'
+import { APPLIED_SNAPSHOT_REASONS } from '../requests/media'
 import type { P3Ctx } from './context'
 import { afterScans, assertMutationWindow, getCaps, MUTATION_WAIT_MAX_AGE_S, pacingWait, scanOffsetS, scanWindow } from './window'
 
@@ -310,7 +312,16 @@ async function ownUpload(ctx: P3Ctx, it: Item, run: Run, size: number): Promise<
   }
   if (reasons.length === 0) return m
   await audit(ctx.db, { action: 'item.ingest.not_adopted', targetType: 'item', targetId: it.id, detail: { path, mediaId: m?.id ?? null, reasons } })
-  await ctx.alert(`item #${it.id}: a file at its reserved path is not its upload; picking another path`, { itemId: it.id, path, mediaId: m?.id ?? null, reasons })
+  // Not adopting may leave an orphan: when only the time check failed (same
+  // size, sole holder; e.g. AzuraCast's clock behind the DB's by more than
+  // the slack), the row is most likely this item's own earlier upload, left
+  // behind while the retry uploads under the next name. Say exactly which
+  // file to check and delete by hand.
+  const orphan = reasons.length === 1 && reasons[0] === 'older_than_attempt' ? path : null
+  const hint = orphan
+    ? ` "${orphan}"${m ? ` (media id ${m.id})` : ''} is probably this song's own earlier upload (only its upload time did not match, e.g. clock skew): once the new upload is live, check it and delete that file in AzuraCast by hand.`
+    : ''
+  await ctx.alert(`item #${it.id}: a file at its reserved path is not its upload; picking another path.${hint}`, { itemId: it.id, path, mediaId: m?.id ?? null, reasons, orphanPath: orphan })
   return null
 }
 
@@ -441,12 +452,20 @@ export async function runIngestVerify(ctx: P3Ctx, payload: { itemId: number }): 
   // move, archive, playlist change or edit of a still-verifying song) owns
   // its state now: that is not a lost row, and repairing towards the ingest
   // snapshot would revert it. The song went live; the newer mutation's own
-  // re-verify (and recovery) takes over.
-  const newer = await ctx.db.query.mediaSnapshots.findFirst({ where: and(eq(mediaSnapshots.mediaId, snap.mediaId), gt(mediaSnapshots.id, snap.id)), orderBy: desc(mediaSnapshots.id) })
+  // re-verify (and recovery) takes over. Only a mutation that APPLIED counts
+  // (its after_* snapshot): a failed one's before_* snapshot never does.
+  const newer = await ctx.db.query.mediaSnapshots.findFirst({
+    where: and(eq(mediaSnapshots.mediaId, snap.mediaId), gt(mediaSnapshots.id, snap.id), inArray(mediaSnapshots.reason, [...APPLIED_SNAPSHOT_REASONS])),
+    orderBy: desc(mediaSnapshots.id),
+  })
   if (newer) {
     await audit(ctx.db, { action: 'item.ingest.verify_superseded', targetType: 'item', targetId: itemId, detail: { snapshotId: snap.id, by: newer.id, reason: newer.reason } })
     return goLive(ctx, run)
   }
+  // An archive or restore of the media in flight (cleared memberships, a
+  // file on its way to Removed/) is not a loss to repair: wait for it.
+  const op = run.mediaId ? await archiveOpInProgress(ctx.db, run.mediaId) : null
+  if (op) throw new Defer(600, `archive operation in progress (archive #${op.id} ${op.status})`)
 
   if (run.stage === 'verifying') {
     const f = await getFileOrNull(ctx, run.mediaId!)

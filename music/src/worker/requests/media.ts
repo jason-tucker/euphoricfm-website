@@ -48,6 +48,14 @@ export function sameIds(a: readonly number[], b: readonly number[]): boolean {
 
 export type Snapshot = typeof mediaSnapshots.$inferSelect
 
+// Snapshots of state the portal actually APPLIED: the after_* snapshot of a
+// mutation, taken only once it is verified, and the ingest snapshot. Only
+// these supersede an older re-verify chain (requests/jobs.ts reverify, the
+// ingest verify) or feed lost-row recovery. A before_* snapshot is taken
+// before the first write; if that operation then fails or is refused, it
+// records nothing the portal changed and must never win.
+export const APPLIED_SNAPSHOT_REASONS = ['after_edit', 'after_move', 'after_art', 'after_playlists', 'after_archive', 'after_restore', 'ingest'] as const
+
 export async function takeSnapshot(
   db: DB,
   media: StationMedia,

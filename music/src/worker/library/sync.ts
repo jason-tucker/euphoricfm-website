@@ -92,8 +92,10 @@ const sorted = (xs: Iterable<number>) => [...new Set(xs)].sort((a, b) => a - b)
 // known nor foreign may be a NEW Events playlist: it is alerted once and
 // counted as station 1 (the safe side for merges, which then never drop the
 // membership) and recorded in unconfirmed_playlist_ids, the only station ids
-// an admin may still move to foreign. The first sync (no previous set)
-// classifies silently against the configured foreign list.
+// an admin may still move to foreign. The first sync (no previous set) does
+// the same for every observed id that is neither configured nor foreign:
+// nothing has confirmed those either (a new Events playlist the default
+// foreign list does not name must stay movable to foreign).
 export function stationSet(opts: {
   prev: readonly number[] | null
   prevUnconfirmed: readonly number[]
@@ -103,7 +105,7 @@ export function stationSet(opts: {
 }): { station: number[]; unconfirmed: number[]; fresh: number[] } {
   const configured = new Set(opts.configured)
   const known = new Set([...(opts.prev ?? []), ...configured])
-  const fresh = opts.prev === null ? [] : sorted([...opts.observed].filter((id) => !known.has(id) && !opts.foreign.has(id)))
+  const fresh = sorted([...opts.observed].filter((id) => !known.has(id) && !opts.foreign.has(id)))
   const station = sorted([...known, ...opts.observed].filter((id) => configured.has(id) || !opts.foreign.has(id)))
   const unconfirmed = sorted([...opts.prevUnconfirmed, ...fresh].filter((id) => station.includes(id) && !configured.has(id)))
   return { station, unconfirmed, fresh }
@@ -200,8 +202,10 @@ export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
   }
   if (JSON.stringify(prevUnconfirmed) !== JSON.stringify(unconfirmed)) await putSetting(ctx, 'unconfirmed_playlist_ids', unconfirmed)
   if (fresh.length > 0) {
-    await ctx.alert(`library sync: new playlist id(s) ${fresh.join(', ')} counted as station 1; if any belongs to the Events station, add it to foreign_playlist_ids (admin settings)`, {
+    const what = prev === null ? 'first library sync: playlist id(s) not in the assignable, default or foreign lists' : 'library sync: new playlist id(s)'
+    await ctx.alert(`${what} ${fresh.join(', ')} counted as station 1 (unconfirmed); if any belongs to the Events station, add it to foreign_playlist_ids (admin settings)`, {
       playlistIds: fresh,
+      firstSync: prev === null,
     })
   }
   return { total: all.length, library: rows.length, removed, artistsAdded, stationPlaylistIds: stationIds }

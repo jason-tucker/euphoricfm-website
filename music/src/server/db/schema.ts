@@ -496,6 +496,11 @@ export const archive = pgTable(
     status: archiveStatusEnum('status').notNull().default('archived'),
     archivedAt: ts('archived_at').notNull().defaultNow(),
     restoredAt: ts('restored_at'),
+    // Set on every status write (and when a re-run resumes the row): an
+    // 'archiving' / 'restoring' row that has not moved for a while and has
+    // no live job is finished or rolled back by the reconciler
+    // (requests/jobs.ts reconcileArchive).
+    updatedAt: ts('updated_at').notNull().defaultNow(),
   },
   (t) => [
     index('archive_media_idx').on(t.mediaId),

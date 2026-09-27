@@ -674,6 +674,16 @@ async function handleControl(req, res, url) {
     state.az.ignoreNextPut = true
     return send(res, 200, { ok: true })
   }
+  // Someone adds (or removes) the file in an Events (station 14) playlist in
+  // AzuraCast: sets only its station-14 memberships, like that station's own
+  // playlist UI would (the station-1 API cannot).
+  if (p === '/__mock/az/station14' && req.method === 'POST') {
+    const f = state.az.files.get(body.path)
+    if (!f) return send(res, 404, { error: 'no such path' })
+    const ids = (body.playlists ?? []).map(Number).filter((id) => STATION14_PLAYLISTS.has(id))
+    f.playlists = [...f.playlists.filter((id) => !STATION14_PLAYLISTS.has(id)), ...ids]
+    return send(res, 200, azMedia(f))
+  }
   if (p === '/__mock/az/fail-next-move' && req.method === 'POST') {
     state.az.failNextMove = body?.error ?? 'Filesystem error.'
     return send(res, 200, { ok: true })

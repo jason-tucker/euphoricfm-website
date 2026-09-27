@@ -129,7 +129,7 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
             {initial.stationPlaylistIds.length ? initial.stationPlaylistIds.join(', ') : 'not synced yet'}
           </p>
           {initial.unconfirmedPlaylistIds?.length ? (
-            <p className="mt-1 text-xs text-cream/50">Unconfirmed (new since the first sync; could be Events playlists): {initial.unconfirmedPlaylistIds.join(', ')}</p>
+            <p className="mt-1 text-xs text-cream/50">Unconfirmed (seen by the library sync, never confirmed; could be Events playlists): {initial.unconfirmedPlaylistIds.join(', ')}</p>
           ) : null}
         </div>
         <div className="sm:col-span-2">

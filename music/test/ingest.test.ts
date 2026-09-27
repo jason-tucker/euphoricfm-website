@@ -113,8 +113,12 @@ describe('scan window and pacing (clock only)', () => {
 
   it('station playlist set: sync-owned, never shrinks by observation, alerts a new id once, drops only admin-foreign ids', () => {
     const foreign = new Set([74, 75, 76, 77, 78])
-    // first sync: classified against the configured foreign list, silently
-    expect(stationSet({ prev: null, prevUnconfirmed: [], configured: [2], foreign, observed: new Set([2, 4, 74, 78]) })).toEqual({ station: [2, 4], unconfirmed: [], fresh: [] })
+    // first sync: classified against the configured foreign list; an id that
+    // is neither configured nor foreign is station 1 but UNCONFIRMED (an
+    // admin can still move it to foreign) and alerted once (v0.2.2 #5)
+    const r0 = stationSet({ prev: null, prevUnconfirmed: [], configured: [2], foreign, observed: new Set([2, 4, 74, 78]) })
+    expect(r0).toEqual({ station: [2, 4], unconfirmed: [4], fresh: [4] })
+    expect(stationSet({ prev: r0.station, prevUnconfirmed: r0.unconfirmed, configured: [2], foreign, observed: new Set([2, 4]) })).toEqual({ station: [2, 4], unconfirmed: [4], fresh: [] })
     // 4 not seen this time: kept; 79 is new: counted as station 1, alerted, unconfirmed
     const r1 = stationSet({ prev: [2, 4], prevUnconfirmed: [], configured: [2], foreign, observed: new Set([2, 79]) })
     expect(r1).toEqual({ station: [2, 4, 79], unconfirmed: [79], fresh: [79] })
@@ -611,6 +615,85 @@ describe.skipIf(!DBENV() || !MOCKS())('ingest pipeline (station 1, Portal-Test/ 
     const writes = ((await control('/__mock/az/calls')) as { method: string }[]).slice(before).filter((c) => c.method !== 'GET')
     expect(writes).toHaveLength(0)
     await ownerSql()`UPDATE jobs SET status = 'done' WHERE kind = 'reverify' AND payload->>'mediaId' = ${String(mediaId)} AND status = 'queued'`
+    ctx.cleanup()
+  })
+
+  it('v0.2.2 #4: a failed operation’s before_* snapshot never supersedes the ingest verify: lost memberships are still repaired', async () => {
+    await ownerSql()`INSERT INTO settings (key, value) VALUES ('station_playlist_ids', '[2,3,5]'::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    const ctx = makeCtx(slot(36))
+    const { id, path } = await ingestToVerifying(ctx)
+    const mediaId = (await item(id)).media_id as number
+    // A manager playlist change that was refused (or failed its verify)
+    // after taking its before_* snapshot: nothing of it applied.
+    await ownerSql()`INSERT INTO media_snapshots (media_id, path, title, artist, album, genre, playlist_ids, reason) VALUES (${mediaId}, ${path}, 'x', 'x', '', '', '{}', 'before_playlists')`
+    await fetch(`${process.env.MOCKS_AZURACAST}/api/station/1/files/batch`, {
+      method: 'PUT',
+      headers: { 'X-API-Key': process.env.AZURACAST_API_KEY!, 'content-type': 'application/json' },
+      body: JSON.stringify({ do: 'playlist', files: [path], playlists: [] }),
+    })
+    ctx.clock.t = slot(36, 11, 31)
+    expect((await verify(ctx, id))?.message).toBe('playlists re-applied')
+    expect((await azFile(path))!.playlists.map((p) => p.id)).toEqual([2])
+    expect((await item(id)).status).toBe('verifying')
+    ctx.cleanup()
+  })
+
+  it('v0.2.2 #2: the ingest verify waits while the song has an archive or restore in flight (no repair of a half-done archive)', async () => {
+    const ctx = makeCtx(slot(37))
+    const { id, path } = await ingestToVerifying(ctx)
+    const mediaId = (await item(id)).media_id as number
+    const [a] = await ownerSql()`INSERT INTO archive (media_id, original_path, archived_path, status) VALUES (${mediaId}, ${path}, ${`Portal-Test/Removed/${mediaId}/x.mp3`}, 'archiving') RETURNING id`
+    try {
+      // the archive cleared the memberships and has not moved the file yet
+      await fetch(`${process.env.MOCKS_AZURACAST}/api/station/1/files/batch`, {
+        method: 'PUT',
+        headers: { 'X-API-Key': process.env.AZURACAST_API_KEY!, 'content-type': 'application/json' },
+        body: JSON.stringify({ do: 'playlist', files: [path], playlists: [] }),
+      })
+      ctx.clock.t = slot(37, 11, 31)
+      const before = ((await control('/__mock/az/calls')) as unknown[]).length
+      expect((await verify(ctx, id))?.message).toMatch(/archive operation in progress/)
+      const writes = ((await control('/__mock/az/calls')) as { method: string }[]).slice(before).filter((c) => c.method !== 'GET')
+      expect(writes).toHaveLength(0)
+      expect((await azFile(path))!.playlists).toEqual([])
+      expect((await item(id)).status).toBe('verifying')
+    } finally {
+      await ownerSql()`UPDATE archive SET status = 'failed' WHERE id = ${a!.id}`
+    }
+    ctx.cleanup()
+  })
+
+  it('v0.2.2 #6: an upload refused only by the time check (clock skew) names the orphan file to delete in the alert', async () => {
+    let drop = true
+    const lossy = (async (url: string, init: RequestInit) => {
+      if (drop && init.method === 'POST' && String(url).endsWith('/api/station/1/files')) {
+        drop = false
+        await fetch(url, init)
+        throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' })
+      }
+      return fetch(url, init)
+    }) as unknown as typeof fetch
+    const ctx = makeCtx(slot(38), { az: gatedAz({ fetchImpl: lossy }) })
+    const owner = await mkUser()
+    const folder = `PT Skew ${uniq()}`
+    const artistId = await mkArtist(folder)
+    const b = await mkBatch(owner.id)
+    const id = await mkItem({ batchId: b, ownerId: owner.id, title: 'Skew', artist: folder, artistId })
+    await step(ctx, id)
+    await actAsProbe(ctx, id)
+    await expect(step(ctx, id)).rejects.toMatchObject({ name: 'TimeoutError' })
+    const P = `Portal-Test/Music/Artists/${folder}/${folder} - Skew.mp3`
+    const orphan = (await azFile(P))!
+    // The DB clock runs ahead of AzuraCast's by more than the slack.
+    await ownerSql()`UPDATE ingest_runs SET upload_attempted_at = now() + interval '1 hour' WHERE item_id = ${id}`
+    ctx.clock.t = slot(38, 3, 20)
+    expect(await step(ctx, id)).toBeNull()
+    expect(await uploadsTo(folder)).toHaveLength(2)
+    expect((await item(id)).target_path).toBe(P.replace(/\.mp3$/, ' (2).mp3'))
+    const a = ctx.alerts.find((x) => x.title.includes('not its upload'))!
+    expect(a.detail).toMatchObject({ reasons: ['older_than_attempt'], orphanPath: P })
+    expect(a.title).toContain(`"${P}" (media id ${orphan.id})`)
+    expect(a.title).toMatch(/delete that file in AzuraCast by hand/)
     ctx.cleanup()
   })
 

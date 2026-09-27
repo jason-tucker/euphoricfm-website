@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { when } from '@/components/format'
+import { ResolveArchiveButton } from '@/components/requests/ResolveArchiveButton'
 import { RestoreButton } from '@/components/requests/RestoreButton'
 import { PageTitle } from '@/components/ui'
 import { getDb } from '@/server/db/client'
@@ -32,8 +33,16 @@ export default async function ArchivedPage() {
                   Was in Music/Artists/{a.folder} · archived {when(a.archivedAt)}
                   {a.requestId ? ` · request #${a.requestId}` : ''}
                 </p>
+                {a.status === 'archiving' || a.status === 'restoring' ? (
+                  <p className="text-xs text-sunburst">
+                    {a.status === 'archiving' ? 'Archiving stopped part way.' : 'Restoring stopped part way.'} The worker settles it on its own; Resolve does it now.
+                  </p>
+                ) : null}
               </div>
-              <RestoreButton archiveId={a.id} name={a.fileName} />
+              <span className="inline-flex items-start gap-2">
+                {a.status === 'archiving' || a.status === 'restoring' ? <ResolveArchiveButton archiveId={a.id} name={a.fileName} status={a.status} /> : null}
+                <RestoreButton archiveId={a.id} name={a.fileName} />
+              </span>
             </li>
           ))}
         </ul>

@@ -68,9 +68,17 @@ export function archiveSong(mediaId: number, reason: string) {
   return api(`/api/library/${mediaId}/archive`, { json: reason ? { reason } : {} })
 }
 
-// CONFIRMED: POST /api/archive/:archiveId/restore (409 not_archived)
+// CONFIRMED: POST /api/archive/:archiveId/restore (409 not_archived; an
+// 'archiving' row is settled first, 409 archive_job_pending while a worker
+// job still holds it)
 export function restoreSong(archiveId: number) {
   return api(`/api/archive/${archiveId}/restore`, { method: 'POST' })
+}
+
+// POST /api/archive/:archiveId/reconcile: settle an archive or restore that
+// stopped part way (409 not_in_progress, archive_job_pending)
+export function reconcileArchive(archiveId: number) {
+  return api(`/api/archive/${archiveId}/reconcile`, { method: 'POST' })
 }
 
 // Album art contract: PUT /api/library/:mediaId/art {artId} (manage, audited,

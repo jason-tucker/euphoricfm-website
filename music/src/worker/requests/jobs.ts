@@ -16,15 +16,23 @@
 // is instead of snapshotting a half-done state.
 //
 // Every re-verify re-applies its snapshot only while that snapshot is still
-// the latest portal snapshot of the media (a newer mutation supersedes it),
-// and re-adds missing playlist memberships by merge, never by a REPLACE
-// with an old set.
+// the latest APPLIED portal snapshot of the media (a newer mutation that
+// really applied supersedes it; the before_* snapshot of an operation that
+// then failed never does), and re-adds missing playlist memberships by
+// merge, never by a REPLACE with an old set.
+//
+// While a media has an open archive operation ('archiving' / 'restoring')
+// every other mutation of it waits (edits, moves, playlist and art changes,
+// re-verify repairs), and reconcileArchive finishes or rolls back a row
+// whose job is gone, so no half-done archive stays open and a later archive
+// always starts from a fresh snapshot.
 
 import { and, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
 import { imageComplete, imageDims, sniffImage } from '../../probe/cover'
 import { AzuraCastError, mergePlaylists, type StationMedia } from '../../server/azuracast/client'
 import { audit } from '../../server/audit'
 import { archive, artists, artUploads, mediaSnapshots, requests, users } from '../../server/db/schema'
+import { ARCHIVE_OP_STATUSES, ARCHIVE_STALE_MS, archiveOpInProgress, liveArchiveJob } from '../../server/requests/archive-state'
 import { enqueue, type JobKind } from '../../server/jobs'
 import {
   archiveDirPath,
@@ -59,7 +67,18 @@ import { TicketsApiError } from '../../server/tickets/client'
 import { Permanent, RetryLater, TRANSIENT_MAX_AGE_S, type WorkerCtx } from '../handlers'
 import { afterScans, assertMutationWindow, assertNotOnAir, scanOffsetS } from '../ingest/window'
 import { findMediaByPath, reapplySnapshot, remapMediaId } from '../library/recovery'
-import { OpFailed, playlistIdsOf, sameIds, snapshotMeta, stationIds, stationPlaylistSet, takeSnapshot, upsertLibrary, type Snapshot } from './media'
+import {
+  APPLIED_SNAPSHOT_REASONS,
+  OpFailed,
+  playlistIdsOf,
+  sameIds,
+  snapshotMeta,
+  stationIds,
+  stationPlaylistSet,
+  takeSnapshot,
+  upsertLibrary,
+  type Snapshot,
+} from './media'
 
 export type RequestsCtx = WorkerCtx & {
   root: string // PORTAL_TEST_PREFIX or ''
@@ -90,6 +109,17 @@ const schedule = (ctx: RequestsCtx, kind: JobKind, payload: Record<string, unkno
   ctx.schedule ? ctx.schedule(kind, payload, opts) : enqueue(ctx.db, kind, payload, opts)
 
 const actorOf = (p: Actor) => ({ actorUserId: p.actorUserId ?? null, actorDiscordId: p.actorDiscordId ?? null })
+
+// Another mutation of a media whose archive or restore is in flight would
+// act on a half-done state (memberships cleared, the file about to move, or
+// already in Removed/): it waits, without spending an attempt, until the
+// operation finishes or the reconciler closes the row (bounded by the
+// default wait age; an aged-out wait fails its request).
+const ARCHIVE_OP_WAIT_S = 600
+async function assertNoArchiveOp(ctx: RequestsCtx, mediaId: number): Promise<void> {
+  const op = await archiveOpInProgress(ctx.db, mediaId)
+  if (op) throw new RetryLater(ARCHIVE_OP_WAIT_S, `archive operation in progress (archive #${op.id} ${op.status})`)
+}
 
 async function getFile(ctx: RequestsCtx, id: number): Promise<StationMedia> {
   try {
@@ -267,6 +297,7 @@ export async function applyEdit(ctx: RequestsCtx, payload: ApplyEditPayload) {
 
   const media = await getFile(ctx, mediaId)
   if (!isRequestTarget(ctx.root, media.path)) throw new OpFailed('target_not_allowed', { path: media.path })
+  await assertNoArchiveOp(ctx, mediaId)
   const current = metaOf(media)
   const next = applyProposed(current, parsed.data)
   // "Before" is the value the member saw when filing (or the manager when
@@ -334,6 +365,10 @@ export async function applyEdit(ctx: RequestsCtx, payload: ApplyEditPayload) {
   await upsertLibrary(ctx.db, after)
   await audit(ctx.db, { ...actorOf(payload), action: 'media.edit', targetType: 'media', targetId: mediaId, detail: { before: current, after: next, requestId: req?.id ?? null, moveTo } })
   if (moveTo) {
+    // The metadata change applied: its snapshot supersedes older re-verify
+    // chains now (one of them re-applying its older metadata before the
+    // move runs would revert this edit). The move's own snapshot follows.
+    await takeSnapshot(ctx.db, after, station, 'after_edit', { requestId: req?.id })
     await schedule(ctx, 'move', { mediaId, toDir: moveTo, requestId: req?.id ?? null, ...actorOf(payload) }, req ? { dedupeKey: `move:request:${req.id}` } : {})
     return
   }
@@ -373,6 +408,7 @@ export async function applyArt(ctx: RequestsCtx, payload: ApplyArtPayload) {
   const offset = await mutationWindow(ctx)
   const media = await getFile(ctx, mediaId)
   if (!isRequestTarget(ctx.root, media.path)) throw new OpFailed('target_not_allowed', { path: media.path })
+  await assertNoArchiveOp(ctx, mediaId)
   const art = await loadArt(ctx.db, artId)
   if (!isUsableArt(art)) throw new OpFailed('art_not_ready', { artId })
   const [dims] = await ctx.db.select({ width: artUploads.width, height: artUploads.height }).from(artUploads).where(eq(artUploads.id, art.id)).limit(1)
@@ -439,6 +475,7 @@ export async function move(ctx: RequestsCtx, payload: MovePayload) {
   if (req && req.status !== 'applying') return
   const offset = await mutationWindow(ctx)
   const media = await getFile(ctx, payload.mediaId)
+  await assertNoArchiveOp(ctx, media.id)
   const dest = `${payload.toDir}/${basename(media.path)}`
   const station = await stationPlaylistSet(ctx.db)
   let expected: number[] | null = null
@@ -531,11 +568,16 @@ export async function archiveMedia(ctx: RequestsCtx, payload: ArchivePayload) {
     if (!s0) throw new OpFailed('archive_snapshot_missing', { archiveId: row.id })
     snap = s0
     if (req && !(await claim(ctx, req.id))) return
+    await touchArchive(ctx, row.id, 'archiving') // being worked on: not stale
     if (media.path === row.archivedPath) return finishArchive(ctx, req, row, media, snap, station, offset, payload)
     if (media.path !== row.originalPath) {
       await ctx.alert('archive: file is neither at its original nor at its archive path', { mediaId, archiveId: row.id, path: media.path })
       throw new OpFailed('archive_path_unexpected', { path: media.path })
     }
+    // The Events refusal holds on a resume too, before any further write: a
+    // membership outside the station set that appeared between attempts
+    // puts the snapshot memberships back and refuses.
+    await refuseIfInEvents(ctx, row, snap, station, media)
     await assertNotOnAir(ctx.db, ctx.azuracast, media)
   } else {
     if (!isRequestTarget(ctx.root, media.path)) throw new OpFailed('target_not_allowed', { path: media.path })
@@ -588,6 +630,8 @@ export async function archiveMedia(ctx: RequestsCtx, payload: ArchivePayload) {
     await rollbackArchive(ctx, row, snap, station)
     throw new OpFailed('memberships_remain', { playlists: left })
   }
+  // An Events membership that appeared since the check: refused before the move.
+  await refuseIfInEvents(ctx, row, snap, station, cleared)
   // 3. move to Removed/<media_id>/ (per-id folder: same file names never collide).
   let moveErr: unknown = null
   try {
@@ -615,29 +659,56 @@ export async function archiveMedia(ctx: RequestsCtx, payload: ArchivePayload) {
   throw moveErr
 }
 
-// Re-applies the snapshot memberships at the original path and checks them.
-// A verified rollback marks the archive row failed (a later archive starts
-// fresh from the restored state); an unverified one leaves it 'archiving',
-// so a re-run still has the original snapshot.
-async function rollbackArchive(ctx: RequestsCtx, row: ArchiveRow, snap: Snapshot, station: ReadonlySet<number>): Promise<void> {
+// Puts the snapshot's station memberships back (MERGE: memberships the row
+// has now stay) wherever the file is in the library (its original path, or
+// another artist folder if it was moved by hand) and checks them. A
+// verified rollback marks the archive row failed (a later archive starts
+// fresh from the restored state, with a new snapshot); an unverified one
+// leaves it 'archiving', so a re-run (or the reconciler) still has the
+// original snapshot. Never throws: returns whether it was verified.
+async function rollbackArchive(ctx: RequestsCtx, row: ArchiveRow, snap: Snapshot, station: ReadonlySet<number>): Promise<boolean> {
   try {
     let cur = await ctx.azuracast.getFile(row.mediaId)
-    if (cur.path !== row.originalPath) {
+    if (cur.path !== row.originalPath && !isRequestTarget(ctx.root, cur.path)) {
       await ctx.alert('archive rollback: file not at its original path', { mediaId: row.mediaId, path: cur.path })
-      return
+      return false
     }
-    if (!sameIds(stationIds(cur, station), snap.playlistIds)) {
-      await ctx.azuracast.setPlaylists(cur.path, snap.playlistIds, new Set(snap.playlistIds))
+    const want = snap.playlistIds.filter((id) => station.has(id))
+    const have = stationIds(cur, station)
+    if (want.some((id) => !have.includes(id))) {
+      const ids = [...new Set([...have, ...want])].sort((x, y) => x - y)
+      await ctx.azuracast.setPlaylists(cur.path, ids, new Set(ids))
       cur = await ctx.azuracast.getFile(row.mediaId)
-      if (!sameIds(stationIds(cur, station), snap.playlistIds)) {
-        await ctx.alert('archive rollback: playlists NOT verified', { mediaId: row.mediaId, snapshotId: snap.id, expected: snap.playlistIds })
-        return
+      const now = stationIds(cur, station)
+      if (!want.every((id) => now.includes(id))) {
+        await ctx.alert('archive rollback: playlists NOT verified', { mediaId: row.mediaId, snapshotId: snap.id, expected: want })
+        return false
       }
     }
-    await ctx.db.update(archive).set({ status: 'failed' }).where(and(eq(archive.id, row.id), eq(archive.status, 'archiving')))
+    await ctx.db.update(archive).set({ status: 'failed', updatedAt: sql`now()` }).where(and(eq(archive.id, row.id), eq(archive.status, 'archiving')))
+    return true
   } catch (e) {
     await ctx.alert('archive rollback failed: playlists NOT re-applied', { mediaId: row.mediaId, snapshotId: snap.id, error: errText(e) })
+    return false
   }
+}
+
+// ARC-3 before any further write of an archive: a song with a membership
+// outside the station set (the Events station) is refused; the station
+// memberships this attempt may have cleared are put back first. (While the
+// queues are paused the job parks here: nothing is written.)
+async function refuseIfInEvents(ctx: RequestsCtx, row: ArchiveRow, snap: Snapshot, station: ReadonlySet<number>, media: StationMedia): Promise<void> {
+  const foreign = playlistIdsOf(media).filter((id) => !station.has(id))
+  if (foreign.length === 0) return
+  await assertQueuesRunning(ctx.db)
+  await rollbackArchive(ctx, row, snap, station)
+  throw new OpFailed('in_events_playlists', { playlistIds: foreign, note: foreign.join(', '), archiveId: row.id })
+}
+
+// Marks an open row as worked on (updated_at): the reconciler only takes
+// rows nobody has touched for ARCHIVE_STALE_MS.
+async function touchArchive(ctx: RequestsCtx, id: number, status: 'archiving' | 'restoring'): Promise<void> {
+  await ctx.db.update(archive).set({ updatedAt: sql`now()` }).where(and(eq(archive.id, id), eq(archive.status, status)))
 }
 
 async function finishArchive(
@@ -645,7 +716,7 @@ async function finishArchive(
   req: typeof requests.$inferSelect | null,
   row: ArchiveRow,
   after: StationMedia,
-  snap: Snapshot,
+  snap: Snapshot | null,
   station: ReadonlySet<number>,
   offset: number,
   payload: Actor,
@@ -655,7 +726,7 @@ async function finishArchive(
   // the wrapper cannot touch playlists under Removed/: a human must.
   const left = stationIds(after, station)
   if (left.length) await ctx.alert('archived file still has station playlist memberships', { mediaId: after.id, path: after.path, playlists: left })
-  await ctx.db.update(archive).set({ status: 'archived', archivedAt: new Date() }).where(and(eq(archive.id, row.id), eq(archive.status, 'archiving')))
+  await ctx.db.update(archive).set({ status: 'archived', archivedAt: new Date(), updatedAt: sql`now()` }).where(and(eq(archive.id, row.id), eq(archive.status, 'archiving')))
   await upsertLibrary(ctx.db, after) // now under Removed/: off the request surface
   const post = await takeSnapshot(ctx.db, after, station, 'after_archive', { requestId: req?.id })
   await audit(ctx.db, {
@@ -663,7 +734,7 @@ async function finishArchive(
     action: 'media.archive',
     targetType: 'media',
     targetId: after.id,
-    detail: { from: row.originalPath, to: row.archivedPath, snapshotId: snap.id, archiveId: row.id, requestId: req?.id ?? null, moveReply: moveErr ? errText(moveErr) : 'ok' },
+    detail: { from: row.originalPath, to: row.archivedPath, snapshotId: snap?.id ?? null, archiveId: row.id, requestId: req?.id ?? null, moveReply: moveErr ? errText(moveErr) : 'ok' },
   })
   await applied(ctx, req?.id, post, offset)
 }
@@ -690,7 +761,7 @@ export async function restoreMedia(ctx: RequestsCtx, payload: Actor & { archiveI
     }
     await takeSnapshot(ctx.db, media, station, 'before_restore')
     // Recorded before the move: a re-run after it resumes (below).
-    await ctx.db.update(archive).set({ status: 'restoring' }).where(and(eq(archive.id, a.id), inArray(archive.status, ['archived', 'restoring'])))
+    await ctx.db.update(archive).set({ status: 'restoring', updatedAt: sql`now()` }).where(and(eq(archive.id, a.id), inArray(archive.status, ['archived', 'restoring'])))
     await assertQueuesRunning(ctx.db)
     let moveErr: unknown = null
     try {
@@ -704,7 +775,7 @@ export async function restoreMedia(ctx: RequestsCtx, payload: Actor & { archiveI
       // Not moved: a definitive failure puts the row back to 'archived'
       // (Restore can be pressed again); anything else is retried.
       if (moveErr === null || definitiveMoveError(moveErr)) {
-        await ctx.db.update(archive).set({ status: 'archived' }).where(and(eq(archive.id, a.id), eq(archive.status, 'restoring')))
+        await ctx.db.update(archive).set({ status: 'archived', updatedAt: sql`now()` }).where(and(eq(archive.id, a.id), eq(archive.status, 'restoring')))
         throw new OpFailed('restore_move_failed', { error: moveErr === null ? 'not_moved' : errText(moveErr), errors: moveErr instanceof AzuraCastError ? moveErr.detail : undefined })
       }
       throw moveErr
@@ -712,6 +783,7 @@ export async function restoreMedia(ctx: RequestsCtx, payload: Actor & { archiveI
   } else if (media.path === a.originalPath && (!a.uniqueId || media.unique_id === a.uniqueId)) {
     // An earlier attempt moved it back and then died (or lost a reply):
     // continue with the metadata and memberships.
+    await touchArchive(ctx, a.id, 'restoring')
     after = media
   } else {
     throw new OpFailed('archived_path_mismatch', { path: media.path })
@@ -733,7 +805,7 @@ export async function restoreMedia(ctx: RequestsCtx, payload: Actor & { archiveI
   const now = stationIds(after, station)
   if (!snap.playlistIds.every((id) => now.includes(id))) throw new OpFailed('playlists_verify_failed')
   if (!sameMeta(metaOf(after), want)) throw new OpFailed('metadata_verify_failed')
-  await ctx.db.update(archive).set({ status: 'restored', restoredAt: new Date() }).where(and(eq(archive.id, a.id), inArray(archive.status, ['archived', 'restoring'])))
+  await ctx.db.update(archive).set({ status: 'restored', restoredAt: new Date(), updatedAt: sql`now()` }).where(and(eq(archive.id, a.id), inArray(archive.status, ['archived', 'restoring'])))
   await upsertLibrary(ctx.db, after)
   const post = await takeSnapshot(ctx.db, after, station, 'after_restore')
   await audit(ctx.db, { ...actorOf(payload), action: 'media.restore', targetType: 'archive', targetId: a.id, detail: { mediaId: a.mediaId, to: target, playlistIds: snap.playlistIds } })
@@ -750,6 +822,7 @@ export async function restoreMedia(ctx: RequestsCtx, payload: Actor & { archiveI
 export async function setPlaylistsJob(ctx: RequestsCtx, payload: Actor & { mediaId: number; chosen: number[] }) {
   const media = await getFile(ctx, payload.mediaId)
   if (!isRequestTarget(ctx.root, media.path)) throw new OpFailed('target_not_allowed', { path: media.path })
+  await assertNoArchiveOp(ctx, media.id)
   const station = await stationPlaylistSet(ctx.db)
   const assignable = new Set((await getIntList(ctx.db, 'assignable_playlist_ids')).filter((id) => station.has(id)))
   const current = (media.playlists ?? []).map((p) => p.id)
@@ -819,11 +892,17 @@ export async function reverify(ctx: RequestsCtx, payload: ReverifyPayload) {
       { ...payload, ...extra, attempt: attempt + 1 },
       { dedupeKey: `reverify:${snap.id}:${attempt + 1}`, runAfter: new Date(afterScans(now(ctx), n, offset)) },
     )
-  // A newer portal snapshot of this media (a later edit, move, archive,
-  // restore, art or playlist change) supersedes this chain: its own
-  // re-verify checks the newer state, and re-applying this one would
-  // revert that change (or ping-pong with it).
-  const latest = await ctx.db.query.mediaSnapshots.findFirst({ where: eq(mediaSnapshots.mediaId, snap.mediaId), orderBy: desc(mediaSnapshots.id) })
+  // A newer APPLIED portal snapshot of this media (the after_* snapshot of
+  // a later edit, move, archive, restore, art or playlist change that
+  // really applied) supersedes this chain: its own re-verify checks the
+  // newer state, and re-applying this one would revert that change (or
+  // ping-pong with it). The before_* snapshot of an operation that then
+  // failed or was refused never counts: nothing newer applied, so this
+  // chain still checks (and repairs) its own state.
+  const latest = await ctx.db.query.mediaSnapshots.findFirst({
+    where: and(eq(mediaSnapshots.mediaId, snap.mediaId), inArray(mediaSnapshots.reason, [...APPLIED_SNAPSHOT_REASONS])),
+    orderBy: desc(mediaSnapshots.id),
+  })
   const newer = latest && latest.id > snap.id ? latest : null
 
   let media: StationMedia | null
@@ -834,11 +913,15 @@ export async function reverify(ctx: RequestsCtx, payload: ReverifyPayload) {
     media = null
   }
 
+  if (media && newer) {
+    await audit(ctx.db, { action: 'media.reverify_superseded', targetType: 'media', targetId: media.id, detail: { snapshotId: snap.id, by: newer.id, reason: newer.reason } })
+    return done(ctx, payload.requestId)
+  }
+  // An archive or restore of the media in flight owns its state (cleared
+  // memberships, a file on its way to or back from Removed/): wait for it.
+  await assertNoArchiveOp(ctx, payload.mediaId)
+
   if (media) {
-    if (newer) {
-      await audit(ctx.db, { action: 'media.reverify_superseded', targetType: 'media', targetId: media.id, detail: { snapshotId: snap.id, by: newer.id, reason: newer.reason } })
-      return done(ctx, payload.requestId)
-    }
     if (media.path !== snap.path) throw new OpFailed('reverify_path_changed', { expected: snap.path, actual: media.path })
     if (holds(media, snap, station)) return done(ctx, payload.requestId)
     if (attempt >= 2) throw new OpFailed('reverify_mismatch')
@@ -848,8 +931,9 @@ export async function reverify(ctx: RequestsCtx, payload: ReverifyPayload) {
   }
 
   // The id vanished after a scan: recovery (library/recovery.ts, shared
-  // with the ingest re-verify), from the LATEST snapshot of the media (its
-  // path and state are the newest the portal knows). Look for the file at
+  // with the ingest re-verify), from the LATEST APPLIED snapshot of the
+  // media (its path and state are the newest the portal applied; a failed
+  // operation's before_* snapshot never wins). Look for the file at
   // its path (files/list with flushCache; only a scanned media row counts).
   const eff = newer ?? snap
   const found = await findMediaByPath(ctx.azuracast, eff.path)
@@ -880,6 +964,144 @@ export async function reverify(ctx: RequestsCtx, payload: ReverifyPayload) {
   await done(ctx, payload.requestId)
 }
 
+// --------------------------------------------------------- reconciler ---
+
+type ReconcilePayload = Actor & { archiveId: number; manual?: boolean; restoreAfter?: boolean }
+
+// A row the reconciler could not settle is looked at (and alerted) again
+// after this long.
+const RECONCILE_EVERY_MS = 6 * 3600_000
+
+async function staleArchive(ctx: RequestsCtx, id: number): Promise<boolean> {
+  const rows = await ctx.db
+    .select({ id: archive.id })
+    .from(archive)
+    .where(and(eq(archive.id, id), inArray(archive.status, [...ARCHIVE_OP_STATUSES]), sql`${archive.updatedAt} < now() - make_interval(secs => ${ARCHIVE_STALE_MS / 1000})`))
+  return rows.length === 1
+}
+
+// Scheduled (worker/scheduler): 'archiving' / 'restoring' rows untouched for
+// ARCHIVE_STALE_MS that no queued or running job will pick up (the attempt
+// that wrote them failed for good, ran out of attempts, or died with its
+// job) get a reconcile_archive job. The job itself runs in the scan window,
+// never while the queues are paused (a mutating kind), and re-checks all of
+// this before it writes.
+export async function sweepStaleArchiveRows(ctx: RequestsCtx): Promise<number> {
+  const rows = await ctx.db
+    .select()
+    .from(archive)
+    .where(and(inArray(archive.status, [...ARCHIVE_OP_STATUSES]), sql`${archive.updatedAt} < now() - make_interval(secs => ${ARCHIVE_STALE_MS / 1000})`))
+    .orderBy(archive.id)
+    .limit(50)
+  let n = 0
+  for (const a of rows) {
+    if (await liveArchiveJob(ctx.db, a, { includeReconcile: true })) continue
+    await schedule(ctx, 'reconcile_archive', { archiveId: a.id }, { dedupeKey: `reconcile_archive:${a.id}:${Math.floor(now(ctx) / RECONCILE_EVERY_MS)}` })
+    n++
+  }
+  return n
+}
+
+// Settles an 'archiving' / 'restoring' row by where the file actually is:
+//
+//   archiving, file at Removed/<id>/…   the move happened: finish the archive
+//                                       (row 'archived', after_archive
+//                                       snapshot, re-verify; its removal
+//                                       request, even one already failed,
+//                                       is applied)
+//   archiving, file in the library      the archive did not happen: put the
+//                                       snapshot memberships back (merge),
+//                                       close the row 'failed', fail its
+//                                       request if still open
+//   restoring, file at Removed/<id>/…   the restore did not move it: back to
+//                                       'archived' (Restore can be pressed)
+//   restoring, file at the original     finish the restore (metadata,
+//                                       memberships, verify, 'restored')
+//   anything else                       alert (with the paths) and leave it
+//
+// Automatic runs (the sweep) need a stale row; a manager's run (manual)
+// does not. Both skip a row a queued or running archive/restore job will
+// resume. restoreAfter: a manager's Restore of an 'archiving' row: once it
+// is archived, a restore job follows.
+export async function reconcileArchive(ctx: RequestsCtx, payload: ReconcilePayload) {
+  const a = await ctx.db.query.archive.findFirst({ where: eq(archive.id, payload.archiveId) })
+  if (!a) throw new Permanent('archive row missing')
+  const thenRestore = async () => {
+    if (payload.restoreAfter) await schedule(ctx, 'restore', { archiveId: a.id, ...actorOf(payload) })
+  }
+  if (a.status === 'archived') return thenRestore()
+  if (a.status !== 'archiving' && a.status !== 'restoring') return
+  if (await liveArchiveJob(ctx.db, a)) {
+    await audit(ctx.db, { ...actorOf(payload), action: 'archive.reconcile_skipped', targetType: 'archive', targetId: a.id, detail: { reason: 'live_job', status: a.status } })
+    return
+  }
+  if (!payload.manual && !(await staleArchive(ctx, a.id))) return
+  const offset = await mutationWindow(ctx)
+  const station = await stationPlaylistSet(ctx.db)
+  const snap = a.snapshotId ? ((await ctx.db.query.mediaSnapshots.findFirst({ where: eq(mediaSnapshots.id, a.snapshotId) })) ?? null) : null
+  const where = { archiveId: a.id, mediaId: a.mediaId, status: a.status, originalPath: a.originalPath, archivedPath: a.archivedPath }
+  let media: StationMedia
+  try {
+    media = await ctx.azuracast.getFile(a.mediaId)
+  } catch (e) {
+    if (!(e instanceof AzuraCastError && e.code === 'not_found')) throw e
+    await ctx.alert(`archive #${a.id} (${a.status}) needs a human: media id ${a.mediaId} is gone; look for the file at ${a.archivedPath} or ${a.originalPath}`, where)
+    throw new OpFailed('archive_media_missing', where)
+  }
+  const at = { ...where, path: media.path }
+
+  if (a.status === 'archiving') {
+    if (media.path === a.archivedPath) {
+      let req = a.requestId ? ((await ctx.db.query.requests.findFirst({ where: eq(requests.id, a.requestId) })) ?? null) : null
+      if (req?.status === 'failed') {
+        // The attempt failed the request after the file had moved: the
+        // removal did happen, so the request is applied after all.
+        const [re] = await ctx.db
+          .update(requests)
+          .set({ status: 'applying', error: null, updatedAt: new Date() })
+          .where(and(eq(requests.id, req.id), eq(requests.status, 'failed'), eq(requests.kind, 'removal')))
+          .returning()
+        if (re) {
+          await audit(ctx.db, { action: 'request.reopened', targetType: 'request', targetId: re.id, detail: { archiveId: a.id, previousError: req.error } })
+          req = re
+        }
+      }
+      await finishArchive(ctx, req, a, media, snap, station, offset, payload)
+      await ctx.alert(`archive #${a.id} reconciled: the file was already in ${a.archivedPath}; the archive is finished`, at)
+      return thenRestore()
+    }
+    if (media.path === a.originalPath || isRequestTarget(ctx.root, media.path)) {
+      if (!snap) {
+        await ctx.alert(`archive #${a.id} needs a human: no snapshot to put the playlists back from (file at ${media.path})`, at)
+        throw new OpFailed('archive_snapshot_missing', at)
+      }
+      await assertQueuesRunning(ctx.db)
+      if (!(await rollbackArchive(ctx, a, snap, station))) throw new OpFailed('archive_rollback_unverified', at)
+      await audit(ctx.db, { ...actorOf(payload), action: 'media.archive_rolled_back', targetType: 'archive', targetId: a.id, detail: { ...at, snapshotId: snap.id, playlistIds: snap.playlistIds } })
+      if (a.requestId) await failRequest(ctx, a.requestId, 'archive_rolled_back', { archiveId: a.id })
+      await ctx.alert(`archive #${a.id} reconciled: the file never left the library (${media.path}); its playlists are back and the row is closed`, at)
+      return
+    }
+    await ctx.alert(`archive #${a.id} needs a human: the file is at ${media.path}, neither at ${a.originalPath} nor at ${a.archivedPath}`, at)
+    throw new OpFailed('archive_path_unexpected', at)
+  }
+
+  // restoring
+  if (media.path === a.archivedPath) {
+    await ctx.db.update(archive).set({ status: 'archived', updatedAt: sql`now()` }).where(and(eq(archive.id, a.id), eq(archive.status, 'restoring')))
+    await audit(ctx.db, { ...actorOf(payload), action: 'archive.restore_reset', targetType: 'archive', targetId: a.id, detail: at })
+    await ctx.alert(`archive #${a.id} reconciled: the restore never moved the file; it is archived again (Restore can be pressed again)`, at)
+    return thenRestore()
+  }
+  if (media.path === a.originalPath && (!a.uniqueId || media.unique_id === a.uniqueId)) {
+    await restoreMedia(ctx, { archiveId: a.id, ...actorOf(payload) })
+    await ctx.alert(`archive #${a.id} reconciled: the file was already back at ${a.originalPath}; the restore is finished`, at)
+    return
+  }
+  await ctx.alert(`archive #${a.id} needs a human: the file is at ${media.path}, neither at ${a.archivedPath} nor at ${a.originalPath}`, at)
+  throw new OpFailed('restore_path_unexpected', at)
+}
+
 // ---------------------------------------------------------- sweeping ---
 
 // Requests parked on a new-artist approval: resume once the artist is
@@ -900,7 +1122,18 @@ export async function sweepParkedRequests(ctx: RequestsCtx): Promise<number> {
 
 // ------------------------------------------------------------ runner ---
 
-export const REQUEST_JOB_KINDS = new Set<string>(['request_ticket_open', 'request_ticket_post', 'apply_edit', 'apply_art', 'move', 'archive', 'restore', 'set_playlists', 'reverify'])
+export const REQUEST_JOB_KINDS = new Set<string>([
+  'request_ticket_open',
+  'request_ticket_post',
+  'apply_edit',
+  'apply_art',
+  'move',
+  'archive',
+  'restore',
+  'set_playlists',
+  'reverify',
+  'reconcile_archive',
+])
 
 function transient(e: unknown): boolean {
   if (e instanceof OpFailed || e instanceof Permanent) return false
@@ -938,6 +1171,8 @@ export async function runRequestJob(ctx: RequestsCtx, job: JobRow): Promise<void
         return await setPlaylistsJob(ctx, p as Actor & { mediaId: number; chosen: number[] })
       case 'reverify':
         return await reverify(ctx, p as ReverifyPayload)
+      case 'reconcile_archive':
+        return await reconcileArchive(ctx, p as ReconcilePayload)
       default:
         throw new Permanent(`unknown job kind ${job.kind}`)
     }

@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { proposedChanges, RequestForms } from '@/components/requests/RequestForms'
 import { RequestDecision } from '@/components/requests/RequestDecision'
+import { ResolveArchiveButton } from '@/components/requests/ResolveArchiveButton'
 import { stubFetch } from './fetch'
 
 const current = { title: 'Song', artist: 'GRIM', album: 'Night', genre: 'House' }
@@ -49,5 +50,21 @@ describe('P4 request forms (routes guessed in src/lib/api/requests.ts)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm deny' }))
     await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/someone else already decided/i))
     expect(calls[0]!.body).toEqual({ decision: 'deny', reason: 'Tags are right' })
+  })
+
+  it('Resolve on an archive that stopped part way POSTs the reconcile route; a busy row shows a readable reason', async () => {
+    const calls = stubFetch({ 'POST /api/archive/7/reconcile': { status: 202, body: { queued: 'reconcile_archive', archiveId: 7 } } })
+    const { unmount } = render(<ResolveArchiveButton archiveId={7} name="stranded.mp3" status="archiving" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    expect(screen.getByText(/stopped part way through archiving/i)).toBeTruthy()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Resolve' }).at(-1)!)
+    await vi.waitFor(() => expect(calls.filter((c) => c.method === 'POST').map((c) => c.url)).toEqual(['/api/archive/7/reconcile']))
+    unmount()
+    stubFetch({ 'POST /api/archive/8/reconcile': { status: 409, body: { error: 'archive_job_pending' } } })
+    render(<ResolveArchiveButton archiveId={8} name="busy.mp3" status="restoring" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
+    expect(screen.getByText(/stopped part way through restoring/i)).toBeTruthy()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Resolve' }).at(-1)!)
+    await vi.waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/still working on this archive or restore/i))
   })
 })
