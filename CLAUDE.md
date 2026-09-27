@@ -127,7 +127,7 @@ The Caddyfile serves a second virtual host (`{$TICKETS_GG_HOSTNAME:tickets.eupho
 
 ## Stack (locked)
 
-- Astro 6 (static, no SSR) · Tailwind 3 · TypeScript strict
+- Astro 7 (static, no SSR) · Tailwind 4 · TypeScript strict
 - Caddy 2 binds 0.0.0.0:80+443 directly and terminates TLS via Let's Encrypt — no cloudflared, no Cloudflare proxy (in-game CEF iframe compatibility; see Rule 4)
 - pnpm 10 · Node 24
 - Watchtower for auto-deploy on new GHCR images
