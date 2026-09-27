@@ -24,6 +24,9 @@ const AZ_KEY = process.env.MOCK_AZURACAST_KEY ?? 'test-azuracast-key-0000'
 // Category staff sets (INTEGRATION_API v0.12.2): the three reviewer roles.
 const STAFF_ROLE_IDS = (process.env.MOCK_STAFF_ROLE_IDS ?? '1144462744456794153,917525862696489001,1145243342620327947').split(',')
 const OPENAPI = readFileSync(new URL('../fixtures/openapi-min.yml', import.meta.url), 'utf8')
+// The Events station (14) shares storage 2: its playlist ids (live DB,
+// station_playlists.station_id = 14). A station-1 batch never touches them.
+const STATION14_PLAYLISTS = new Set([74, 75, 76, 77, 78])
 
 // ------------------------------------------------------------ helpers ----
 
@@ -72,8 +75,11 @@ function reset() {
       playlists: new Map([
         [2, '1General Rotation'],
         [3, 'Night'],
-        [74, 'Events A (station 14)'],
-        [75, 'Events B (station 14)'],
+        [74, 'Stinger (station 14)'],
+        [75, 'ForeverStinger (station 14)'],
+        [76, 'default (station 14)'],
+        [77, 'Fasion Show (Test) (station 14)'],
+        [78, 'Renfair (station 14)'],
       ]),
       superadmin: false,
       drift: false,
@@ -82,6 +88,7 @@ function reset() {
       artUploads: [],
       nowplaying: null, // P4: {now_playing, playing_next} override
       failNextMove: null, // P4: per-record error string for the next do=move
+      ignoreNextPut: false, // a metadata PUT that answers success but stores nothing
     },
     canary: [],
   }
@@ -345,6 +352,34 @@ function firstMultipartFile(contentType, buf) {
   return null
 }
 
+// AlbumArt::resize + a JPEG encoder: AzuraCast stores a RE-ENCODED copy of
+// uploaded art, not the posted bytes. Simulated for a JPEG whose header can
+// be read (the dimensions survive, the bytes differ: APPn/COM segments are
+// dropped and a COM marker is added). Header-less test bytes, which the real
+// decoder would reject, are kept as posted.
+function reencodeJpeg(b) {
+  if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return b
+  const keep = []
+  let o = 2
+  let sof = false
+  while (o + 4 <= b.length && b[o] === 0xff) {
+    const marker = b[o + 1]
+    const len = b.readUInt16BE(o + 2)
+    if (len < 2 || o + 2 + len > b.length) return b
+    if (marker === 0xda) {
+      if (!sof) return b
+      const com = Buffer.from('mock re-encode', 'latin1')
+      const head = Buffer.from([0xff, 0xd8, 0xff, 0xfe, 0, 0])
+      head.writeUInt16BE(com.length + 2, 4)
+      return Buffer.concat([head, com, ...keep, b.subarray(o)])
+    }
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) sof = true
+    if (!((marker >= 0xe0 && marker <= 0xef) || marker === 0xfe)) keep.push(b.subarray(o, o + 2 + len))
+    o += 2 + len
+  }
+  return b
+}
+
 function azMedia(f) {
   return {
     id: f.id,
@@ -390,7 +425,7 @@ function buildListing(dir) {
   }
   for (const d of state.az.dirs) consider(`${d}/.keep`)
   for (const [path, f] of state.az.files) {
-    if (consider(path) === 'file') entries.push({ path, path_short: path.slice(prefix.length), text: f.title ?? path, type: 'media', timestamp: f.mtime, size: 481165, media: azMedia(f), dir: null, links: {} })
+    if (consider(path) === 'file') entries.push({ path, path_short: path.slice(prefix.length), text: f.title ?? path, type: 'media', timestamp: f.mtime, size: f.size ?? 481165, media: azMedia(f), dir: null, links: {} })
   }
   for (const [path, size] of state.az.unscanned) {
     if (consider(path) === 'file') entries.push({ path, path_short: path.slice(prefix.length), text: 'File Processing', type: 'other', timestamp: Math.floor(Date.now() / 1000), size, media: null, dir: null, links: {} })
@@ -476,6 +511,12 @@ async function handleAzuraCast(req, res, url) {
     if (!f) return send(res, 404, { code: 404, message: 'Record not found' })
     if (req.method === 'GET') return send(res, 200, azMedia(f))
     if (req.method === 'PUT') {
+      if (state.az.ignoreNextPut) {
+        // The failure mode the portal guards against by re-reading the row:
+        // the API reports success, the stored values do not change.
+        state.az.ignoreNextPut = false
+        return send(res, 200, { success: true, message: 'Record updated successfully.', formatted_message: 'Record updated successfully.' })
+      }
       for (const k of ['title', 'artist', 'album', 'genre']) if (typeof body?.[k] === 'string') f[k] = body[k]
       if (Array.isArray(body?.playlists)) f.playlists = body.playlists.map((x) => (typeof x === 'object' ? x.id : x))
       if (typeof body?.path === 'string') {
@@ -499,7 +540,7 @@ async function handleAzuraCast(req, res, url) {
     const part = firstMultipartFile(req.headers['content-type'] ?? '', bodyBuf)
     if (!part) return send(res, 500, { code: 500, message: 'No file uploaded.' })
     state.az.artUploads.push({ mediaId: f.id, field: part.name, filename: part.filename, sha256: createHash('sha256').update(part.data).digest('hex'), size: part.data.length })
-    f.artBytes = part.data
+    f.artBytes = reencodeJpeg(part.data)
     f.art_updated_at = Math.floor(Date.now() / 1000)
     f.mtime = Math.floor(Date.now() / 1000) + 5
     return send(res, 200, { success: true, message: 'Record updated successfully.', formatted_message: 'Record updated successfully.' })
@@ -516,7 +557,8 @@ async function handleAzuraCast(req, res, url) {
       existing.size = size
       return send(res, 200, azMedia(existing))
     }
-    azSeed([{ path, title: 'Portal Test', artist: 'Portal Test', size }])
+    const now = Math.floor(Date.now() / 1000)
+    azSeed([{ path, title: 'Portal Test', artist: 'Portal Test', size, mtime: now, uploaded_at: now }])
     state.az.unscanned.delete(path)
     return send(res, 200, azMedia(state.az.files.get(path)))
   }
@@ -541,7 +583,9 @@ async function handleAzuraCast(req, res, url) {
       if (errors.length === 0) {
         for (const fp of files) {
           const f = state.az.files.get(fp)
-          if (f) f.playlists = [...f.playlists.filter((id) => id >= 70), ...ids] // replace this station's set; other stations' stay
+          // Replaces THIS station's set; station 14's memberships stay, and
+          // ids of station 14 in the request are skipped (findOneBy station).
+          if (f) f.playlists = [...f.playlists.filter((id) => STATION14_PLAYLISTS.has(id)), ...ids.filter((id) => !STATION14_PLAYLISTS.has(id))]
         }
       }
     } else if (body?.do === 'move') {
@@ -624,6 +668,10 @@ async function handleControl(req, res, url) {
   if (p === '/__mock/az/art-uploads') return send(res, 200, state.az.artUploads)
   if (p === '/__mock/az/nowplaying' && req.method === 'POST') {
     state.az.nowplaying = body && Object.keys(body).length ? body : null
+    return send(res, 200, { ok: true })
+  }
+  if (p === '/__mock/az/ignore-next-put' && req.method === 'POST') {
+    state.az.ignoreNextPut = true
     return send(res, 200, { ok: true })
   }
   if (p === '/__mock/az/fail-next-move' && req.method === 'POST') {
