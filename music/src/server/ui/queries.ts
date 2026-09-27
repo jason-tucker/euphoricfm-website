@@ -101,7 +101,7 @@ export async function batchDetail(db: DB, v: Viewer, id: number) {
 
 // ---------------------------------------------------------- review queue --
 
-export type QueueFilters = { q?: string; kind?: 'song' | 'new_artist'; source?: 'upload' | 'soundcloud'; mine?: boolean }
+export type QueueFilters = { q?: string; kind?: 'song' | 'new_artist'; source?: 'upload' | 'soundcloud'; mine?: boolean; batchId?: number }
 
 export async function reviewQueue(db: DB, v: Viewer, f: QueueFilters = {}) {
   if (!isReviewer(v)) throw forbidden()
@@ -109,6 +109,7 @@ export async function reviewQueue(db: DB, v: Viewer, f: QueueFilters = {}) {
   if (f.kind) conds.push(eq(items.kind, f.kind))
   if (f.source) conds.push(eq(items.source, f.source))
   if (f.mine) conds.push(eq(items.ownerUserId, v.userId))
+  if (f.batchId) conds.push(eq(items.batchId, f.batchId))
   if (f.q) {
     const pat = `%${escapeLike(f.q)}%`
     conds.push(or(ilike(items.title, pat), ilike(items.artist, pat), ilike(items.newArtistName, pat), ilike(users.name, pat))!)
