@@ -124,6 +124,7 @@ def fetch_artwork(art: ArtworkUrl, dest: str, opener: Opener, *, max_bytes: int 
                     view = view[os.write(fd, view):]
             if n == 0:
                 return 'artwork_empty'
+            os.fchmod(fd, 0o440)
             ok = True
         finally:
             os.close(fd)
@@ -132,7 +133,6 @@ def fetch_artwork(art: ArtworkUrl, dest: str, opener: Opener, *, max_bytes: int 
                     os.unlink(dest)
                 except OSError:
                     pass
-        os.chmod(dest, 0o440)
         return ArtworkResult(h.hexdigest(), n)
     finally:
         resp.close()

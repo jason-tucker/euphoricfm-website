@@ -157,6 +157,10 @@ def main():
     if slug == 'unsupported':
         print(f'ERROR: Unsupported URL: {url}', file=sys.stderr)
         return 1
+    if slug == 'nosuitable':
+        # the real 2026.8.19 message with --use-extractors soundcloud
+        print(f'ERROR: No suitable extractor found for URL {url}', file=sys.stderr)
+        return 1
     if slug == 'playlist':
         write_info(job, {'_type': 'playlist', 'entries': [], 'extractor': 'soundcloud:set',
                          'extractor_key': 'SoundcloudSet'})
@@ -186,7 +190,7 @@ def main():
         return 0
     if slug == 'symlink':
         write_info(job, info)
-        os.symlink('/etc/passwd', os.path.join(job, 'audio.mp3'))
+        os.symlink(os.path.join(root, 'decoy.txt'), os.path.join(job, 'audio.mp3'))
         return 0
     if slug == 'hardlink':
         write_info(job, info)

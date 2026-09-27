@@ -21,7 +21,9 @@ import uuid
 
 from tests.helpers import STUB
 
-PKG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'fetchsvc')
+import fetchsvc
+
+PKG = os.path.dirname(os.path.abspath(fetchsvc.__file__))   # works from the repo and from site-packages
 ROOT = os.path.dirname(PKG)
 ENV_ATTRS = {'environ', 'environb', 'getenv', 'getenvb', 'putenv', 'unsetenv'}
 BOOT = ('import sys; sys.path.insert(0, %r); from fetchsvc.__main__ import main; sys.exit(main())' % ROOT)

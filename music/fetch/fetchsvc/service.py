@@ -320,7 +320,7 @@ class Service:
         if 'larger than max-filesize' in tail:
             raise FetchError(E.TOO_LARGE, 'yt-dlp max-filesize')
         if outcome.returncode != 0:
-            if 'Unsupported URL' in tail:
+            if 'Unsupported URL' in tail or 'No suitable extractor' in tail:
                 raise FetchError(E.NOT_A_TRACK, 'extractor refused URL')
             raise FetchError(E.EXTRACTOR_FAILED, f'yt-dlp exit {outcome.returncode}: {tail[-600:]}')
 
@@ -371,9 +371,9 @@ class Service:
                     raise FetchError(E.TOO_LARGE, 'audio grew over cap')
                 h.update(b)
             raw_sha = h.hexdigest()
+            os.fchmod(fd, 0o440)  # on the verified fd, never by path
         finally:
             os.close(fd)
-        os.chmod(audio_path, 0o440)
 
         warnings: list[str] = []
         files: dict = {'audio': audio_path}

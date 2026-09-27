@@ -164,6 +164,7 @@ class ErrorPathTests(E2EBase):
     def test_extractor_errors(self):
         self.assertError(SC + 'fail', EXTRACTOR_FAILED)
         self.assertError(SC + 'unsupported', NOT_A_TRACK)
+        self.assertError(SC + 'nosuitable', NOT_A_TRACK)
         self.assertError(SC + 'generic', NOT_A_TRACK)
         self.assertError(SC + 'nodur', EXTRACTOR_FAILED)
         self.assertError(SC + 'noaudio', EXTRACTOR_FAILED)
@@ -177,9 +178,10 @@ class ErrorPathTests(E2EBase):
                 self.assertError(SC + slug, BAD_MEDIA)
 
     def test_symlink_target_untouched(self):
-        before = os.stat('/etc/passwd')
         self.assertError(SC + 'symlink', BAD_MEDIA)
-        self.assertEqual(stat.S_IMODE(os.stat('/etc/passwd').st_mode), stat.S_IMODE(before.st_mode))
+        self.assertEqual(stat.S_IMODE(os.stat(self.env.decoy).st_mode), 0o644)
+        with open(self.env.decoy) as f:
+            self.assertEqual(f.read(), 'decoy')
 
     def test_url_rejected_before_ytdlp(self):
         for url, code in [
@@ -277,7 +279,7 @@ class RequestDocTests(E2EBase):
     def test_symlinked_request_is_not_followed(self):
         import uuid as u
         uid = str(u.uuid4())
-        os.symlink('/etc/passwd', os.path.join(self.env.spool, 'in', f'{uid}.json'))
+        os.symlink(self.env.decoy, os.path.join(self.env.spool, 'in', f'{uid}.json'))
         self.assertTrue(self.env.svc.process_one(uid))
         self.assertEqual(self.env.result(uid)['errorCode'], BAD_REQUEST)
 
@@ -328,7 +330,11 @@ class SweepTests(E2EBase):
         old, fresh = str(u.uuid4()), str(u.uuid4())
         for d in (old, fresh, 'not-a-uuid'):
             os.mkdir(os.path.join(self.env.staging, d))
-        os.symlink('/etc', os.path.join(self.env.staging, str(u.uuid4())))
+        decoy_dir = os.path.join(self.env.root, 'decoy-dir')
+        os.mkdir(decoy_dir)
+        past0 = time.time() - 3 * 86400
+        os.utime(decoy_dir, (past0, past0))
+        os.symlink(decoy_dir, os.path.join(self.env.staging, str(u.uuid4())))
         past = time.time() - 3 * 86400
         os.utime(os.path.join(self.env.staging, old), (past, past))
         os.utime(os.path.join(self.env.staging, 'not-a-uuid'), (past, past))
@@ -337,8 +343,8 @@ class SweepTests(E2EBase):
         self.assertNotIn(old, left)
         self.assertIn(fresh, left)
         self.assertIn('not-a-uuid', left)
-        self.assertEqual(len(left), 3)  # the symlink is left alone (and /etc untouched)
-        self.assertTrue(os.path.isdir('/etc'))
+        self.assertEqual(len(left), 3)  # the symlink is left alone (and its target untouched)
+        self.assertTrue(os.path.isdir(decoy_dir))
 
 
 if __name__ == '__main__':

@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -81,10 +82,7 @@ class DownloadTests(unittest.TestCase):
         self.art = validate_artwork_url('https://i1.sndcdn.com/x.jpg')
 
     def tearDown(self):
-        for n in os.listdir(self.d):
-            os.chmod(os.path.join(self.d, n), 0o600)
-            os.unlink(os.path.join(self.d, n))
-        os.rmdir(self.d)
+        shutil.rmtree(self.d)
 
     def fetch(self, resp=None, exc=None, **kw):
         return fetch_artwork(self.art, self.dest, Opener(resp, exc), **kw)
@@ -112,9 +110,14 @@ class DownloadTests(unittest.TestCase):
                 self.assertFalse(os.path.exists(self.dest))
 
     def test_existing_dest_not_overwritten(self):
-        os.symlink('/etc/passwd', self.dest)
+        decoy = os.path.join(self.d, 'decoy.txt')
+        with open(decoy, 'w') as f:
+            f.write('decoy')
+        os.symlink(decoy, self.dest)
         with self.assertRaises(FileExistsError):
             self.fetch(FakeResp(200, {'Content-Type': 'image/jpeg'}, JPEG))
+        with open(decoy) as f:
+            self.assertEqual(f.read(), 'decoy')
 
 
 if __name__ == '__main__':

@@ -74,6 +74,11 @@ class Env:
             os.makedirs(os.path.join(self.spool, d))
         os.makedirs(self.staging)
         os.makedirs(self.home)
+        # Symlink tests point at this decoy, never at a real system file.
+        self.decoy = os.path.join(self.root, 'decoy.txt')
+        with open(self.decoy, 'w') as f:
+            f.write('decoy')
+        os.chmod(self.decoy, 0o644)
         self.art = FakeArtOpener()
         self.urls = FakeUrlOpener({})
         cfg = Config(spool_dir=self.spool, staging_dir=self.staging, home_dir=self.home,
@@ -85,11 +90,6 @@ class Env:
         self.svc.prepare()
 
     def cleanup(self):
-        for dp, dn, fn in os.walk(self.root):
-            for n in dn + fn:
-                p = os.path.join(dp, n)
-                if not os.path.islink(p):
-                    os.chmod(p, 0o700)
         shutil.rmtree(self.root, ignore_errors=True)
 
     def submit(self, url, uid=None, doc=None, requested_by='117501528641634310'):
