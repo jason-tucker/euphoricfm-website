@@ -127,6 +127,11 @@ const workerSchema = z.object({
     .transform((v) => new URL(v).origin),
   KUMA_PUSH_URL: z.string().url().optional(),
   ALERT_DISCORD_WEBHOOK: z.string().url().optional(),
+  // Optional Kuma push monitor for staging disk use (up < 85 %, down ≥ 85 %).
+  KUMA_DISK_PUSH_URL: z.string().url().optional(),
+  // Optional: a media file under PORTAL_TEST_PREFIX used for the daily
+  // behavioural /files/batch contract check (no-op playlist re-apply).
+  PORTAL_CONTRACT_FIXTURE: z.string().max(1024).optional(),
   SPOOL_PROBE_IN_DIR: z.string().default('/spool/probe/in-worker'),
   SPOOL_PROBE_OUT_DIR: z.string().default('/spool/probe/out'),
   STAGING_FINAL_DIR: z.string().default('/staging/final'),

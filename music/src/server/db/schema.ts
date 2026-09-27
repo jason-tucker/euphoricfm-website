@@ -165,6 +165,9 @@ export const batches = pgTable(
       .references(() => users.id),
     status: batchStatusEnum('status').notNull().default('draft'),
     attestedAt: ts('attested_at'),
+    // Version of the rights statement the submitter attested (UI setting
+    // rights_attestation.version), recorded with attested_at.
+    attestVersion: text('attest_version'),
     submittedAt: ts('submitted_at'),
     ticketId: integer('ticket_id'),
     ticketNumber: integer('ticket_number'),
@@ -366,6 +369,49 @@ export const mediaSnapshots = pgTable(
     takenAt: ts('taken_at').notNull().defaultNow(),
   },
   (t) => [index('media_snapshots_media_idx').on(t.mediaId)],
+)
+
+// Ingest pipeline state, one row per approved song (plan §3.7 "ingest", P3).
+// The worker advances `stage` idempotently; `uploaded_at` drives the serial
+// pacing (≥ ingestSpacingS between uploads, ≤ ingestPerHour per hour).
+export const ingestStageEnum = pgEnum('ingest_stage', [
+  'finalize', // artist gate, then submit `finalize` to the probe
+  'finalizing', // waiting for the probe result
+  'ready', // final file verified; waiting for the scan window + pacing
+  'uploaded', // POST /files done; playlists next
+  'playlists', // playlists set; GET verify + snapshot next
+  'verifying', // waiting for the post-scan re-verify
+  'recovering', // row lost after a scan: polling by path
+  'live',
+  'failed',
+])
+
+export const ingestRuns = pgTable(
+  'ingest_runs',
+  {
+    itemId: integer('item_id')
+      .primaryKey()
+      .references(() => items.id),
+    stage: ingestStageEnum('stage').notNull().default('finalize'),
+    finalizeRequestId: uuid('finalize_request_id'),
+    finalizeRequestedAt: ts('finalize_requested_at'),
+    finalFile: text('final_file'), // <uuid>.mp3 under /staging/final
+    finalRemovedAt: ts('final_removed_at'),
+    playlistIds: integer('playlist_ids').array().notNull().default(sql`'{}'::int[]`),
+    targetPath: text('target_path'),
+    mediaId: integer('media_id'),
+    uniqueId: text('unique_id'),
+    uploadedAt: ts('uploaded_at'),
+    verifyDueAt: ts('verify_due_at'),
+    repairs: integer('repairs').notNull().default(0),
+    recoveryPolls: integer('recovery_polls').notNull().default(0),
+    recoveryStartedAt: ts('recovery_started_at'),
+    recoveries: integer('recoveries').notNull().default(0),
+    lastError: text('last_error'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [index('ingest_runs_uploaded_idx').on(t.uploadedAt), index('ingest_runs_stage_idx').on(t.stage)],
 )
 
 export const archiveStatusEnum = pgEnum('archive_status', ['archived', 'restored', 'failed'])

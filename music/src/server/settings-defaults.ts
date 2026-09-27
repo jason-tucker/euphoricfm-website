@@ -22,6 +22,12 @@ export const DEFAULT_SETTINGS: Record<string, unknown> = {
   // memberships across all stations on the storage (P0d-B (d)), so playlist
   // merges must filter by this set. Must be configured before P4 merges.
   station_playlist_ids: null,
+  // Playlist ids that belong to OTHER stations on storage 2 (the Events
+  // station 14; P0d-B (d) saw 74, 75, 77, 78 on station-1 files). The library
+  // sync records station_playlist_ids = ids seen on Music/Artists/** minus
+  // these, plus the assignable/default ids. Confirm against the DB
+  // (station_playlists.station_id) before removing PORTAL_TEST_PREFIX.
+  foreign_playlist_ids: [74, 75, 77, 78],
   auto_close_days: 7,
   caps: DEFAULT_CAPS,
   nowplaying_shortcode: 'euphoricfm',
