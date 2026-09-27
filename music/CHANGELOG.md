@@ -1,5 +1,18 @@
 # Changelog — EFM Music Portal (`music/`)
 
+## [0.2.1] — 2026-09-27 — v0.2.0 verification fixes
+
+### Web / probe / deploy
+
+#### Security
+- **Album-art uploads cannot exhaust music-web's memory (SEC-1).** `POST /api/uploads/art` now takes an in-flight slot (1 per member, 3 per process; `429 art_upload_in_progress` / `503 art_uploads_busy`) and runs the quota pre-check before reading any body byte; those refusals carry `Connection: close`. The body is read into one buffer of its `Content-Length` (required: `411 content_length_required`; still ≤ 5 MB + 64 KB) and the single multipart file part is parsed in place (`server/art/multipart.ts`) instead of through `Response.formData()` + `File.arrayBuffer()` (about four copies per request before). A body still incomplete after 120 s is `408 body_timeout`, a disconnect ends the read, and the slot is released in `finally`. Worst case about 15 MB of art bodies in flight.
+- **Album-art caps (SEC-2).** Per member per rolling 24 h: 30 uploads and 50 MB (`429 art_daily_quota`); globally 512 MB of processing + ready art (`503 art_storage_full`). Art bytes (processing, and ready JPEGs kept 7 days, charged at the uploaded size) now count toward `maxStagingBytes` for both art and tus admissions, all under the one staging advisory lock; the art row is inserted by that locked admission before the raw file is written. New caps `artUploadsPerUserPerDay`, `artBytesPerUserPerDay`, `maxArtBytes` (admins may lower them; optional in the admin schema so older saved caps stay valid).
+- **One metadata character rule (SEC-3).** `PATCH /api/items/:id` uses the edit-request rule (`requests/common.ts` `metaText`: NFC, trimmed, length counted after NFC, no `\p{Cc}` incl. `\n`/`\t`, no `\p{Cf}`, no U+2028/U+2029). A newline or tab accepted here used to fail finalize after approval (`bad_finalize_request`), and bidi / zero-width characters reached the on-air ID3. The probe's pre-fill (`probe/tags.ts` `clipTag`) turns controls and separators into a space, drops `\p{Cf}`, applies NFC and never cuts a surrogate pair, so an untouched pre-fill always finalizes.
+
+#### Deploy
+- **`MUSIC_APP_DB_PASSWORD` must be URL-safe (F1):** 24–128 characters of `[A-Za-z0-9_.-]`; `/`, `+` and `=` (base64) are refused because the same value goes into `DATABASE_URL`. Generate it with `openssl rand -hex 24`. **Upgrade note:** a deployment whose password contains `+` or `=` (which the URL tolerated) must rotate it in `migrate.env`, `web.env` and `worker.env` before this migrate step runs.
+- **First boot cannot race initdb (F2):** the `music-db` healthcheck uses TCP (`pg_isready -h 127.0.0.1`), which the entrypoint's socket-only initdb server does not answer, and `music-migrate` retries its first connect for up to 60 s on "not reachable / starting up" errors only (a bad password or SQL error still fails at once).
+
 ## [0.2.0] — 2026-09-27 — Integrated portal: P3 ingest, P4 requests, UI, album art
 
 One deployable build: the P2 foundation (0.1.1) with P3 (`feat/music-ingest`), P4 (`feat/music-requests`) and the UI (`feat/music-ui`) merged. P5 (SoundCloud) is not included. Where the branches overlapped, the foundation's version was kept.
