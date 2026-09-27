@@ -10,9 +10,10 @@
 #        runs from different worktrees (project, networks, test image tag).
 set -eu
 cd "$(dirname "$0")/.."
-export MUSIC_TAG=local-test
 export MUSIC_DATA_DIR=./test/.out/data
 export MUSIC_TEST_PROJECT="${MUSIC_TEST_PROJECT:-efm-music-test}"
+# CI tags the images built under the default project (…:<target>-local-test).
+if [ "$MUSIC_TEST_PROJECT" = efm-music-test ]; then export MUSIC_TAG=local-test; else export MUSIC_TAG="local-test-$MUSIC_TEST_PROJECT"; fi
 DC="${DOCKER_COMPOSE:-docker compose} -p $MUSIC_TEST_PROJECT -f compose.yml -f test/compose.test.yml"
 
 cleanup() {

@@ -63,6 +63,9 @@ services:
   music-web:
     build: { context: ., target: web }
     env_file: !reset []
+    # Tests reach music-web:3000 over the network; no host port, so parallel
+    # stacks (MUSIC_TEST_PROJECT) do not collide on 127.0.0.1:6096.
+    ports: !reset []
     environment: *web-env
     depends_on:
       mocks:
