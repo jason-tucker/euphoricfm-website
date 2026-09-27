@@ -455,9 +455,29 @@ export class AzuraCastClient {
     await this.batch(body, allowedIds)
   }
 
+  // AzuraCast's BatchAction::doMove does NOT check the destination: it
+  // rename()s over an occupied path (Flysystem local adapter), and it silently
+  // skips a source that has no DB record (success:true, errors:[]). So the
+  // wrapper is the barrier (plan §3.5 "move, archive and restore fail on any
+  // collision"):
+  //   1. validate the batch body (patterns, prefix) before any I/O;
+  //   2. list the source dir (flushCache=true): the source must be an exact
+  //      media entry with an id;
+  //   3. list the destination dir (flushCache=true): NO entry of any type may
+  //      sit at <directory>/<basename>;
+  //   4. move, then GET the id and require the exact new path.
+  // Callers run this inside the scan-safe window to keep 2–4 close together.
   async moveFile(filePath: string, directory: string): Promise<void> {
     const body = { do: 'move' as const, files: [filePath], dirs: [], currentDirectory: dirname(filePath), directory }
+    await this.validate('PUT', this.sidPath('/files/batch'), { body })
+    const dest = `${directory}/${basename(filePath)}`
+    const src = (await this.listDirectory(dirname(filePath))).find((e) => e.path === filePath)
+    const mediaId = src?.media?.id
+    if (!src || !mediaId) throw new AzuraCastError('move_source_missing', { path: filePath })
+    if (await this.pathTaken(directory, dest)) throw new AzuraCastError('refused_move_collision', { path: dest })
     await this.batch(body)
+    const moved = await this.getFile(mediaId)
+    if (moved.path !== dest) throw new AzuraCastError('move_verify_failed', { expected: dest, actual: moved.path })
   }
 
   private async batch(body: Record<string, unknown>, allowedPlaylistIds?: ReadonlySet<number>): Promise<void> {

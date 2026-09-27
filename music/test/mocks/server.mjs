@@ -75,6 +75,8 @@ function reset() {
       ]),
       superadmin: false,
       drift: false,
+      batchErrorsNext: [],
+      overwrites: [],
     },
     canary: [],
   }
@@ -449,7 +451,13 @@ async function handleAzuraCast(req, res, url) {
     return send(res, 200, azMedia(state.az.files.get(path)))
   }
   if (req.method === 'PUT' && rest === '/files/batch') {
-    const errors = []
+    // Mirrors upstream BatchAction (checked against the deployed 0.21.0 source
+    // and upstream main): both actions iterate ONLY the DB records whose path
+    // is in files[], so a path with no record is skipped silently (no error).
+    // doMove has NO destination check: rename() replaces an occupied target.
+    // errors[] is populated only by per-record exceptions, which the control
+    // API can inject (/__mock/az/batch-errors-next).
+    const errors = state.az.batchErrorsNext.splice(0)
     const files = Array.isArray(body?.files) ? body.files : []
     if (body?.do === 'playlist') {
       const ids = []
@@ -460,23 +468,23 @@ async function handleAzuraCast(req, res, url) {
           ids.push(id)
         } else ids.push(Number(x))
       }
-      for (const fp of files) {
-        const f = state.az.files.get(fp)
-        if (!f) errors.push(`${fp}: File not found.`)
-        else f.playlists = [...f.playlists.filter((id) => id >= 70), ...ids] // replace this station's set; other stations' stay
+      if (errors.length === 0) {
+        for (const fp of files) {
+          const f = state.az.files.get(fp)
+          if (f) f.playlists = [...f.playlists.filter((id) => id >= 70), ...ids] // replace this station's set; other stations' stay
+        }
       }
     } else if (body?.do === 'move') {
-      for (const fp of files) {
+      for (const fp of errors.length === 0 ? files : []) {
         const f = state.az.files.get(fp)
+        if (!f) continue // no DB record: skipped silently, like upstream
         const dest = `${body.directory}/${fp.split('/').pop()}`
-        if (!f) errors.push(`${fp}: File not found.`)
-        else if (state.az.files.has(dest)) errors.push(`${fp}: Destination already exists.`)
-        else {
-          state.az.files.delete(fp)
-          f.path = dest
-          state.az.files.set(dest, f)
-          state.az.dirs.add(dirOf(fp)) // the emptied source folder stays
-        }
+        const victim = state.az.files.get(dest)
+        if (victim) state.az.overwrites.push({ dest, lostId: victim.id, byId: f.id })
+        state.az.files.delete(fp)
+        f.path = dest
+        state.az.files.set(dest, f) // silently replaces whatever was there
+        state.az.dirs.add(dirOf(fp)) // the emptied source folder stays
       }
     } else if (body?.do === 'delete') {
       for (const fp of files) state.az.files.delete(fp)
@@ -527,6 +535,11 @@ async function handleControl(req, res, url) {
     Object.assign(state.az, { superadmin: Boolean(body.superadmin), drift: Boolean(body.drift) })
     return send(res, 200, { ok: true })
   }
+  if (p === '/__mock/az/batch-errors-next' && req.method === 'POST') {
+    state.az.batchErrorsNext.push(...(body.errors ?? []))
+    return send(res, 200, { ok: true })
+  }
+  if (p === '/__mock/az/overwrites') return send(res, 200, state.az.overwrites)
   if (p === '/__mock/az/files') return send(res, 200, [...state.az.files.values()].map(azMedia))
   if (p === '/__mock/canary/hits') return send(res, 200, state.canary)
   return send(res, 404, { error: 'unknown control path' })

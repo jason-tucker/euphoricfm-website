@@ -152,6 +152,22 @@ describe('AzuraCast wrapper refusals (no request leaves the process)', () => {
     expect(calls).toHaveLength(0)
   })
 
+  it('move: a batch "success" whose GET shows another path is a failure', async () => {
+    const calls: string[] = []
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push(`${init.method} ${url}`)
+      if (url.includes('/files/list') && url.includes('currentDirectory=Music%2FArtists%2FA&')) {
+        return new Response(JSON.stringify([{ path: 'Music/Artists/A/x.mp3', type: 'media', media: { id: 9, unique_id: 'u', path: 'Music/Artists/A/x.mp3' } }]), { status: 200 })
+      }
+      if (url.includes('/files/list')) return new Response('[]', { status: 200 })
+      if (url.endsWith('/file/9')) return new Response(JSON.stringify({ id: 9, unique_id: 'u', path: 'Music/Artists/A/x.mp3' }), { status: 200 })
+      return new Response(JSON.stringify({ success: true, errors: [] }), { status: 200 })
+    }) as unknown as typeof fetch
+    const c = new AzuraCastClient({ baseUrl: 'https://az.invalid', apiKey: 'k'.repeat(20), profile: resolveProfile(PROD_ENV), canaryStationId: 7, fetchImpl, env: PROD_ENV })
+    await refused(c.moveFile('Music/Artists/A/x.mp3', 'Music/Artists/B'), 'move_verify_failed')
+    expect(calls.filter((x) => x.startsWith('PUT'))).toHaveLength(1)
+  })
+
   it('playlists must be integer ids from the allowed set ("new" would create one)', async () => {
     const { c, calls } = fakeClient(PROD_ENV)
     await refused(c.setPlaylists('Music/Artists/A/x.mp3', [3], new Set([2])), 'refused_playlist_id')
@@ -253,7 +269,47 @@ describe.skipIf(!MOCKS())('AzuraCast wrapper against the P0d-B mock', () => {
 
   it('batch errors arrive with HTTP 200 and are treated as failure', async () => {
     const c = client()
-    await expect(c.moveFile('Portal-Test/Music/Artists/Nope/missing.mp3', 'Portal-Test/Removed/9')).rejects.toMatchObject({ code: 'batch_errors' })
+    const src = `Portal-Test/Music/Artists/Err${Date.now()}/x.mp3`
+    await control('/__mock/az/seed', { files: [{ path: src }] })
+    await control('/__mock/az/batch-errors-next', { errors: [`${src}: simulated`] })
+    await expect(c.setPlaylists(src, [2], new Set([2]))).rejects.toMatchObject({ code: 'batch_errors' })
+  })
+
+  it('move: a missing source is refused BEFORE the batch (upstream would report success)', async () => {
+    const c = client()
+    const before = ((await control('/__mock/az/calls')) as { path: string }[]).length
+    await expect(c.moveFile(`Portal-Test/Music/Artists/Nope${Date.now()}/missing.mp3`, 'Portal-Test/Removed/9')).rejects.toMatchObject({ code: 'move_source_missing' })
+    const calls = ((await control('/__mock/az/calls')) as { path: string }[]).slice(before)
+    expect(calls.some((x) => x.path.endsWith('/files/batch'))).toBe(false)
+    // and the mock really does mirror upstream: a raw batch on it "succeeds"
+    const r = await fetch(`${process.env.MOCKS_AZURACAST}/api/station/1/files/batch`, {
+      method: 'PUT',
+      headers: { 'X-API-Key': process.env.AZURACAST_API_KEY!, 'content-type': 'application/json' },
+      body: JSON.stringify({ do: 'move', files: ['Portal-Test/Music/Artists/Nope/missing.mp3'], currentDirectory: 'Portal-Test/Music/Artists/Nope', directory: 'Portal-Test/Removed/9' }),
+    })
+    expect(await r.json()).toMatchObject({ success: true, errors: [] })
+  })
+
+  it('move: an occupied destination (media or unscanned) is refused and nothing is overwritten', async () => {
+    const c = client()
+    const t = Date.now()
+    const a = `Portal-Test/Music/Artists/A${t}/Song.mp3`
+    const bDir = `Portal-Test/Music/Artists/B${t}`
+    await control('/__mock/az/seed', { files: [{ path: a }, { path: `${bDir}/Song.mp3` }] })
+    const before = ((await control('/__mock/az/calls')) as { path: string }[]).length
+    await expect(c.moveFile(a, bDir)).rejects.toMatchObject({ code: 'refused_move_collision' })
+    const cDir = `Portal-Test/Music/Artists/C${t}`
+    await control('/__mock/az/unscanned', { path: `${cDir}/Song.mp3` })
+    await expect(c.moveFile(a, cDir)).rejects.toMatchObject({ code: 'refused_move_collision' })
+    const calls = ((await control('/__mock/az/calls')) as { path: string; query: Record<string, string> }[]).slice(before)
+    expect(calls.some((x) => x.path.endsWith('/files/batch'))).toBe(false)
+    expect(calls.filter((x) => x.path.endsWith('/files/list')).every((x) => x.query.flushCache === 'true')).toBe(true)
+    expect(((await control('/__mock/az/overwrites')) as { dest: string }[]).filter((o) => o.dest.includes(String(t)))).toEqual([])
+    // A free destination moves, and the new path is verified by id.
+    const dDir = `Portal-Test/Music/Artists/D${t}`
+    await c.moveFile(a, dDir)
+    const files = (await control('/__mock/az/files')) as { path: string }[]
+    expect(files.some((f) => f.path === `${dDir}/Song.mp3`)).toBe(true)
   })
 
   it('move and playlist replace on seeded files; metadata PUT resolves the id first', async () => {
