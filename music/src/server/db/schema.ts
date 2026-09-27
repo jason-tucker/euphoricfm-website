@@ -449,7 +449,13 @@ export const ingestRuns = pgTable(
     finalFile: text('final_file'), // <uuid>.mp3 under /staging/final
     finalRemovedAt: ts('final_removed_at'),
     playlistIds: integer('playlist_ids').array().notNull().default(sql`'{}'::int[]`),
+    // Reserved right before the POST (after the window and pause checks),
+    // together with upload_attempted_at (DB clock). A retry adopts the media
+    // row at this path only when it is provably this run's upload
+    // (pipeline.ts ownUpload). While the run is active no other run may
+    // reserve the same path (partial unique index below).
     targetPath: text('target_path'),
+    uploadAttemptedAt: ts('upload_attempted_at'),
     mediaId: integer('media_id'),
     uniqueId: text('unique_id'),
     uploadedAt: ts('uploaded_at'),
@@ -462,10 +468,20 @@ export const ingestRuns = pgTable(
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
   },
-  (t) => [index('ingest_runs_uploaded_idx').on(t.uploadedAt), index('ingest_runs_stage_idx').on(t.stage)],
+  (t) => [
+    index('ingest_runs_uploaded_idx').on(t.uploadedAt),
+    index('ingest_runs_stage_idx').on(t.stage),
+    uniqueIndex('ingest_runs_target_path_active_uq')
+      .on(t.targetPath)
+      .where(sql`${t.targetPath} IS NOT NULL AND ${t.stage} NOT IN ('live', 'failed')`),
+  ],
 )
 
-export const archiveStatusEnum = pgEnum('archive_status', ['archived', 'restored', 'failed'])
+// 'archiving' is written (with the before_archive snapshot) BEFORE the first
+// AzuraCast write and 'restoring' before the restore move, so a re-run after
+// a crash or a lost response resumes from the recorded state instead of
+// snapshotting a half-done one (requests/jobs.ts archiveMedia/restoreMedia).
+export const archiveStatusEnum = pgEnum('archive_status', ['archiving', 'archived', 'restoring', 'restored', 'failed'])
 
 export const archive = pgTable(
   'archive',
@@ -481,7 +497,13 @@ export const archive = pgTable(
     archivedAt: ts('archived_at').notNull().defaultNow(),
     restoredAt: ts('restored_at'),
   },
-  (t) => [index('archive_media_idx').on(t.mediaId)],
+  (t) => [
+    index('archive_media_idx').on(t.mediaId),
+    // At most one open (archiving / archived / restoring) row per media id.
+    uniqueIndex('archive_media_open_uq')
+      .on(t.mediaId)
+      .where(sql`${t.status} NOT IN ('restored', 'failed')`),
+  ],
 )
 
 export const jobStatusEnum = pgEnum('job_status', ['queued', 'running', 'done', 'failed', 'dead'])
