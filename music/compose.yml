@@ -13,12 +13,16 @@
 #                    discord.com for OAuth. Created by the main session at
 #                    P1-net/Deploy-1: docker network create --subnet 172.31.250.0/24 efm-music-hooks
 #   efm-public-net   EXTERNAL (existing), worker only: → tickets-web:3000/api/v1/*
-#   worker-egress    worker only: egress to euphoric.fm (AzuraCast), Kuma, Discord alerts
+#   worker-egress    worker only, FIXED subnet 172.31.252.0/24 (bridge, not
+#                    internal): egress to euphoric.fm (AzuraCast), Kuma,
+#                    Discord alerts
 #   probe            network_mode none
 #
-# DOCKER-USER egress rules (NOT applied by this file; P0b/Deploy-1 host work,
-# documented in README.md): drop RFC1918 / 169.254.0.0/16 / 100.64.0.0/10
-# from worker-egress except the tickets path, and from fetch-egress (P5).
+# DOCKER-USER egress rules are NOT applied by this repo: on botvps the
+# persistent systemd unit efm-music-egress.service drops RFC1918 /
+# 169.254.0.0/16 / 100.64.0.0/10 from 172.31.252.0/24 (worker-egress) and
+# 172.31.251.0/24 (P5 fetch-egress). That is why the subnet is pinned here:
+# change it only together with that unit (README.md).
 #
 # Secrets: one env_file per service, mode 600, owned by botuser; templates in
 # ./env/*.env.example. The probe gets no env_file at all.
@@ -220,7 +224,12 @@ services:
 networks:
   music-int:
     internal: true
-  worker-egress: {}
+  # The subnet is what efm-music-egress.service on botvps matches (see top).
+  worker-egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.252.0/24
   efm-public-net:
     external: true
   efm-music-hooks:

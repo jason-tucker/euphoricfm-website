@@ -124,6 +124,11 @@ services:
       - worker-egress
 
 networks:
+  # The harness must NOT take the production worker-egress subnet
+  # (172.31.252.0/24, pinned in compose.yml for botvps's egress guard):
+  # Docker picks a free one, so parallel projects never overlap.
+  worker-egress: !override
+    driver: bridge
   efm-public-net: !override
     name: ${MUSIC_TEST_PROJECT:-efm-music-test}-public
   efm-music-hooks: !override

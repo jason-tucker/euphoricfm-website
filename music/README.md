@@ -96,22 +96,13 @@ docker compose -p efm-music up -d
 
   `efm-public-net` already exists.
 
-### DOCKER-USER egress rules (documented only; not applied by this repo)
+### DOCKER-USER egress rules (applied on botvps by `efm-music-egress.service`, not by this repo)
 
-Apply these in P0b/Deploy-1 on the host, after pinning the `worker-egress` subnet (give it `ipam` in `compose.yml`, or read it from `docker network inspect efm-music_worker-egress`).
+`compose.yml` pins `worker-egress` to **172.31.252.0/24** (a plain bridge, not internal). On botvps the persistent systemd unit **`efm-music-egress.service`** installs the DOCKER-USER guard for that fixed subnet, and for **172.31.251.0/24** (`fetch-egress`, P5): traffic from those subnets to RFC1918 (10/8, 172.16/12, 192.168/16), 169.254.0.0/16 (cloud metadata) and 100.64.0.0/10 (CGNAT / Tailscale) is dropped, with established return traffic allowed first. This repo does not apply or persist any iptables rule.
 
-```sh
-W=<worker-egress subnet>
-iptables -I DOCKER-USER -s "$W" -d 10.0.0.0/8      -j DROP
-iptables -I DOCKER-USER -s "$W" -d 172.16.0.0/12   -j DROP
-iptables -I DOCKER-USER -s "$W" -d 192.168.0.0/16  -j DROP
-iptables -I DOCKER-USER -s "$W" -d 169.254.0.0/16  -j DROP   # cloud metadata
-iptables -I DOCKER-USER -s "$W" -d 100.64.0.0/10   -j DROP   # CGNAT / Tailscale
-# allow established return traffic before the drops:
-iptables -I DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-```
-
-`music-fetch` (P5) gets the same rules on its own `fetch-egress` network. The worker reaches tickets-web over `efm-public-net`, whose traffic stays on its own bridge and is not affected. Persist the rules the way the host already does, and record them in the vault.
+- Change the `worker-egress` subnet only together with that unit; otherwise the worker runs without the guard.
+- The worker reaches tickets-web over `efm-public-net`, whose traffic stays on its own bridge and is not affected.
+- The test harness (`test/compose.test.yml`) overrides `worker-egress` without a fixed subnet, so a test stack never takes the production range.
 
 ## Tests
 
