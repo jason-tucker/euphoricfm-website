@@ -26,9 +26,13 @@ export const DIRS = {
   spool: '/spool/probe',
   uploads: '/staging/uploads',
   final: '/staging/final',
+  art: '/staging/art',
   work: '/staging/work',
   mmChild: new URL('./mm-child.mjs', import.meta.url).pathname,
 }
+
+// `art` is optional so callers (tests) that predate custom art still fit.
+type ProbeDirs = Omit<typeof DIRS, 'art'> & { art?: string }
 
 const INBOXES: Inbox[] = ['in-web', 'in-worker']
 
@@ -36,7 +40,7 @@ function fail(id: string, inbox: Inbox, type: string, error: string): SpoolResul
   return { v: 1, id, source: inbox, type: type.slice(0, 32), ok: false, error }
 }
 
-export async function handleClaimed(inbox: Inbox, id: string, claimedPath: string, dirs = DIRS): Promise<SpoolResult> {
+export async function handleClaimed(inbox: Inbox, id: string, claimedPath: string, dirs: ProbeDirs = DIRS): Promise<SpoolResult> {
   let text: string | null
   try {
     text = await readSmallFileNoFollow(claimedPath)
@@ -59,7 +63,7 @@ export async function handleClaimed(inbox: Inbox, id: string, claimedPath: strin
     case 'probe':
       return runProbe(req, { uploads: dirs.uploads, work: dirs.work, mmChild: dirs.mmChild })
     case 'finalize':
-      return runFinalize(req, { uploads: dirs.uploads, work: dirs.work, final: dirs.final })
+      return runFinalize(req, { uploads: dirs.uploads, work: dirs.work, final: dirs.final, art: dirs.art })
     case 'cleanup_final': {
       // unlink removes a symlink itself, never its target; the name is
       // pattern-checked by the schema (no separators, no dots but .mp3).
@@ -77,7 +81,7 @@ export async function handleClaimed(inbox: Inbox, id: string, claimedPath: strin
   }
 }
 
-export async function processOne(inbox: Inbox, id: string, dirs = DIRS): Promise<boolean> {
+export async function processOne(inbox: Inbox, id: string, dirs: ProbeDirs = DIRS): Promise<boolean> {
   const claimedDir = join(dirs.spool, 'claimed')
   const claimed = join(claimedDir, `${inbox}-${id}.json`)
   try {

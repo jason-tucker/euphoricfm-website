@@ -46,6 +46,17 @@ export const probeRequest = z
   })
   .strict()
 
+// Custom album art (art contract 2026-09-27): the probe's re-encoded JPEG
+// for art_uploads.id lives at /staging/art/<artId>/<ART_JPEG_FILE>. The
+// request names only the id; the probe builds the path itself.
+// ASSUMED name — align with the foundation's standalone-cover output.
+export const ART_JPEG_FILE = 'cover.jpg'
+
+export const finalizeCover = z.union([
+  z.object({ file: z.string().regex(COVER_FILE_RE), sha256: z.string().regex(SHA256_RE) }).strict(), // embedded (probe-time) cover
+  z.object({ artId: z.string().regex(UUID_RE), sha256: z.string().regex(SHA256_RE) }).strict(), // custom art upload
+])
+
 export const finalizeRequest = z
   .object({
     v: z.literal(1),
@@ -54,7 +65,7 @@ export const finalizeRequest = z
     upload: z.string().regex(UPLOAD_ID_RE),
     approvedSha256: z.string().regex(SHA256_RE),
     tags: z.object({ title: tagString, artist: tagString, album: tagString, genre: tagString }).strict(),
-    cover: z.object({ file: z.string().regex(COVER_FILE_RE), sha256: z.string().regex(SHA256_RE) }).strict().nullable(),
+    cover: finalizeCover.nullable(),
   })
   .strict()
 

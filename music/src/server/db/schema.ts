@@ -147,6 +147,10 @@ export const libraryCache = pgTable(
     playlistIds: integer('playlist_ids').array().notNull().default(sql`'{}'::int[]`),
     lengthS: integer('length_s'),
     mtime: integer('mtime'),
+    // AzuraCast `art` from /files, else /api/station/<shortcode>/art/<unique_id>
+    // (art contract). The foundation branch adds the same column; the P3
+    // migration uses ADD COLUMN IF NOT EXISTS so either order applies.
+    artUrl: text('art_url'),
     refreshedAt: ts('refreshed_at').notNull().defaultNow(),
   },
   (t) => [uniqueIndex('library_cache_path_uq').on(t.path)],
@@ -218,6 +222,10 @@ export const items = pgTable(
     finalSha256: text('final_sha256'),
     coverFile: text('cover_file'), // cover-<uuid>.jpg under /staging/uploads, written by probe
     coverSha256: text('cover_sha256'),
+    // Custom album art (art_uploads.id, art contract 2026-09-27). The
+    // effective cover is custom, else the embedded one above. The FK to
+    // art_uploads is added where that table is declared (foundation branch).
+    customArtId: uuid('custom_art_id'),
     durationS: integer('duration_s'),
     bitrate: integer('bitrate'),
     prefill: jsonb('prefill'),

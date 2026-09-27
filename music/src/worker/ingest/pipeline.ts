@@ -28,10 +28,11 @@ import { audit } from '../../server/audit'
 import { AzuraCastError, type StationMedia } from '../../server/azuracast/client'
 import { ingestRuns, items, mediaSnapshots } from '../../server/db/schema'
 import { enqueue } from '../../server/jobs'
+import { loadArt } from '../../server/library/art'
 import { resolveArtistGate } from '../../server/library/artists'
 import { PathError, resolveIngestPath } from '../../server/paths/builder'
 import { getSetting } from '../../server/settings'
-import { FINAL_FILE_RE, readSpoolResult, writeSpoolRequest } from '../../server/spool/protocol'
+import { FINAL_FILE_RE, readSpoolResult, writeSpoolRequest, type FinalizeRequest } from '../../server/spool/protocol'
 import { Defer, Permanent } from '../handlers'
 import { findMediaByPath, reapplySnapshot, RECOVERY_MIN_MS, RECOVERY_MIN_POLLS, remapMediaId } from '../library/recovery'
 import { ingestPlaylistIds, stationPlaylistIds } from '../library/playlists'
@@ -63,6 +64,12 @@ async function setRun(ctx: P3Ctx, id: number, patch: Partial<typeof ingestRuns.$
 
 async function queuesPaused(ctx: P3Ctx): Promise<boolean> {
   return Boolean(await getSetting(ctx.db, 'queues_paused'))
+}
+
+// Re-checked immediately before EVERY AzuraCast write (contract drift can
+// pause the queues while a job is mid-flight).
+async function assertNotPaused(ctx: P3Ctx): Promise<void> {
+  if (await queuesPaused(ctx)) throw new Defer(600, 'queues paused')
 }
 
 // The window never opens if offset + 20 s > 150 s: alert (stop condition)
@@ -144,6 +151,16 @@ async function stageFinalize(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
   if (gate.kind === 'fail') throw new IngestFailure(gate.reason)
   if (!it.approvedSha256 || !it.uploadId) throw new IngestFailure('not_finalizable')
   if (!it.title?.trim() || !it.artist?.trim()) throw new IngestFailure('metadata_missing')
+  // The effective cover: custom art (a ready, probe-made JPEG) else the
+  // probe-time embedded cover; the probe re-verifies its sha either way.
+  let cover: FinalizeRequest['cover'] = null
+  if (it.customArtId) {
+    const art = await loadArt(ctx.db, it.customArtId)
+    if (!art || art.status !== 'ready' || !art.jpegSha256) throw new IngestFailure('custom_art_unavailable')
+    cover = { artId: art.id, sha256: art.jpegSha256 }
+  } else if (it.coverFile && it.coverSha256) {
+    cover = { file: it.coverFile, sha256: it.coverSha256 }
+  }
   const id = randomUUID()
   try {
     await writeSpoolRequest(ctx.spoolInDir, {
@@ -153,7 +170,7 @@ async function stageFinalize(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
       upload: it.uploadId,
       approvedSha256: it.approvedSha256,
       tags: { title: it.title, artist: it.artist, album: it.album ?? '', genre: it.genre ?? '' },
-      cover: it.coverFile && it.coverSha256 ? { file: it.coverFile, sha256: it.coverSha256 } : null,
+      cover,
     })
   } catch (e) {
     if (e instanceof Error && e.name === 'ZodError') throw new IngestFailure('bad_finalize_request')
@@ -220,6 +237,7 @@ async function stageReady(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
   const w = scanWindow(ctx.now(), offset)
   if (!w.open) throw new Defer(Math.ceil(w.waitMs / 1000), 'window closed before upload')
   let media: StationMedia
+  await assertNotPaused(ctx)
   try {
     media = await ctx.azuracast.uploadFile(path, bytes, it.finalSha256)
   } catch (e) {
@@ -237,7 +255,10 @@ async function recordUpload(ctx: P3Ctx, it: Item, path: string, media: StationMe
 }
 
 async function stageUploaded(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
-  if (run.playlistIds.length > 0) await ctx.azuracast.setPlaylists(run.targetPath!, run.playlistIds, new Set(run.playlistIds))
+  if (run.playlistIds.length > 0) {
+    await assertNotPaused(ctx)
+    await ctx.azuracast.setPlaylists(run.targetPath!, run.playlistIds, new Set(run.playlistIds))
+  }
   await setRun(ctx, it.id, { stage: 'playlists' })
 }
 
@@ -347,6 +368,7 @@ export async function runIngestVerify(ctx: P3Ctx, payload: { itemId: number }): 
       if (run.repairs >= MAX_REPAIRS) return failIngest(ctx, itemId, 'playlists_lost', { missing })
       const stationIds = await stationPlaylistIds(ctx.db)
       const ids = snap.playlistIds.filter((id) => stationIds.has(id))
+      await assertNotPaused(ctx)
       await ctx.azuracast.setPlaylists(run.targetPath!, ids, new Set(ids))
       await setRun(ctx, itemId, { repairs: run.repairs + 1, verifyDueAt: next(2) })
       await audit(ctx.db, { action: 'item.ingest.playlists_repaired', targetType: 'item', targetId: itemId, detail: { missing } })
@@ -361,6 +383,7 @@ export async function runIngestVerify(ctx: P3Ctx, payload: { itemId: number }): 
   const m = await findMediaByPath(ctx.azuracast, run.targetPath!)
   if (m) {
     const stationIds = await stationPlaylistIds(ctx.db)
+    await assertNotPaused(ctx)
     await reapplySnapshot(ctx.azuracast, m.id, run.targetPath!, snap, stationIds)
     await remapMediaId(ctx.db, run.mediaId!, m.id, m.unique_id)
     const recoveries = run.recoveries + 1

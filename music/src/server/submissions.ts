@@ -12,6 +12,7 @@ import type { DB } from './db/client'
 import { batches, comments, items, uploads } from './db/schema'
 import { badRequest, conflict, forbidden, HttpError, notFound } from './http/errors'
 import { enqueue } from './jobs'
+import { loadArt } from './library/art'
 import { afterApprove, ensureNewArtistItems } from './library/artists'
 import { signMediaUrl } from './media/signing'
 import { getIntList, getSetting } from './settings'
@@ -54,6 +55,7 @@ function itemView(v: Viewer, it: typeof items.$inferSelect) {
     probeError: it.probeError,
     denyReason: it.denyReason,
     hasCover: Boolean(it.coverFile),
+    customArtId: it.customArtId,
     playlistIds: it.playlistIds,
     ...(isReviewer(v) ? { selfApproved: it.selfApproved, probeSha256: it.probeSha256, decidedBy: it.decidedBy } : {}),
   }
@@ -170,14 +172,30 @@ const editSchema = z
   .strict()
   .refine((o) => Object.keys(o).length > 0, 'no fields')
 
-export async function editItemMetadata(db: DB, v: Viewer, itemId: number, input: unknown) {
-  const e = editSchema.safeParse(input)
-  if (!e.success) throw badRequest('invalid_edit', { issues: e.error.issues.map((i) => i.message) })
+// Shared by the metadata PATCH and the art PUT/DELETE: who may edit a
+// pending song item, and the conditional WHERE that enforces it at write
+// time (409 once the item is decided or the batch submitted).
+async function loadEditableItem(db: DB, v: Viewer, itemId: number) {
   const it = await db.query.items.findFirst({ where: eq(items.id, itemId) })
   if (!it || !canViewOwned(v, it)) throw notFound()
   if (it.kind !== 'song') throw conflict('not_editable')
   const reviewer = isReviewer(v)
   if (!reviewer && !isOwner(v, it)) throw notFound()
+  const where = reviewer
+    ? and(eq(items.id, it.id), eq(items.status, 'pending'))
+    : and(
+        eq(items.id, it.id),
+        eq(items.status, 'pending'),
+        eq(items.ownerUserId, v.userId),
+        sql`EXISTS (SELECT 1 FROM ${batches} WHERE ${batches.id} = ${items.batchId} AND ${batches.status} = 'draft')`,
+      )
+  return { it, reviewer, where }
+}
+
+export async function editItemMetadata(db: DB, v: Viewer, itemId: number, input: unknown) {
+  const e = editSchema.safeParse(input)
+  if (!e.success) throw badRequest('invalid_edit', { issues: e.error.issues.map((i) => i.message) })
+  const { it, reviewer, where } = await loadEditableItem(db, v, itemId)
   const patch: Partial<typeof items.$inferInsert> = { updatedAt: new Date() }
   const changes: Record<string, { from: string | null; to: string | null }> = {}
   for (const k of ['title', 'artist', 'album', 'genre'] as const) {
@@ -191,14 +209,6 @@ export async function editItemMetadata(db: DB, v: Viewer, itemId: number, input:
   // A different artist must be resolved again (known artist or new-artist item).
   if ('artist' in changes) Object.assign(patch, { artistId: null, newArtistName: null })
   return db.transaction(async (tx) => {
-    const where = reviewer
-      ? and(eq(items.id, it.id), eq(items.status, 'pending'))
-      : and(
-          eq(items.id, it.id),
-          eq(items.status, 'pending'),
-          eq(items.ownerUserId, v.userId),
-          sql`EXISTS (SELECT 1 FROM ${batches} WHERE ${batches.id} = ${items.batchId} AND ${batches.status} = 'draft')`,
-        )
     const row = oneOrConflict(await tx.update(items).set(patch).where(where).returning(), 'not_editable')
     if (Object.keys(changes).length > 0) {
       await audit(tx, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'item.edit', targetType: 'item', targetId: row.id, detail: { changes, asReviewer: reviewer && !isOwner(v, it) } })
@@ -210,6 +220,30 @@ export async function editItemMetadata(db: DB, v: Viewer, itemId: number, input:
     const fresh = await tx.query.items.findFirst({ where: eq(items.id, row.id) })
     return itemView(v, fresh!)
   })
+}
+
+// PUT /api/items/:id/art {artId} and DELETE: custom album art (art
+// contract). Same editors and 409 rule as the metadata PATCH. The upload must
+// be the viewer's own and `ready` (probe-verified JPEG).
+const artSchema = z.object({ artId: z.string().uuid() }).strict()
+
+export async function setItemArt(db: DB, v: Viewer, itemId: number, input: unknown) {
+  const a = artSchema.safeParse(input)
+  if (!a.success) throw badRequest('invalid_art')
+  const { it, reviewer, where } = await loadEditableItem(db, v, itemId)
+  const art = await loadArt(db, a.data.artId)
+  if (!art || art.owner !== v.userId) throw notFound()
+  if (art.status !== 'ready' || !art.jpegSha256) throw conflict('art_not_ready')
+  const row = oneOrConflict(await db.update(items).set({ customArtId: art.id, updatedAt: new Date() }).where(where).returning(), 'not_editable')
+  await audit(db, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'item.art.set', targetType: 'item', targetId: row.id, detail: { artId: art.id, from: it.customArtId, asReviewer: reviewer && !isOwner(v, it) } })
+  return itemView(v, row)
+}
+
+export async function clearItemArt(db: DB, v: Viewer, itemId: number) {
+  const { it, reviewer, where } = await loadEditableItem(db, v, itemId)
+  const row = oneOrConflict(await db.update(items).set({ customArtId: null, updatedAt: new Date() }).where(where).returning(), 'not_editable')
+  if (it.customArtId) await audit(db, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'item.art.clear', targetType: 'item', targetId: row.id, detail: { from: it.customArtId, asReviewer: reviewer && !isOwner(v, it) } })
+  return itemView(v, row)
 }
 
 const decisionSchema = z.discriminatedUnion('decision', [
