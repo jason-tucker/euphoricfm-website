@@ -16,6 +16,12 @@ Residual edge cases of the resumable archive / restore / re-verify (v0.2.1) wher
 
 **Deploy note:** the first-sync change applies only while `station_playlist_ids` is still unset. If v0.2.1 already ran a library sync in production, the ids it classified silently stay confirmed; to make them movable to foreign, set `unconfirmed_playlist_ids` by hand to the `station_playlist_ids` values that are not in `assignable_playlist_ids` / `default_playlist_ids` (the sync keeps that list from then on). Do not reset `station_playlist_ids` to `null` on a live system: every playlist job fails `station_playlist_ids_unset` until the next sync.
 
+### Web / probe / CI (PR #26 checks)
+- **Request bodies are complete and the 1 MB cap is deterministic.** Next 15.5 runs Node middleware on a clone of the body and swaps the buffered copy into the request without awaiting it, so a handler that started reading while the body was still arriving lost its start: an oversized chunked body could answer 400 `invalid_json` instead of 413 (the CI flake), and a slow valid body 400. The middleware now reads its copy of every unsafe request's body to the end, counting it against the cap (413 `payload_too_large`, `Connection: close`), after the rate-limit and CSRF refusals; handlers keep their own caps. Regression test sends the body with a gap.
+- **Probe children run without a shell.** `runLimited` execs `prlimit --as=<bytes> --core=0 -- timeout -s KILL -k 1 <s> <tool> <args...>` as a plain argv (same RLIMIT_AS / no-core limits as the former `sh -c 'ulimit ...'`); probe and test images add `util-linux-misc` (CodeQL js/shell-command-injection-from-environment).
+- **Linear SVG sniff.** The cover SVG check is a cursor scan instead of a regex that backtracked exponentially on a run of comments (CodeQL js/redos; a 1 KiB head of `<!---->` hung the probe). A comment now ends at its first `-->`.
+- **gitleaks:** repo-root `.gitleaks.toml` keeps the default rules and allowlists the verified false positives by exact path, on `generic-api-key` / `discord-client-id` only.
+
 ## [0.2.1] — 2026-09-27 — v0.2.0 verification fix round
 
 ### Worker

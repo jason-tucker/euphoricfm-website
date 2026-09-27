@@ -5,7 +5,7 @@ import { decryptField, deriveSubkey, encryptField, parseEncKey } from '@/server/
 import { checkCsrf } from '@/server/http/csrf'
 import { buildCsp } from '@/server/http/csp'
 import { clientKey, LIMITS, RateLimiter } from '@/server/http/ratelimit'
-import { readBodyLimited } from '@/server/http/body'
+import { checkBodyLimited, readBodyLimited } from '@/server/http/body'
 import { computePerms } from '@/server/authz/permissions'
 import { canComment, canSeeComment, canViewOwned, type Viewer } from '@/server/authz/predicates'
 import { verifyTicketsSignature } from '@/server/hooks/signature'
@@ -76,6 +76,39 @@ describe('body cap', () => {
     const stream = new ReadableStream({ start(c) { c.enqueue(new Uint8Array(4)); c.enqueue(new Uint8Array(4)); c.close() } })
     await expect(readBodyLimited(new Request('http://x', { method: 'POST', body: stream, duplex: 'half' } as RequestInit), 5)).rejects.toMatchObject({ status: 413 })
     expect((await readBodyLimited(new Request('http://x', { method: 'POST', body: 'abc' }), 5)).toString()).toBe('abc')
+  })
+
+  // bytes are counted first: a stream that fails AFTER the cap was exceeded
+  // is still 413; one that fails below the cap is 400 bad_body
+  const failing = (sizes: number[]) =>
+    new Request('http://x', {
+      method: 'POST',
+      duplex: 'half',
+      // pull-based: error() would discard chunks still queued
+      body: new ReadableStream({
+        pull(c) {
+          const n = sizes.shift()
+          if (n === undefined) c.error(new Error('ECONNRESET'))
+          else c.enqueue(new Uint8Array(n))
+        },
+      }),
+    } as RequestInit)
+  it('a stream error after the cap is exceeded is 413, below it 400', async () => {
+    await expect(readBodyLimited(failing([4, 4]), 5)).rejects.toMatchObject({ status: 413 })
+    await expect(readBodyLimited(failing([4]), 5)).rejects.toMatchObject({ status: 400, code: 'bad_body' })
+    expect(await checkBodyLimited(failing([4, 4]), 5)).toBe('too_large')
+    expect(await checkBodyLimited(failing([4]), 5)).toBe('bad_body')
+  })
+
+  it('checkBodyLimited (middleware) reads to the end and applies the same cap', async () => {
+    const chunked = (sizes: number[]) =>
+      new Request('http://x', { method: 'POST', duplex: 'half', body: new ReadableStream({ start(c) { for (const n of sizes) c.enqueue(new Uint8Array(n)); c.close() } }) } as RequestInit)
+    expect(await checkBodyLimited(chunked([2, 3]), 5)).toBe('ok')
+    expect(await checkBodyLimited(chunked([2, 3, 1]), 5)).toBe('too_large')
+    expect(await checkBodyLimited(new Request('http://x', { method: 'POST', body: 'x'.repeat(10), headers: { 'content-length': '10' } }), 5)).toBe('too_large')
+    expect(await checkBodyLimited(new Request('http://x', { method: 'POST' }), 5)).toBe('ok')
+    const cl = new Request('http://x', { method: 'POST', body: 'abc' })
+    expect(await checkBodyLimited(cl, 5)).toBe('ok')
   })
 })
 

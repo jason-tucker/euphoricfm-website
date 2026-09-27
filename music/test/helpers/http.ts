@@ -77,11 +77,13 @@ export async function control(path: string, body?: unknown) {
 // into the next request's pooled keep-alive connection. Body chunks stop as
 // soon as the response arrives. If the socket dies before any response (the
 // server closed while we were still sending: EPIPE/ECONNRESET), the request
-// is retried on a fresh connection, at most twice.
+// is retried on a fresh connection, at most twice. `pause` holds the send for
+// `ms` before piece `before` (64 KiB pieces of `body`, or `chunks`), so the
+// server is already handling the request while the rest is still in flight.
 export function reqFresh(
   jar: Jar | null,
   path: string,
-  o: { method?: string; headers?: Record<string, string>; body?: string | Buffer; chunks?: Buffer[] } = {},
+  o: { method?: string; headers?: Record<string, string>; body?: string | Buffer; chunks?: Buffer[]; pause?: { before: number; ms: number } } = {},
 ): Promise<{ status: number; text: string }> {
   const attempt = () =>
     new Promise<{ status: number; text: string }>((resolve, reject) => {
@@ -120,7 +122,12 @@ export function reqFresh(
       const write = (i: number) => {
         if (responded || r.destroyed) return
         if (i >= pieces.length) return void r.end()
-        r.write(pieces[i], () => write(i + 1))
+        const send = () => {
+          if (responded || r.destroyed) return
+          r.write(pieces[i], () => write(i + 1))
+        }
+        if (o.pause && i === o.pause.before) setTimeout(send, o.pause.ms)
+        else send()
       }
       write(0)
     })

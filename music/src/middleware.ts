@@ -9,8 +9,22 @@
 // /api/uploads (tus) is excluded from the matcher so Next never buffers 8 MB
 // chunks for middleware; the tus route applies the same CSRF + rate-limit
 // helpers itself.
+//
+// Body integrity (CI flake "expected 400 to be 413"): Next 15.5 hands Node
+// middleware a CLONE of the request body and swaps its buffered copy into the
+// request only once the body has ENDED, without awaiting that swap
+// (next-server.js runMiddleware: `finally { requestData.body.finalize() }`).
+// A handler that started reading while the body was still arriving read the
+// raw stream and missed the prefix the clone had already taken: an oversized
+// chunked body looked like < 1 MB of broken JSON (400 instead of 413), and a
+// slow, valid body lost its start (400). So every unsafe request that passed
+// the checks above has its middleware copy read to the end here, counted
+// against the 1 MB cap (413 as soon as it is exceeded, deterministically);
+// the handler then always reads the complete buffered body and still applies
+// its own cap.
 
 import { NextResponse, type NextRequest } from 'next/server'
+import { checkBodyLimited } from './server/http/body'
 import { readBodyLimitHeaderOnly } from './server/http/body-header'
 import { checkCsrf, SAFE_METHODS } from './server/http/csrf'
 import { buildCsp, MEDIA_CSP } from './server/http/csp'
@@ -29,7 +43,7 @@ function json(status: number, code: string, headers: Record<string, string> = {}
   })
 }
 
-export function middleware(req: NextRequest) {
+export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
   const method = req.method.toUpperCase()
   const unsafe = !SAFE_METHODS.has(method)
@@ -54,6 +68,13 @@ export function middleware(req: NextRequest) {
 
   const csrf = checkCsrf(method, pathname, req.headers, portalOrigin())
   if (!csrf.ok) return json(403, `csrf_${csrf.reason}`)
+
+  // After the cheap refusals, so a refused request's body is never read.
+  if (unsafe && req.body) {
+    const b = await checkBodyLimited(req)
+    if (b === 'too_large') return json(413, 'payload_too_large', { Connection: 'close' })
+    if (b === 'bad_body') return json(400, 'bad_body', { Connection: 'close' })
+  }
 
   const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('base64')
   const csp = pathname.startsWith('/api/media/') ? MEDIA_CSP : buildCsp(nonce)

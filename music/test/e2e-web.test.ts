@@ -69,12 +69,42 @@ describe.skipIf(!E2E())('CSRF (exact Origin + Sec-Fetch-Site) and body caps', ()
     // Each oversized request uses its own connection (see reqFresh).
     const big = JSON.stringify({ body: 'x'.repeat(1024 * 1024 + 10) })
     const declared = await reqFresh(jar, `/api/batches/${b.id}/comments`, { body: big, headers: { 'content-type': 'application/json' } })
-    expect(declared.status).toBe(413)
+    expect(declared.status, declared.text).toBe(413)
     const chunks = Array.from({ length: 20 }, () => Buffer.from('x'.repeat(64 * 1024)))
     const chunked = await reqFresh(jar, `/api/batches/${b.id}/comments`, { chunks, headers: { 'content-type': 'application/json' } })
-    expect(chunked.status).toBe(413)
+    expect(chunked.status, chunked.text).toBe(413)
     // and a normal request right after still works
     expect((await req(jar, `/api/batches/${b.id}/comments`, { json: { body: 'after the cap' } })).status).toBe(201)
+  })
+
+  // Regression (CI flake "expected 400 to be 413", {"error":"invalid_json"}):
+  // Next 15.5 runs Node middleware on a CLONE of the body and swaps the
+  // buffered copy into the request only when the body has ended, without
+  // awaiting that swap. A route that started reading while the body was still
+  // arriving read the raw stream and missed the prefix the clone had already
+  // consumed: an oversized chunked body looked like < 1 MB of broken JSON
+  // (400), and a slow, valid body lost its start. The pause makes the old
+  // race certain: the route is already running when the second part arrives.
+  it('1 MB cap and body integrity hold when the body is still arriving as the route starts', async () => {
+    const jar = await loginOk({ id: newId() })
+    const b = (await (await req(jar, '/api/batches', { method: 'POST' })).json()) as { id: number }
+    const url = `/api/batches/${b.id}/comments`
+    const chunks = Array.from({ length: 20 }, () => Buffer.from('x'.repeat(64 * 1024)))
+    const chunked = await reqFresh(jar, url, { chunks, pause: { before: 8, ms: 700 }, headers: { 'content-type': 'application/json' } })
+    expect(chunked.status, chunked.text).toBe(413)
+    expect(JSON.parse(chunked.text)).toEqual({ error: 'payload_too_large' })
+    // a valid ~600 KB body (JSON whitespace padding; the schema is strict),
+    // declared and chunked, delivered with a gap
+    const text = `slow body ${newId()}`
+    const body = `{"body":${JSON.stringify(text)},${' '.repeat(600 * 1024)}"visibility":"all"}`
+    const declared = await reqFresh(jar, url, { body, pause: { before: 4, ms: 700 }, headers: { 'content-type': 'application/json' } })
+    expect(declared.status, declared.text).toBe(201)
+    const buf = Buffer.from(body)
+    const pieces = Array.from({ length: Math.ceil(buf.length / 65536) }, (_, i) => buf.subarray(i * 65536, (i + 1) * 65536))
+    const slowChunked = await reqFresh(jar, url, { chunks: pieces, pause: { before: 4, ms: 700 }, headers: { 'content-type': 'application/json' } })
+    expect(slowChunked.status, slowChunked.text).toBe(201)
+    const listed = (await (await req(jar, url)).json()) as { body: string }[]
+    expect(listed.filter((c) => c.body === text)).toHaveLength(2)
   })
 
   it('mutations are rate-limited to 30/min per cf-connecting-ip', async () => {
