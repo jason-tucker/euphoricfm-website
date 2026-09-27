@@ -12,6 +12,7 @@ import type { DB } from './db/client'
 import { batches, comments, items, uploads } from './db/schema'
 import { badRequest, conflict, forbidden, HttpError, notFound } from './http/errors'
 import { enqueue } from './jobs'
+import { afterApprove, ensureNewArtistItems } from './library/artists'
 import { signMediaUrl } from './media/signing'
 import { getIntList, getSetting } from './settings'
 import { DEFAULT_CAPS, type Caps } from './settings-defaults'
@@ -41,6 +42,8 @@ function itemView(v: Viewer, it: typeof items.$inferSelect) {
     batchId: it.batchId,
     kind: it.kind,
     status: it.status,
+    artistId: it.artistId,
+    newArtistName: it.newArtistName,
     title: it.title,
     artist: it.artist,
     album: it.album,
@@ -111,8 +114,11 @@ export async function addUploadToBatch(db: DB, v: Viewer, batchId: number, uploa
   return { id: item.row.id, status: item.row.status }
 }
 
-export async function submitBatch(db: DB, v: Viewer, batchId: number, attest: unknown) {
+const ATTEST_VERSION_RE = /^[A-Za-z0-9._:-]{1,40}$/
+
+export async function submitBatch(db: DB, v: Viewer, batchId: number, attest: unknown, attestVersion?: unknown) {
   if (attest !== true) throw badRequest('attestation_required')
+  if (attestVersion !== undefined && (typeof attestVersion !== 'string' || !ATTEST_VERSION_RE.test(attestVersion))) throw badRequest('bad_attest_version')
   const b = await loadBatchVisible(db, v, batchId)
   if (!isOwner(v, b)) throw notFound()
   return db.transaction(async (tx) => {
@@ -122,10 +128,12 @@ export async function submitBatch(db: DB, v: Viewer, batchId: number, attest: un
     const row = oneOrConflict(
       await tx
         .update(batches)
-        .set({ status: 'submitted', attestedAt: new Date(), submittedAt: new Date(), updatedAt: new Date() })
+        .set({ status: 'submitted', attestedAt: new Date(), attestVersion: (attestVersion as string | undefined) ?? null, submittedAt: new Date(), updatedAt: new Date() })
         .where(and(eq(batches.id, b.id), eq(batches.status, 'draft')))
         .returning(),
     )
+    // P3: songs by artists not in `artists` get a linked new_artist item.
+    await ensureNewArtistItems(tx, b.id, b.ownerUserId)
     await enqueue(tx, 'ticket_open', { batchId: b.id }, { dedupeKey: `ticket_open:batch:${b.id}` })
     await audit(tx, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'batch.submit', targetType: 'batch', targetId: b.id })
     return { id: row.id, status: row.status }
@@ -147,8 +155,72 @@ export async function withdrawItem(db: DB, v: Viewer, itemId: number) {
   return { id: row.id, status: row.status }
 }
 
+// PATCH /api/items/:id — per-field overrides that become the metadata the
+// ingest writes (finalize tags + file name). The owner may edit a pending
+// item while its batch is still a draft; a reviewer may edit any pending
+// item before the decision. Conditional UPDATE: 409 once it is decided.
+const metaField = text(200).transform((s) => s.trim())
+const editSchema = z
+  .object({
+    title: metaField.refine((s) => s.length > 0, 'title required').optional(),
+    artist: metaField.refine((s) => s.length > 0, 'artist required').optional(),
+    album: metaField.nullable().optional(),
+    genre: metaField.nullable().optional(),
+  })
+  .strict()
+  .refine((o) => Object.keys(o).length > 0, 'no fields')
+
+export async function editItemMetadata(db: DB, v: Viewer, itemId: number, input: unknown) {
+  const e = editSchema.safeParse(input)
+  if (!e.success) throw badRequest('invalid_edit', { issues: e.error.issues.map((i) => i.message) })
+  const it = await db.query.items.findFirst({ where: eq(items.id, itemId) })
+  if (!it || !canViewOwned(v, it)) throw notFound()
+  if (it.kind !== 'song') throw conflict('not_editable')
+  const reviewer = isReviewer(v)
+  if (!reviewer && !isOwner(v, it)) throw notFound()
+  const patch: Partial<typeof items.$inferInsert> = { updatedAt: new Date() }
+  const changes: Record<string, { from: string | null; to: string | null }> = {}
+  for (const k of ['title', 'artist', 'album', 'genre'] as const) {
+    const val = e.data[k]
+    if (val === undefined) continue
+    const to = val === null || val === '' ? null : val
+    if ((it[k] ?? null) === to) continue
+    patch[k] = to
+    changes[k] = { from: it[k] ?? null, to }
+  }
+  // A different artist must be resolved again (known artist or new-artist item).
+  if ('artist' in changes) Object.assign(patch, { artistId: null, newArtistName: null })
+  return db.transaction(async (tx) => {
+    const where = reviewer
+      ? and(eq(items.id, it.id), eq(items.status, 'pending'))
+      : and(
+          eq(items.id, it.id),
+          eq(items.status, 'pending'),
+          eq(items.ownerUserId, v.userId),
+          sql`EXISTS (SELECT 1 FROM ${batches} WHERE ${batches.id} = ${items.batchId} AND ${batches.status} = 'draft')`,
+        )
+    const row = oneOrConflict(await tx.update(items).set(patch).where(where).returning(), 'not_editable')
+    if (Object.keys(changes).length > 0) {
+      await audit(tx, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'item.edit', targetType: 'item', targetId: row.id, detail: { changes, asReviewer: reviewer && !isOwner(v, it) } })
+      if ('artist' in changes) {
+        const b = await tx.query.batches.findFirst({ where: eq(batches.id, row.batchId) })
+        if (b && b.status !== 'draft') await ensureNewArtistItems(tx, b.id, b.ownerUserId)
+      }
+    }
+    const fresh = await tx.query.items.findFirst({ where: eq(items.id, row.id) })
+    return itemView(v, fresh!)
+  })
+}
+
 const decisionSchema = z.discriminatedUnion('decision', [
-  z.object({ decision: z.literal('approve'), playlistIds: z.array(z.number().int().positive()).max(16).optional() }).strict(),
+  z
+    .object({
+      decision: z.literal('approve'),
+      playlistIds: z.array(z.number().int().positive()).max(16).optional(),
+      // new_artist items only: the reviewer-confirmed folder (strict sanitizer output)
+      folder: z.string().max(300).optional(),
+    })
+    .strict(),
   z.object({ decision: z.literal('deny'), reason: text(500).refine((s) => s.trim().length > 0, 'reason required') }).strict(),
 ])
 
@@ -159,11 +231,12 @@ export async function decideItem(db: DB, v: Viewer, itemId: number, input: unkno
   const it = await db.query.items.findFirst({ where: eq(items.id, itemId) })
   if (!it) throw notFound()
   const self = isSelfApproval(v, it)
+  if (d.data.decision === 'approve' && d.data.folder !== undefined && it.kind !== 'new_artist') throw badRequest('folder_not_allowed')
   return db.transaction(async (tx) => {
     let rows
     if (d.data.decision === 'approve') {
       const assignable = new Set(await getIntList(db, 'assignable_playlist_ids'))
-      const chosen = d.data.playlistIds ?? (await getIntList(db, 'default_playlist_ids'))
+      const chosen = it.kind === 'new_artist' ? [] : (d.data.playlistIds ?? (await getIntList(db, 'default_playlist_ids')))
       if (chosen.some((id) => !assignable.has(id))) throw badRequest('playlist_not_assignable')
       rows = await tx
         .update(items)
@@ -178,7 +251,8 @@ export async function decideItem(db: DB, v: Viewer, itemId: number, input: unkno
           selfApproved: self,
           updatedAt: new Date(),
         })
-        .where(and(eq(items.id, it.id), eq(items.status, 'pending'), sql`${items.probeSha256} IS NOT NULL`))
+        // A song needs its probe sha; a new-artist item has no file.
+        .where(and(eq(items.id, it.id), eq(items.status, 'pending'), sql`(${items.kind} = 'new_artist' OR ${items.probeSha256} IS NOT NULL)`))
         .returning()
     } else {
       rows = await tx
@@ -188,6 +262,9 @@ export async function decideItem(db: DB, v: Viewer, itemId: number, input: unkno
         .returning()
     }
     const row = oneOrConflict(rows)
+    // P3: a song approval enqueues `ingest`; a new-artist approval creates
+    // the artists row + folder and ungates the batch's songs.
+    if (row.status === 'approved') await afterApprove(tx, row, v, { folder: d.data.decision === 'approve' ? d.data.folder : undefined })
     await audit(tx, {
       actorUserId: v.userId,
       actorDiscordId: v.discordId,
