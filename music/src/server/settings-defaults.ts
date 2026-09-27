@@ -13,6 +13,13 @@ export const DEFAULT_CAPS = {
   maxItemsPerBatch: 20,
   ingestPerHour: 6,
   ingestSpacingS: 90,
+  // Standalone album art (v0.2.1, review SEC-2). Charged at the uploaded
+  // size while processing and while the probe's JPEG is kept (ready, 7 days),
+  // and those bytes also count toward maxStagingBytes (same disk). Per user:
+  // uploads and bytes in any rolling 24 h; globally: processing + ready bytes.
+  artUploadsPerUserPerDay: 30,
+  artBytesPerUserPerDay: 50 * MB,
+  maxArtBytes: 512 * MB,
 } as const
 
 export const DEFAULT_SETTINGS: Record<string, unknown> = {

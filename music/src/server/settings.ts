@@ -25,6 +25,9 @@ const capsOverride = z
     maxItemsPerBatch: z.number().int().positive(),
     ingestPerHour: z.number().int().positive(),
     ingestSpacingS: z.number().int().positive(),
+    artUploadsPerUserPerDay: z.number().int().positive(),
+    artBytesPerUserPerDay: z.number().int().positive(),
+    maxArtBytes: z.number().int().positive(),
   })
   .partial()
 
