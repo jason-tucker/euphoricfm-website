@@ -52,7 +52,9 @@ CMD ["node", "/app/worker.mjs"]
 
 # -------------------------------------------------------------- probe ----
 FROM ${NODE_IMAGE} AS probe
-RUN apk add --no-cache ffmpeg rsvg-convert
+# util-linux-misc: prlimit, which applies RLIMIT_AS / RLIMIT_CORE to every
+# parser child without a shell (src/probe/exec.ts).
+RUN apk add --no-cache ffmpeg rsvg-convert util-linux-misc
 WORKDIR /app
 ENV NODE_ENV=production NODE_OPTIONS=--max-old-space-size=64
 COPY --from=build /build/dist/probe/ ./
@@ -67,7 +69,7 @@ CMD ["node", "-e", "console.error('music-fetch is not implemented until P5'); pr
 
 # --------------------------------------------------------------- test ----
 FROM deps AS test
-RUN apk add --no-cache ffmpeg rsvg-convert
+RUN apk add --no-cache ffmpeg rsvg-convert util-linux-misc
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN node scripts/bundle.mjs

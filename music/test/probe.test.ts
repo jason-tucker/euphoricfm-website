@@ -11,7 +11,7 @@ import { runArt, runArtRelease } from '@/probe/art'
 import { runFinalize } from '@/probe/finalize'
 import { ContainmentBreach, processOne } from '@/probe/main'
 import { findStrays, findStraysAfterGrace, snapshotBaseline } from '@/probe/containment'
-import { runLimited } from '@/probe/exec'
+import { limitedArgv, PRLIMIT, runLimited, TIMEOUT } from '@/probe/exec'
 import { ffprobeArgs, judgeFfprobe, runProbe } from '@/probe/probe'
 import { scanId3 } from '@/probe/id3scan'
 import { checkMp3Magic } from '@/probe/magic'
@@ -222,6 +222,46 @@ function alive(pid: number): boolean {
     return false
   }
 }
+
+describe('probe exec: limits without a shell', () => {
+  it('builds a plain argv (prlimit → timeout → tool), never a shell command string', () => {
+    const argv = limitedArgv('ffprobe', ['-i', 'a b; $(id)'], 1024, 20.7)
+    expect(argv).toEqual(['--as=1048576', '--core=0', '--', TIMEOUT, '-s', 'KILL', '-k', '1', '20', 'ffprobe', '-i', 'a b; $(id)'])
+    expect(PRLIMIT).toBe('/usr/bin/prlimit')
+    expect(() => limitedArgv('x', [], Number.NaN, 1)).toThrow()
+  })
+
+  it('the child runs with RLIMIT_AS = vmemKb KiB (soft and hard) and no core dumps', async () => {
+    const r = await runLimited('cat', ['/proc/self/limits'], { timeoutS: 5, vmemKb: 200 * 1024 })
+    expect(r.code).toBe(0)
+    const lim = r.stdout.toString()
+    expect(lim).toMatch(/^Max address space\s+209715200\s+209715200\s+bytes/m)
+    expect(lim).toMatch(/^Max core file size\s+0\s+0\s+bytes/m)
+  })
+
+  it('the address-space limit is enforced on the tool', async () => {
+    // node cannot even start its heap in 64 MiB of address space
+    const r = await runLimited('node', ['-e', 'console.log("started")'], { timeoutS: 10, vmemKb: 64 * 1024 })
+    expect(r.code).not.toBe(0)
+    expect(r.stdout.toString()).not.toContain('started')
+  })
+
+  it('arguments with shell syntax reach the tool verbatim and are never executed', async () => {
+    const marker = join(root, `pwned-${randomUUID()}`)
+    const hostile = [`$(touch ${marker})`, `\`touch ${marker}\``, `; touch ${marker}`, `"$@" '|' && touch ${marker}`, '*', '\n']
+    const r = await runLimited('printf', ['[%s]', ...hostile], { timeoutS: 5, vmemKb: 1 << 20 })
+    expect(r.code).toBe(0)
+    expect(r.stdout.toString()).toBe(hostile.map((h) => `[${h}]`).join(''))
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('timeouts still apply through prlimit (exit via SIGKILL, reported as timedOut)', async () => {
+    const t0 = Date.now()
+    const r = await runLimited('sleep', ['30'], { timeoutS: 1, vmemKb: 1 << 20 })
+    expect(r.timedOut).toBe(true)
+    expect(Date.now() - t0).toBeLessThan(8000)
+  })
+})
 
 describe('probe containment: parser children cannot outlive their job', () => {
   it('a timeout kills the whole process group, grandchildren included', async () => {

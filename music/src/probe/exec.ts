@@ -1,7 +1,15 @@
-// Runs an untrusted-input tool under `timeout` and `ulimit -v`, with a
-// minimal environment (PATH, HOME=/tmp), no shell interpolation of inputs
-// (arguments are passed positionally to `sh -c '... "$@"'`), and bounded
-// output capture.
+// Runs an untrusted-input tool under `timeout` and an address-space limit,
+// with a minimal environment (PATH, HOME=/tmp) and bounded output capture.
+//
+// NO shell is involved: the argv array goes straight to execve as
+//   prlimit --as=<bytes> --core=0 -- timeout -s KILL -k 1 <s> <cmd> <args...>
+// prlimit (util-linux, installed in the probe and test images) sets
+// RLIMIT_AS (soft = hard, the same as the former `ulimit -v`) and
+// RLIMIT_CORE = 0 on itself and execs timeout, which runs the tool; no
+// argument is ever parsed as shell syntax (CodeQL
+// js/shell-command-injection-from-environment flagged the former
+// `/bin/sh -c 'ulimit ... "$@"'` wrapper). A missing prlimit makes spawn fail
+// (ENOENT), which callers see as a failed run: it fails closed.
 //
 // Containment (review finding "probe containment"):
 //  * every child is spawned DETACHED, i.e. as the leader of its own process
@@ -17,6 +25,18 @@
 import { spawn } from 'node:child_process'
 
 export const CHILD_ENV = { PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', HOME: '/tmp' }
+
+// Fixed absolute paths (Alpine: util-linux-misc and the busybox applet).
+export const PRLIMIT = '/usr/bin/prlimit'
+export const TIMEOUT = '/usr/bin/timeout'
+
+// The full argv for runLimited: every element is one execve argument.
+export function limitedArgv(cmd: string, args: readonly string[], vmemKb: number, timeoutS: number): string[] {
+  const asBytes = Math.floor(vmemKb) * 1024
+  const secs = Math.max(1, Math.floor(timeoutS))
+  if (!Number.isSafeInteger(asBytes) || asBytes <= 0) throw new Error('runLimited: bad vmemKb')
+  return [`--as=${asBytes}`, '--core=0', '--', TIMEOUT, '-s', 'KILL', '-k', '1', String(secs), cmd, ...args]
+}
 
 export type ExecResult = { code: number | null; signal: NodeJS.Signals | null; stdout: Buffer; stderr: string; timedOut: boolean }
 
@@ -41,12 +61,14 @@ export function runLimited(
     // its own session; see containment.ts); -k is moot with KILL but kept so
     // a switch to TERM stays bounded. The group kill below covers the rest of
     // the job's process group, and node's own timer covers a stuck watcher.
-    const script = `ulimit -v ${Math.floor(opts.vmemKb)} && ulimit -c 0 && exec timeout -s KILL -k 1 ${timeoutS} "$@"`
-    const child = spawn('/bin/sh', ['-c', script, 'probe-exec', cmd, ...args], {
+    // prlimit execs timeout in place (no fork), so the group leader is the
+    // same process as before.
+    const child = spawn(PRLIMIT, limitedArgv(cmd, args, opts.vmemKb, timeoutS), {
       env: CHILD_ENV as unknown as NodeJS.ProcessEnv,
       cwd: opts.cwd ?? '/tmp',
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true,
+      shell: false,
     })
     const pid = child.pid
     const out: Buffer[] = []
