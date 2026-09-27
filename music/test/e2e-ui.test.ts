@@ -12,7 +12,9 @@ import { Jar, req } from './helpers/http'
 import { tusUpload } from './helpers/tus'
 
 const E2E_UI = () => has('E2E_WEB_URL', 'MOCKS_CONTROL', 'TEST_OWNER_DATABASE_URL')
-const OWNER = '117501528641634310' // PORTAL_OWNER_IDS in test/compose.test.yml → admin
+const OWNER = '117501528641634310'
+// The web may run in the Portal-Test prefix profile (P4 harness sets it).
+const ROOT = process.env.PORTAL_TEST_PREFIX ?? '' // PORTAL_OWNER_IDS in test/compose.test.yml → admin
 let seq = 0
 const newId = () => `6${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
 
@@ -147,14 +149,14 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     const mediaId = 900000 + (Date.now() % 90000)
     const sql = ownerSql()
     await sql`INSERT INTO library_cache (media_id, unique_id, path, title, artist, album, genre, playlist_ids, length_s)
-              VALUES (${mediaId}, ${'u' + mediaId}, ${`Music/Artists/GRIM/GRIM - Smoke ${mediaId}.mp3`}, ${`Smoke ${mediaId}`}, 'GRIM', 'Night', 'House', '{2,77}', 200)`
+              VALUES (${mediaId}, ${'u' + mediaId}, ${`${ROOT}Music/Artists/GRIM/GRIM - Smoke ${mediaId}.mp3`}, ${`Smoke ${mediaId}`}, 'GRIM', 'Night', 'House', '{2,77}', 200)`
     await sql`INSERT INTO library_cache (media_id, unique_id, path, title, artist)
-              VALUES (${mediaId + 1}, ${'u' + (mediaId + 1)}, ${`UNRELEASED-DO NOT ADD TO ROTATION/Hidden ${mediaId}.mp3`}, ${`Hidden ${mediaId}`}, 'X')`
+              VALUES (${mediaId + 1}, ${'u' + (mediaId + 1)}, ${`${ROOT}UNRELEASED-DO NOT ADD TO ROTATION/Hidden ${mediaId}.mp3`}, ${`Hidden ${mediaId}`}, 'X')`
     const member = await loginOk({ id: newId() })
     const admin = await loginOk({ id: OWNER })
     const [u] = await sql<{ id: string }[]>`SELECT id FROM "user" WHERE discord_id = ${OWNER}`
     await sql`INSERT INTO requests (owner_user_id, kind, media_id, target_path, proposed, reason)
-              VALUES (${u!.id}, 'edit', ${mediaId}, ${`Music/Artists/GRIM/GRIM - Smoke ${mediaId}.mp3`}, ${sql.json({ title: 'Smoke Fixed' })}, 'typo')`
+              VALUES (${u!.id}, 'edit', ${mediaId}, ${`${ROOT}Music/Artists/GRIM/GRIM - Smoke ${mediaId}.mp3`}, ${sql.json({ title: 'Smoke Fixed' })}, 'typo')`
 
     const lib = await page(member, `/library?q=${mediaId}`)
     expect(lib.status).toBe(200)

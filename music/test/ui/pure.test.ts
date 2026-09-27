@@ -8,17 +8,17 @@ import { escapeLike, folderOf, libraryRoot, onLibrarySurface } from '@/server/ui
 const MB = 1024 * 1024
 
 describe('library whitelist and LIKE escaping', () => {
-  it('only Music/Artists/** is on the portal surface', () => {
-    expect(onLibrarySurface('Music/Artists/GRIM/GRIM - Song.mp3')).toBe(true)
-    expect(onLibrarySurface('UNRELEASED-DO NOT ADD TO ROTATION/x.mp3')).toBe(false)
-    expect(onLibrarySurface('ADS/spot.mp3')).toBe(false)
-    expect(onLibrarySurface('Events/x.mp3')).toBe(false)
-    expect(onLibrarySurface('Removed/12/x.mp3')).toBe(false)
-    expect(onLibrarySurface('Portal-Test/Music/Artists/A/b.mp3')).toBe(false)
-    expect(onLibrarySurface('Music/Artists/../ADS/x.mp3')).toBe(false)
+  it('production root: only Music/Artists/<folder>/<file> is on the portal surface', () => {
+    expect(onLibrarySurface('Music/Artists/GRIM/GRIM - Song.mp3', '')).toBe(true)
+    expect(onLibrarySurface('UNRELEASED-DO NOT ADD TO ROTATION/x.mp3', '')).toBe(false)
+    expect(onLibrarySurface('ADS/spot.mp3', '')).toBe(false)
+    expect(onLibrarySurface('Events/x.mp3', '')).toBe(false)
+    expect(onLibrarySurface('Removed/12/x.mp3', '')).toBe(false)
+    expect(onLibrarySurface('Portal-Test/Music/Artists/A/b.mp3', '')).toBe(false)
+    expect(onLibrarySurface('Music/Artists/../ADS/x.mp3', '')).toBe(false)
     // exactly one artist folder deep (same rule as P4's isRequestTarget)
-    expect(onLibrarySurface('Music/Artists/GRIM/Live/x.mp3')).toBe(false)
-    expect(onLibrarySurface('Music/Artists/GRIM')).toBe(false)
+    expect(onLibrarySurface('Music/Artists/GRIM/Live/x.mp3', '')).toBe(false)
+    expect(onLibrarySurface('Music/Artists/GRIM', '')).toBe(false)
   })
   it('honours PORTAL_TEST_PREFIX as the library root, and refuses a bad one', () => {
     const root = libraryRoot({ PORTAL_TEST_PREFIX: 'Portal-Test/' })
