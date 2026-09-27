@@ -14,6 +14,7 @@ import { badRequest, conflict, forbidden, HttpError, notFound } from './http/err
 import { enqueue } from './jobs'
 import { isUsableArt, loadArt } from './library/art'
 import { afterApprove, ensureNewArtistItems } from './library/artists'
+import { mayHaveCover } from './media/cover'
 import { signMediaUrl } from './media/signing'
 import { getIntList, getSetting } from './settings'
 import { DEFAULT_CAPS, type Caps } from './settings-defaults'
@@ -120,7 +121,7 @@ export async function addUploadToBatch(db: DB, v: Viewer, batchId: number, uploa
   return { id: item.row.id, status: item.row.status }
 }
 
-const ATTEST_VERSION_RE = /^[A-Za-z0-9._:-]{1,40}$/
+export const ATTEST_VERSION_RE = /^[A-Za-z0-9._:-]{1,40}$/
 
 export async function submitBatch(db: DB, v: Viewer, batchId: number, attest: unknown, attestVersion?: unknown) {
   if (attest !== true) throw badRequest('attestation_required')
@@ -401,7 +402,8 @@ export async function previewUrls(db: DB, v: Viewer, itemId: number) {
   if (!it.probeSha256 || !it.uploadId) throw conflict('not_probed')
   return {
     audioUrl: signMediaUrl('audio', it.id, v.userId),
-    coverUrl: it.coverFile ? signMediaUrl('cover', it.id, v.userId) : null,
+    // The effective cover (custom art, else embedded): /api/media/cover/:id.
+    coverUrl: mayHaveCover(it) ? signMediaUrl('cover', it.id, v.userId) : null,
   }
 }
 

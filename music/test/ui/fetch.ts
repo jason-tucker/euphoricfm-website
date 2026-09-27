@@ -7,7 +7,13 @@ export function stubFetch(routes: Record<string, Reply | ((body: unknown) => Rep
   const calls: { method: string; url: string; body: unknown }[] = []
   const fn = vi.fn(async (url: string, init?: RequestInit) => {
     const method = (init?.method ?? 'GET').toUpperCase()
-    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
+    // JSON bodies are parsed; a FormData body is recorded as [field, kind] pairs.
+    const body =
+      typeof init?.body === 'string'
+        ? JSON.parse(init.body)
+        : init?.body instanceof FormData
+          ? [...init.body.entries()].map(([k, v]) => [k, typeof v === 'string' ? 'string' : 'file'])
+          : undefined
     calls.push({ method, url, body })
     const key = Object.keys(routes).find((k) => {
       const [m, p] = k.split(' ')

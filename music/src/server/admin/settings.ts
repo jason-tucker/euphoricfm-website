@@ -12,6 +12,7 @@ import { roleBindings, settings } from '../db/schema'
 import { badRequest, conflict, forbidden, notFound } from '../http/errors'
 import { getIntList, getSetting } from '../settings'
 import { DEFAULT_CAPS } from '../settings-defaults'
+import { ATTEST_VERSION_RE } from '../submissions'
 
 function requireAdmin(v: Viewer) {
   if (!v.perms.has('admin')) throw forbidden()
@@ -59,7 +60,9 @@ export const SETTING_SCHEMAS: Record<string, z.ZodType<unknown>> = {
     .refine((r) => Object.keys(r).length <= 200, 'too many names'),
   auto_close_days: z.number().int().min(1).max(365),
   caps: capsSchema,
-  rights_attestation: z.object({ version: plainText(1, 40), text: plainText(1, 2000) }).strict(),
+  // The version is echoed back by the submit call and must pass its check
+  // (submissions.ts ATTEST_VERSION_RE), or every submit would be refused.
+  rights_attestation: z.object({ version: z.string().regex(ATTEST_VERSION_RE), text: plainText(1, 2000) }).strict(),
   discord_invite_url: z
     .string()
     .max(200)

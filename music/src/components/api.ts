@@ -48,7 +48,8 @@ export type ConflictContext = keyof typeof CONFLICT_TEXT
 // The one place an error becomes the sentence shown to the user.
 export function messageFor(err: unknown, conflict?: ConflictContext): string {
   if (err instanceof ApiError) {
-    if (err.status === 409 && conflict && (err.code === 'state_changed' || err.code === 'conflict')) return CONFLICT_TEXT[conflict]
+    // P3's item edits answer 409 not_editable for the same race.
+    if (err.status === 409 && conflict && (err.code === 'state_changed' || err.code === 'conflict' || err.code === 'not_editable')) return CONFLICT_TEXT[conflict]
     if (err.code === 'daily_cap' && typeof err.body?.limit === 'number') {
       return `You've reached today's limit of ${err.body.limit} requests of this kind. Try again tomorrow.`
     }

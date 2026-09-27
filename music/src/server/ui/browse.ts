@@ -2,7 +2,7 @@
 // (Music/Artists/** only), the reviewer's request queue, and the managers'
 // archived list. Permission checks mirror plan §3.3.
 
-import { and, asc, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm'
+import { and, asc, count, desc, eq, ilike, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import { isReviewer, type Viewer } from '../authz/predicates'
 import type { DB } from '../db/client'
 import { archive, artists, libraryCache, requests, users } from '../db/schema'
@@ -25,7 +25,7 @@ function songView(v: Viewer, r: typeof libraryCache.$inferSelect) {
     lengthS: r.lengthS,
     folder: folderOf(r.path),
     fileName: r.path.slice(r.path.lastIndexOf('/') + 1),
-    artUrl: libraryArtUrl((r as unknown as Record<string, unknown>).artUrl as string | undefined, r.uniqueId),
+    artUrl: libraryArtUrl(r.artUrl, r.uniqueId),
     // Playlist memberships are a staff concern.
     ...(isReviewer(v) ? { playlistIds: r.playlistIds } : {}),
   }
@@ -104,7 +104,7 @@ export async function pendingRequests(db: DB, v: Viewer) {
       ownerName: ownerName ?? ownerDiscordId,
       ticket: r.ticketId ? { number: r.ticketNumber, webUrl: r.ticketWebUrl, channelUrl: r.ticketChannelUrl, status: r.ticketStatus } : null,
       current: c ? { title: c.title, artist: c.artist, album: c.album, genre: c.genre } : null,
-      currentArtUrl: c ? libraryArtUrl((c as unknown as Record<string, unknown>).artUrl as string | undefined, c.uniqueId) : null,
+      currentArtUrl: c ? libraryArtUrl(c.artUrl, c.uniqueId) : null,
       proposedArtId: r.proposed && typeof r.proposed === 'object' && 'artId' in r.proposed ? String((r.proposed as Record<string, unknown>).artId) : null,
     }
   })
@@ -126,25 +126,24 @@ export async function archivedSongs(db: DB, v: Viewer) {
 }
 
 // Approved edits parked on a new artist (P4: requests.pending_artist_id,
-// artist status 'pending'). Read through to_jsonb so this query does not
-// depend on the column being in this branch's schema file.
+// artist status 'pending').
 export async function artistsAwaitingApproval(db: DB, v: Viewer) {
   if (!isReviewer(v)) throw forbidden()
-  const rows = await db.execute<{ id: number; target_path: string; proposed: Record<string, string> | null; artist_id: string }>(sql`
-    SELECT r.id, r.target_path, r.proposed, to_jsonb(r) ->> 'pending_artist_id' AS artist_id
-    FROM requests r
-    WHERE r.status IN ('approved', 'applying') AND (to_jsonb(r) ->> 'pending_artist_id') IS NOT NULL
-    ORDER BY r.id
-    LIMIT 100`)
-  const ids = [...new Set([...rows].map((r) => Number(r.artist_id)).filter((n) => Number.isInteger(n) && n > 0))]
+  const rows = await db
+    .select({ id: requests.id, targetPath: requests.targetPath, proposed: requests.proposed, artistId: requests.pendingArtistId })
+    .from(requests)
+    .where(and(inArray(requests.status, ['approved', 'applying']), isNotNull(requests.pendingArtistId)))
+    .orderBy(asc(requests.id))
+    .limit(100)
+  const ids = [...new Set(rows.map((r) => r.artistId).filter((n): n is number => typeof n === 'number' && n > 0))]
   if (ids.length === 0) return []
   const as = await db.select().from(artists).where(and(inArray(artists.id, ids), eq(artists.status, 'pending')))
   return as.map((a) => ({
     artistId: a.id,
     name: a.name,
     folder: a.folder,
-    requests: [...rows]
-      .filter((r) => Number(r.artist_id) === a.id)
-      .map((r) => ({ id: r.id, targetPath: r.target_path, proposed: r.proposed })),
+    requests: rows
+      .filter((r) => r.artistId === a.id)
+      .map((r) => ({ id: r.id, targetPath: r.targetPath, proposed: (r.proposed ?? null) as Record<string, string> | null })),
   }))
 }

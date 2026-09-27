@@ -8,6 +8,7 @@ import { canViewOwned, isReviewer, type Viewer } from '../authz/predicates'
 import type { DB } from '../db/client'
 import { batches, comments, items, jobs, requests, roleBindings, settings, uploads, users } from '../db/schema'
 import { forbidden, notFound } from '../http/errors'
+import { BATCH_DECIDABLE_SQL } from '../submissions'
 import { customArtIdOf, itemCoverUrl, itemHasArt, libraryArt } from './art'
 import { escapeLike } from './library'
 
@@ -72,17 +73,6 @@ export async function listOwnBatches(db: DB, v: Viewer, limit = 50) {
 
 export async function listOwnRequests(db: DB, v: Viewer, limit = 50) {
   const rows = await db.query.requests.findMany({ where: eq(requests.ownerUserId, v.userId), orderBy: desc(requests.id), limit })
-  // P4 columns (deny_reason, error, pending_artist_id) read through to_jsonb
-  // so this does not depend on them being in this branch's schema file.
-  const extra = new Map<number, { deny_reason: string | null; error: string | null; pending_artist_id: string | null }>()
-  if (rows.length) {
-    const ids = sql.join(rows.map((r) => sql`${r.id}`), sql`, `)
-    const ex = await db.execute<{ id: number; deny_reason: string | null; error: string | null; pending_artist_id: string | null }>(
-      sql`SELECT r.id, to_jsonb(r) ->> 'deny_reason' AS deny_reason, to_jsonb(r) ->> 'error' AS error, to_jsonb(r) ->> 'pending_artist_id' AS pending_artist_id
-          FROM requests r WHERE r.owner_user_id = ${v.userId} AND r.id IN (${ids})`,
-    )
-    for (const e of ex) extra.set(Number(e.id), e)
-  }
   const art = await libraryArt(db, rows.map((r) => r.mediaId))
   return rows.map((r) => ({
     id: r.id,
@@ -92,9 +82,9 @@ export async function listOwnRequests(db: DB, v: Viewer, limit = 50) {
     targetPath: r.targetPath,
     proposed: (r.proposed ?? null) as Record<string, unknown> | null,
     reason: r.reason,
-    denyReason: extra.get(r.id)?.deny_reason ?? null,
-    error: extra.get(r.id)?.error ?? null,
-    awaitingArtist: Boolean(extra.get(r.id)?.pending_artist_id),
+    denyReason: r.denyReason,
+    error: r.error,
+    awaitingArtist: r.pendingArtistId !== null,
     artUrl: art.get(r.mediaId) ?? null,
     createdAt: r.createdAt.toISOString(),
     ticket: r.ticketId ? { number: r.ticketNumber, webUrl: r.ticketWebUrl, channelUrl: r.ticketChannelUrl, status: r.ticketStatus } : null,
@@ -126,7 +116,10 @@ export type QueueFilters = { q?: string; kind?: 'song' | 'new_artist'; source?: 
 
 export async function reviewQueue(db: DB, v: Viewer, f: QueueFilters = {}) {
   if (!isReviewer(v)) throw forbidden()
-  const conds = [eq(items.status, 'pending'), eq(batches.status, 'submitted')]
+  // Only items a reviewer may decide: pending, in a batch submitted WITH the
+  // rights attestation (the same predicate decideItem's UPDATE uses), so a
+  // member's unsubmitted draft never shows up in the queue.
+  const conds = [eq(items.status, 'pending'), BATCH_DECIDABLE_SQL]
   if (f.kind) conds.push(eq(items.kind, f.kind))
   if (f.source) conds.push(eq(items.source, f.source))
   if (f.mine) conds.push(eq(items.ownerUserId, v.userId))
@@ -167,7 +160,9 @@ export async function reviewItem(db: DB, v: Viewer, id: number) {
   const it = await db.query.items.findFirst({ where: eq(items.id, id) })
   if (!it) throw notFound()
   const b = await db.query.batches.findFirst({ where: eq(batches.id, it.batchId) })
-  if (!b) throw notFound()
+  // A draft (never submitted / attested) batch is still the member's: it is
+  // not on the review surface at all (the queue filters it the same way).
+  if (!b || b.status === 'draft' || b.attestedAt === null) throw notFound()
   const owner = await db.query.users.findFirst({ where: eq(users.id, it.ownerUserId) })
   const siblings = await db
     .select({ id: items.id, status: items.status, title: items.title, artist: items.artist, kind: items.kind })

@@ -1,15 +1,32 @@
-// Album art client (contract: scratchpad art-contract.md, 2026-09-27). The
-// server parts are being built on other branches, so every route here is
-// written from the contract text and none exists on this branch yet:
-//   foundation  POST /api/uploads/art, GET /api/uploads/art/:artId
-//   P3          PUT / DELETE /api/items/:id/art
-//   P4          PUT /api/library/:mediaId/art   (see requests.ts: setLibraryArt)
-//               proposed.artId in edit requests (requests.ts: fileEditRequest)
+// Album art client, matching the server contract exactly (the foundation's
+// src/server/art/uploads.ts is authoritative):
+//   POST /api/uploads/art          multipart/form-data, exactly one file field
+//                                  `art`; 202 {artId, status:'processing'}.
+//                                  Refusals: 413 art_too_large, 415
+//                                  unsupported_image_type / multipart_required,
+//                                  422 unreadable_image_header / image_too_large
+//                                  / image_truncated, 400 exactly_one_art_field
+//                                  / empty_file, 429 too_many_art_uploads_processing
+//                                  or rate_limited, 503 probe_unavailable /
+//                                  uploads_paused.
+//   GET  /api/uploads/art/:artId   {artId, status:'processing'|'ready'|'rejected'
+//                                  |'expired', reason?, previewUrl?, width?, height?}
+//   PUT / DELETE /api/items/:id/art           (item art)
+//   PUT /api/library/:mediaId/art             (manager; see requests.ts)
+//   proposed.artId in edit requests           (requests.ts)
 
 import { api, ApiError } from '@/components/api'
 
-export type ArtId = string | number
-export type ArtStatus = { artId: ArtId; status: 'processing' | 'ready' | 'rejected'; reason?: string; previewUrl?: string }
+// art_uploads ids are v4 UUIDs.
+export type ArtId = string
+export type ArtStatus = {
+  artId: ArtId
+  status: 'processing' | 'ready' | 'rejected' | 'expired'
+  reason?: string
+  previewUrl?: string
+  width?: number
+  height?: number
+}
 
 export const ART_MAX_BYTES = 5 * 1024 * 1024
 export const ART_TYPES = ['image/jpeg', 'image/png', 'image/webp']

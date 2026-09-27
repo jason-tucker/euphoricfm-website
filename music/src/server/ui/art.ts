@@ -2,14 +2,13 @@
 //
 //  * Library songs: library_cache.art_url (the worker stores AzuraCast's art
 //    URL there), else https://euphoric.fm/api/station/<shortcode>/art/<unique_id>.
-//    The column comes from the foundation/P3 branches, so it is read through
-//    to_jsonb and this works before and after that migration.
-//  * Portal items: the signed, viewer-bound cover preview URL. After P3 the
-//    cover route serves the EFFECTIVE cover (custom art, else embedded).
+//  * Portal items: the signed, viewer-bound cover preview URL. The cover
+//    route serves the EFFECTIVE cover (custom art, else embedded).
 
-import { inArray, sql } from 'drizzle-orm'
+import { inArray } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { items, libraryCache } from '../db/schema'
+import { mayHaveCover } from '../media/cover'
 import { signMediaUrl } from '../media/signing'
 
 export const ART_ORIGIN = 'https://euphoric.fm'
@@ -35,17 +34,15 @@ export async function libraryArt(db: DB, mediaIds: number[]): Promise<Map<number
   const ids = [...new Set(mediaIds)]
   if (ids.length === 0) return out
   const rows = await db
-    .select({ mediaId: libraryCache.mediaId, uniqueId: libraryCache.uniqueId, artUrl: sql<string | null>`to_jsonb(${libraryCache}) ->> 'art_url'` })
+    .select({ mediaId: libraryCache.mediaId, uniqueId: libraryCache.uniqueId, artUrl: libraryCache.artUrl })
     .from(libraryCache)
     .where(inArray(libraryCache.mediaId, ids))
   for (const r of rows) out.set(r.mediaId, libraryArtUrl(r.artUrl, r.uniqueId))
   return out
 }
 
-// items.custom_art_id arrives with P3; read it without depending on it.
 export function customArtIdOf(it: typeof items.$inferSelect): string | null {
-  const v = (it as unknown as Record<string, unknown>).customArtId
-  return v === null || v === undefined ? null : String(v)
+  return it.customArtId ?? null
 }
 
 export function itemHasArt(it: typeof items.$inferSelect): boolean {
@@ -53,7 +50,7 @@ export function itemHasArt(it: typeof items.$inferSelect): boolean {
 }
 
 export function itemCoverUrl(viewerUserId: string, it: typeof items.$inferSelect): string | null {
-  if (!it.probeSha256 || !itemHasArt(it)) return null
+  if (!mayHaveCover(it)) return null
   try {
     return signMediaUrl('cover', it.id, viewerUserId)
   } catch {

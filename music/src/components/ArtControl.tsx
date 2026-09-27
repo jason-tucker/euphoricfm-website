@@ -16,11 +16,13 @@ import { Thumb } from './Thumb'
 
 type Phase = 'idle' | 'uploading' | 'processing' | 'attaching' | 'removing'
 
+// The probe's rejection reasons (GET /api/uploads/art/:artId `reason`);
+// anything else reads as the generic "couldn't be used".
 const REJECT_TEXT: Record<string, string> = {
-  too_large: errorText('art_too_large'),
-  unsupported_type: errorText('art_type'),
-  bad_image: errorText('art_rejected'),
-  too_many_pixels: 'That image is too large in pixels. Use one under 10,000 × 10,000.',
+  unsupported_image_type: errorText('art_type'),
+  image_too_large: errorText('image_too_large'),
+  probe_timeout: errorText('art_timeout'),
+  probe_unavailable: errorText('probe_unavailable'),
 }
 
 export function ArtControl({
@@ -69,7 +71,7 @@ export function ArtControl({
       const up = await uploadArtFile(file)
       setPhase('processing')
       const st = await waitForArt(up.artId)
-      if (st.status === 'rejected') {
+      if (st.status !== 'ready') {
         setError(REJECT_TEXT[st.reason ?? ''] ?? errorText('art_rejected'))
         return
       }

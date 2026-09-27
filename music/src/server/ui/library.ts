@@ -134,7 +134,7 @@ export type DuplicateHint =
 
 // Same title + artist (case-insensitive) already in the library, or in a
 // portal item that is still in play. Members only see their OWN items here;
-// reviewers see every submission.
+// reviewers see every SUBMITTED submission.
 export async function findDuplicates(db: DB, v: Viewer, title: string, artist: string, excludeItemId?: number): Promise<DuplicateHint[]> {
   const t = title.trim()
   const a = artist.trim()
@@ -151,7 +151,10 @@ export async function findDuplicates(db: DB, v: Viewer, title: string, artist: s
     eq(items.kind, 'song'),
   ]
   if (excludeItemId) conds.push(ne(items.id, excludeItemId))
+  // Reviewers see other members' submissions, but never an unsubmitted
+  // (unattested) draft: that is still the member's own business.
   if (!isReviewer(v)) conds.push(eq(items.ownerUserId, v.userId))
+  else conds.push(or(eq(items.ownerUserId, v.userId), sql`EXISTS (SELECT 1 FROM batches b WHERE b.id = ${items.batchId} AND b.attested_at IS NOT NULL)`)!)
   const its = await db
     .select({ id: items.id, batchId: items.batchId, title: items.title, artist: items.artist, status: items.status, owner: items.ownerUserId })
     .from(items)

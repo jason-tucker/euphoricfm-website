@@ -8,7 +8,7 @@ import { forbidden, notFound } from '@/server/http/errors'
 import { parseId, route } from '@/server/http/route'
 import { verifyMediaSig } from '@/server/media/signing'
 import { isJpeg, serveStagedFile } from '@/server/media/serve'
-import { COVER_FILE_RE, UPLOAD_ID_RE } from '@/server/spool/protocol'
+import { effectiveCover } from '@/server/media/cover'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -20,8 +20,10 @@ export const GET = route<{ id: string }>(async (req, p) => {
   if (!it || !canPreviewItem(v, it)) throw notFound()
   const u = new URL(req.url)
   if (!verifyMediaSig('cover', id, v.userId, u.searchParams.get('exp'), u.searchParams.get('sig'))) throw forbidden('bad_signature')
-  // Only bytes the probe accepted are ever served.
-  if (!it.probeSha256) throw notFound()
-  if (!it.coverFile || !COVER_FILE_RE.test(it.coverFile)) throw notFound()
-  return serveStagedFile({ dir: webEnv().STAGING_UPLOADS_DIR, name: it.coverFile, contentType: 'image/jpeg', downloadName: `cover-${id}.jpg`, range: null, magic: isJpeg })
+  // The EFFECTIVE cover (custom art, else embedded); only probe-made JPEGs
+  // are ever served, and only for items whose audio the probe accepted.
+  const env = webEnv()
+  const cover = await effectiveCover(getDb(), it, { uploads: env.STAGING_UPLOADS_DIR, art: env.STAGING_ART_DIR })
+  if (!cover) throw notFound()
+  return serveStagedFile({ dir: cover.dir, name: cover.name, contentType: 'image/jpeg', downloadName: `cover-${id}.jpg`, range: null, magic: isJpeg })
 })

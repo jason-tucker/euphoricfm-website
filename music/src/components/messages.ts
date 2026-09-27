@@ -19,6 +19,8 @@ export const ERROR_TEXT: Record<string, string> = {
 
   // batches / items
   state_changed: 'This changed while you were looking at it. Reload to see the latest status.',
+  not_editable: 'This song can no longer be changed here: it has been decided, or its batch was already submitted.',
+  batch_not_submitted: "This batch hasn't been submitted yet, so it can't be reviewed.",
   conflict: 'This changed while you were looking at it. Reload to see the latest status.',
   batch_not_draft: 'This batch has already been submitted, so files can no longer be added.',
   batch_full: 'This batch is full. Submit it, then start a new batch for more songs.',
@@ -56,6 +58,14 @@ export const ERROR_TEXT: Record<string, string> = {
   art_rejected: "That image couldn't be used. Try a different JPEG, PNG or WebP file.",
   art_not_ready: 'The image is still being processed. Wait a moment and try again.',
   art_timeout: 'Processing the image took too long. Try again.',
+  // POST /api/uploads/art refusals (server codes)
+  unsupported_image_type: 'Use a JPEG, PNG or WebP image.',
+  unreadable_image_header: "That image couldn't be read. Try a different JPEG, PNG or WebP file.",
+  image_truncated: 'That image file is incomplete. Try saving it again.',
+  image_too_large: 'That image is too large in pixels. Use one under 12 megapixels (at most 8000 px on a side).',
+  exactly_one_art_field: 'Upload one image at a time.',
+  empty_file: 'That image file is empty.',
+  too_many_art_uploads_processing: 'A few images are still being processed. Wait a moment and try again.',
 
   // uploads (tus)
   upload_too_large: 'That file is larger than 35 MB.',

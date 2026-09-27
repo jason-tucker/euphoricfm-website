@@ -6,9 +6,9 @@
 //     'art_release' request asks the probe (the only writer of the art dir)
 //     to delete the JPEG.
 // A reference keeps art alive until the referencing item or request is
-// finished, plus 7 days: items.custom_art_id (P3's column; read through
-// to_jsonb so this also runs before that column exists) and
-// requests.proposed->>'artId' (P4's edit requests).
+// finished, plus 7 days: items.custom_art_id (P3) and
+// requests.proposed->>'artId' (P4's edit requests). A manager's direct
+// apply_art job that has not run yet (queued/running) also keeps it.
 
 import { randomUUID } from 'node:crypto'
 import { unlink } from 'node:fs/promises'
@@ -40,12 +40,16 @@ export async function sweepArt(db: DB, dirs: { spoolIn: string }, now = Date.now
     WHERE a.status IN ('ready', 'rejected') AND a.created_at < ${cut}
       AND NOT EXISTS (
         SELECT 1 FROM items i
-        WHERE to_jsonb(i) ->> 'custom_art_id' = a.id::text
+        WHERE i.custom_art_id = a.id
           AND (i.status::text NOT IN ${sql.raw(ITEM_DONE)} OR i.updated_at > ${cut}))
       AND NOT EXISTS (
         SELECT 1 FROM requests r
         WHERE r.proposed ->> 'artId' = a.id::text
           AND (r.status::text NOT IN ${sql.raw(REQUEST_DONE)} OR r.updated_at > ${cut}))
+      AND NOT EXISTS (
+        SELECT 1 FROM jobs j
+        WHERE j.kind = 'apply_art' AND j.status IN ('queued', 'running')
+          AND j.payload ->> 'artId' = a.id::text)
     LIMIT 500`)
   let expired = 0
   for (const a of stale as unknown as { id: string; status: string; raw_path: string | null }[]) {

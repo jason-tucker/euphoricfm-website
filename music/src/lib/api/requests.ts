@@ -1,6 +1,6 @@
 // Thin client for the P4 routes (edit/removal requests and the manager
 // library actions). Routes marked CONFIRMED match feat/music-requests
-// (58587c9); anything still GUESSED is marked so. Pages and components never
+// (58587c9). Pages and components never
 // build these URLs themselves.
 //
 // Plan contract this follows:
@@ -14,11 +14,12 @@
 //     the assignable set are kept), archive and restore.
 
 import { api } from '@/components/api'
+import type { ArtId } from './art'
 
-export type ArtId = string | number
+export type { ArtId }
 export type Proposed = Partial<Record<'title' | 'artist' | 'album' | 'genre', string>> & {
-  // Album art contract: an edit may propose new art (a ready art upload).
-  // P4's ProposedSchema is strict and does not accept it yet (GUESSED shape).
+  // Album art contract: an edit may propose new art (the id of a READY art
+  // upload of the member's own; P4's ProposedSchema accepts it).
   artId?: ArtId
 }
 
@@ -73,8 +74,7 @@ export function restoreSong(archiveId: number) {
 }
 
 // Album art contract: PUT /api/library/:mediaId/art {artId} (manage, audited,
-// enqueues apply_art). P4 owns it; not on any branch yet (GUESSED from the
-// contract text).
+// enqueues apply_art).
 export function setLibraryArt(mediaId: number, artId: ArtId) {
   return api(`/api/library/${mediaId}/art`, { method: 'PUT', json: { artId } })
 }
