@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
+    "test:ui": "vitest run --config vitest.ui.config.ts",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
