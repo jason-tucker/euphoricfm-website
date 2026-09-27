@@ -3,11 +3,16 @@
 // These mirror the sidecar's /stats/* JSON payloads (server/stats.mjs, PART A
 // of the stats spec) field-for-field — keep in sync if the server shape
 // changes. Nothing here does I/O; stats.ts is the sole consumer.
+//
+// Since server schema 2 every `plays`/`p`/months-`p` field carries LISTENS
+// (each song play weighted by the listeners tuned in when it started, ads
+// excluded); raw song-play counts are `totals.songs` and `StatsDay.s`.
 
 export interface StatsDay {
   d: string; // 'YYYY-MM-DD', station TZ
-  p: number; // plays
-  r: number; // request-plays
+  p: number; // listens
+  s: number; // songs played (raw count, the requests-% basis)
+  r: number; // request-plays (raw count)
   lavg: number | null; // avg listeners sampled that day, 1dp, null = no samples
   lmax: number | null;
 }
@@ -84,7 +89,7 @@ export interface StatsRangeRollup {
 export interface StatsGridCell {
   w: number; // 0..6, 0 = Sunday, station TZ
   h: number; // 0..23, station TZ hour-of-day
-  p: number; // plays landing in this day×hour cell, all-time
+  p: number; // listens landing in this day×hour cell, all-time
   lavg: number | null; // avg listeners folded into this cell, null = no samples
 }
 
@@ -100,7 +105,8 @@ export interface StatsSummary {
     };
   };
   totals: {
-    plays: number;
+    plays: number; // listens
+    songs: number; // raw song plays
     requests: number;
     uniqueTracks: number;
     uniqueArtists: number;

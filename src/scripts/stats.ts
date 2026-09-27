@@ -3,7 +3,7 @@
 // Progressive enhancement: the section starts `hidden`; this module fetches
 // `/stats/summary` (same-origin, reverse-proxied by Caddy to the efm-requests
 // sidecar — see server/stats.mjs) 800ms after load and only unhides the
-// section on success with totals.plays > 0. No sidecar (e.g. `pnpm dev`) or
+// section on success with any recorded songs (totals.songs/plays > 0). No sidecar (e.g. `pnpm dev`) or
 // an empty store (fresh boot, no data yet) both leave the section hidden —
 // that's the intended graceful-degradation behaviour, not a bug.
 //
@@ -28,7 +28,7 @@ import type {
   ArtistDetailResponse,
 } from '../lib/stats';
 
-// The one synced range — drives the primary tab row, the Listeners/Plays
+// The one synced range — drives the primary tab row, the Listeners/Listens
 // cards' own rows, the KPI tiles, and the top lists. Rhythm is intentionally
 // NOT synced to this (it stays all-time, see showRhythm below).
 type ActiveRange = StatsRangeKey | 'all';
@@ -822,7 +822,10 @@ interface PlotPoint {
 
   const renderKpis = (sum: StatsSummary, range: ActiveRange) => {
     const days = daysForRange(sum, range);
+    // `p` is listens (schema 2); `s` is raw songs played — the requests-%
+    // basis, so the sub reads "x% of songs played", never ÷ listens.
     const totalPlays = days.reduce((a, d) => a + d.p, 0);
+    const totalSongs = days.reduce((a, d) => a + (d.s || 0), 0);
     const totalRequests = days.reduce((a, d) => a + d.r, 0);
 
     if (elKpiPlaysValue) elKpiPlaysValue.textContent = compactNumber(totalPlays);
@@ -875,8 +878,8 @@ interface PlotPoint {
 
     if (elKpiRequestsValue) elKpiRequestsValue.textContent = compactNumber(totalRequests);
     if (elKpiRequestsSub) {
-      const pct = totalPlays > 0 ? (totalRequests / totalPlays) * 100 : 0;
-      elKpiRequestsSub.textContent = totalPlays > 0 ? s.kpi.requests.sub.replace('{pct}', pct.toFixed(1)) : '';
+      const pct = totalSongs > 0 ? (totalRequests / totalSongs) * 100 : 0;
+      elKpiRequestsSub.textContent = totalSongs > 0 ? s.kpi.requests.sub.replace('{pct}', pct.toFixed(1)) : '';
     }
   };
 
@@ -1887,7 +1890,9 @@ interface PlotPoint {
       const r = await fetch('/stats/summary');
       if (!r.ok) return;
       const data = (await r.json()) as StatsSummary;
-      if (!data.ok || !data.totals || data.totals.plays === 0) return;
+      // Hide only when nothing at all was recorded — a store with songs but
+      // zero listens (e.g. fresh after the schema-2 rebuild) still renders.
+      if (!data.ok || !data.totals || (data.totals.plays === 0 && !data.totals.songs)) return;
       summary = data;
       TZ = data.meta.timezone || TZ;
       tzShort = shortTzName(TZ);

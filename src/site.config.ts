@@ -72,7 +72,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     coveragePrefixFull: 'All-time · since',
     coveragePrefixPartial: 'Tracking since',
 
-    // The one synced range selection (primary row + Listeners/Plays cards'
+    // The one synced range selection (primary row + Listeners/Listens cards'
     // own rows, and the "since {date}" tile/top-list subs below) shares this
     // single label map and aria-label — see stats.ts renderRangeTabs().
     rangeLabels: { '7d': '7D', '30d': '30D', '90d': '90D', '1y': '1Y', all: 'ALL' },
@@ -85,9 +85,12 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     // which use the capitalized caption.all variant instead.
     since: 'since {date}',
 
+    // "Listens" = each song play weighted by the listeners tuned in when it
+    // started (ads excluded) — see server/stats.mjs's module header. The
+    // API keeps its `plays`/`p` field names; only the copy says listens.
     kpi: {
       plays: {
-        label: 'Total plays',
+        label: 'Total listens',
         // 'all' range only — every other range uses rangeSub below instead.
         sub: 'since {date}',
         rangeSub: {
@@ -105,7 +108,8 @@ San Andreas is not only our home; it's also the source of incredible talent wait
         noData: 'No listener data yet',
       },
       tracks: { label: 'Tracks played', sub: '{count} artists' },
-      requests: { label: 'Requests played', sub: '{pct}% of plays' },
+      // {pct} = requested songs ÷ songs played (raw counts), not ÷ listens.
+      requests: { label: 'Requests played', sub: '{pct}% of songs played' },
     },
 
     // Coverage captions under every chart (between the chart and its table
@@ -126,32 +130,32 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     },
 
     plays: {
-      title: 'Plays',
-      ariaLabel: 'Plays over time',
+      title: 'Listens',
+      ariaLabel: 'Listens over time',
       perDay: 'per day',
       perWeek: 'per week',
       tableDate: 'Date',
-      tablePlays: 'Plays',
+      tablePlays: 'Listens',
     },
 
     rhythm: {
       title: 'Rhythm',
       ariaLabel: 'Listening rhythm heatmap by day and hour, station time',
-      tabs: { plays: 'Plays', listeners: 'Listeners' },
+      tabs: { plays: 'Listens', listeners: 'Listeners' },
       // Rhythm stays all-time regardless of the synced range — this prefix
       // makes that explicit right in the subtitle.
       allTimePrefix: 'All-time · ',
       // stats.ts appends the actual short tz abbreviation (derived from
       // meta.timezone, e.g. "EDT") in parens after this — never hardcode
       // one here, STATS_TZ is operator-configurable.
-      subtitlePlays: 'Plays by hour & day, station time',
+      subtitlePlays: 'Listens by hour & day, station time',
       subtitleListeners: 'Average listeners by hour & day, station time',
       byHour: 'By hour',
       byDay: 'By day',
-      // Cell percentage basis: plays = share of all plays; listeners = share
-      // of the single peak hour/day cell. {pct} is 1dp for plays, whole
-      // number for listeners — see stats.ts pctLabel()/pctShort().
-      pctOfPlays: '{pct}% of all plays',
+      // Cell percentage basis: listens = share of all listens; listeners =
+      // share of the single peak hour/day cell. {pct} is 1dp for listens,
+      // whole number for listeners — see stats.ts pctLabel()/pctShort().
+      pctOfPlays: '{pct}% of all listens',
       pctOfPeak: '{pct}% of the peak hour',
       // Per-cell tooltip label lines. {day}/{hour} are filled from the
       // day-of-week/hour-of-day lookup tables, never a timezone-aware Date.
@@ -174,16 +178,16 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     detail: {
       close: 'Close',
       back: 'Back',
-      plays: 'Plays',
+      plays: 'Listens',
       requests: 'Requests',
       firstPlayed: 'First played',
       lastPlayed: 'Last played',
-      playsPerMonth: 'Plays per month',
+      playsPerMonth: 'Listens per month',
       topTracks: 'Top tracks',
       tracksSuffix: 'tracks',
       loadError: 'Failed to load — try again later.',
       tableMonth: 'Month',
-      tablePlays: 'Plays',
+      tablePlays: 'Listens',
     },
   },
 
