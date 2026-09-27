@@ -46,6 +46,19 @@ export async function findStrays(baseline: ReadonlySet<number>, procDir = '/proc
   return (await listProcesses(procDir)).filter((p) => p.pid !== process.pid && !baseline.has(p.pid) && p.state !== 'Z' && p.state !== 'X')
 }
 
+// busybox `timeout` forks a watcher that calls setsid() (its own session,
+// so the group kill cannot reach it) and exits within ~1 s of its parent's
+// exit. So a stray only counts once it is still alive after a short grace
+// period; a real escapee gets those few seconds, nothing more.
+export async function findStraysAfterGrace(baseline: ReadonlySet<number>, graceMs = 3000, procDir = '/proc'): Promise<ProcInfo[]> {
+  const until = Date.now() + graceMs
+  for (;;) {
+    const strays = await findStrays(baseline, procDir)
+    if (strays.length === 0 || Date.now() >= until) return strays
+    await new Promise((r) => setTimeout(r, 100))
+  }
+}
+
 export function killAll(ps: readonly ProcInfo[]): void {
   for (const p of ps) {
     try {

@@ -37,9 +37,10 @@ export function runLimited(
   const maxOut = opts.maxStdout ?? 1024 * 1024
   const timeoutS = Math.max(1, Math.floor(opts.timeoutS))
   return new Promise((resolve) => {
-    // busybox timeout signals only its direct child; -k is moot with KILL but
-    // kept so a switch to TERM stays bounded. The group kill below covers the
-    // rest of the job's process group.
+    // busybox timeout signals only its direct child (and its watcher runs in
+    // its own session; see containment.ts); -k is moot with KILL but kept so
+    // a switch to TERM stays bounded. The group kill below covers the rest of
+    // the job's process group, and node's own timer covers a stuck watcher.
     const script = `ulimit -v ${Math.floor(opts.vmemKb)} && ulimit -c 0 && exec timeout -s KILL -k 1 ${timeoutS} "$@"`
     const child = spawn('/bin/sh', ['-c', script, 'probe-exec', cmd, ...args], {
       env: CHILD_ENV as unknown as NodeJS.ProcessEnv,

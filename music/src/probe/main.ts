@@ -19,7 +19,7 @@ import {
   type Inbox,
   type SpoolResult,
 } from '../server/spool/protocol'
-import { findStrays, killAll, snapshotBaseline, type ProcInfo } from './containment'
+import { findStraysAfterGrace, killAll, snapshotBaseline, type ProcInfo } from './containment'
 import { runFinalize } from './finalize'
 import { runProbe } from './probe'
 
@@ -118,7 +118,7 @@ export async function main() {
   // Start-up process table: tini (PID 1) and this process. Anything else
   // alive after a job is a stray (containment.ts).
   const baseline = await snapshotBaseline()
-  const strayCheck = () => findStrays(baseline)
+  const strayCheck = () => findStraysAfterGrace(baseline)
   let stopping = false
   process.on('SIGTERM', () => (stopping = true))
   process.on('SIGINT', () => (stopping = true))

@@ -9,7 +9,7 @@ import NodeID3 from 'node-id3'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { runFinalize } from '@/probe/finalize'
 import { ContainmentBreach, processOne } from '@/probe/main'
-import { findStrays, snapshotBaseline } from '@/probe/containment'
+import { findStrays, findStraysAfterGrace, snapshotBaseline } from '@/probe/containment'
 import { runLimited } from '@/probe/exec'
 import { ffprobeArgs, judgeFfprobe, runProbe } from '@/probe/probe'
 import { scanId3 } from '@/probe/id3scan'
@@ -362,5 +362,14 @@ describe('cover decode bounds (crafted headers)', () => {
     const big = readFileSync(join(w, 'big.png'))
     expect(await reencodeCover(join(w, 'big.png'), big, w, join(w, 'o2.jpg'))).not.toBeNull()
     expect(imageDims(readFileSync(join(w, 'o2.jpg')), 'jpeg')).toEqual({ w: 1000, h: 1000 })
+  })
+})
+
+describe('probe containment: the busybox timeout watcher is not a false positive', () => {
+  it('after an ordinary runLimited job, nothing is left once the grace period passes', async () => {
+    const baseline = await snapshotBaseline()
+    await runLimited('sleep', ['0.2'], { timeoutS: 5, vmemKb: 1 << 20 })
+    const strays = (await findStraysAfterGrace(baseline)).filter((p) => p.cmd === 'timeout' || p.cmd === 'sleep')
+    expect(strays).toEqual([])
   })
 })
