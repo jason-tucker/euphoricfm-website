@@ -3,13 +3,14 @@
 #
 # Runs the repo's Caddyfile in caddy:2.10-alpine against a built dist/ (run
 # `pnpm build` first — e.g. in node:24-alpine) with plain-HTTP test hostnames
-# (no ACME), then curls every positive/negative redirect case plus the
-# iframe/CEF card cases. Exits non-zero on the first mismatch.
+# (no ACME), then curls every positive/negative redirect case, including framed
+# (Sec-Fetch-Dest: iframe) and in-game (CitizenFX UA) requests, which get the
+# SAME 302 as everyone else. Exits non-zero if any check fails.
 #
 #   sh test/caddy-music-redirect.sh
 set -eu
 cd "$(dirname "$0")/.."
-[ -f dist/music-card/index.html ] || { echo "dist/ not built (need dist/music-card/index.html)"; exit 2; }
+[ -f dist/index.html ] || { echo "dist/ not built (need dist/index.html)"; exit 2; }
 
 PORT="${PORT:-18080}"
 NAME="efm-caddy-music-test-$$"
@@ -25,7 +26,7 @@ i=0; until curl -s -o /dev/null "http://127.0.0.1:$PORT/" -H 'Host: info.euphori
 done
 
 FAIL=0
-# req <path> [curl header args...] → prints "status|location|cache-control|vary|is-card"
+# req <path> [curl header args...] → prints "status|location|cache-control|vary"
 req() {
   p="$1"; shift
   hdrs=$(curl -s -D - -o /tmp/efm-body.$$ --path-as-is "http://127.0.0.1:$PORT$p" -H 'Host: info.euphoric.fm' "$@")
@@ -33,19 +34,19 @@ req() {
   loc=$(printf '%s' "$hdrs" | grep -i '^location:' | cut -d' ' -f2- | tr -d '\r')
   cc=$(printf '%s' "$hdrs" | grep -i '^cache-control:' | cut -d' ' -f2- | tr -d '\r')
   vary=$(printf '%s' "$hdrs" | grep -i '^vary:' | cut -d' ' -f2- | tr -d '\r' | paste -sd, -)
-  card=no; grep -q 'Music submissions happen in your browser' /tmp/efm-body.$$ && card=yes
-  printf '%s|%s|%s|%s|%s' "$st" "$loc" "$cc" "$vary" "$card"
+  printf '%s|%s|%s|%s' "$st" "$loc" "$cc" "$vary"
 }
-# check <label> <expected-status> <expected-location or -> <expect-card yes/no> <path> [headers...]
+# check <label> <expected-status> <expected-location or -> <path> [headers...]
 check() {
-  label="$1" est="$2" eloc="$3" ecard="$4" p="$5"; shift 5
+  label="$1" est="$2" eloc="$3" p="$4"; shift 4
   out=$(req "$p" "$@")
-  st=$(echo "$out" | cut -d'|' -f1); loc=$(echo "$out" | cut -d'|' -f2); card=$(echo "$out" | cut -d'|' -f5)
+  st=$(echo "$out" | cut -d'|' -f1); loc=$(echo "$out" | cut -d'|' -f2); cc=$(echo "$out" | cut -d'|' -f3)
   [ "$eloc" = "-" ] && eloc=""
   ok=PASS
   [ "$st" = "$est" ] || ok=FAIL
   [ "$loc" = "$eloc" ] || ok=FAIL
-  [ "$card" = "$ecard" ] || ok=FAIL
+  # Every redirect carries no-store.
+  [ -z "$loc" ] || [ "$cc" = "no-store" ] || ok=FAIL
   # Any Location header must be on music.euphoric.fm and nothing else.
   case "$loc" in ""|https://music.euphoric.fm/*) ;; *) ok=FAIL ;; esac
   [ "$ok" = PASS ] || FAIL=1
@@ -53,57 +54,49 @@ check() {
 }
 
 P=https://music.euphoric.fm
-echo "RESULT label path -> status|location|cache-control|vary|card"
-check "root redirect"                 302 "$P/"             no  /music
-check "trailing slash"                302 "$P/"             no  /music/
-check "rest path"                     302 "$P/dashboard"    no  /music/dashboard
-check "nested rest + query kept"      302 "$P/a/b?x=1&y=2"  no  '/music/a/b?x=1&y=2'
-check "root + query"                  302 "$P/"             no  '/music?x=1'
+echo "RESULT label path -> status|location|cache-control|vary"
+check "root redirect"                 302 "$P/"             /music
+check "trailing slash"                302 "$P/"             /music/
+check "rest path"                     302 "$P/dashboard"    /music/dashboard
+check "nested rest + query kept"      302 "$P/a/b?x=1&y=2"  '/music/a/b?x=1&y=2'
+check "root + query"                  302 "$P/"             '/music?x=1'
 # Caddy merges the duplicate slashes when stripping the prefix; either way the
 # host is the literal music.euphoric.fm.
-check "leading // stays on host"      302 "$P/evil.com"     no  //music//evil.com
-check "//evil via rest stays on host" 302 "$P/evil.com"     no  /music//evil.com
-check "///evil via rest stays on host" 302 "$P/evil.com"    no  /music///evil.com
-check "@ in rest stays on host"       302 "$P/@evil.com"    no  /music/@evil.com
-check "encoded slashes stay encoded"  302 "$P/%2F%2Fevil.com" no /music/%2F%2Fevil.com
-check "backslash stays on host"       302 "$P/%5Cevil.com"  no  '/music/%5Cevil.com'
-check "CRLF stays percent-encoded"    302 "$P/%0d%0aX-Evil:1" no '/music/%0d%0aX-Evil:1'
-check "NEG /music.evil.com"           200 -                 no  /music.evil.com
-check "NEG /music@evil.com"           200 -                 no  /music@evil.com
-check "NEG /musicx"                   200 -                 no  /musicx
-check "NEG /music-evil"               200 -                 no  /music-evil
+check "leading // stays on host"      302 "$P/evil.com"     //music//evil.com
+check "//evil via rest stays on host" 302 "$P/evil.com"     /music//evil.com
+check "///evil via rest stays on host" 302 "$P/evil.com"    /music///evil.com
+check "@ in rest stays on host"       302 "$P/@evil.com"    /music/@evil.com
+check "encoded slashes stay encoded"  302 "$P/%2F%2Fevil.com" /music/%2F%2Fevil.com
+check "backslash stays on host"       302 "$P/%5Cevil.com"  '/music/%5Cevil.com'
+check "CRLF stays percent-encoded"    302 "$P/%0d%0aX-Evil:1" '/music/%0d%0aX-Evil:1'
+check "NEG /music.evil.com"           200 -                 /music.evil.com
+check "NEG /music@evil.com"           200 -                 /music@evil.com
+check "NEG /musicx"                   200 -                 /musicx
+check "NEG /music-evil"               200 -                 /music-evil
 # Caddy path matching is case-insensitive; still the fixed host.
-check "case-insensitive /MUSIC"       302 "$P/"             no  /MUSIC
-check "case-insensitive /Music/Foo"   302 "$P/Foo"          no  /Music/Foo
-check "NEG /MUSIC.evil.com"           200 -                 no  /MUSIC.evil.com
-check "NEG /music%2Eevil.com"         200 -                 no  /music%2Eevil.com
-check "card: Sec-Fetch-Dest iframe"   200 -                 yes /music        -H 'Sec-Fetch-Dest: iframe'
-check "card: iframe on rest path"     200 -                 yes /music/x/y    -H 'Sec-Fetch-Dest: iframe'
-check "card: frame"                   200 -                 yes /music        -H 'Sec-Fetch-Dest: frame'
-check "card: CitizenFX UA"            200 -                 yes /music        -A 'Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0 Safari/537.36 CitizenFX/1.0.0.12345'
-check "card: citizenfx UA lowercase"  200 -                 yes /music/foo    -A 'mozilla citizenfx'
-check "no card: Sec-Fetch-Dest doc"   302 "$P/"             no  /music        -H 'Sec-Fetch-Dest: document'
-check "no card: iframe off /music"    200 -                 no  /musicx       -H 'Sec-Fetch-Dest: iframe'
-check "card direct path"              200 -                 yes /music-card/
+check "case-insensitive /MUSIC"       302 "$P/"             /MUSIC
+check "case-insensitive /Music/Foo"   302 "$P/Foo"          /Music/Foo
+check "NEG /MUSIC.evil.com"           200 -                 /MUSIC.evil.com
+check "NEG /music%2Eevil.com"         200 -                 /music%2Eevil.com
+# No in-game special-casing: framed and CitizenFX requests get the same 302.
+check "framed (Sec-Fetch-Dest iframe)" 302 "$P/"             /music        -H 'Sec-Fetch-Dest: iframe'
+check "framed on rest path"           302 "$P/x/y"          /music/x/y    -H 'Sec-Fetch-Dest: iframe'
+check "Sec-Fetch-Dest frame"          302 "$P/"             /music        -H 'Sec-Fetch-Dest: frame'
+check "CitizenFX UA"                  302 "$P/"             /music        -A 'Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0 Safari/537.36 CitizenFX/1.0.0.12345'
+check "citizenfx UA on rest path"     302 "$P/foo"          /music/foo    -A 'mozilla citizenfx'
+check "Sec-Fetch-Dest document"       302 "$P/"             /music        -H 'Sec-Fetch-Dest: document'
+check "NEG framed /musicx"            200 -                 /musicx       -H 'Sec-Fetch-Dest: iframe'
+check "NEG /music-card/ (removed)"    200 -                 /music-card/
 
 echo
-echo "Headers on the card (framed):"
-curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/music" -H 'Host: info.euphoric.fm' -H 'Sec-Fetch-Dest: iframe' \
-  | grep -i -E '^(cache-control|vary|content-security-policy|x-frame-options|content-type):' | tr -d '\r'
-echo "Headers on the redirect:"
-curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/music/x" -H 'Host: info.euphoric.fm' \
+echo "Headers on the redirect (framed + CitizenFX):"
+curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/music/x?y=1" -H 'Host: info.euphoric.fm' -H 'Sec-Fetch-Dest: iframe' -A 'CitizenFX' \
   | grep -i -E '^(cache-control|vary|location):' | tr -d '\r'
 
-# Card response must carry the required caching headers and stay framable.
-H=$(curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/music" -H 'Host: info.euphoric.fm' -A 'CitizenFX')
-echo "$H" | grep -qi '^cache-control: no-store' || { echo "FAIL card cache-control"; FAIL=1; }
-echo "$H" | grep -qi '^vary: .*Sec-Fetch-Dest.*User-Agent' || { echo "FAIL card vary"; FAIL=1; }
-echo "$H" | grep -qi 'frame-ancestors \*' || { echo "FAIL card CSP frame-ancestors"; FAIL=1; }
-echo "$H" | grep -qi '^x-frame-options' && { echo "FAIL card has X-Frame-Options"; FAIL=1; }
 # The song-submission webhook must no longer be handed out to visitors.
 RC=$(curl -s "http://127.0.0.1:$PORT/efm-runtime-config.js" -H 'Host: info.euphoric.fm')
 echo "Runtime config: $RC"
 echo "$RC" | grep -q requestWebhook && { echo "FAIL runtime config still serves requestWebhook"; FAIL=1; }
-grep -q 'window.top' dist/music-card/index.html && { echo "FAIL card references window.top"; FAIL=1; }
+[ -e dist/music-card ] && { echo "FAIL dist/music-card still built"; FAIL=1; }
 rm -f /tmp/efm-body.$$
 [ "$FAIL" = 0 ] && echo "ALL PASS" || { echo "SOME CHECKS FAILED"; exit 1; }

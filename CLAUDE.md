@@ -71,9 +71,6 @@ Webhook URLs (`PUBLIC_DISCORD_CONTACT_WEBHOOK` — the only one left since song 
 src/
   layouts/BaseLayout.astro     window.__EFM_CONFIG__ injected here; imports nowplaying.ts + effects.ts
   pages/index.astro            composes the page top-to-bottom
-  pages/music-card.astro       static in-game card for the browser-only music portal
-                               (music.euphoric.fm); Caddy serves it for framed/CEF
-                               /music requests, 302s everyone else to the portal
   pages/events.astro           composes the Euphoric FM Events page (Header → EventsHero →
                                EventsHowItWorks → EventsServices → EventStatus → Footer,
                                EventInquiryModal outside .phone)
@@ -180,9 +177,9 @@ There is **no `typecheck` script** in `package.json`. Type-checking runs as `pnp
 ## Discord webhooks
 
 The "contact us" form (and the /events inquiry form) POST to a Discord webhook. Song
-submission is NOT a form any more: the "Submit music" button opens the browser-only portal at
-music.euphoric.fm, and `/music` redirects there (in-game → the `/music-card/` page; see the
-Caddyfile "Music portal entry" block). Webhook URLs are
+submission is NOT a form any more: the "Submit music" button opens the portal at
+music.euphoric.fm, and `/music` 302-redirects there (see the Caddyfile "Music portal entry"
+block). Webhook URLs are
 **runtime env-injected** (see Rule 7): Caddy serves `/efm-runtime-config.js` which templates
 `PUBLIC_DISCORD_CONTACT_WEBHOOK` from the container env into
 `window.__EFM_CONFIG__.discord`. The modals read them at submit time from that object. They are

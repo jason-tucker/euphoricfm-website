@@ -54,31 +54,12 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     note: 'Use "Contact us!" to inquire and get started.',
   },
 
-  // Music submission portal (music.euphoric.fm). It is BROWSER-ONLY: Discord
-  // OAuth can't complete inside the in-game phone's CEF iframe, so in-game
-  // visitors get the static card page (src/pages/music-card.astro) instead.
-  // Caddy routes info.euphoric.fm/music(/…) either to a fixed-host 302 or, when
-  // framed / in-game, to that card — see the Caddyfile's "Music portal" block.
+  // Music submission portal (music.euphoric.fm) — the homepage "Submit
+  // music" button links here, and info.euphoric.fm/music(/…) 302s here (see
+  // the Caddyfile's "Music portal entry" block). No in-game special-casing.
   music: {
     portalUrl: 'https://music.euphoric.fm/',
-    portalHost: 'music.euphoric.fm',
-    // Where the homepage "Submit music" button goes INSIDE the in-game phone
-    // (html.efm-cef): the card page itself, directly, so it never depends on
-    // CEF sending the headers Caddy's /music routing keys on.
-    cardPath: '/music-card/',
     button: 'Submit music',
-    card: {
-      title: 'Submit music',
-      eyebrow: 'Music submissions',
-      heading: 'Music submissions happen in your browser.',
-      body: 'Open music.euphoric.fm on your PC or phone.',
-      urlLabel: 'Open this address',
-      copy: 'Copy',
-      copied: 'Copied!',
-      copyFailed: 'Select the address and copy it',
-      qrLabel: 'Or scan it with your phone',
-      back: 'Back to EuphoricFM',
-    },
   },
 
   // NewDayRP profile URL pattern — used to validate the optional profile field

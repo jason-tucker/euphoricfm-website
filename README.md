@@ -19,10 +19,9 @@ leaving the phone:
 - **Station stats** — a full stats area (below About) with interactive area
   graphs, KPI tiles, rhythm charts, and clickable top-tracks/top-artists with
   drill-down, covering the station's history back to 2023 where data permits.
-- **Submit music** — a button that opens the browser-only music portal at
-  [music.euphoric.fm](https://music.euphoric.fm) (Discord login). Inside the
-  in-game phone it shows a card instead ("open music.euphoric.fm on your PC or
-  phone"); `info.euphoric.fm/music` redirects to the portal the same way.
+- **Submit music** — a button that opens the music portal at
+  [music.euphoric.fm](https://music.euphoric.fm) in a new tab;
+  `info.euphoric.fm/music` 302-redirects there too.
 - **Contact us** — a form that posts to a Discord webhook.
 - **Euphoric FM Events** (`/events`) — a page for booking curated music and
   radio programming for an event, with a live on-air/"On the Calendar" status
@@ -48,9 +47,6 @@ src/
                               effects backdrop + client scripts
   pages/index.astro           composes the single page top-to-bottom
   pages/events.astro          composes the Euphoric FM Events page
-  pages/music-card.astro      in-game "submit music in your browser" card
-                              (build-time QR); Caddy serves it for framed/CEF
-                              requests to /music
   site.config.ts              one source of truth for editable strings + URLs
                                (includes the `events` copy block)
   lib/azuracast.ts            TS types + URL helpers for the AzuraCast API
@@ -76,8 +72,7 @@ src/
                               up-next, Web Audio analyser feeding --efm-* vars
     ListenButton.astro        HTML5 audio + volume (merged into PlayerCard)
     ActionRow.astro           CTAs: modal openers (efm:open-* events) + the
-                              Events link + "Submit music" (portal link;
-                              in-game it opens /music-card/ in-frame)
+                              Events link + "Submit music" (portal link)
     RecentlyPlayed.astro      list skeleton, hydrated by nowplaying.ts
     RequestedSongs.astro      shared pending-requests card, hydrated client-side
     Stats.astro               station stats section skeleton, hydrated by
