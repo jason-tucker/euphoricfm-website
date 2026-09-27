@@ -32,8 +32,56 @@ export function sniffImage(b: Buffer): ImageKind | null {
   if (b.length >= 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'webp'
   if (b.length >= 6 && /^GIF8[79]a$/.test(b.toString('latin1', 0, 6))) return 'gif'
   const head = b.subarray(0, 1024).toString('utf8').replace(/^﻿/, '').trimStart()
-  if (/^(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*(<!DOCTYPE svg[^>]*>\s*)?<svg[\s>]/i.test(head)) return 'svg'
+  if (looksLikeSvg(head)) return 'svg'
   return null
+}
+
+// SVG sniff: an optional `<?xml ...>` declaration, any number of `<!-- -->`
+// comments, an optional `<!DOCTYPE svg ...>`, then the `<svg` root (followed
+// by whitespace or `>`), with optional whitespace between the parts.
+//
+// One left-to-right scan with a cursor: fixed tokens are matched by sticky,
+// unambiguous regexes at the cursor, and each part's end is found by indexOf
+// from the cursor, so every character is visited a bounded number of times
+// (linear). The former single regex had an ambiguous
+// `(<!--[\s\S]*?-->\s*)*` that backtracked exponentially on a run of
+// comments that is not followed by `<svg` (CodeQL js/redos). A comment ends at
+// its FIRST `-->`, as in XML; the old regex could also stretch a comment over
+// a later `-->` (text outside a comment before the root), which is not a
+// well-formed SVG prolog and is no longer accepted.
+const XML_DECL = /<\?xml/iy
+const COMMENT_OPEN = /<!--/y
+const DOCTYPE_SVG = /<!DOCTYPE svg/iy
+const SVG_ROOT = /<svg[\s>]/iy
+const WS = /\s*/y
+
+export function looksLikeSvg(head: string): boolean {
+  let at = 0
+  const token = (re: RegExp): boolean => {
+    re.lastIndex = at
+    if (!re.test(head)) return false
+    at = re.lastIndex
+    return true
+  }
+  const skipWs = () => {
+    WS.lastIndex = at
+    WS.test(head)
+    at = WS.lastIndex
+  }
+  const skipPast = (end: string): boolean => {
+    const i = head.indexOf(end, at)
+    if (i < 0) return false
+    at = i + end.length
+    skipWs()
+    return true
+  }
+  skipWs()
+  if (token(XML_DECL) && !skipPast('>')) return false
+  while (token(COMMENT_OPEN)) {
+    if (!skipPast('-->')) return false
+  }
+  if (token(DOCTYPE_SVG) && !skipPast('>')) return false
+  return token(SVG_ROOT)
 }
 
 // Declared dimensions, read only from a structurally valid header; null
