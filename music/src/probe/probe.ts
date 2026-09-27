@@ -113,6 +113,7 @@ export async function runProbe(req: ProbeRequest, dirs: ProbeDirs): Promise<Spoo
         artist: z.string().nullable(),
         album: z.string().nullable(),
         genre: z.string().nullable(),
+        year: z.string().regex(/^\d{1,4}$/).nullable().optional(),
         cover: z.object({ format: z.string(), size: z.number() }).nullable(),
       })
       .parse(JSON.parse(mm.stdout.toString('utf8')))
@@ -142,7 +143,7 @@ export async function runProbe(req: ProbeRequest, dirs: ProbeDirs): Promise<Spoo
       size,
       durationS: Math.round(durationS * 10) / 10,
       bitrate,
-      tags: { title: tags.title, artist: tags.artist, album: tags.album, genre: tags.genre },
+      tags: { title: tags.title, artist: tags.artist, album: tags.album, genre: tags.genre, year: tags.year ?? null },
       cover,
       flags,
     }

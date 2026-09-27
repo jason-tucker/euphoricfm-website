@@ -3,7 +3,7 @@
 //
 // Inbox rules (enforced here, on top of the mounts): in-web may carry only
 // 'probe' | 'art' | 'art_release'; in-worker only 'finalize' | 'cover' |
-// 'probe_fetch'. A request of
+// 'probe_fetch' | 'cleanup_final'. A request of
 // the wrong type is answered {ok:false, error:'type_not_allowed_in_inbox'}
 // and never executed. Every result records its source inbox.
 
@@ -35,6 +35,7 @@ export const DIRS = {
   mmChild: new URL('./mm-child.mjs', import.meta.url).pathname,
 }
 
+
 const INBOXES: Inbox[] = ['in-web', 'in-worker']
 
 function fail(id: string, inbox: Inbox, type: string, error: string): SpoolResult {
@@ -64,11 +65,23 @@ export async function handleClaimed(inbox: Inbox, id: string, claimedPath: strin
     case 'probe':
       return runProbe(req, { uploads: dirs.uploads, work: dirs.work, mmChild: dirs.mmChild })
     case 'finalize':
-      return runFinalize(req, { uploads: dirs.uploads, work: dirs.work, final: dirs.final })
+      return runFinalize(req, { uploads: dirs.uploads, work: dirs.work, final: dirs.final, art: dirs.art })
     case 'art':
       return runArt(req, { artIn: dirs.artIn, art: dirs.art, work: dirs.work })
     case 'art_release':
       return runArtRelease(req, { artIn: dirs.artIn, art: dirs.art, work: dirs.work })
+    case 'cleanup_final': {
+      // unlink removes a symlink itself, never its target; the name is
+      // pattern-checked by the schema (no separators, no dots but .mp3).
+      let removed = true
+      try {
+        await unlink(join(dirs.final, req.file))
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return fail(id, inbox, req.type, 'cleanup_failed')
+        removed = false
+      }
+      return { v: 1, id, source: inbox, type: 'cleanup_final', ok: true, removed }
+    }
     default:
       return fail(id, inbox, req.type, 'not_implemented') // P5 SoundCloud types
   }

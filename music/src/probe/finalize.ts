@@ -8,12 +8,13 @@
 import { chmod, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import NodeID3 from 'node-id3'
-import { MAX_UPLOAD_BYTES, type FinalizeRequest, type SpoolResult } from '../server/spool/protocol'
+import { ART_JPEG_FILE, MAX_UPLOAD_BYTES, type FinalizeRequest, type SpoolResult } from '../server/spool/protocol'
 import { runLimited } from './exec'
 import { copyNoFollowHashed, ProbeReject, publishFile, reader, sha256File } from './files'
 import { checkMp3Magic } from './magic'
 
-export type FinalizeDirs = { uploads: string; work: string; final: string }
+// `art`: /staging/art (custom album art, one dir per art_uploads id).
+export type FinalizeDirs = { uploads: string; work: string; final: string; art?: string }
 
 export function stripArgs(input: string, output: string): string[] {
   return [
@@ -49,7 +50,9 @@ export async function runFinalize(req: FinalizeRequest, dirs: FinalizeDirs): Pro
     let imageBuffer: Buffer | null = null
     if (req.cover) {
       const coverCopy = join(work, 'cover.jpg')
-      const c = await copyNoFollowHashed(join(dirs.uploads, req.cover.file), coverCopy, 2 * 1024 * 1024)
+      // The effective cover: custom art (by id) or the probe-time embedded one.
+      const src = 'artId' in req.cover ? join(dirs.art ?? '/staging/art', req.cover.artId, ART_JPEG_FILE) : join(dirs.uploads, req.cover.file)
+      const c = await copyNoFollowHashed(src, coverCopy, 2 * 1024 * 1024)
       if (c.sha256 !== req.cover.sha256) throw new ProbeReject('cover_sha_mismatch')
       imageBuffer = await readFile(coverCopy)
       if (!(imageBuffer[0] === 0xff && imageBuffer[1] === 0xd8 && imageBuffer[2] === 0xff)) throw new ProbeReject('cover_not_jpeg')

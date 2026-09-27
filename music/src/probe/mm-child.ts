@@ -24,7 +24,14 @@ async function main() {
     cover = { format: String(pic.format ?? '').slice(0, 64), size: pic.data.length }
   }
   process.stdout.write(
-    JSON.stringify({ title: clip(c.title), artist: clip(c.artist), album: clip(c.album), genre: clip(c.genre?.[0]), cover }),
+    JSON.stringify({
+      title: clip(c.title),
+      artist: clip(c.artist),
+      album: clip(c.album),
+      genre: clip(c.genre?.[0]),
+      year: typeof c.year === 'number' && Number.isInteger(c.year) && c.year > 0 && c.year < 10000 ? String(c.year) : null,
+      cover,
+    }),
   )
 }
 

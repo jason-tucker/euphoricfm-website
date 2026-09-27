@@ -430,6 +430,8 @@ describe.skipIf(!MOCKS())('AzuraCast wrapper against the P0d-B mock', () => {
     const calls = (await control('/__mock/az/calls')) as { path: string; query: Record<string, string> }[]
     const pages = calls.filter((x) => (x as { method?: string }).method === 'GET' && x.path === '/api/station/1/files')
     expect(pages.length).toBeGreaterThan(1)
-    expect(pages.every((x) => x.query.per_page === '2' && x.query.page)).toBe(true)
+    // (the running worker's library sync pages too, with per_page=100)
+    expect(pages.every((x) => x.query.per_page && x.query.page)).toBe(true)
+    expect(pages.filter((x) => x.query.per_page === '2').length).toBeGreaterThan(1)
   })
 })

@@ -2,7 +2,7 @@
 // (plan §3 "Spool" + the PINNED MOUNTS).
 //
 //   /spool/probe/in-web/<uuid>.json     written by web      → 'probe' | 'art' | 'art_release'
-//   /spool/probe/in-worker/<uuid>.json  written by worker   → 'finalize' | 'cover' | 'probe_fetch'
+//   /spool/probe/in-worker/<uuid>.json  written by worker   → 'finalize' | 'cover' | 'probe_fetch' | 'cleanup_final'
 //   /spool/probe/out/<uuid>.json        written by probe    → read-only for web + worker
 //
 // The mounts enforce who can write where; the probe additionally enforces
@@ -33,7 +33,7 @@ export type Inbox = 'in-web' | 'in-worker'
 
 export const INBOX_TYPES: Record<Inbox, readonly string[]> = {
   'in-web': ['probe', 'art', 'art_release'],
-  'in-worker': ['finalize', 'cover', 'probe_fetch'],
+  'in-worker': ['finalize', 'cover', 'probe_fetch', 'cleanup_final'],
 }
 
 const tagString = z
@@ -51,6 +51,16 @@ export const probeRequest = z
   })
   .strict()
 
+// Custom album art (art contract 2026-09-27): the probe's re-encoded JPEG
+// for art_uploads.id lives at /staging/art/<artId>/<ART_JPEG_FILE>. The
+// request names only the id; the probe builds the path itself (the same
+// path the art request published, see ART_JPEG_FILE above).
+
+export const finalizeCover = z.union([
+  z.object({ file: z.string().regex(COVER_FILE_RE), sha256: z.string().regex(SHA256_RE) }).strict(), // embedded (probe-time) cover
+  z.object({ artId: z.string().regex(UUID_RE), sha256: z.string().regex(SHA256_RE) }).strict(), // custom art upload
+])
+
 export const finalizeRequest = z
   .object({
     v: z.literal(1),
@@ -59,7 +69,7 @@ export const finalizeRequest = z
     upload: z.string().regex(UPLOAD_ID_RE),
     approvedSha256: z.string().regex(SHA256_RE),
     tags: z.object({ title: tagString, artist: tagString, album: tagString, genre: tagString }).strict(),
-    cover: z.object({ file: z.string().regex(COVER_FILE_RE), sha256: z.string().regex(SHA256_RE) }).strict().nullable(),
+    cover: finalizeCover.nullable(),
   })
   .strict()
 
@@ -81,7 +91,14 @@ export const artReleaseRequest = z
   .object({ v: z.literal(1), id: z.string().regex(UUID_RE), type: z.literal('art_release'), artId: z.string().regex(UUID_RE) })
   .strict()
 
-export const spoolRequest = z.discriminatedUnion('type', [probeRequest, finalizeRequest, coverRequest, probeFetchRequest, artRequest, artReleaseRequest])
+// P3: the worker mounts /staging/final read-only, so it asks the probe to
+// remove a finalized file (live or failed + 7 days). Name pattern only.
+export const FINAL_FILE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.mp3$/
+export const cleanupFinalRequest = z
+  .object({ v: z.literal(1), id: z.string().regex(UUID_RE), type: z.literal('cleanup_final'), file: z.string().regex(FINAL_FILE_RE) })
+  .strict()
+
+export const spoolRequest = z.discriminatedUnion('type', [probeRequest, finalizeRequest, coverRequest, probeFetchRequest, artRequest, artReleaseRequest, cleanupFinalRequest])
 export type SpoolRequest = z.infer<typeof spoolRequest>
 export type ProbeRequest = z.infer<typeof probeRequest>
 export type FinalizeRequest = z.infer<typeof finalizeRequest>
@@ -95,6 +112,8 @@ export const probeTags = z.object({
   artist: z.string().max(200).nullable(),
   album: z.string().max(200).nullable(),
   genre: z.string().max(200).nullable(),
+  // Prefill only (shown to the submitter); not written by finalize.
+  year: z.string().regex(/^\d{1,4}$/).nullable().optional(),
 })
 
 export const probeOk = z.object({
@@ -139,7 +158,14 @@ export const spoolFailure = z.object({
   error: z.string().max(64),
 })
 
-export const spoolResult = z.union([probeOk, finalizeOk, artOk, artReleaseOk, spoolFailure])
+export const cleanupOk = z.object({
+  ...resultBase,
+  type: z.literal('cleanup_final'),
+  ok: z.literal(true),
+  removed: z.boolean(),
+})
+
+export const spoolResult = z.union([probeOk, finalizeOk, artOk, artReleaseOk, cleanupOk, spoolFailure])
 export type SpoolResult = z.infer<typeof spoolResult>
 
 // Exclusive-create a tmp file (O_CREAT|O_EXCL never follows a symlink), then
