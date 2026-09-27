@@ -58,7 +58,10 @@ async function dailyCaps(db: DB) {
 export async function loadRequestTarget(db: DB, root: string, id: number) {
   const lib = await db.query.libraryCache.findFirst({ where: eq(libraryCache.mediaId, id) })
   if (!lib || !isRequestTarget(root, lib.path)) throw notFound()
-  const archived = await db.query.archive.findFirst({ where: and(eq(archive.mediaId, id), eq(archive.status, 'archived')) })
+  // Archived, or a restore still in progress. (An 'archiving' row that
+  // stopped part way stays actionable, so a manager can queue the archive
+  // again and the worker resumes it.)
+  const archived = await db.query.archive.findFirst({ where: and(eq(archive.mediaId, id), inArray(archive.status, ['archived', 'restoring'])) })
   if (archived) throw notFound()
   return lib
 }

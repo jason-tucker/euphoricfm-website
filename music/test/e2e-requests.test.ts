@@ -210,6 +210,9 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
     const e = await req(reviewer, `/api/library/${s.id}`, { method: 'PATCH', json: { genre: 'Managed' } })
     expect(e.status).toBe(202)
     await waitFor(async () => (await byId(s.id))?.genre === 'Managed')
+    // the artist the manager saw travels with the job (a retry after the PUT still knows it)
+    const editJob = (await ownerSql()`SELECT payload FROM jobs WHERE kind = 'apply_edit' AND payload->>'mediaId' = ${String(s.id)} ORDER BY id DESC LIMIT 1`)[0]!
+    expect(editJob.payload).toMatchObject({ mediaId: s.id, beforeArtist: artistName })
     expect((await req(reviewer, `/api/library/${s.id}/playlists`, { method: 'PUT', json: { playlistIds: [3] } })).status).toBe(400)
     expect((await req(reviewer, `/api/library/${s.id}/playlists`, { method: 'PUT', json: { playlistIds: [] } })).status).toBe(202)
     await waitFor(async () => ((await byId(s.id))?.playlists ?? [{ id: 0 }]).length === 0)
@@ -276,6 +279,15 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
     expect((await put(admin, { key: 'default_playlist_ids', value: [3] })).status).toBe(400) // not assignable
     expect((await put(admin, { key: 'discord_invite_url', value: 'https://discord.gg/efm' })).status).toBe(200)
     expect((await put(admin, { key: 'rights_attestation', value: { version: 'v2', text: 'I have the rights.' } })).status).toBe(200)
+    // station_playlist_ids is sync-owned; the Events ids are the admin control,
+    // and an edit may not pull a confirmed station-1 id out of the station set
+    expect((await put(admin, { key: 'station_playlist_ids', value: [2] })).status).toBe(400)
+    const refusal = async (value: unknown) => ((await (await put(admin, { key: 'foreign_playlist_ids', value })).json()) as { error?: string }).error
+    expect(await refusal([74, 75, 76, 77, 78, 2])).toBe('foreign_is_assignable')
+    expect(await refusal([74, 75, 76, 77, 78, 3])).toBe('foreign_is_station_playlist') // 3: a station id (beforeAll)
+    expect((await put(admin, { key: 'foreign_playlist_ids', value: [74, 75, 76, 77, 78, 987654] })).status).toBe(200)
+    expect((await put(admin, { key: 'foreign_playlist_ids', value: [74, 75, 76, 77, 78] })).status).toBe(200)
+    expect((await put(admin, { key: 'assignable_playlist_ids', value: [2, 74] })).status).toBe(400) // an Events id is never assignable
     const s = Object.fromEntries((await ownerSql()`SELECT key, value, updated_by FROM settings WHERE key IN ('playlist_names', 'discord_invite_url')`).map((r) => [r.key, r]))
     expect(s.playlist_names!.value).toEqual({ '2': '1General Rotation', '3': 'Night' })
     expect(s.discord_invite_url!.updated_by).toBe(ADMIN_ID)

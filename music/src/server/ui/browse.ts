@@ -113,7 +113,8 @@ export type PendingRequest = Awaited<ReturnType<typeof pendingRequests>>[number]
 
 export async function archivedSongs(db: DB, v: Viewer) {
   if (!v.perms.has('manage')) throw forbidden()
-  const rows = await db.query.archive.findMany({ where: eq(archive.status, 'archived'), orderBy: desc(archive.archivedAt), limit: 200 })
+  // 'restoring': a restore that stopped part way; Restore resumes it.
+  const rows = await db.query.archive.findMany({ where: inArray(archive.status, ['archived', 'restoring']), orderBy: desc(archive.archivedAt), limit: 200 })
   return rows.map((a) => ({
     id: a.id,
     mediaId: a.mediaId,

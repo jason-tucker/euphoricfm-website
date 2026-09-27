@@ -2,7 +2,7 @@
 // playlist change (the worker MERGES), archive and restore. The web holds no
 // AzuraCast key, so each one validates, audits and queues a worker job.
 
-import { and, eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import { audit } from '../audit'
 import type { Viewer } from '../authz/predicates'
@@ -36,7 +36,9 @@ export async function directEdit(db: DB, v: Viewer, root: string, mediaId: numbe
     if (!a || a.status !== 'active') throw conflict('artist_not_active')
   }
   return db.transaction(async (tx) => {
-    await enqueue(tx, 'apply_edit', { mediaId, proposed: p.data, ...actor(v) })
+    // beforeArtist: a worker re-run after its metadata PUT must still see the
+    // main-artist change and queue the folder move.
+    await enqueue(tx, 'apply_edit', { mediaId, proposed: p.data, beforeArtist: current.artist, ...actor(v) })
     await audit(tx, { ...actor(v), action: 'library.edit', targetType: 'media', targetId: mediaId, detail: { path: lib.path, before: current, proposed: p.data } })
     return { queued: 'apply_edit', mediaId }
   })
@@ -77,7 +79,8 @@ export async function restoreSong(db: DB, v: Viewer, archiveId: number) {
   requireManage(v)
   const a = await db.query.archive.findFirst({ where: eq(archive.id, archiveId) })
   if (!a) throw notFound()
-  if (a.status !== 'archived') throw conflict('not_archived')
+  // 'restoring': an earlier restore stopped part way; the worker resumes it.
+  if (a.status !== 'archived' && a.status !== 'restoring') throw conflict('not_archived')
   return db.transaction(async (tx) => {
     await enqueue(tx, 'restore', { archiveId: a.id, ...actor(v) })
     await audit(tx, { ...actor(v), action: 'library.restore', targetType: 'archive', targetId: a.id, detail: { mediaId: a.mediaId, originalPath: a.originalPath } })
@@ -87,7 +90,7 @@ export async function restoreSong(db: DB, v: Viewer, archiveId: number) {
 
 export async function listArchived(db: DB, v: Viewer) {
   requireManage(v)
-  const rows = await db.query.archive.findMany({ where: and(eq(archive.status, 'archived')), limit: 500 })
+  const rows = await db.query.archive.findMany({ where: inArray(archive.status, ['archived', 'restoring']), limit: 500 })
   return rows.map((a) => ({ id: a.id, mediaId: a.mediaId, originalPath: a.originalPath, archivedPath: a.archivedPath, requestId: a.requestId, archivedAt: a.archivedAt.toISOString() }))
 }
 

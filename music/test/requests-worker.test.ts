@@ -2,8 +2,8 @@
 // (plan §6 P4). Handlers run in-process with an injected clock; follow-up
 // jobs are captured instead of queued, so the running music-worker never
 // races these tests.
-import { randomUUID } from 'node:crypto'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
@@ -19,6 +19,7 @@ import {
   applyEdit,
   archiveMedia,
   move,
+  requestFailureText,
   restoreMedia,
   reverify,
   runRequestJob,
@@ -90,6 +91,18 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
     if (i < 0) throw new Error(`nothing scheduled of kind ${kind}: ${scheduled.map((s) => s.kind).join(',')}`)
     return scheduled.splice(i, 1)[0]!
   }
+
+  // A context whose AzuraCast transport goes through `f` (which forwards to
+  // the mock with the real fetch): lost replies, network errors, a server
+  // that answers without doing the work.
+  function ctxWith(f: (url: string, init: RequestInit) => Promise<Response>): RequestsCtx {
+    const az = new AzuraCastClient({ baseUrl: process.env.MOCKS_AZURACAST!, apiKey: process.env.AZURACAST_API_KEY!, profile: resolveProfile(ENV), canaryStationId: 7, env: ENV, artDir, fetchImpl: f as unknown as typeof fetch })
+    return { ...ctx, azuracast: az }
+  }
+  const batchOf = (url: string, init: RequestInit): string | null =>
+    init.method === 'PUT' && url.endsWith('/api/station/1/files/batch') ? ((JSON.parse(String(init.body)) as { do?: string }).do ?? null) : null
+  const timeout = () => Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' })
+  const archiveRow = async (mediaId: number) => (await ownerSql()`SELECT * FROM archive WHERE media_id = ${mediaId} ORDER BY id DESC LIMIT 1`)[0]
 
   beforeAll(async () => {
     const recFetch = (async (url: string, init: RequestInit) => {
@@ -218,6 +231,8 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
     const id = await request('edit', m, { title: 'After Edit' })
     await applyEdit(ctx, { requestId: id })
     const rv = take('reverify')
+    // A manager job queued for the old id (REMAP-1): it must follow the row.
+    const [queued] = await ownerSql()`INSERT INTO jobs (kind, payload, status, run_after) VALUES ('set_playlists', ${ownerSql().json({ mediaId: m.id, chosen: [2] })}, 'queued', now() + interval '30 days') RETURNING id`
     const fresh = (await control('/__mock/az/lose-row', { path: m.path })) as StationMedia
     expect(fresh.id).not.toBe(m.id)
     expect(fresh.title).toBe('Scanned Title')
@@ -234,6 +249,8 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
     expect((await ownerSql()`SELECT count(*)::int AS n FROM media_snapshots WHERE media_id = ${m.id}`)[0]!.n).toBe(0)
     expect((await ownerSql()`SELECT media_id FROM library_cache WHERE path = ${m.path}`)[0]!.media_id).toBe(fresh.id)
     expect(alerts.some((a) => a.includes('recovered'))).toBe(true)
+    expect((await ownerSql()`SELECT payload FROM jobs WHERE id = ${queued!.id}`)[0]!.payload).toEqual({ mediaId: fresh.id, chosen: [2] })
+    await ownerSql()`UPDATE jobs SET status = 'done' WHERE id = ${queued!.id}`
   })
 
   it('a row that stays lost is re-polled, then fails after 3 cycles and 20 minutes', async () => {
@@ -295,17 +312,190 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
     expect(ids(after)).toEqual([2, 3])
     expect(await reqRow(id)).toMatchObject({ status: 'failed', error: 'archive_move_failed' })
     expect(take('request_ticket_post').payload).toMatchObject({ requestId: id, event: 'failed' })
-    expect((await ownerSql()`SELECT count(*)::int AS n FROM archive WHERE media_id = ${m.id}`)[0]!.n).toBe(0)
+    // The row recorded before the first write is closed: nothing is open.
+    expect((await ownerSql()`SELECT status FROM archive WHERE media_id = ${m.id}`).map((r) => r.status)).toEqual(['failed'])
   })
 
-  it('archive refuses when another station keeps a membership, and puts the playlists back', async () => {
+  it('archive refuses BEFORE any change when the song is also in an Events playlist, and the ticket names the playlists', async () => {
     const folder = `EVT-${RUN}`
     await artist(`Evt ${RUN}`, folder)
-    const m = await seed(`${art(folder)}/ev.mp3`, { playlists: [2, 74] })
-    await expect(archiveMedia(ctx, { mediaId: m.id })).rejects.toMatchObject({ code: 'memberships_remain' })
+    const m = await seed(`${art(folder)}/ev.mp3`, { playlists: [2, 74, 78] })
+    const id = await request('removal', m, null)
+    const before = await writes()
+    await runRequestJob(ctx, { id: 1, kind: 'archive', payload: { requestId: id }, attempts: 1, max_attempts: 8 })
+    expect(await writes()).toBe(before) // nothing cleared, nothing moved, nothing re-added
     const after = await fileById(m.id)
     expect(after!.path).toBe(m.path)
-    expect(ids(after)).toEqual([2, 74])
+    expect(ids(after)).toEqual([2, 74, 78])
+    const r = await reqRow(id)
+    expect(r).toMatchObject({ status: 'failed', error: 'in_events_playlists: 74, 78' })
+    expect(await archiveRow(m.id)).toBeUndefined()
+    expect(take('request_ticket_post').payload).toMatchObject({ requestId: id, event: 'failed' })
+    expect(requestFailureText({ error: r.error as string }, 'Removal', 'A - T')).toMatch(/Events playlist\(s\) 74, 78 \(station 14\).*take it out of those playlists/)
+    expect(alerts).toContain('archive failed (in_events_playlists)')
+    // A manager's direct archive is refused the same way.
+    await expect(archiveMedia(ctx, { mediaId: m.id })).rejects.toMatchObject({ code: 'in_events_playlists', detail: { playlistIds: [74, 78] } })
+  })
+
+  it('archive resumes after a failure between the clear and the move with the ORIGINAL snapshot, so restore brings the playlists back', async () => {
+    const folder = `ARC1-${RUN}`
+    await artist(`Arc One ${RUN}`, folder)
+    const m = await seed(`${art(folder)}/resume.mp3`, { playlists: [2, 3] })
+    const id = await request('removal', m, null)
+    let cleared = false
+    let failed = false
+    const flaky = ctxWith(async (url, init) => {
+      if (batchOf(url, init) === 'playlist') {
+        const r = await fetch(url, init)
+        cleared = true
+        return r
+      }
+      if (cleared && !failed && init.method === 'GET' && url.endsWith(`/api/station/1/file/${m.id}`)) {
+        failed = true
+        throw new TypeError('fetch failed')
+      }
+      return fetch(url, init)
+    })
+    await expect(archiveMedia(flaky, { requestId: id })).rejects.toBeInstanceOf(TypeError)
+    expect(await fileById(m.id)).toMatchObject({ path: m.path, playlists: [] }) // cleared, not moved
+    expect(await archiveRow(m.id)).toMatchObject({ status: 'archiving', original_path: m.path })
+    // The retry must not snapshot the cleared state.
+    await archiveMedia(ctx, { requestId: id })
+    expect((await fileById(m.id))!.path).toBe(`${PREFIX}Removed/${m.id}/resume.mp3`)
+    const a = (await archiveRow(m.id))!
+    expect(a.status).toBe('archived')
+    expect((await ownerSql()`SELECT playlist_ids FROM media_snapshots WHERE id = ${a.snapshot_id}`)[0]!.playlist_ids).toEqual([2, 3])
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM media_snapshots WHERE media_id = ${m.id} AND reason = 'before_archive'`)[0]!.n).toBe(1)
+    expect(await reqRow(id)).toMatchObject({ status: 'verifying' })
+    await restoreMedia(ctx, { archiveId: a.id as number })
+    expect(await fileById(m.id)).toMatchObject({ path: m.path })
+    expect(ids(await fileById(m.id))).toEqual([2, 3])
+  })
+
+  it('archive: a move whose reply is lost finishes (the file is where it is), and a half-done archive completes on re-run', async () => {
+    const folder = `ARC2-${RUN}`
+    await artist(`Arc Two ${RUN}`, folder)
+    // (a) AzuraCast moved the file, the reply timed out.
+    const m1 = await seed(`${art(folder)}/lost reply.mp3`, { playlists: [2] })
+    const r1 = await request('removal', m1, null)
+    const lost = ctxWith(async (url, init) => {
+      if (batchOf(url, init) === 'move') {
+        await fetch(url, init)
+        throw timeout()
+      }
+      return fetch(url, init)
+    })
+    await archiveMedia(lost, { requestId: r1 })
+    expect((await fileById(m1.id))!.path).toBe(`${PREFIX}Removed/${m1.id}/lost reply.mp3`)
+    expect(await archiveRow(m1.id)).toMatchObject({ status: 'archived', archived_path: `${PREFIX}Removed/${m1.id}/lost reply.mp3` })
+    expect(await reqRow(r1)).toMatchObject({ status: 'verifying' })
+    expect(alerts.filter((a) => a.includes('rollback'))).toEqual([])
+    await restoreMedia(ctx, { archiveId: (await archiveRow(m1.id))!.id as number })
+    expect(await fileById(m1.id)).toMatchObject({ path: m1.path })
+    expect(ids(await fileById(m1.id))).toEqual([2])
+    // (b) moved, then the worker lost the next read too (as good as a crash).
+    const m2 = await seed(`${art(folder)}/crash.mp3`, { playlists: [3] })
+    const r2 = await request('removal', m2, null)
+    let moved = false
+    let readFailed = false
+    const crash = ctxWith(async (url, init) => {
+      if (batchOf(url, init) === 'move') {
+        await fetch(url, init)
+        moved = true
+        throw timeout()
+      }
+      if (moved && !readFailed && init.method === 'GET' && url.endsWith(`/api/station/1/file/${m2.id}`)) {
+        readFailed = true
+        throw new TypeError('fetch failed')
+      }
+      return fetch(url, init)
+    })
+    await expect(archiveMedia(crash, { requestId: r2 })).rejects.toBeInstanceOf(TypeError)
+    expect((await fileById(m2.id))!.path).toBe(`${PREFIX}Removed/${m2.id}/crash.mp3`)
+    expect(await archiveRow(m2.id)).toMatchObject({ status: 'archiving' })
+    await archiveMedia(ctx, { requestId: r2 })
+    expect(await archiveRow(m2.id)).toMatchObject({ status: 'archived' })
+    expect(await reqRow(r2)).toMatchObject({ status: 'verifying' })
+    const a2 = (await archiveRow(m2.id))!
+    expect((await ownerSql()`SELECT playlist_ids FROM media_snapshots WHERE id = ${a2.snapshot_id}`)[0]!.playlist_ids).toEqual([3])
+  })
+
+  it('restore resumes after a failure following the move: the retry completes with the snapshot playlists', async () => {
+    const folder = `RES1-${RUN}`
+    await artist(`Res One ${RUN}`, folder)
+    const m = await seed(`${art(folder)}/back.mp3`, { title: 'Back', artist: `Res One ${RUN}`, playlists: [2, 3] })
+    await archiveMedia(ctx, { mediaId: m.id })
+    const a = (await archiveRow(m.id))!
+    let failed = false
+    const flaky = ctxWith(async (url, init) => {
+      if (batchOf(url, init) === 'playlist' && !failed) {
+        failed = true
+        throw new TypeError('fetch failed')
+      }
+      return fetch(url, init)
+    })
+    await expect(restoreMedia(flaky, { archiveId: a.id as number })).rejects.toBeInstanceOf(TypeError)
+    expect(await fileById(m.id)).toMatchObject({ path: m.path, playlists: [] }) // moved back, memberships not yet
+    expect((await archiveRow(m.id))!.status).toBe('restoring')
+    await restoreMedia(ctx, { archiveId: a.id as number })
+    expect(await fileById(m.id)).toMatchObject({ path: m.path, title: 'Back' })
+    expect(ids(await fileById(m.id))).toEqual([2, 3])
+    expect((await archiveRow(m.id))!.status).toBe('restored')
+  })
+
+  it('re-verify never reverts a later change: set_playlists after an edit keeps its new id; overlapping edits do not ping-pong', async () => {
+    await ownerSql()`UPDATE settings SET value = '[2,5,9]'::jsonb WHERE key = 'assignable_playlist_ids'`
+    await ownerSql()`UPDATE settings SET value = '[2,3,5,9]'::jsonb WHERE key = 'station_playlist_ids'`
+    try {
+      const folder = `VER1-${RUN}`
+      await artist(`Ver One ${RUN}`, folder)
+      const m = await seed(`${art(folder)}/v.mp3`, { title: 'Orig', artist: `Ver One ${RUN}`, playlists: [2] })
+      const e0 = await request('edit', m, { title: 'Edited' })
+      await applyEdit(ctx, { requestId: e0 })
+      const rv0 = take('reverify')
+      take('request_ticket_post')
+      // a manager adds playlist 9 before the edit's re-verify runs
+      await setPlaylistsJob(ctx, { mediaId: m.id, chosen: [2, 9] })
+      const rvPl = take('reverify') // set_playlists has its own chain
+      let before = await writes()
+      await reverify(ctx, rv0.payload as never)
+      expect(await writes()).toBe(before) // superseded: nothing re-applied
+      expect(ids(await fileById(m.id))).toEqual([2, 9])
+      expect(await reqRow(e0)).toMatchObject({ status: 'done' })
+      await reverify(ctx, rvPl.payload as never)
+      expect(ids(await fileById(m.id))).toEqual([2, 9])
+      // two edits whose re-verify chains overlap
+      const e1 = await request('edit', (await fileById(m.id)) as StationMedia, { title: 'First' })
+      await applyEdit(ctx, { requestId: e1 })
+      const rv1 = take('reverify')
+      const e2 = await request('edit', (await fileById(m.id)) as StationMedia, { title: 'Second' })
+      await applyEdit(ctx, { requestId: e2 })
+      const rv2 = take('reverify')
+      before = await writes()
+      await reverify(ctx, rv1.payload as never)
+      await reverify(ctx, rv2.payload as never)
+      expect(await writes()).toBe(before)
+      expect((await fileById(m.id))!.title).toBe('Second')
+      expect(await reqRow(e1)).toMatchObject({ status: 'done' })
+      expect(await reqRow(e2)).toMatchObject({ status: 'done' })
+      // a real loss on the latest chain is still repaired, by MERGE: the lost
+      // id comes back, a membership added since (3) stays
+      const e3 = await request('edit', (await fileById(m.id)) as StationMedia, { genre: 'Third' })
+      await applyEdit(ctx, { requestId: e3 })
+      const rv3 = take('reverify')
+      await fetch(`${process.env.MOCKS_AZURACAST}/api/station/1/files/batch`, {
+        method: 'PUT',
+        headers: { 'X-API-Key': process.env.AZURACAST_API_KEY!, 'content-type': 'application/json' },
+        body: JSON.stringify({ do: 'playlist', files: [m.path], playlists: [3, 9] }),
+      })
+      await reverify(ctx, rv3.payload as never)
+      expect(ids(await fileById(m.id))).toEqual([2, 3, 9])
+      const batch = (await azCalls()).filter((c) => c.path.endsWith('/files/batch')).at(-1)!
+      expect(batch.body).toMatchObject({ do: 'playlist', playlists: [2, 3, 9] })
+    } finally {
+      await ownerSql()`UPDATE settings SET value = '[2]'::jsonb WHERE key = 'assignable_playlist_ids'`
+      await ownerSql()`UPDATE settings SET value = '[2,3,5]'::jsonb WHERE key = 'station_playlist_ids'`
+    }
   })
 
   it('refuses targets outside Music/Artists/<folder>/: ADS/, Events/, UNRELEASED*, Removed/, nested', async () => {
@@ -411,6 +601,87 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
     await ownerSql()`UPDATE jobs SET status = 'done' WHERE id = ${j!.id}`
   })
 
+  it('a retried manager edit still queues the folder move (the payload carries the artist the manager saw)', async () => {
+    const f1 = `EDIT1A-${RUN}`
+    const f2 = `EDIT1B-${RUN}`
+    await artist(`Edit One ${RUN}`, f1)
+    await artist(`Edit Two ${RUN}`, f2)
+    // The first run's PUT landed, then it died before queueing the move: the
+    // row already carries the new artist.
+    const m = await seed(`${art(f1)}/e.mp3`, { artist: `Edit Two ${RUN}` })
+    await applyEdit(ctx, { mediaId: m.id, proposed: { artist: `Edit Two ${RUN}` }, beforeArtist: `Edit One ${RUN}` })
+    expect(take('move').payload).toMatchObject({ mediaId: m.id, toDir: art(f2) })
+  })
+
+  it('an edit whose new artist sanitizes to ANOTHER artist’s folder fails with artist_folder_taken (active or denied owner); nothing is written', async () => {
+    const src = `SEC5-${RUN}`
+    await artist(`Sec Five ${RUN}`, src)
+    const ownerId = await artist(`Other Band ${RUN}`, `AC DC ${RUN}`)
+    const m1 = await seed(`${art(src)}/one.mp3`, { artist: `Sec Five ${RUN}` })
+    const m2 = await seed(`${art(src)}/two.mp3`, { artist: `Sec Five ${RUN}` })
+    const r1 = await request('edit', m1, { artist: `AC/DC ${RUN}` })
+    const before = await writes()
+    await runRequestJob(ctx, { id: 1, kind: 'apply_edit', payload: { requestId: r1 }, attempts: 1, max_attempts: 8 })
+    expect(await reqRow(r1)).toMatchObject({ status: 'failed', error: `artist_folder_taken: AC DC ${RUN}` })
+    expect(scheduled.map((x) => x.kind)).toEqual(['request_ticket_post'])
+    take('request_ticket_post')
+    await ownerSql()`UPDATE artists SET status = 'denied' WHERE id = ${ownerId}`
+    const r2 = await request('edit', m2, { artist: `AC/DC ${RUN}` })
+    await runRequestJob(ctx, { id: 1, kind: 'apply_edit', payload: { requestId: r2 }, attempts: 1, max_attempts: 8 })
+    expect(await reqRow(r2)).toMatchObject({ status: 'failed', error: `artist_folder_taken: AC DC ${RUN}` })
+    expect(requestFailureText({ error: `artist_folder_taken: AC DC ${RUN}` }, 'Edit', 'x')).toMatch(/already belongs to a different artist/)
+    expect(await writes()).toBe(before)
+    expect((await fileById(m1.id))!.artist).toBe(`Sec Five ${RUN}`)
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM artists WHERE folder = ${`AC DC ${RUN}`}`)[0]!.n).toBe(1)
+  })
+
+  it('a metadata PUT that reports success but stores nothing fails the edit (metadata_verify_failed)', async () => {
+    const folder = `F2-${RUN}`
+    await artist(`F Two ${RUN}`, folder)
+    const m = await seed(`${art(folder)}/silent.mp3`, { title: 'Before' })
+    const id = await request('edit', m, { title: 'After' })
+    await control('/__mock/az/ignore-next-put', {})
+    await runRequestJob(ctx, { id: 1, kind: 'apply_edit', payload: { requestId: id }, attempts: 1, max_attempts: 8 })
+    expect(await reqRow(id)).toMatchObject({ status: 'failed', error: 'metadata_verify_failed' })
+    expect((await fileById(m.id))!.title).toBe('Before')
+    expect(scheduled.some((x) => x.kind === 'reverify')).toBe(false)
+  })
+
+  it('an old job waiting for the scan window comes back when the window opens, not on the 30-minute age floor', async () => {
+    clock = LATE // :x5:45, the window opens again at :x6:30
+    const [j] = await ownerSql()`INSERT INTO jobs (kind, payload, status, attempts) VALUES ('move', ${ownerSql().json({ mediaId: 999997, toDir: art('none') })}, 'running', 1) RETURNING id`
+    await runJob(ctx, { id: Number(j!.id), kind: 'move', payload: { mediaId: 999997, toDir: art('none') }, attempts: 1, max_attempts: 8, age_s: 40_000 } as never)
+    const row = (await ownerSql()`SELECT status, EXTRACT(EPOCH FROM run_after - now())::int AS in_s FROM jobs WHERE id = ${j!.id}`)[0]!
+    expect(row.status).toBe('queued')
+    expect(row.in_s).toBeGreaterThanOrEqual(40)
+    expect(row.in_s).toBeLessThanOrEqual(46)
+    await ownerSql()`UPDATE jobs SET status = 'done' WHERE id = ${j!.id}`
+  })
+
+  it('a wait that ages out fails the request (status, ticket post), and a window wait gets more than the 7-day default', async () => {
+    clock = EARLY
+    const folder = `F1-${RUN}`
+    await artist(`F One ${RUN}`, folder)
+    const m = await seed(`${art(folder)}/old.mp3`, { playlists: [2] })
+    const id = await request('removal', m, null)
+    const job = async (ageS: number) => {
+      const [j] = await ownerSql()`INSERT INTO jobs (kind, payload, status, attempts, created_at) VALUES ('archive', ${ownerSql().json({ requestId: id })}, 'running', 1, now() - make_interval(secs => ${ageS})) RETURNING id`
+      await runJob(ctx, { id: Number(j!.id), kind: 'archive', payload: { requestId: id }, attempts: 1, max_attempts: 8, age_s: ageS } as never)
+      const st = (await ownerSql()`SELECT status FROM jobs WHERE id = ${j!.id}`)[0]!.status as string
+      await ownerSql()`UPDATE jobs SET status = 'done' WHERE id = ${j!.id} AND status = 'queued'` // keep it from the live worker
+      return st
+    }
+    // 8 days waiting for the window: still waiting (a song may have waited
+    // for its artist or a pause before), the request untouched.
+    expect(await job(8 * 86_400)).toBe('queued')
+    expect(await reqRow(id)).toMatchObject({ status: 'approved' })
+    // past the window wait's age bound: the job dies AND the request fails
+    expect(await job(41 * 86_400)).toBe('dead')
+    expect(await reqRow(id)).toMatchObject({ status: 'failed', error: 'wait_expired' })
+    expect(take('request_ticket_post').payload).toMatchObject({ requestId: id, event: 'failed' })
+    expect(alerts.some((a) => a.includes('gave up'))).toBe(true)
+  })
+
   // ------------------------------------------------------------ art ---
   // The foundation's uploadArt, end to end against the mock's POST
   // /api/station/1/art/{id} (multipart field `file`, verified upstream):
@@ -421,13 +692,34 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
   // A context whose art POST answers success without storing anything (so
   // art_updated_at does not move): the verify must fail the request.
   function silentArt(): RequestsCtx {
-    const f = (async (url: string, init: RequestInit) => {
+    return ctxWith(async (url, init) => {
       if (init.method === 'POST' && /\/api\/station\/1\/art\/\d+$/.test(url)) return new Response(JSON.stringify({ success: true }), { status: 200 })
       return fetch(url, init)
-    }) as unknown as typeof fetch
-    const az = new AzuraCastClient({ baseUrl: process.env.MOCKS_AZURACAST!, apiKey: process.env.AZURACAST_API_KEY!, profile: resolveProfile(ENV), canaryStationId: 7, env: ENV, artDir, fetchImpl: f })
-    return { ...ctx, azuracast: az }
+    })
   }
+  // A JPEG with a real header (SOF with the given dimensions): the mock, like
+  // AzuraCast, stores a re-encoded copy of it (the bytes differ).
+  function jpeg(w: number, h: number, tag: string): Buffer {
+    const app0 = [0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]
+    const sof = [0xff, 0xc0, 0, 17, 8, h >> 8, h & 255, w >> 8, w & 255, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]
+    const sos = [0xff, 0xda, 0, 12, 3, 1, 0, 2, 0x11, 3, 0x11, 0, 0x3f, 0]
+    return Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.from(app0), Buffer.from(sof), Buffer.from(sos), Buffer.from(`scan ${tag}`), Buffer.from([0xff, 0xd9])])
+  }
+  async function readyArt(bytes: Buffer, w: number, h: number) {
+    const id = randomUUID()
+    const jpegPath = `${artDir}/${id}/cover.jpg`
+    mkdirSync(`${artDir}/${id}`, { recursive: true })
+    writeFileSync(jpegPath, bytes)
+    const sha = createHash('sha256').update(bytes).digest('hex')
+    await ownerSql()`INSERT INTO art_uploads (id, owner, status, jpeg_path, jpeg_sha256, width, height) VALUES (${id}, ${ownerId}, 'ready', ${jpegPath}, ${sha}, ${w}, ${h})`
+    return { id, sha }
+  }
+  const servedArt = async (mediaId: number) => {
+    const r = await fetch(`${process.env.MOCKS_AZURACAST}/api/station/1/art/${mediaId}`, { redirect: 'manual' })
+    return r.status === 200 ? Buffer.from(await r.arrayBuffer()) : null
+  }
+  const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex')
+  const pause1s = () => new Promise((r) => setTimeout(r, 1100))
 
   it('art-only edit request: apply_edit writes no metadata, then apply_art uploads the probe JPEG and verifies', async () => {
     const folder = `ART1-${RUN}`
@@ -503,6 +795,42 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
     await runRequestJob(silentArt(), { id: 1, kind: 'apply_art', payload: { requestId: id }, attempts: 1, max_attempts: 8 })
     expect(await reqRow(id)).toMatchObject({ status: 'failed', error: 'art_verify_failed' })
     expect(await artUploadsFor(m.id)).toHaveLength(0)
+  })
+
+  it('apply_art verifies the art AzuraCast serves (a re-encoded copy with the probe dimensions passes), keeps the old art hash, and fails on the wrong image', async () => {
+    const folder = `ART5-${RUN}`
+    await artist(`Art Five ${RUN}`, folder)
+    const m = await seed(`${art(folder)}/d.mp3`, { playlists: [2] })
+    const one = await readyArt(jpeg(640, 480, `one ${RUN}`), 640, 480)
+    await applyArt(ctx, { mediaId: m.id, artId: one.id })
+    const served1 = (await servedArt(m.id))!
+    expect(sha256(served1)).not.toBe(one.sha) // stored re-encoded, not byte-equal
+    take('reverify')
+    await pause1s() // art_updated_at has 1 s resolution (AzuraCast's time())
+    const two = await readyArt(jpeg(800, 600, `two ${RUN}`), 800, 600)
+    await applyArt(ctx, { mediaId: m.id, artId: two.id })
+    take('reverify')
+    const served2 = (await servedArt(m.id))!
+    const snaps = await ownerSql()`SELECT reason, had_art, art_sha256 FROM media_snapshots WHERE media_id = ${m.id} AND reason LIKE '%art' ORDER BY id`
+    expect(snaps).toEqual([
+      { reason: 'before_art', had_art: false, art_sha256: null },
+      { reason: 'after_art', had_art: true, art_sha256: sha256(served1) },
+      { reason: 'before_art', had_art: true, art_sha256: sha256(served1) }, // the old art, for a restore by hand
+      { reason: 'after_art', had_art: true, art_sha256: sha256(served2) },
+    ])
+    // AzuraCast answers success and moves art_updated_at, but serves an
+    // image with other dimensions: not ours.
+    const three = await readyArt(jpeg(300, 300, `three ${RUN}`), 300, 300)
+    const wrong = ctxWith(async (url, init) => {
+      if (init.method === 'GET' && url.endsWith(`/api/station/1/art/${m.id}`)) {
+        const r = await fetch(url, init)
+        if (r.status !== 200) return r
+        return new Response(new Uint8Array(jpeg(100, 100, 'other')), { status: 200, headers: { 'content-type': 'image/jpeg' } })
+      }
+      return fetch(url, init)
+    })
+    await pause1s()
+    await expect(applyArt(wrong, { mediaId: m.id, artId: three.id })).rejects.toMatchObject({ code: 'art_verify_failed', detail: { reason: 'dimensions_differ' } })
   })
 
   it('OpFailed carries a machine code', () => {
