@@ -230,6 +230,27 @@ describe.skipIf(!E2E())('submission flow through the real containers', () => {
     expect(await r.json()).toMatchObject({ status: 'approved', selfApproved: true })
   })
 
+  it('a public comment on a draft is stored but queued only at submit, then reaches the ticket', async () => {
+    const id = newId()
+    const jar = await loginOk({ id })
+    await control('/__mock/tickets/member', { id, member: true })
+    const b = await createBatch(jar)
+    const item = await addFile(jar, b, 'raw35c.mp3')
+    const body = `draft note ${randomUUID()}`
+    const r = await req(jar, `/api/batches/${b}/comments`, { json: { body } })
+    expect(r.status).toBe(201)
+    const cid = ((await r.json()) as { id: number }).id
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM jobs WHERE dedupe_key = ${`ticket_comment:${cid}`}`)[0]!.n).toBe(0)
+    await settled(jar, item)
+    expect((await req(jar, `/api/batches/${b}/submit`, { json: { attest: true } })).status).toBe(200)
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM jobs WHERE dedupe_key = ${`ticket_comment:${cid}`}`)[0]!.n).toBe(1)
+    await waitFor(async () => ((await control('/__mock/tickets/messages')) as { body: string }[]).some((m) => m.body.includes(body)), 60_000)
+    const row = await waitFor(async () => (await ownerSql()`SELECT ticket_message_id FROM comments WHERE id = ${cid}`)[0]!.ticket_message_id as string | null, 30_000)
+    expect(row).toBeTruthy()
+    const job = (await ownerSql()`SELECT status FROM jobs WHERE dedupe_key = ${`ticket_comment:${cid}`}`)[0]!
+    expect(job.status).toBe('done')
+  })
+
   it('a probed item in an unsubmitted draft batch cannot be approved or denied by a reviewer', async () => {
     const b = await createBatch(owner)
     const item = await addFile(owner, b, 'raw35b.mp3')

@@ -2,7 +2,7 @@
 // comment / decision messages, and the daily contract probe. Ingest, moves,
 // archive/restore and recovery (P3/P4) plug into the same runner.
 
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { AzuraCastClient } from '../server/azuracast/client'
 import { checkContract } from '../server/azuracast/contract'
 import { audit } from '../server/audit'
@@ -22,12 +22,30 @@ export type WorkerCtx = {
   alert: (title: string, detail: Record<string, unknown>) => Promise<void>
 }
 
+// A wait on something outside the job (a ticket not open yet, a busy or
+// unavailable tickets bot, a scan window): the job is rescheduled WITHOUT
+// spending one of its attempts. It is bounded by AGE instead: once the job is
+// older than `maxAgeS` (default 7 days) it goes dead and alerts. The delay
+// grows with the job's age (see runJob), so a long outage is polled gently.
+// `Defer` is the same class: P3/P4 "reschedule without an attempt" waits
+// should use it.
+export const RETRY_MAX_AGE_S = 7 * 24 * 3600
+export const TRANSIENT_MAX_AGE_S = 24 * 3600
+
 export class RetryLater extends Error {
-  constructor(readonly delayS: number, message = 'retry later') {
+  readonly maxAgeS: number
+  constructor(
+    readonly delayS: number,
+    message = 'retry later',
+    opts: { maxAgeS?: number } = {},
+  ) {
     super(message)
     this.name = 'RetryLater'
+    this.maxAgeS = opts.maxAgeS ?? RETRY_MAX_AGE_S
   }
 }
+
+export { RetryLater as Defer }
 
 export class Permanent extends Error {
   constructor(message: string) {
@@ -38,7 +56,8 @@ export class Permanent extends Error {
 
 function fromTickets(e: unknown): never {
   if (e instanceof TicketsApiError) {
-    if (e.retryable) throw new RetryLater(e.retryAfterS ?? 30, `${e.status} ${e.code}`)
+    // Transient bot/API trouble: a time budget (24 h), not 8 quick tries.
+    if (e.retryable) throw new RetryLater(e.retryAfterS ?? 30, `${e.status} ${e.code}`, { maxAgeS: TRANSIENT_MAX_AGE_S })
     throw new Permanent(`${e.status} ${e.code}`)
   }
   throw e
@@ -132,6 +151,13 @@ export async function ticketOpen(ctx: WorkerCtx, payload: { batchId: number }) {
     .set({ ticketId: res.ticketId, ticketNumber: res.number, ticketWebUrl: res.webUrl, ticketChannelUrl: res.discordChannelUrl, ticketStatus: 'open', updatedAt: new Date() })
     .where(and(eq(batches.id, b.id), isNull(batches.ticketId)))
   await audit(ctx.db, { action: 'ticket.opened', targetType: 'batch', targetId: b.id, detail: { ticketId: res.ticketId, created: res.created } })
+  // Comment / decision jobs of this batch that were waiting for the ticket
+  // run now instead of at their next back-off.
+  await ctx.db.execute(sql`
+    UPDATE jobs SET run_after = now(), updated_at = now()
+    WHERE status = 'queued' AND (
+      (kind = 'ticket_comment' AND (payload->>'commentId') IN (SELECT id::text FROM comments WHERE batch_id = ${b.id}))
+      OR (kind = 'ticket_decision' AND (payload->>'itemId') IN (SELECT id::text FROM items WHERE batch_id = ${b.id})))`)
 }
 
 // Staff comments are never forwarded. Checked here against the DB row (not

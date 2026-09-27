@@ -127,6 +127,12 @@ export async function submitBatch(db: DB, v: Viewer, batchId: number, attest: un
         .returning(),
     )
     await enqueue(tx, 'ticket_open', { batchId: b.id }, { dedupeKey: `ticket_open:batch:${b.id}` })
+    // Public comments written while the batch was a draft go to the ticket now.
+    const waiting = await tx
+      .select({ id: comments.id })
+      .from(comments)
+      .where(and(eq(comments.batchId, b.id), eq(comments.visibility, 'all'), eq(comments.source, 'portal'), sql`${comments.ticketMessageId} IS NULL`))
+    for (const c of waiting) await enqueue(tx, 'ticket_comment', { commentId: c.id }, { dedupeKey: `ticket_comment:${c.id}` })
     await audit(tx, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'batch.submit', targetType: 'batch', targetId: b.id })
     return { id: row.id, status: row.status }
   })
@@ -254,8 +260,9 @@ export async function addComment(db: DB, v: Viewer, batchId: number, input: unkn
       })
       .returning()
     // Only public comments are ever queued for the ticket. The worker and the
-    // tickets client each refuse staff comments again.
-    if (row!.visibility === 'all') await enqueue(tx, 'ticket_comment', { commentId: row!.id }, { dedupeKey: `ticket_comment:${row!.id}` })
+    // tickets client each refuse staff comments again. A draft has no ticket
+    // yet: its public comments are queued by submitBatch.
+    if (row!.visibility === 'all' && b.status !== 'draft') await enqueue(tx, 'ticket_comment', { commentId: row!.id }, { dedupeKey: `ticket_comment:${row!.id}` })
     await audit(tx, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'comment.add', targetType: 'comment', targetId: row!.id, detail: { visibility: row!.visibility, batchId: b.id } })
     return { id: row!.id, visibility: row!.visibility }
   })

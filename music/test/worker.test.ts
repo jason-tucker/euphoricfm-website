@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, describe, expect, it } from 'vitest'
 import { TicketsApiError, TicketsClient } from '@/server/tickets/client'
-import { startupChecks } from '@/worker/main'
+import { runJob, startupChecks } from '@/worker/main'
 import { ticketComment, type WorkerCtx } from '@/worker/handlers'
 import { closeDb, getDb } from '@/server/db/client'
 import { MOCKS, DBENV } from './helpers/env'
@@ -209,5 +209,45 @@ describe.skipIf(!DBENV())('draft retention (plan §3.4 "drafts after 7 days")', 
     expect((await ownerSql()`SELECT status FROM batches WHERE id = ${oldDraft!.id}`)[0]!.status).toBe('withdrawn')
     expect((await ownerSql()`SELECT status FROM batches WHERE id = ${freshDraft!.id}`)[0]!.status).toBe('draft')
     expect(await staged()).toBe(200) // no longer counts toward the staging caps
+  })
+})
+
+describe.skipIf(!DBENV())('dependency waits do not spend attempts (ticket not open yet)', () => {
+  it('a ticket_comment waiting for its ticket survives many retries, and dies (with an alert) only past its max age', async () => {
+    const db = getDb(process.env.TEST_APP_DATABASE_URL, 2)
+    const [u] = await ownerSql()`INSERT INTO "user" (id, discord_id) VALUES (${randomUUID()}, ${'5' + String(Date.now()).padStart(17, '0')}) RETURNING id`
+    const [b] = await ownerSql()`INSERT INTO batches (owner_user_id, status, attested_at, submitted_at) VALUES (${u!.id}, 'submitted', now(), now()) RETURNING id`
+    const [c] = await ownerSql()`INSERT INTO comments (batch_id, source, visibility, body) VALUES (${b!.id}, 'portal', 'all', 'waits for the ticket') RETURNING id`
+    // run_after in the future so the live worker leaves it alone; we drive runJob directly
+    const [j] = await ownerSql()`INSERT INTO jobs (kind, payload, run_after, dedupe_key) VALUES ('ticket_comment', ${ownerSql().json({ commentId: c!.id })}, now() + interval '1 hour', ${`t-wait-${c!.id}`}) RETURNING id`
+    const alerts: string[] = []
+    const { client } = recordingTickets()
+    const ctx = { db, tickets: client, alert: async (t: string) => void alerts.push(t) } as unknown as WorkerCtx
+    for (let i = 0; i < 12; i++) {
+      const [row] = await ownerSql()`UPDATE jobs SET status = 'running', attempts = attempts + 1 WHERE id = ${j!.id} RETURNING attempts, max_attempts`
+      await runJob(ctx, { id: Number(j!.id), kind: 'ticket_comment', payload: { commentId: c!.id }, attempts: row!.attempts, max_attempts: row!.max_attempts, age_s: 600 })
+    }
+    let [st] = await ownerSql()`SELECT status, attempts FROM jobs WHERE id = ${j!.id}`
+    expect(st).toMatchObject({ status: 'queued', attempts: 0 })
+    expect(alerts).toEqual([])
+    await runJob(ctx, { id: Number(j!.id), kind: 'ticket_comment', payload: { commentId: c!.id }, attempts: 1, max_attempts: 8, age_s: 8 * 24 * 3600 })
+    ;[st] = await ownerSql()`SELECT status FROM jobs WHERE id = ${j!.id}`
+    expect(st!.status).toBe('dead')
+    expect(alerts[0]).toMatch(/gave up after waiting/)
+  })
+
+  it('transient tickets errors get a 24 h budget, not 8 quick tries', async () => {
+    const db = getDb(process.env.TEST_APP_DATABASE_URL, 2)
+    const [u] = await ownerSql()`INSERT INTO "user" (id, discord_id) VALUES (${randomUUID()}, ${'5' + String(Date.now() + 1).padStart(17, '0')}) RETURNING id`
+    const [b] = await ownerSql()`INSERT INTO batches (owner_user_id, status, ticket_id) VALUES (${u!.id}, 'submitted', ${800000 + Math.floor(Math.random() * 99999)}) RETURNING id`
+    const [c] = await ownerSql()`INSERT INTO comments (batch_id, source, visibility, body) VALUES (${b!.id}, 'portal', 'all', 'bot is down') RETURNING id`
+    const [j] = await ownerSql()`INSERT INTO jobs (kind, payload, run_after, dedupe_key) VALUES ('ticket_comment', ${ownerSql().json({ commentId: c!.id })}, now() + interval '1 hour', ${`t-502-${c!.id}`}) RETURNING id`
+    const f = (async () => new Response(JSON.stringify({ error: 'bot_unavailable' }), { status: 502 })) as unknown as typeof fetch
+    const alerts: string[] = []
+    const ctx = { db, tickets: new TicketsClient({ baseUrl: 'http://t.invalid', key: 'k', portalOrigin: ORIGIN, fetchImpl: f }), alert: async (t: string) => void alerts.push(t) } as unknown as WorkerCtx
+    for (let i = 0; i < 10; i++) await runJob(ctx, { id: Number(j!.id), kind: 'ticket_comment', payload: { commentId: c!.id }, attempts: 8, max_attempts: 8, age_s: 3600 })
+    expect((await ownerSql()`SELECT status FROM jobs WHERE id = ${j!.id}`)[0]!.status).toBe('queued')
+    await runJob(ctx, { id: Number(j!.id), kind: 'ticket_comment', payload: { commentId: c!.id }, attempts: 8, max_attempts: 8, age_s: 25 * 3600 })
+    expect((await ownerSql()`SELECT status FROM jobs WHERE id = ${j!.id}`)[0]!.status).toBe('dead')
   })
 })

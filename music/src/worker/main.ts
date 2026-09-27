@@ -73,7 +73,7 @@ async function makeAlert(env: WorkerEnv) {
   }
 }
 
-type JobRow = { id: number; kind: string; payload: Record<string, unknown>; attempts: number; max_attempts: number }
+type JobRow = { id: number; kind: string; payload: Record<string, unknown>; attempts: number; max_attempts: number; age_s?: number }
 
 export async function claimJob(db: DB): Promise<JobRow | null> {
   // Reclaim jobs whose runner died mid-flight.
@@ -90,7 +90,7 @@ export async function claimJob(db: DB): Promise<JobRow | null> {
       WHERE status = 'queued' AND run_after <= now()
         AND NOT (kind IN (${mutating}) AND ${PAUSED_SQL})
       ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)
-    RETURNING id, kind, payload, attempts, max_attempts`)
+    RETURNING id, kind, payload, attempts, max_attempts, (EXTRACT(EPOCH FROM now() - created_at))::int AS age_s`)
   return (rows as unknown as JobRow[])[0] ?? null
 }
 
@@ -127,12 +127,26 @@ export async function runJob(ctx: WorkerCtx, job: JobRow): Promise<void> {
       )
       return
     }
+    if (e instanceof RetryLater) {
+      // A wait, not a failure: no attempt is spent; bounded by the job's age.
+      const age = Number(job.age_s ?? 0)
+      if (age > e.maxAgeS) {
+        await ctx.db.execute(sql`UPDATE jobs SET status = 'dead', updated_at = now(), last_error = ${msg} WHERE id = ${job.id}`)
+        await ctx.alert(`job ${job.kind} #${job.id} gave up after waiting ${Math.round(age / 3600)} h`, { error: msg })
+        return
+      }
+      const delay = Math.max(1, Math.min(86_400, Math.ceil(Math.max(e.delayS, Math.min(1800, age / 20)))))
+      await ctx.db.execute(
+        sql`UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = GREATEST(attempts - 1, 0), updated_at = now(), last_error = ${msg}, run_after = now() + make_interval(secs => ${delay}) WHERE id = ${job.id}`,
+      )
+      return
+    }
     if (e instanceof Permanent || job.attempts >= job.max_attempts) {
       await ctx.db.execute(sql`UPDATE jobs SET status = 'dead', updated_at = now(), last_error = ${msg} WHERE id = ${job.id}`)
       await ctx.alert(`job ${job.kind} #${job.id} failed permanently`, { error: msg })
       return
     }
-    const delay = e instanceof RetryLater ? e.delayS : Math.min(3600, 15 * 2 ** job.attempts)
+    const delay = Math.min(3600, 15 * 2 ** job.attempts)
     await ctx.db.execute(
       sql`UPDATE jobs SET status = 'queued', locked_at = NULL, updated_at = now(), last_error = ${msg}, run_after = now() + make_interval(secs => ${delay}) WHERE id = ${job.id}`,
     )
