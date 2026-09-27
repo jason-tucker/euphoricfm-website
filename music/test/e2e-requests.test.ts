@@ -5,7 +5,7 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { E2E } from './helpers/env'
 import { loginOk } from './helpers/auth'
-import { ownerSql } from './helpers/db'
+import { ensureArtUploadsStub, insertArt, ownerSql } from './helpers/db'
 import { control, Jar, req } from './helpers/http'
 import { waitFor } from './helpers/wait'
 
@@ -26,6 +26,7 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
   let other: Jar
   let reviewer: Jar
   let admin: Jar
+  let reviewerId: string
   const songs: Media[] = []
   const refused: number[] = []
   const folder = `E2E-${RUN}`
@@ -69,7 +70,7 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
     member = await loginOk({ id: memberId })
     await control('/__mock/tickets/member', { id: memberId, member: true })
     other = await loginOk({ id: newId() })
-    const reviewerId = newId()
+    reviewerId = newId()
     reviewer = await loginOk({ id: reviewerId, roles: [REVIEWER_ROLE] })
     await control('/__mock/tickets/member', { id: reviewerId, member: true })
     admin = await loginOk({ id: ADMIN_ID })
@@ -234,6 +235,37 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
     const list = await json<{ id: number }[]>(await req(reviewer, '/api/archive'))
     expect(list.some((x) => x.id === a.id)).toBe(true)
     expect((await req(reviewer, `/api/archive/${a.id}/restore`, { method: 'POST' })).status).toBe(202)
+  })
+
+  it('album art: an edit may propose the member’s own ready art; managers set art directly', async () => {
+    await ensureArtUploadsStub()
+    const memberUser = (await ownerSql()`SELECT id FROM "user" WHERE discord_id = ${memberId}`)[0]!.id as string
+    const reviewerUser = (await ownerSql()`SELECT id FROM "user" WHERE discord_id = ${reviewerId}`)[0]!.id as string
+    const mine = await insertArt(memberUser)
+    const theirs = await insertArt(reviewerUser)
+    const processing = await insertArt(memberUser, 'processing')
+    const s = songs[5]!
+    expect((await file(member, { kind: 'edit', mediaId: s.id, proposed: { artId: theirs.id } })).status).toBe(400)
+    expect((await file(member, { kind: 'edit', mediaId: s.id, proposed: { artId: processing.id } })).status).toBe(400)
+    expect((await file(member, { kind: 'edit', mediaId: s.id, proposed: { artId: 'no-such-art' } })).status).toBe(400)
+    const r = await file(member, { kind: 'edit', mediaId: s.id, proposed: { artId: mine.id } })
+    expect(r.status).toBe(201) // art alone is a change
+    const id = (await json<{ id: number }>(r)).id
+    const t = await waitFor(async () => (await tickets()).find((x) => x.externalRef === `request:${id}`))
+    expect(t.card.lines).toContain('New album art proposed')
+    expect((await ownerSql()`SELECT proposed FROM requests WHERE id = ${id}`)[0]!.proposed).toEqual({ artId: mine.id })
+
+    const m = songs[6]!
+    expect((await req(member, `/api/library/${m.id}/art`, { method: 'PUT', json: { artId: mine.id } })).status).toBe(403)
+    expect((await req(reviewer, `/api/library/${m.id}/art`, { method: 'PUT', json: { artId: processing.id } })).status).toBe(400)
+    expect((await req(reviewer, `/api/library/${refused[0]}/art`, { method: 'PUT', json: { artId: mine.id } })).status).toBe(404)
+    expect((await req(reviewer, `/api/library/${m.id}`, { method: 'PATCH', json: { artId: mine.id } })).status).toBe(400) // use the art route
+    const put = await req(reviewer, `/api/library/${m.id}/art`, { method: 'PUT', json: { artId: mine.id } })
+    expect(put.status).toBe(202)
+    expect(await json(put)).toMatchObject({ queued: 'apply_art', mediaId: m.id, artId: mine.id })
+    const job = (await ownerSql()`SELECT payload FROM jobs WHERE kind = 'apply_art' AND payload->>'mediaId' = ${String(m.id)}`)[0]!
+    expect(job.payload).toMatchObject({ mediaId: m.id, artId: mine.id })
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM audit_log WHERE action = 'library.art' AND target_id = ${String(m.id)}`)[0]!.n).toBe(1)
   })
 
   it('admin settings: admin only, validated per key, audited', async () => {

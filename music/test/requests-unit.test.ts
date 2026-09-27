@@ -45,6 +45,8 @@ describe('proposed edits', () => {
       expect(ProposedSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
     }
     expect(ProposedSchema.safeParse({ album: '' }).success).toBe(true) // clearing an album is allowed
+    expect(ProposedSchema.safeParse({ artId: '0f8fad5b-d9cb-469f-a165-70867728950e' }).success).toBe(true) // art alone
+    expect(ProposedSchema.safeParse({ title: 'x', artId: 'a/b' }).success).toBe(false)
   })
   it('applies field by field over the current values', () => {
     const cur = { title: 'T', artist: 'A', album: 'B', genre: 'G' }
@@ -106,6 +108,8 @@ describe('request ticket card', () => {
     expect(lines).toContain('Artist: "Grimm" → "GRIM"')
     expect(lines).toContain('Reason: typo in artist')
     expect(lines.every((l) => l.length <= 200)).toBe(true)
+    const art = requestCard({ id: 8, kind: 'edit', mediaId: 1, snapshot: { title: 't', artist: 'a' }, proposed: { artId: 'x1' }, reason: null } as never)
+    expect(art).toContain('New album art proposed')
   })
 })
 

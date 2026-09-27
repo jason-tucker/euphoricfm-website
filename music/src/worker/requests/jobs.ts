@@ -43,6 +43,8 @@ import { getIntList } from '../../server/settings'
 import { TicketsApiError } from '../../server/tickets/client'
 import { Permanent, RetryLater, type WorkerCtx } from '../handlers'
 import { OpFailed, remapMediaId, sameIds, snapshotMeta, stationIds, stationPlaylistSet, takeSnapshot, upsertLibrary, type Snapshot } from './media'
+import { artClient, artStamp } from './art'
+import { getReadyArt } from '../../server/requests/art'
 import { afterScansMs, assertMutationWindow, assertNotOnAir, assertQueuesRunning, Deferred, scanOffset } from './window'
 
 export type RequestsCtx = WorkerCtx & {
@@ -138,7 +140,7 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 
 export function requestCard(r: typeof requests.$inferSelect) {
   const snap = (r.snapshot ?? {}) as Partial<Meta>
-  const proposed = (r.proposed ?? {}) as Partial<Meta>
+  const proposed = (r.proposed ?? {}) as Partial<Meta> & { artId?: string }
   const lines = [clip(`Song: ${snap.artist || '?'} - ${snap.title || '?'}`, 200), clip(`Media id: ${r.mediaId}`, 200)]
   if (r.kind === 'edit') {
     for (const k of META_KEYS) {
@@ -147,6 +149,7 @@ export function requestCard(r: typeof requests.$inferSelect) {
       lines.push(clip(`${label}: "${snap[k] ?? ''}" → "${proposed[k]}"`, 200))
     }
   }
+  if (r.kind === 'edit' && proposed.artId !== undefined) lines.push('New album art proposed')
   if (r.reason) lines.push(clip(`Reason: ${r.reason.replace(/\s+/g, ' ')}`, 200))
   return lines.slice(0, 25)
 }
@@ -192,7 +195,7 @@ export async function requestTicketPost(ctx: RequestsCtx, payload: { requestId: 
         ? `${what} request denied: ${name}\nReason: ${r.denyReason ?? ''}`
         : payload.event === 'applied'
           ? r.kind === 'edit'
-            ? `Edit applied: ${name}.`
+            ? `Edit applied: ${name}.${proposedArtId(r) ? ' The new album art is live.' : ''}`
             : `Removed from rotation and archived: ${name}.`
           : `${what} request could not be applied: ${name}. Managers have been alerted.${r.error ? ` (${r.error})` : ''}`
   try {
@@ -271,7 +274,59 @@ export async function applyEdit(ctx: RequestsCtx, payload: ApplyEditPayload) {
     return
   }
   const post = await takeSnapshot(ctx.db, after, station, 'after_edit', { requestId: req?.id })
+  // Art comes after the metadata (and after any move).
+  if (await chainArt(ctx, req, parsed.data.artId ?? null, mediaId, payload)) return
   await applied(ctx, req?.id, post, await scanOffset(ctx.db))
+}
+
+function proposedArtId(r: typeof requests.$inferSelect): string | null {
+  const a = (r.proposed as { artId?: unknown } | null)?.artId
+  return typeof a === 'string' && a.length > 0 ? a : null
+}
+
+async function chainArt(ctx: RequestsCtx, req: typeof requests.$inferSelect | null, artId: string | null, mediaId: number, a: Actor): Promise<boolean> {
+  if (!artId) return false
+  await schedule(ctx, 'apply_art', req ? { requestId: req.id } : { mediaId, artId, ...actorOf(a) }, req ? { dedupeKey: `apply_art:request:${req.id}` } : {})
+  return true
+}
+
+// ---------------------------------------------------------- apply_art ---
+
+type ApplyArtPayload = Actor & { requestId?: number | null; mediaId?: number; artId?: string }
+
+// Snapshot (had art, old art hash if readable) → uploadArt with the probe
+// JPEG and its sha → verify art_updated_at moved → ticket post (via applied).
+export async function applyArt(ctx: RequestsCtx, payload: ApplyArtPayload) {
+  const req = payload.requestId ? await loadRequest(ctx, payload.requestId) : null
+  if (req && req.status !== 'applying') return
+  const artId = req ? proposedArtId(req) : (payload.artId ?? null)
+  if (!artId) throw new OpFailed('no_art')
+  const mediaId = req ? req.mediaId : Number(payload.mediaId)
+  const offset = await assertMutationWindow(ctx.db, now(ctx))
+  const media = await getFile(ctx, mediaId)
+  if (!isRequestTarget(ctx.root, media.path)) throw new OpFailed('target_not_allowed', { path: media.path })
+  const art = await getReadyArt(ctx.db, artId)
+  if (!art) throw new OpFailed('art_not_ready', { artId })
+  const client = artClient(ctx.azuracast)
+  const station = await stationPlaylistSet(ctx.db)
+  const before = artStamp(media)
+  let oldSha: string | null = null
+  if (client.getArtSha256) {
+    try {
+      oldSha = await client.getArtSha256(mediaId)
+    } catch {
+      oldSha = null
+    }
+  }
+  await takeSnapshot(ctx.db, media, station, 'before_art', { requestId: req?.id }, { hadArt: before > 0, artSha256: oldSha })
+  await assertQueuesRunning(ctx.db)
+  await client.uploadArt(mediaId, art.jpegPath, art.jpegSha256)
+  const after = await getFile(ctx, mediaId)
+  if (!(artStamp(after) > before)) throw new OpFailed('art_verify_failed')
+  await upsertLibrary(ctx.db, after)
+  const post = await takeSnapshot(ctx.db, after, station, 'after_art', { requestId: req?.id }, { hadArt: true, artSha256: art.jpegSha256 })
+  await audit(ctx.db, { ...actorOf(payload), action: 'media.art', targetType: 'media', targetId: mediaId, detail: { artId, jpegSha256: art.jpegSha256, hadArt: before > 0, oldArtSha256: oldSha, requestId: req?.id ?? null } })
+  await applied(ctx, req?.id, post, offset)
 }
 
 // --------------------------------------------------------------- move ---
@@ -319,6 +374,7 @@ export async function move(ctx: RequestsCtx, payload: MovePayload) {
   await upsertLibrary(ctx.db, after)
   const post = await takeSnapshot(ctx.db, after, station, 'after_move', { requestId: req?.id })
   await audit(ctx.db, { ...actorOf(payload), action: 'media.move', targetType: 'media', targetId: media.id, detail: { from: media.path, to: dest, requestId: req?.id ?? null } })
+  if (await chainArt(ctx, req, req ? proposedArtId(req) : null, media.id, payload)) return
   await applied(ctx, req?.id, post, offset)
 }
 
@@ -567,7 +623,7 @@ export async function sweepParkedRequests(ctx: RequestsCtx): Promise<number> {
 
 // ------------------------------------------------------------ runner ---
 
-export const REQUEST_JOB_KINDS = new Set<string>(['request_ticket_open', 'request_ticket_post', 'apply_edit', 'move', 'archive', 'restore', 'set_playlists', 'reverify'])
+export const REQUEST_JOB_KINDS = new Set<string>(['request_ticket_open', 'request_ticket_post', 'apply_edit', 'apply_art', 'move', 'archive', 'restore', 'set_playlists', 'reverify'])
 
 function transient(e: unknown): boolean {
   if (e instanceof Deferred || e instanceof OpFailed || e instanceof Permanent) return false
@@ -594,6 +650,8 @@ export async function runRequestJob(ctx: RequestsCtx, job: JobRow): Promise<void
         return await requestTicketPost(ctx, p as { requestId: number; event: string })
       case 'apply_edit':
         return await applyEdit(ctx, p as ApplyEditPayload)
+      case 'apply_art':
+        return await applyArt(ctx, p as ApplyArtPayload)
       case 'move':
         return await move(ctx, p as MovePayload)
       case 'archive':

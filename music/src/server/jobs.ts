@@ -16,6 +16,7 @@ export const JOB_KINDS = [
   'request_ticket_open',
   'request_ticket_post',
   'apply_edit',
+  'apply_art',
   'move',
   'archive',
   'restore',

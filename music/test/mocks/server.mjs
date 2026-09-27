@@ -326,6 +326,7 @@ function azMedia(f) {
     art: null,
     custom_fields: {},
     extra_metadata: {},
+    art_updated_at: f.art_updated_at ?? 0,
     // Aggregates memberships from EVERY station on the storage (P0d-B (d)).
     playlists: f.playlists.map((id) => ({ id, name: state.az.playlists.get(id) ?? `p${id}`, short_name: `p${id}`, count: 1 })),
     links: { self: `/api/station/1/file/${f.id}` },
@@ -535,6 +536,14 @@ async function handleControl(req, res, url) {
   if (p === '/__mock/az/nowplaying' && req.method === 'POST') {
     state.az.nowplaying = body && Object.keys(body).length ? body : null
     return send(res, 200, { ok: true })
+  }
+  // P4 art stand-in until the foundation's art endpoints land: bump a file's
+  // art_updated_at as a successful POST /art/{id} would.
+  if (p === '/__mock/az/art' && req.method === 'POST') {
+    const f = [...state.az.files.values()].find((x) => x.id === Number(body.id))
+    if (!f) return send(res, 404, { error: 'no such id' })
+    f.art_updated_at = Math.max(Math.floor(Date.now() / 1000), (f.art_updated_at ?? 0) + 1)
+    return send(res, 200, azMedia(f))
   }
   if (p === '/__mock/az/fail-next-move' && req.method === 'POST') {
     state.az.failNextMove = body?.error ?? 'Filesystem error.'

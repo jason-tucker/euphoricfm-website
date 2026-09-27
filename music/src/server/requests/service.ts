@@ -13,6 +13,7 @@ import { archive, artists, libraryCache, requests } from '../db/schema'
 import { badRequest, forbidden, HttpError, notFound } from '../http/errors'
 import { enqueue } from '../jobs'
 import { getSetting } from '../settings'
+import { getReadyArt } from './art'
 import {
   applyProposed,
   DEFAULT_REQUEST_CAPS,
@@ -92,11 +93,18 @@ export async function fileRequest(db: DB, v: Viewer, root: string, input: unknow
   const current = metaOf(lib)
   let proposed: Record<string, string> | null = null
   if (d.kind === 'edit') {
+    const artId = d.proposed.artId
+    // Proposed art must be a ready upload of the member's own.
+    if (artId !== undefined) {
+      const art = await getReadyArt(db, artId)
+      if (!art || art.owner !== v.userId) throw badRequest('art_not_ready')
+    }
     const next = applyProposed(current, d.proposed)
-    if (sameMeta(next, current)) throw badRequest('no_change')
-    // Store only the fields that actually change.
+    if (sameMeta(next, current) && artId === undefined) throw badRequest('no_change')
+    // Store only the fields that actually change (plus the art, if any).
     proposed = {}
     for (const k of META_KEYS) if (d.proposed[k] !== undefined && d.proposed[k] !== current[k]) proposed[k] = d.proposed[k]!
+    if (artId !== undefined) proposed.artId = artId
   }
   const caps = await dailyCaps(db)
   return db.transaction(async (tx) => {

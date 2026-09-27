@@ -52,6 +52,7 @@ export async function takeSnapshot(
   station: ReadonlySet<number>,
   reason: string,
   links: { requestId?: number | null } = {},
+  art: { hadArt?: boolean | null; artSha256?: string | null } = {},
 ): Promise<Snapshot> {
   const m = metaOf(media)
   const [row] = await db
@@ -66,6 +67,8 @@ export async function takeSnapshot(
       genre: m.genre,
       playlistIds: stationIds(media, station),
       reason,
+      hadArt: art.hadArt ?? null,
+      artSha256: art.artSha256 ?? null,
       requestId: links.requestId ?? null,
     })
     .returning()

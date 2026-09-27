@@ -11,7 +11,8 @@ import { archive } from '../db/schema'
 import { badRequest, conflict, forbidden, notFound } from '../http/errors'
 import { enqueue } from '../jobs'
 import { getIntList } from '../settings'
-import { applyProposed, freeText, mainArtistChanged, metaOf, ProposedSchema, resolveArtist, sameMeta } from './common'
+import { getReadyArt } from './art'
+import { applyProposed, ArtIdSchema, freeText, mainArtistChanged, metaOf, ProposedSchema, resolveArtist, sameMeta } from './common'
 import { loadRequestTarget } from './service'
 
 function requireManage(v: Viewer) {
@@ -24,6 +25,7 @@ export async function directEdit(db: DB, v: Viewer, root: string, mediaId: numbe
   requireManage(v)
   const p = ProposedSchema.safeParse(input)
   if (!p.success) throw badRequest('invalid_edit', { issues: p.error.issues.map((i) => i.message) })
+  if (p.data.artId !== undefined) throw badRequest('use_art_endpoint') // PUT /api/library/:mediaId/art
   const lib = await loadRequestTarget(db, root, mediaId)
   const current = metaOf(lib)
   const next = applyProposed(current, p.data)
@@ -87,4 +89,22 @@ export async function listArchived(db: DB, v: Viewer) {
   requireManage(v)
   const rows = await db.query.archive.findMany({ where: and(eq(archive.status, 'archived')), limit: 500 })
   return rows.map((a) => ({ id: a.id, mediaId: a.mediaId, originalPath: a.originalPath, archivedPath: a.archivedPath, requestId: a.requestId, archivedAt: a.archivedAt.toISOString() }))
+}
+
+const artSchema = z.object({ artId: ArtIdSchema }).strict()
+
+// Manager direct art change → worker apply_art. The upload must be ready and
+// the caller's own, or the caller has `manage` (always true here).
+export async function setArt(db: DB, v: Viewer, root: string, mediaId: number, input: unknown) {
+  requireManage(v)
+  const p = artSchema.safeParse(input)
+  if (!p.success) throw badRequest('invalid_art')
+  const lib = await loadRequestTarget(db, root, mediaId)
+  const art = await getReadyArt(db, p.data.artId)
+  if (!art || (art.owner !== v.userId && !v.perms.has('manage'))) throw badRequest('art_not_ready')
+  return db.transaction(async (tx) => {
+    await enqueue(tx, 'apply_art', { mediaId, artId: art.id, ...actor(v) })
+    await audit(tx, { ...actor(v), action: 'library.art', targetType: 'media', targetId: mediaId, detail: { path: lib.path, artId: art.id, jpegSha256: art.jpegSha256 } })
+    return { queued: 'apply_art', mediaId, artId: art.id }
+  })
 }

@@ -10,6 +10,7 @@ import { closeDb, getDb } from '@/server/db/client'
 import { TicketsClient } from '@/server/tickets/client'
 import { runJob } from '@/worker/main'
 import {
+  applyArt,
   applyEdit,
   archiveMedia,
   move,
@@ -23,7 +24,7 @@ import {
 import { OpFailed } from '@/worker/requests/media'
 import { Deferred } from '@/worker/requests/window'
 import { DBENV, MOCKS } from './helpers/env'
-import { ownerSql } from './helpers/db'
+import { ensureArtUploadsStub, insertArt, ownerSql } from './helpers/db'
 import { control } from './helpers/http'
 
 const ORIGIN = 'https://music.euphoric.fm'
@@ -401,6 +402,94 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
     expect(row).toMatchObject({ status: 'queued', attempts: 2, later: true })
     expect(row.last_error).toMatch(/outside_scan_window/)
     await ownerSql()`UPDATE jobs SET status = 'done' WHERE id = ${j!.id}`
+  })
+
+  // ------------------------------------------------------------ art ---
+  // uploadArt is the foundation's wrapper method (STUBBED here): a fake that
+  // records the call and bumps art_updated_at in the mock like a real upload.
+  function withArt(bump = true) {
+    const uploads: unknown[][] = []
+    const az = Object.create(ctx.azuracast) as typeof ctx.azuracast & { uploadArt: (...a: unknown[]) => Promise<void> }
+    az.uploadArt = async (...a: unknown[]) => {
+      uploads.push(a)
+      if (bump) await control('/__mock/az/art', { id: a[0] })
+    }
+    return { c: { ...ctx, azuracast: az } as RequestsCtx, uploads }
+  }
+
+  it('art-only edit request: apply_edit writes no metadata, then apply_art uploads the probe JPEG and verifies', async () => {
+    await ensureArtUploadsStub()
+    const folder = `ART1-${RUN}`
+    await artist(`Art One ${RUN}`, folder)
+    const m = await seed(`${art(folder)}/a.mp3`, { playlists: [2] })
+    const up = await insertArt(ownerId)
+    const id = await request('edit', m, { artId: up.id })
+    const { c, uploads } = withArt()
+    const before = await writes()
+    await applyEdit(c, { requestId: id })
+    expect(await writes()).toBe(before) // no metadata PUT
+    const job = take('apply_art')
+    expect(job).toMatchObject({ payload: { requestId: id }, opts: { dedupeKey: `apply_art:request:${id}` } })
+    expect(await reqRow(id)).toMatchObject({ status: 'applying' })
+    await applyArt(c, job.payload as never)
+    expect(uploads).toEqual([[m.id, up.jpegPath, up.sha]])
+    expect(await reqRow(id)).toMatchObject({ status: 'verifying' })
+    expect(take('request_ticket_post').payload).toMatchObject({ requestId: id, event: 'applied' })
+    take('reverify')
+    const snaps = await ownerSql()`SELECT reason, had_art, art_sha256 FROM media_snapshots WHERE media_id = ${m.id} AND reason LIKE '%art' ORDER BY id`
+    expect(snaps).toEqual([
+      { reason: 'before_art', had_art: false, art_sha256: null },
+      { reason: 'after_art', had_art: true, art_sha256: up.sha },
+    ])
+  })
+
+  it('metadata + art: art is applied after the metadata, and after the move when the artist changes', async () => {
+    await ensureArtUploadsStub()
+    const f1 = `ART2-${RUN}`
+    const f2 = `ART3-${RUN}`
+    await artist(`Art Two ${RUN}`, f1)
+    await artist(`Art Three ${RUN}`, f2)
+    const m = await seed(`${art(f1)}/b.mp3`, { artist: `Art Two ${RUN}`, playlists: [2] })
+    const up = await insertArt(ownerId)
+    const id = await request('edit', m, { artist: `Art Three ${RUN}`, artId: up.id })
+    const { c, uploads } = withArt()
+    await applyEdit(c, { requestId: id })
+    expect(scheduled.map((x) => x.kind)).toEqual(['move'])
+    expect((await fileById(m.id))!.artist).toBe(`Art Three ${RUN}`)
+    await move(c, take('move').payload as never)
+    expect(scheduled.map((x) => x.kind)).toEqual(['apply_art'])
+    expect(await reqRow(id)).toMatchObject({ status: 'applying' })
+    await applyArt(c, take('apply_art').payload as never)
+    expect(uploads).toHaveLength(1)
+    expect((await fileById(m.id))!.path).toBe(`${art(f2)}/b.mp3`)
+    expect(await reqRow(id)).toMatchObject({ status: 'verifying' })
+  })
+
+  it('apply_art: scan window, queues_paused, readiness, the missing wrapper method and a failed verify', async () => {
+    await ensureArtUploadsStub()
+    const folder = `ART4-${RUN}`
+    await artist(`Art Four ${RUN}`, folder)
+    const m = await seed(`${art(folder)}/c.mp3`, { playlists: [2] })
+    const up = await insertArt(ownerId)
+    const { c, uploads } = withArt()
+    clock = EARLY
+    await expect(applyArt(c, { mediaId: m.id, artId: up.id })).rejects.toMatchObject({ reason: 'outside_scan_window' })
+    clock = IN_WINDOW
+    await ownerSql()`INSERT INTO settings (key, value) VALUES ('queues_paused', '{"reason":"test"}'::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    try {
+      await expect(applyArt(c, { mediaId: m.id, artId: up.id })).rejects.toMatchObject({ reason: 'queues_paused' })
+    } finally {
+      await ownerSql()`UPDATE settings SET value = 'null'::jsonb WHERE key = 'queues_paused'`
+    }
+    const processing = await insertArt(ownerId, 'processing')
+    await expect(applyArt(c, { mediaId: m.id, artId: processing.id })).rejects.toMatchObject({ code: 'art_not_ready' })
+    expect(uploads).toHaveLength(0)
+    await expect(applyArt(ctx, { mediaId: m.id, artId: up.id })).rejects.toMatchObject({ code: 'upload_art_unavailable' })
+    // an upload that does not change the art fails the request
+    const id = await request('edit', m, { artId: up.id }, 'applying')
+    const silent = withArt(false)
+    await runRequestJob(silent.c, { id: 1, kind: 'apply_art', payload: { requestId: id }, attempts: 1, max_attempts: 8 })
+    expect(await reqRow(id)).toMatchObject({ status: 'failed', error: 'art_verify_failed' })
   })
 
   it('OpFailed carries a machine code', () => {

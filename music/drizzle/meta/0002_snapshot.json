@@ -1,5 +1,5 @@
 {
-  "id": "6fbc4387-b633-439d-aa3b-545001c5f636",
+  "id": "97909c33-370e-4bc0-a109-6f8d2c64afcf",
   "prevId": "c6f97e50-a536-4a59-9783-37848afe8c5f",
   "version": "7",
   "dialect": "postgresql",
@@ -1399,6 +1399,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::int[]"
+        },
+        "had_art": {
+          "name": "had_art",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "art_sha256": {
+          "name": "art_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "reason": {
           "name": "reason",

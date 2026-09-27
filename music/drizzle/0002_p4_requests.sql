@@ -1,3 +1,5 @@
+ALTER TABLE "media_snapshots" ADD COLUMN "had_art" boolean;--> statement-breakpoint
+ALTER TABLE "media_snapshots" ADD COLUMN "art_sha256" text;--> statement-breakpoint
 ALTER TABLE "requests" ADD COLUMN "snapshot" jsonb;--> statement-breakpoint
 ALTER TABLE "requests" ADD COLUMN "deny_reason" text;--> statement-breakpoint
 ALTER TABLE "requests" ADD COLUMN "error" text;--> statement-breakpoint

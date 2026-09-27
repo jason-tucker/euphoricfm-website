@@ -370,6 +370,10 @@ export const mediaSnapshots = pgTable(
     album: text('album'),
     genre: text('genre'),
     playlistIds: integer('playlist_ids').array().notNull().default(sql`'{}'::int[]`),
+    // P4 art: whether the row had custom art (art_updated_at > 0) and, when
+    // the wrapper can fetch it, the sha256 of the old art bytes.
+    hadArt: boolean('had_art'),
+    artSha256: text('art_sha256'),
     reason: text('reason').notNull(),
     itemId: integer('item_id').references(() => items.id),
     requestId: integer('request_id').references(() => requests.id),

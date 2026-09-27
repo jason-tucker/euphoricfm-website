@@ -25,15 +25,20 @@ const metaValue = z
   .transform((s) => s.normalize('NFC').trim())
   .refine((s) => !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(s), 'control characters')
 
+// art_uploads id (contract: artId). GUESSED format: the contract does not fix
+// the id type, so any short token (uuid, hex or integer) is accepted.
+export const ArtIdSchema = z.union([z.string().regex(/^[A-Za-z0-9_-]{1,64}$/), z.number().int().positive().max(2_147_483_647).transform(String)])
+
 export const ProposedSchema = z
   .object({
     title: metaValue.refine((s) => s.length > 0, 'title cannot be blank').optional(),
     artist: metaValue.refine((s) => s.length > 0, 'artist cannot be blank').optional(),
     album: metaValue.optional(),
     genre: metaValue.optional(),
+    artId: ArtIdSchema.optional(),
   })
   .strict()
-  .refine((p) => META_KEYS.some((k) => p[k] !== undefined), 'nothing proposed')
+  .refine((p) => META_KEYS.some((k) => p[k] !== undefined) || p.artId !== undefined, 'nothing proposed')
 export type Proposed = z.infer<typeof ProposedSchema>
 
 // Free text (reasons): newlines and tabs allowed, other control chars not.
