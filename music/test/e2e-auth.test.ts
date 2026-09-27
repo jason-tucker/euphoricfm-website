@@ -22,7 +22,8 @@ async function me(jar: Jar) {
 describe.skipIf(!E2E())('auth: Discord OAuth + guild membership gate', () => {
   it('unsafe /api/auth/* requests must declare Content-Length (chunked bodies are refused)', async () => {
     const { reqFresh } = await import('./helpers/http')
-    const r = await reqFresh(null, '/api/auth/signin/discord', { chunks: [Buffer.alloc(64 * 1024, 0x61), Buffer.alloc(64 * 1024, 0x61)], headers: { 'content-type': 'application/x-www-form-urlencoded' } })
+    // headers only (Transfer-Encoding: chunked, no data yet): the refusal is decided on headers
+    const r = await reqFresh(null, '/api/auth/signin/discord', { chunks: [], headers: { 'content-type': 'application/x-www-form-urlencoded' } })
     expect(r.status).toBe(411)
   })
 

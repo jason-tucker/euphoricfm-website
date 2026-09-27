@@ -308,3 +308,42 @@ describe.skipIf(!DBENV() || !MOCKS())('comment actor: staff/opener rule and the 
     }
   })
 })
+
+describe.skipIf(!DBENV())('album-art retention', () => {
+  it('expires unreferenced art after 7 days (raw deleted, probe asked to release the JPEG), keeps referenced art, times out stuck processing', async () => {
+    const { sweepArt } = await import('@/server/art/retention')
+    const db = getDb(process.env.TEST_APP_DATABASE_URL, 2)
+    const spoolIn = mkdtempSync(join(tmpdir(), 'art-spool-'))
+    const artIn = mkdtempSync(join(tmpdir(), 'art-in-'))
+    const [u] = await ownerSql()`INSERT INTO "user" (id, discord_id) VALUES (${randomUUID()}, ${'4' + String(Date.now()).padStart(17, '0')}) RETURNING id`
+    const mk = async (status: string, age: string) => {
+      const id = randomUUID()
+      writeFileSync(join(artIn, id), 'raw')
+      await ownerSql()`INSERT INTO art_uploads (id, owner, status, raw_path, jpeg_path, jpeg_sha256, created_at)
+        VALUES (${id}, ${u!.id}, ${status}::art_status, ${join(artIn, id)}, ${`/staging/art/${id}/cover.jpg`}, ${'a'.repeat(64)}, now() - ${age}::interval)`
+      return id
+    }
+    const oldReady = await mk('ready', '8 days')
+    const oldRejected = await mk('rejected', '8 days')
+    const freshReady = await mk('ready', '2 days')
+    const referenced = await mk('ready', '8 days')
+    const stuck = await mk('processing', '25 hours')
+    await ownerSql()`INSERT INTO requests (owner_user_id, kind, media_id, target_path, proposed, status)
+      VALUES (${u!.id}, 'edit', 1, 'Music/Artists/A/x.mp3', ${ownerSql().json({ artId: referenced })}, 'pending')`
+    await sweepArt(db, { spoolIn })
+    const st = Object.fromEntries((await ownerSql()`SELECT id::text AS id, status::text AS status, reason FROM art_uploads WHERE owner = ${u!.id}`).map((r) => [r.id, r]))
+    expect(st[oldReady]!.status).toBe('expired')
+    expect(st[oldRejected]!.status).toBe('expired')
+    expect(st[freshReady]!.status).toBe('ready')
+    expect(st[referenced]!.status).toBe('ready')
+    expect(st[stuck]).toMatchObject({ status: 'rejected', reason: 'probe_timeout' })
+    expect(existsSync(join(artIn, oldReady))).toBe(false)
+    expect(existsSync(join(artIn, stuck))).toBe(false)
+    expect(existsSync(join(artIn, freshReady))).toBe(true)
+    const { readdirSync, readFileSync } = await import('node:fs')
+    const reqs = readdirSync(spoolIn).map((f) => JSON.parse(readFileSync(join(spoolIn, f), 'utf8')))
+    const mine = reqs.filter((r) => [oldReady, oldRejected, freshReady, referenced, stuck].includes(r.artId))
+    expect(mine).toEqual([expect.objectContaining({ type: 'art_release', artId: oldReady })]) // only READY art has a JPEG to release
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM audit_log WHERE action = 'art.expired' AND target_id IN (${oldReady}, ${oldRejected})`)[0]!.n).toBe(2)
+  })
+})

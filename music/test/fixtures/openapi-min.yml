@@ -3,6 +3,93 @@ info:
   title: 'AzuraCast (portal contract subset for tests)'
   version: 0.21.0
 paths:
+  '/station/{station_id}/art/{media_id}':
+    get:
+      tags:
+        - 'Public: Stations'
+      summary: 'Returns the album art for a song, or a generic image.'
+      operationId: getMediaArt
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+        -
+          name: media_id
+          in: path
+          description: 'The station media unique ID'
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/SuccessWithImage'
+        '302':
+          description: 'Image not found; generic filler image.'
+          headers:
+            location:
+              description: 'The current URL of the resource.'
+              schema:
+                type: string
+      security: []
+    post:
+      tags:
+        - 'Stations: Media'
+      summary: 'Sets the album art for a track.'
+      operationId: postMediaArt
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+        -
+          name: media_id
+          in: path
+          description: 'Media ID'
+          required: true
+          schema:
+            anyOf:
+              -
+                type: integer
+                format: int64
+              -
+                type: string
+      requestBody:
+        $ref: '#/components/requestBodies/FlowFileUpload'
+      responses:
+        '200':
+          $ref: '#/components/responses/Success'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          $ref: '#/components/responses/RecordNotFound'
+        '500':
+          $ref: '#/components/responses/GenericError'
+    delete:
+      tags:
+        - 'Stations: Media'
+      summary: 'Removes the album art for a track.'
+      operationId: deleteMediaArt
+      parameters:
+        -
+          $ref: '#/components/parameters/StationIdRequired'
+        -
+          name: media_id
+          in: path
+          description: 'Media ID'
+          required: true
+          schema:
+            anyOf:
+              -
+                type: integer
+                format: int64
+              -
+                type: string
+      responses:
+        '200':
+          $ref: '#/components/responses/Success'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          $ref: '#/components/responses/RecordNotFound'
+        '500':
+          $ref: '#/components/responses/GenericError'
   '/station/{station_id}/files':
     get:
       tags:
@@ -760,3 +847,14 @@ components:
     HashMap:
       description: 'A hash-map array represented as an object.'
       type: object
+  requestBodies:
+    FlowFileUpload:
+      content:
+        multipart/form-data:
+          schema:
+            properties:
+              file:
+                description: 'The body of the file to upload.'
+                type: string
+                format: binary
+            type: object

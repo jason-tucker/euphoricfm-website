@@ -107,6 +107,20 @@ export function imageDims(b: Buffer, kind: ImageKind): { w: number; h: number } 
   return null
 }
 
+// Whole-file completeness for STANDALONE uploads (a decoder happily renders
+// a truncated image with a grey tail): JPEG ends with EOI (allowing a little
+// trailing padding), PNG ends with an IEND chunk, WebP's RIFF size matches.
+export function imageComplete(b: Buffer, kind: ImageKind): boolean {
+  if (kind === 'jpeg') {
+    const tail = b.subarray(Math.max(0, b.length - 64))
+    for (let i = tail.length - 2; i >= 0; i--) if (tail[i] === 0xff && tail[i + 1] === 0xd9) return true
+    return false
+  }
+  if (kind === 'png') return b.length >= 12 && b.toString('latin1', b.length - 8, b.length - 4) === 'IEND'
+  if (kind === 'webp') return b.length >= 12 && b.readUInt32LE(4) + 8 === b.length
+  return false
+}
+
 export function dimsAcceptable(d: { w: number; h: number } | null): boolean {
   return !!d && d.w > 0 && d.h > 0 && d.w <= MAX_EDGE && d.h <= MAX_EDGE && d.w * d.h <= MAX_PIXELS
 }

@@ -79,6 +79,7 @@ function reset() {
       drift: false,
       batchErrorsNext: [],
       overwrites: [],
+      artUploads: [],
     },
     canary: [],
   }
@@ -320,6 +321,28 @@ async function handleTickets(req, res, url) {
 
 // ----------------------------------------------------------- AzuraCast ---
 
+// Minimal multipart parser for the art endpoint: the first part that has a
+// filename (what PHP's getUploadedFiles() + reset() yields).
+function firstMultipartFile(contentType, buf) {
+  const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType)
+  if (!/^multipart\/form-data/i.test(contentType) || !m) return null
+  const boundary = Buffer.from(`--${m[1] ?? m[2]}`)
+  let at = buf.indexOf(boundary)
+  while (at >= 0) {
+    const headStart = at + boundary.length + 2
+    const headEnd = buf.indexOf('\r\n\r\n', headStart)
+    if (headEnd < 0) return null
+    const next = buf.indexOf(Buffer.concat([Buffer.from('\r\n'), boundary]), headEnd)
+    if (next < 0) return null
+    const head = buf.subarray(headStart, headEnd).toString('latin1')
+    const name = /name="([^"]*)"/i.exec(head)?.[1] ?? null
+    const filename = /filename="([^"]*)"/i.exec(head)?.[1]
+    if (filename !== undefined) return { name, filename, data: Buffer.from(buf.subarray(headEnd + 4, next)) }
+    at = next + 2
+  }
+  return null
+}
+
 function azMedia(f) {
   return {
     id: f.id,
@@ -339,6 +362,9 @@ function azMedia(f) {
     art: null,
     custom_fields: {},
     extra_metadata: {},
+    // unix seconds; 0 = no custom art (P4 verifies uploads by this moving)
+    art_updated_at: f.art_updated_at ?? 0,
+    art: `https://euphoric.fm/api/station/euphoricfm/art/${f.unique_id}-${f.art_updated_at ?? 0}.jpg`,
     // Aggregates memberships from EVERY station on the storage (P0d-B (d)).
     playlists: f.playlists.map((id) => ({ id, name: state.az.playlists.get(id) ?? `p${id}`, short_name: `p${id}`, count: 1 })),
     links: { self: `/api/station/1/file/${f.id}` },
@@ -411,6 +437,18 @@ async function handleAzuraCast(req, res, url) {
   const np = /^\/api\/nowplaying\/([a-z0-9_]+)$/.exec(p)
   if (req.method === 'GET' && np) return send(res, 200, { station: { shortcode: np[1] }, now_playing: { song: { id: 'x' } }, playing_next: null })
 
+  // Public album art: GET /api/station/{sid}/art/{unique_id|id}[-ts.jpg]
+  const ga = /^\/api\/station\/[a-z0-9_]+\/art\/([A-Za-z0-9]+)(?:-\d+\.jpg)?$/.exec(p)
+  if (req.method === 'GET' && ga) {
+    const f = [...state.az.files.values()].find((x) => x.unique_id === ga[1] || String(x.id) === ga[1])
+    if (!f?.artBytes) {
+      res.writeHead(302, { location: 'https://euphoric.fm/static/img/generic_song.jpg' })
+      return res.end()
+    }
+    res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': f.artBytes.length })
+    return res.end(f.artBytes)
+  }
+
   const sm = /^\/api\/station\/(\d+)(\/.*)$/.exec(p)
   if (!sm) return send(res, 404, { code: 404, message: 'Record not found' })
   if (req.headers['x-api-key'] !== AZ_KEY) return send(res, 403, { code: 403, message: 'Access denied.' })
@@ -448,6 +486,24 @@ async function handleAzuraCast(req, res, url) {
       return send(res, 200, { success: true, message: 'Record updated successfully.', formatted_message: 'Record updated successfully.' })
     }
   }
+  // POST /api/station/{sid}/art/{media_id} (Stations\Art\PostArtAction,
+  // 0.21.0): requireForStation(id) → 404 when unknown; Flow standard upload
+  // takes the FIRST multipart file part (OpenAPI names it `file`); the art is
+  // resized and stored, art_updated_at is set, and the audio file's tags are
+  // rewritten (mtime moves). Answers Status::updated().
+  const am = /^\/art\/([A-Za-z0-9]+)$/.exec(rest)
+  if (req.method === 'POST' && am) {
+    const f = [...state.az.files.values()].find((x) => String(x.id) === am[1] || x.unique_id === am[1])
+    if (!f) return send(res, 404, { code: 404, message: 'Record not found' })
+    const part = firstMultipartFile(req.headers['content-type'] ?? '', bodyBuf)
+    if (!part) return send(res, 500, { code: 500, message: 'No file uploaded.' })
+    state.az.artUploads.push({ mediaId: f.id, field: part.name, filename: part.filename, sha256: createHash('sha256').update(part.data).digest('hex'), size: part.data.length })
+    f.artBytes = part.data
+    f.art_updated_at = Math.floor(Date.now() / 1000)
+    f.mtime = Math.floor(Date.now() / 1000) + 5
+    return send(res, 200, { success: true, message: 'Record updated successfully.', formatted_message: 'Record updated successfully.' })
+  }
+
   if (req.method === 'POST' && rest === '/files') {
     if (typeof body?.path !== 'string' || typeof body?.file !== 'string') return send(res, 500, { code: 500, message: 'bad upload' })
     // Stored VERBATIM: no `..` check (P0d-B (a)); only '://' is stripped.
@@ -553,6 +609,7 @@ async function handleControl(req, res, url) {
     return send(res, 200, { ok: true })
   }
   if (p === '/__mock/az/overwrites') return send(res, 200, state.az.overwrites)
+  if (p === '/__mock/az/art-uploads') return send(res, 200, state.az.artUploads)
   if (p === '/__mock/az/files') return send(res, 200, [...state.az.files.values()].map(azMedia))
   if (p === '/__mock/canary/hits') return send(res, 200, state.canary)
   return send(res, 404, { error: 'unknown control path' })

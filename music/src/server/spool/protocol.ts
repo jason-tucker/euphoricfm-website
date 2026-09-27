@@ -1,7 +1,7 @@
 // Spool protocol between web / worker and the network-less music-probe
 // (plan §3 "Spool" + the PINNED MOUNTS).
 //
-//   /spool/probe/in-web/<uuid>.json     written by web      → type 'probe' ONLY
+//   /spool/probe/in-web/<uuid>.json     written by web      → 'probe' | 'art' | 'art_release'
 //   /spool/probe/in-worker/<uuid>.json  written by worker   → 'finalize' | 'cover' | 'probe_fetch'
 //   /spool/probe/out/<uuid>.json        written by probe    → read-only for web + worker
 //
@@ -23,11 +23,16 @@ export const COVER_FILE_RE = /^cover-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab]
 export const SHA256_RE = /^[0-9a-f]{64}$/
 export const MAX_UPLOAD_BYTES = 35 * 1024 * 1024
 export const MAX_SPOOL_DOC_BYTES = 64 * 1024
+// Album art (art contract 2026-09-27): the web writes the raw upload to
+// <art-in>/<artId>; the probe writes the re-encoded JPEG to
+// <art>/<artId>/<ART_JPEG_FILE>. The art id doubles as the spool request id.
+export const ART_JPEG_FILE = 'cover.jpg'
+export const MAX_ART_BYTES = 5 * 1024 * 1024
 
 export type Inbox = 'in-web' | 'in-worker'
 
 export const INBOX_TYPES: Record<Inbox, readonly string[]> = {
-  'in-web': ['probe'],
+  'in-web': ['probe', 'art', 'art_release'],
   'in-worker': ['finalize', 'cover', 'probe_fetch'],
 }
 
@@ -67,10 +72,21 @@ export const probeFetchRequest = z
   .object({ v: z.literal(1), id: z.string().regex(UUID_RE), type: z.literal('probe_fetch'), input: z.string().max(200) })
   .strict()
 
-export const spoolRequest = z.discriminatedUnion('type', [probeRequest, finalizeRequest, coverRequest, probeFetchRequest])
+// A standalone album-art upload to re-encode (JPEG/PNG/WebP only).
+export const artRequest = z
+  .object({ v: z.literal(1), id: z.string().regex(UUID_RE), type: z.literal('art'), expectedSize: z.number().int().min(1).max(MAX_ART_BYTES) })
+  .strict()
+// Delete an expired art JPEG (the probe is the only writer of the art dir).
+export const artReleaseRequest = z
+  .object({ v: z.literal(1), id: z.string().regex(UUID_RE), type: z.literal('art_release'), artId: z.string().regex(UUID_RE) })
+  .strict()
+
+export const spoolRequest = z.discriminatedUnion('type', [probeRequest, finalizeRequest, coverRequest, probeFetchRequest, artRequest, artReleaseRequest])
 export type SpoolRequest = z.infer<typeof spoolRequest>
 export type ProbeRequest = z.infer<typeof probeRequest>
 export type FinalizeRequest = z.infer<typeof finalizeRequest>
+export type ArtRequest = z.infer<typeof artRequest>
+export type ArtReleaseRequest = z.infer<typeof artReleaseRequest>
 
 const resultBase = { v: z.literal(1), id: z.string().regex(UUID_RE), source: z.enum(['in-web', 'in-worker']) }
 
@@ -103,6 +119,19 @@ export const finalizeOk = z.object({
   size: z.number().int(),
 })
 
+export const artOk = z.object({
+  ...resultBase,
+  type: z.literal('art'),
+  ok: z.literal(true),
+  file: z.literal(ART_JPEG_FILE),
+  sha256: z.string().regex(SHA256_RE),
+  size: z.number().int(),
+  width: z.number().int(),
+  height: z.number().int(),
+})
+
+export const artReleaseOk = z.object({ ...resultBase, type: z.literal('art_release'), ok: z.literal(true), artId: z.string().regex(UUID_RE) })
+
 export const spoolFailure = z.object({
   ...resultBase,
   type: z.string().max(32),
@@ -110,7 +139,7 @@ export const spoolFailure = z.object({
   error: z.string().max(64),
 })
 
-export const spoolResult = z.union([probeOk, finalizeOk, spoolFailure])
+export const spoolResult = z.union([probeOk, finalizeOk, artOk, artReleaseOk, spoolFailure])
 export type SpoolResult = z.infer<typeof spoolResult>
 
 // Exclusive-create a tmp file (O_CREAT|O_EXCL never follows a symlink), then

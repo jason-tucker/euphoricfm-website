@@ -147,6 +147,10 @@ export const libraryCache = pgTable(
     playlistIds: integer('playlist_ids').array().notNull().default(sql`'{}'::int[]`),
     lengthS: integer('length_s'),
     mtime: integer('mtime'),
+    // Current album art URL (art contract 2026-09-27): AzuraCast's `art` from
+    // /files, else https://euphoric.fm/api/station/<shortcode>/art/<unique_id>.
+    // Populated by the library sync (P3).
+    artUrl: text('art_url'),
     refreshedAt: ts('refreshed_at').notNull().defaultNow(),
   },
   (t) => [uniqueIndex('library_cache_path_uq').on(t.path)],
@@ -344,6 +348,36 @@ export const uploads = pgTable(
     completedAt: ts('completed_at'),
   },
   (t) => [index('uploads_owner_status_idx').on(t.ownerUserId, t.status)],
+)
+
+// ---------------------------------------------------------- album art ---
+// Standalone art uploads (art contract 2026-09-27). The web stores the raw
+// bytes at raw_path (/staging/art-in/<id>, web-writable) and spools an 'art'
+// request; the network-less probe re-encodes it to a baseline JPEG at
+// jpeg_path (/staging/art/<id>/cover.jpg, probe-written, read-only for web
+// and worker) and reports its sha256. `owner` is users.id.
+
+export const artStatusEnum = pgEnum('art_status', ['processing', 'ready', 'rejected', 'expired'])
+
+export const artUploads = pgTable(
+  'art_uploads',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    owner: text('owner')
+      .notNull()
+      .references(() => users.id),
+    status: artStatusEnum('status').notNull().default('processing'),
+    reason: text('reason'),
+    rawPath: text('raw_path'),
+    rawSize: integer('raw_size'),
+    jpegPath: text('jpeg_path'),
+    jpegSha256: text('jpeg_sha256'),
+    width: integer('width'),
+    height: integer('height'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [index('art_uploads_owner_idx').on(t.owner), index('art_uploads_status_idx').on(t.status, t.createdAt)],
 )
 
 // -------------------------------------------------------- media safety ---

@@ -7,6 +7,7 @@ set -eu
 umask 027
 for d in \
   /data/staging/uploads /data/staging/final /data/staging/work /data/staging/fetch \
+  /data/staging/art /data/staging/art-in \
   /data/spool/probe/in-web /data/spool/probe/in-worker /data/spool/probe/out /data/spool/probe/claimed \
   /data/spool/fetch/in /data/spool/fetch/out; do
   mkdir -p "$d"

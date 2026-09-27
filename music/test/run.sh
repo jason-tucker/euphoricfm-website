@@ -53,6 +53,12 @@ check "worker can write in-worker"          music-worker 'touch /spool/probe/in-
 check "probe has no network"                music-probe 'wget -q -T 3 -O /dev/null http://mocks:4104/egress' fail
 check "probe cannot see /staging/fetch"     music-probe 'test -e /staging/fetch' fail
 check "web rootfs is read-only"             music-web   'touch /app/x' fail
+check "web can write art-in"                music-web   'touch /staging/art-in/.mc && rm /staging/art-in/.mc' ok
+check "web cannot write /staging/art"       music-web   'touch /staging/art/x' fail
+check "worker cannot write /staging/art"    music-worker 'touch /staging/art/x' fail
+check "worker can read /staging/art"        music-worker 'test -d /staging/art && ls /staging/art' ok
+check "worker cannot see art-in"            music-worker 'test -e /staging/art-in' fail
+check "probe cannot write art-in"           music-probe 'touch /staging/art-in/x' fail
 [ $mc -eq 0 ] || status=1
 
 echo "== worker start-up guard (real image)"

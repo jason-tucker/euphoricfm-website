@@ -18,7 +18,9 @@
 //    non-empty `dirs`, `path`/`playlists` in a file PUT, string playlist ids
 //    ("new" creates a playlist, P0d-B (d)).
 //
-// Batch requests are reachable only through setPlaylists() and moveFile().
+// Batch requests are reachable only through setPlaylists(),
+// setPlaylistsReply() and moveFile(). Album art (POST /art/{id}) only through
+// uploadArt(), which gets the same media-id target checks as a metadata PUT.
 // moveFile() adds its own live checks, because AzuraCast's doMove does NOT:
 // the source must be an exact media entry and the destination path must be
 // free (any entry type), both read with flushCache=true, and the moved id is
@@ -34,7 +36,9 @@
 // batch returns HTTP 200 with per-file failures in `errors[]`, which is
 // treated as failure; the full list is paginated (per_page/page).
 
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
+import { constants as FS } from 'node:fs'
+import { open as openFile } from 'node:fs/promises'
 import { z } from 'zod'
 import { assertSafePath, basename, dirname, patterns, PathError } from '../paths/builder'
 import { reassertProfile, type EnvLike, type Profile } from './guard'
@@ -50,6 +54,8 @@ export class AzuraCastError extends Error {
 }
 
 const SID_ROUTE = /^\/api\/station\/(\d+)\//
+// The probe's re-encoded art is ≤1000 px; anything bigger is not ours.
+const MAX_ART_JPEG_BYTES = 2 * 1024 * 1024
 
 // Test-only transport seam (see header).
 export const TEST_SEND = Symbol('azuracast.testSend')
@@ -180,7 +186,7 @@ type Entry = {
   // allowed query keys → value validator; any other key is refused
   query?: Record<string, (v: string) => boolean>
   requiredQuery?: string[]
-  kind: 'read' | 'upload' | 'metadata' | 'batch'
+  kind: 'read' | 'upload' | 'metadata' | 'batch' | 'art'
 }
 
 const dirParam = (v: string) =>
@@ -194,6 +200,10 @@ export const ALLOWLIST: readonly Entry[] = [
   { method: 'GET', re: /^\/api\/openapi\.yml$/, kind: 'read' },
   { method: 'POST', re: /^\/api\/station\/(\d+)\/files$/, kind: 'upload' },
   { method: 'PUT', re: /^\/api\/station\/(\d+)\/file\/([1-9]\d{0,9})$/, kind: 'metadata' },
+  // Album art (verified on the live 0.21.0 build: Stations\Art\PostArtAction,
+  // permission StationPermissions::Media, Flow standard upload = the first
+  // multipart file part, OpenAPI field `file`). Numeric media id only.
+  { method: 'POST', re: /^\/api\/station\/(\d+)\/art\/([1-9]\d{0,9})$/, kind: 'art' },
   { method: 'PUT', re: /^\/api\/station\/(\d+)\/files\/batch$/, kind: 'batch' },
 ]
 
@@ -207,6 +217,9 @@ export type ClientDeps = {
   extraCanaryStationIds?: readonly number[]
   fetchImpl?: typeof fetch
   env?: EnvLike
+  // Where the probe's album-art JPEGs live (read-only for the worker).
+  // uploadArt reads ONLY <artDir>/<uuid>/cover.jpg.
+  artDir?: string
   // Runs immediately before every WRITE leaves the process (after all other
   // checks). The worker wires it to assertQueuesNotPaused (server/pause.ts).
   writeGate?: () => Promise<void>
@@ -216,6 +229,7 @@ type SendOpts = {
   body?: unknown // validated JSON body
   uploadBytes?: Buffer // POST /files: streamed as {"path":…,"file":"<base64>"}
   uploadPath?: string
+  artBytes?: Buffer // POST /art/{id}: sent as multipart, one `file` part (JPEG)
   canary?: boolean // self-check only
   allowedPlaylistIds?: ReadonlySet<number> // required for a do=playlist batch
   timeoutMs?: number
@@ -268,7 +282,17 @@ export class AzuraCastClient {
     const url = `${this.deps.baseUrl}${u.pathname}${u.search}`
     const headers: Record<string, string> = { 'X-API-Key': this.deps.apiKey, Accept: 'application/json' }
     let body: BodyInit | undefined
-    if (opts.uploadBytes) {
+    if (opts.artBytes) {
+      const boundary = `efm${randomBytes(16).toString('hex')}`
+      headers['content-type'] = `multipart/form-data; boundary=${boundary}`
+      body = new Uint8Array(
+        Buffer.concat([
+          Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="cover.jpg"\r\nContent-Type: image/jpeg\r\n\r\n`, 'latin1'),
+          opts.artBytes,
+          Buffer.from(`\r\n--${boundary}--\r\n`, 'latin1'),
+        ]),
+      )
+    } else if (opts.uploadBytes) {
       const stream = base64JsonStream(opts.uploadPath!, opts.uploadBytes)
       headers['content-type'] = 'application/json'
       headers['content-length'] = String(stream.length)
@@ -332,9 +356,18 @@ export class AzuraCastClient {
 
     // Bodies.
     if (entry.kind === 'read') {
-      if (opts.body !== undefined || opts.uploadBytes) throw new AzuraCastError('refused_body_on_read')
+      if (opts.body !== undefined || opts.uploadBytes || opts.artBytes) throw new AzuraCastError('refused_body_on_read')
       return
     }
+    if (entry.kind === 'art') {
+      const b = opts.artBytes
+      if (opts.body !== undefined || opts.uploadBytes || !Buffer.isBuffer(b) || b.length < 4 || b.length > MAX_ART_JPEG_BYTES) throw new AzuraCastError('refused_art_shape')
+      if (!(b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff)) throw new AzuraCastError('refused_art_not_jpeg')
+      // Names only an id, like the metadata PUT: same target checks.
+      await this.assertMediaTarget(Number(entry.re.exec(path)![2]))
+      return
+    }
+    if (opts.artBytes) throw new AzuraCastError('refused_art_shape')
     if (entry.kind === 'upload') {
       if (opts.body !== undefined || !opts.uploadBytes || typeof opts.uploadPath !== 'string') throw new AzuraCastError('refused_upload_shape')
       this.assertWritePath(opts.uploadPath)
@@ -352,10 +385,7 @@ export class AzuraCastClient {
       // The PUT names only an id: resolve it through the (validated) read
       // path and require the file to sit on the Music/Artists/** surface,
       // under the test prefix when set. Runs for EVERY metadata PUT.
-      const id = Number(entry.re.exec(path)![2])
-      const current = await this.getFile(id)
-      this.assertWritePath(current.path)
-      if (!patterns(this.root).artistFile.test(current.path)) throw new AzuraCastError('refused_metadata_target', { path: current.path })
+      await this.assertMediaTarget(Number(entry.re.exec(path)![2]))
       return
     }
     // batch
@@ -375,6 +405,15 @@ export class AzuraCastClient {
       if (!allowed) throw new AzuraCastError('refused_playlist_set_missing')
       for (const id of b.playlists) if (!allowed.has(id)) throw new AzuraCastError('refused_playlist_id', { id })
     }
+  }
+
+  // A write that names only a media id (metadata PUT, art POST): resolve the
+  // id through the validated read path; the file must be on the
+  // Music/Artists/<folder>/<file> surface and under the test prefix when set.
+  private async assertMediaTarget(id: number): Promise<void> {
+    const current = await this.getFile(id)
+    this.assertWritePath(current.path)
+    if (!patterns(this.root).artistFile.test(current.path)) throw new AzuraCastError('refused_metadata_target', { path: current.path })
   }
 
   // Prefix guard: when PORTAL_TEST_PREFIX is set, every path a write names
@@ -481,6 +520,41 @@ export class AzuraCastClient {
     if (!r.success) throw new AzuraCastError('metadata_failed')
   }
 
+  // Sets a track's album art (art contract 2026-09-27) from a probe-made
+  // JPEG. The path must be <artDir>/<uuid>/cover.jpg, read without following
+  // links; the bytes must hash to expectedSha256 (the probe's recorded sha)
+  // and be a JPEG. The request goes through validate() like every write:
+  // the media id is resolved and must be a Music/Artists file under the
+  // prefix, the station must match, and the write gate runs.
+  // AzuraCast side effects (verified in source): it stores a resized copy
+  // (album_art/<unique_id>.jpg), sets art_updated_at, and REWRITES the audio
+  // file's tags on disk (writeToFile), like a metadata PUT.
+  async uploadArt(mediaId: number, jpegPath: string, expectedSha256: string): Promise<void> {
+    if (!Number.isSafeInteger(mediaId) || mediaId <= 0) throw new AzuraCastError('bad_id')
+    if (!/^[0-9a-f]{64}$/.test(expectedSha256)) throw new AzuraCastError('bad_sha256')
+    const artDir = (this.deps.artDir ?? '/staging/art').replace(/\/+$/, '')
+    const m = /^(.*)\/([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/cover\.jpg$/.exec(jpegPath)
+    if (!m || m[1] !== artDir) throw new AzuraCastError('refused_art_path', { path: jpegPath })
+    let fh
+    try {
+      fh = await openFile(jpegPath, FS.O_RDONLY | FS.O_NOFOLLOW | FS.O_NONBLOCK)
+    } catch {
+      throw new AzuraCastError('art_missing')
+    }
+    let bytes: Buffer
+    try {
+      const st = await fh.stat()
+      if (!st.isFile() || st.size < 4 || st.size > MAX_ART_JPEG_BYTES) throw new AzuraCastError('refused_art_shape')
+      bytes = await fh.readFile()
+    } finally {
+      await fh.close()
+    }
+    if (createHash('sha256').update(bytes).digest('hex') !== expectedSha256) throw new AzuraCastError('sha_mismatch')
+    const { status, text } = await this.#send('POST', this.sidPath(`/art/${mediaId}`), { artBytes: bytes, timeoutMs: 60_000 })
+    const r = this.json(status, text, statusResponseSchema, 'art')
+    if (!r.success) throw new AzuraCastError('art_failed')
+  }
+
   // REPLACES the file's station playlist set (P0d-B (d)). `allowedIds` is the
   // assignable set ∪ the snapshot's existing station ids; anything else is
   // refused before any I/O. [] clears every membership (archive).
@@ -490,6 +564,24 @@ export class AzuraCastClient {
     }
     const body = { do: 'playlist' as const, files: [filePath], dirs: [], currentDirectory: dirname(filePath), playlists: [...playlistIds] }
     await this.batch(body, allowedIds)
+  }
+
+  // The SAME do=playlist request as setPlaylists (same validate(), same
+  // allowed-set check), returning the raw reply instead of throwing on
+  // errors[] — for P3's behavioural contract check.
+  async setPlaylistsReply(filePath: string, playlistIds: readonly number[], allowedIds: ReadonlySet<number>): Promise<{ status: number; reply: unknown }> {
+    for (const id of playlistIds) {
+      if (!Number.isSafeInteger(id) || id <= 0 || !allowedIds.has(id)) throw new AzuraCastError('refused_playlist_id', { id })
+    }
+    const body = { do: 'playlist' as const, files: [filePath], dirs: [], currentDirectory: dirname(filePath), playlists: [...playlistIds] }
+    const { status, text } = await this.#send('PUT', this.sidPath('/files/batch'), { body, allowedPlaylistIds: allowedIds })
+    let reply: unknown = null
+    try {
+      reply = JSON.parse(text)
+    } catch {
+      reply = null
+    }
+    return { status, reply }
   }
 
   // AzuraCast's BatchAction::doMove does NOT check the destination: it

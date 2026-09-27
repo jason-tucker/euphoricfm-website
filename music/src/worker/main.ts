@@ -42,6 +42,7 @@ export async function startupChecks(deps: StartupDeps = {}): Promise<{ env: Work
     profile,
     canaryStationId: Number(env.AZURACAST_CANARY_STATION_ID),
     extraCanaryStationIds: env.AZURACAST_EXTRA_CANARY_STATION_IDS.split(',').filter(Boolean).map(Number),
+    artDir: env.STAGING_ART_DIR,
     fetchImpl: deps.fetchImpl,
     env: raw,
   })

@@ -73,40 +73,64 @@ export async function control(path: string, body?: unknown) {
 }
 
 // One request on its OWN connection (no agent, Connection: close), for
-// oversized bodies whose early 413 may reset the socket: nothing can leak
-// into the next request's pooled keep-alive connection.
-export function reqFresh(jar: Jar | null, path: string, o: { method?: string; headers?: Record<string, string>; body?: string | Buffer; chunks?: Buffer[] } = {}): Promise<{ status: number; text: string }> {
-  return new Promise((resolve, reject) => {
-    const url = new URL(path.startsWith('http') ? path : `${WEB()}${path}`)
-    const headers: Record<string, string> = { 'cf-connecting-ip': freshIp(), origin: ORIGIN, 'sec-fetch-site': 'same-origin', connection: 'close', ...(o.headers ?? {}) }
-    if (jar && jar.cookies.size) headers.cookie = jar.header()
-    if (o.body !== undefined) headers['content-length'] = String(Buffer.byteLength(o.body))
-    let settled = false
-    const r = httpRequest({ hostname: url.hostname, port: url.port, path: url.pathname + url.search, method: o.method ?? 'POST', headers, agent: false }, (res) => {
-      // The status line is what the caller asserts. The server closes the
-      // connection after an early 413 while we may still be sending, so the
-      // response can end with a reset instead of a clean 'end': resolve on
-      // whichever comes first, with whatever body arrived.
-      const parts: Buffer[] = []
-      const done = () => {
-        if (settled) return
+// oversized bodies whose early 413/411 may close the socket: nothing can leak
+// into the next request's pooled keep-alive connection. Body chunks stop as
+// soon as the response arrives. If the socket dies before any response (the
+// server closed while we were still sending: EPIPE/ECONNRESET), the request
+// is retried on a fresh connection, at most twice.
+export function reqFresh(
+  jar: Jar | null,
+  path: string,
+  o: { method?: string; headers?: Record<string, string>; body?: string | Buffer; chunks?: Buffer[] } = {},
+): Promise<{ status: number; text: string }> {
+  const attempt = () =>
+    new Promise<{ status: number; text: string }>((resolve, reject) => {
+      const url = new URL(path.startsWith('http') ? path : `${WEB()}${path}`)
+      const headers: Record<string, string> = { 'cf-connecting-ip': freshIp(), origin: ORIGIN, 'sec-fetch-site': 'same-origin', connection: 'close', ...(o.headers ?? {}) }
+      if (jar && jar.cookies.size) headers.cookie = jar.header()
+      const body = o.body === undefined ? undefined : Buffer.from(o.body)
+      if (body) headers['content-length'] = String(body.length)
+      let settled = false
+      let responded = false
+      const r = httpRequest({ hostname: url.hostname, port: url.port, path: url.pathname + url.search, method: o.method ?? 'POST', headers, agent: false }, (res) => {
+        responded = true
+        // The status line is what callers assert; a reset after it still counts.
+        const parts: Buffer[] = []
+        const done = () => {
+          if (settled) return
+          settled = true
+          resolve({ status: res.statusCode ?? 0, text: Buffer.concat(parts).toString('utf8') })
+        }
+        res.on('data', (c: Buffer) => parts.push(c))
+        res.on('end', done)
+        res.on('error', done)
+        res.on('close', done)
+      })
+      r.on('error', (e) => {
+        if (settled || responded) return
         settled = true
-        resolve({ status: res.statusCode ?? 0, text: Buffer.concat(parts).toString('utf8') })
+        reject(e)
+      })
+      const pieces: Buffer[] = o.chunks ?? (body ? Array.from({ length: Math.ceil(body.length / 65536) }, (_, i) => body.subarray(i * 65536, (i + 1) * 65536)) : [])
+      if (pieces.length === 0) {
+        r.flushHeaders()
+        if (body || !o.chunks) r.end()
+        return // chunked with no data: headers only, wait for the response
       }
-      res.on('data', (c: Buffer) => parts.push(c))
-      res.on('end', done)
-      res.on('error', done)
-      res.on('close', done)
-    })
-    // The server may answer (and close) before the whole body is sent.
-    r.on('error', (e) => (settled ? undefined : setTimeout(() => (settled ? undefined : reject(e)), 1000)))
-    if (o.chunks) {
       const write = (i: number) => {
-        if (i >= o.chunks!.length) return r.end()
-        if (r.destroyed) return
-        r.write(o.chunks![i], () => write(i + 1))
+        if (responded || r.destroyed) return
+        if (i >= pieces.length) return void r.end()
+        r.write(pieces[i], () => write(i + 1))
       }
       write(0)
-    } else r.end(o.body)
-  })
+    })
+  return (async () => {
+    for (let n = 0; ; n++) {
+      try {
+        return await attempt()
+      } catch (e) {
+        if (n >= 2) throw e
+      }
+    }
+  })()
 }

@@ -1,4 +1,7 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { AzuraCastClient, AzuraCastError, base64JsonStream, mergePlaylists, samePathLoose, TEST_SEND } from '@/server/azuracast/client'
 import { loadWorkerEnv } from '@/server/env'
@@ -128,6 +131,48 @@ describe('AzuraCast wrapper refusals (no request leaves the process)', () => {
     expect(loadWorkerEnv({ ...base, AZURACAST_BASE_URL: 'https://euphoric.fm/' }).AZURACAST_BASE_URL).toBe('https://euphoric.fm')
     expect(() => loadWorkerEnv({ ...base, AZURACAST_BASE_URL: 'https://euphoric.fm/proxy' })).toThrow(/bare origin/)
     expect(() => loadWorkerEnv({ ...base, AZURACAST_BASE_URL: 'https://euphoric.fm/?x=1' })).toThrow(/bare origin/)
+  })
+
+  it('uploadArt: only a probe JPEG under the art dir, with the recorded sha, onto a Music/Artists file under the prefix', async () => {
+    const artDir = mkdtempSync(join(tmpdir(), 'art-'))
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200, 7), Buffer.from([0xff, 0xd9])])
+    const id = randomUUID()
+    mkdirSync(join(artDir, id))
+    writeFileSync(join(artDir, id, 'cover.jpg'), jpeg)
+    const sha = createHash('sha256').update(jpeg).digest('hex')
+    const calls: { url: string; method: string; ct?: string }[] = []
+    const paths: Record<string, string> = { '11': 'Portal-Test/Music/Artists/A/ok.mp3', '12': 'Events/Show/x.mp3', '13': 'Music/Artists/GRIM/luvusm.mp3' }
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, method: String(init.method), ct: (init.headers as Record<string, string>)['content-type'] })
+      const mid = /\/file\/(\d+)$/.exec(url)?.[1]
+      if (mid && paths[mid]) return new Response(JSON.stringify({ id: Number(mid), unique_id: 'u', path: paths[mid] }), { status: 200 })
+      return new Response(JSON.stringify({ success: true }), { status: 200 })
+    }) as unknown as typeof fetch
+    const c = new AzuraCastClient({ baseUrl: 'https://az.invalid', apiKey: 'k'.repeat(20), profile: resolveProfile(PREFIX_ENV), canaryStationId: 7, fetchImpl, env: PREFIX_ENV, artDir })
+    const posts = () => calls.filter((x) => x.method === 'POST')
+    await refused(c.uploadArt(12, join(artDir, id, 'cover.jpg'), sha), 'refused_test_prefix')
+    await refused(c.uploadArt(13, join(artDir, id, 'cover.jpg'), sha), 'refused_test_prefix')
+    await refused(c.uploadArt(11, join(artDir, id, 'cover.jpg'), '0'.repeat(64)), 'sha_mismatch')
+    await refused(c.uploadArt(11, '/etc/passwd', sha), 'refused_art_path')
+    await refused(c.uploadArt(11, `${artDir}/${id}/../${id}/cover.jpg`, sha), 'refused_art_path')
+    const linkId = randomUUID()
+    mkdirSync(join(artDir, linkId))
+    symlinkSync(join(artDir, id, 'cover.jpg'), join(artDir, linkId, 'cover.jpg'))
+    await refused(c.uploadArt(11, join(artDir, linkId, 'cover.jpg'), sha), 'art_missing') // never through a symlink
+    const notJpeg = randomUUID()
+    mkdirSync(join(artDir, notJpeg))
+    writeFileSync(join(artDir, notJpeg, 'cover.jpg'), Buffer.from('<svg/>'))
+    await refused(c.uploadArt(11, join(artDir, notJpeg, 'cover.jpg'), createHash('sha256').update('<svg/>').digest('hex')), 'refused_art_not_jpeg')
+    expect(posts()).toHaveLength(0)
+    // the raw transport cannot bypass the media-id check either
+    await refused(send(c, 'POST', '/api/station/1/art/12', { artBytes: jpeg }), 'refused_test_prefix')
+    await refused(send(c, 'POST', '/api/station/7/art/11', { artBytes: jpeg }), 'refused_station')
+    await refused(send(c, 'POST', '/api/station/1/art/11', { body: { x: 1 } }), 'refused_art_shape')
+    expect(posts()).toHaveLength(0)
+    await c.uploadArt(11, join(artDir, id, 'cover.jpg'), sha)
+    expect(posts()).toHaveLength(1)
+    expect(posts()[0]!.url).toBe('https://az.invalid/api/station/1/art/11')
+    expect(posts()[0]!.ct).toMatch(/^multipart\/form-data; boundary=efm[0-9a-f]{32}$/)
   })
 
   it('a wrong station id is refused on every route', async () => {
@@ -359,6 +404,24 @@ describe.skipIf(!MOCKS())('AzuraCast wrapper against the P0d-B mock', () => {
     const calls = (await control('/__mock/az/calls')) as { method: string; path: string; body: { do?: string } }[]
     expect(calls.some((x) => x.body?.do === 'delete')).toBe(false)
     expect(calls.filter((x) => x.method === 'PUT' && x.path === `/api/station/1/file/${grim.id}`)).toHaveLength(0)
+  })
+
+  it('uploadArt against the mock: one multipart `file` part with the exact bytes; art_updated_at moves', async () => {
+    const artDir = mkdtempSync(join(tmpdir(), 'art-m-'))
+    const c = new AzuraCastClient({ baseUrl: process.env.MOCKS_AZURACAST!, apiKey: process.env.AZURACAST_API_KEY!, profile: resolveProfile(env), canaryStationId: 7, env, artDir })
+    const path = `Portal-Test/Music/Artists/Art${Date.now()}/x.mp3`
+    await control('/__mock/az/seed', { files: [{ path }] })
+    const media = (await c.listDirectory(path.slice(0, path.lastIndexOf('/'))))[0]!.media!
+    expect((media as { art_updated_at?: number }).art_updated_at).toBe(0)
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(500, 3), Buffer.from([0xff, 0xd9])])
+    const id = randomUUID()
+    mkdirSync(join(artDir, id))
+    writeFileSync(join(artDir, id, 'cover.jpg'), jpeg)
+    const sha = createHash('sha256').update(jpeg).digest('hex')
+    await c.uploadArt(media.id, join(artDir, id, 'cover.jpg'), sha)
+    const ups = (await control('/__mock/az/art-uploads')) as { mediaId: number; field: string; sha256: string }[]
+    expect(ups.at(-1)).toMatchObject({ mediaId: media.id, field: 'file', sha256: sha })
+    expect(((await c.getFile(media.id)) as { art_updated_at?: number }).art_updated_at).toBeGreaterThan(0)
   })
 
   it('full list uses pagination', async () => {

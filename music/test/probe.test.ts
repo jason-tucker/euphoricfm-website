@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import NodeID3 from 'node-id3'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { runArt, runArtRelease } from '@/probe/art'
 import { runFinalize } from '@/probe/finalize'
 import { ContainmentBreach, processOne } from '@/probe/main'
 import { findStrays, findStraysAfterGrace, snapshotBaseline } from '@/probe/containment'
@@ -20,7 +21,7 @@ import { fx, fxBuf } from './helpers/fixtures'
 
 const MM = resolve('dist/probe/mm-child.mjs')
 let root: string
-let dirs: { uploads: string; work: string; final: string; mmChild: string; spool: string }
+let dirs: { uploads: string; work: string; final: string; mmChild: string; spool: string; artIn: string; art: string }
 
 function stage(name: string): { upload: string; size: number } {
   const upload = randomUUID().replace(/-/g, '')
@@ -35,8 +36,8 @@ async function probe(name: string) {
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'probe-'))
-  dirs = { uploads: join(root, 'uploads'), work: join(root, 'work'), final: join(root, 'final'), mmChild: MM, spool: join(root, 'spool') }
-  for (const d of [dirs.uploads, dirs.work, dirs.final, ...['in-web', 'in-worker', 'out', 'claimed'].map((x) => join(dirs.spool, x))]) mkdirSync(d, { recursive: true })
+  dirs = { uploads: join(root, 'uploads'), work: join(root, 'work'), final: join(root, 'final'), mmChild: MM, spool: join(root, 'spool'), artIn: join(root, 'art-in'), art: join(root, 'art') }
+  for (const d of [dirs.uploads, dirs.work, dirs.final, dirs.artIn, dirs.art, ...['in-web', 'in-worker', 'out', 'claimed'].map((x) => join(dirs.spool, x))]) mkdirSync(d, { recursive: true })
   expect(existsSync(MM)).toBe(true)
 })
 
@@ -44,7 +45,7 @@ describe('probe: accepts real mp3', () => {
   it('extracts tags, re-encodes a PNG cover to a ≤1000 px JPEG, reports sha256', async () => {
     const r = await probe('tagged-png.mp3')
     expect(r).toMatchObject({ ok: true, type: 'probe', source: 'in-web', bitrate: 128000, tags: { title: 'Test Title', artist: 'Test Artist', album: 'Test Album', genre: 'Pop' } })
-    if (!r.ok || !('sha256' in r)) throw new Error('not ok')
+    if (!r.ok || r.type !== 'probe') throw new Error('not ok')
     expect(r.sha256).toBe(createHash('sha256').update(fxBuf('tagged-png.mp3')).digest('hex'))
     expect(r.durationS).toBeGreaterThanOrEqual(34)
     const jpg = readFileSync(join(dirs.uploads, r.cover!.file))
@@ -146,7 +147,7 @@ describe('probe: refuses hostile or unfit files', () => {
 describe('finalize', () => {
   async function probed(name: string) {
     const r = await probe(name)
-    if (!r.ok || !('sha256' in r)) throw new Error('probe failed')
+    if (!r.ok || r.type !== 'probe') throw new Error('probe failed')
     return r
   }
 
@@ -184,7 +185,7 @@ describe('finalize', () => {
 describe('probe inbox rules', () => {
   it('a finalize request found in in-web is refused, not executed', async () => {
     const p = await probe('raw35.mp3')
-    if (!p.ok || !('sha256' in p)) throw new Error()
+    if (!p.ok || p.type !== 'probe') throw new Error()
     const id = randomUUID()
     await writeSpoolRequest(join(dirs.spool, 'in-web'), { v: 1, id, type: 'finalize', upload: p.upload, approvedSha256: p.sha256, tags: { title: 'a', artist: 'b', album: '', genre: '' }, cover: null })
     await processOne('in-web', id, { ...dirs, spool: dirs.spool })
@@ -371,5 +372,62 @@ describe('probe containment: the busybox timeout watcher is not a false positive
     await runLimited('sleep', ['0.2'], { timeoutS: 5, vmemKb: 1 << 20 })
     const strays = (await findStraysAfterGrace(baseline)).filter((p) => p.cmd === 'timeout' || p.cmd === 'sleep')
     expect(strays).toEqual([])
+  })
+})
+
+// ------------------------------------------------ standalone album art ---
+
+describe('probe: standalone album art (art contract)', () => {
+  async function art(name: string, bytes?: Buffer) {
+    const id = randomUUID()
+    const data = bytes ?? fxBuf(name)
+    writeFileSync(join(dirs.artIn, id), data)
+    const r = await runArt({ v: 1, id, type: 'art', expectedSize: data.length }, { artIn: dirs.artIn, art: dirs.art, work: dirs.work })
+    return { id, r }
+  }
+
+  it('JPEG, PNG and WebP are re-encoded to a ≤1000 px baseline JPEG with its sha256 recorded', async () => {
+    for (const name of ['art.jpg', 'art.png', 'art.webp']) {
+      const { id, r } = await art(name)
+      if (!r.ok || r.type !== 'art') throw new Error(`${name}: ${JSON.stringify(r)}`)
+      const jpg = readFileSync(join(dirs.art, id, 'cover.jpg'))
+      expect(sniffImage(jpg)).toBe('jpeg')
+      expect(r.sha256).toBe(createHash('sha256').update(jpg).digest('hex'))
+      expect(Math.max(r.width, r.height)).toBeLessThanOrEqual(1000)
+      expect(imageDims(jpg, 'jpeg')).toEqual({ w: r.width, h: r.height })
+      expect(jpg.includes(Buffer.from('Lavf'))).toBe(false) // no encoder/metadata comment carried over
+    }
+  })
+
+  it('SVG, GIF, oversized, truncated and fake-header images are refused before any decoder runs', async () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>')
+    expect((await art('', svg)).r).toMatchObject({ ok: false, error: 'unsupported_image_type' })
+    expect((await art('art.gif')).r).toMatchObject({ ok: false, error: 'unsupported_image_type' })
+    expect((await art('', Buffer.concat([PNG_SIG, ihdr(5000, 5000), pngChunk('IEND', Buffer.alloc(0))]))).r).toMatchObject({ ok: false, error: 'image_too_large' })
+    const p = fxBuf('art.png')
+    expect((await art('', p.subarray(0, p.length - 100))).r).toMatchObject({ ok: false, error: 'image_truncated' })
+    expect((await art('', fxBuf('art.png').subarray(0, 20))).r).toMatchObject({ ok: false, error: 'unreadable_image_header' })
+    const text = Buffer.alloc(13)
+    text.writeUInt32BE(100, 0)
+    text.writeUInt32BE(100, 4)
+    expect((await art('', Buffer.concat([PNG_SIG, pngChunk('tEXt', text), ihdr(12000, 12000)]))).r).toMatchObject({ ok: false, error: 'unreadable_image_header' })
+    const t = fxBuf('art.jpg')
+    expect((await art('', t.subarray(0, Math.floor(t.length / 2)))).r).toMatchObject({ ok: false, error: 'image_truncated' })
+  })
+
+  it('art_release deletes the JPEG; an art id is never re-used', async () => {
+    const { id } = await art('art.jpg')
+    const again = await runArt({ v: 1, id, type: 'art', expectedSize: fxBuf('art.jpg').length }, { artIn: dirs.artIn, art: dirs.art, work: dirs.work })
+    expect(again).toMatchObject({ ok: false, error: 'art_exists' })
+    await runArtRelease({ v: 1, id: randomUUID(), type: 'art_release', artId: id }, { artIn: dirs.artIn, art: dirs.art, work: dirs.work })
+    expect(existsSync(join(dirs.art, id))).toBe(false)
+  })
+
+  it('an art request is accepted only from in-web', async () => {
+    const id = randomUUID()
+    writeFileSync(join(dirs.artIn, id), fxBuf('art.jpg'))
+    await writeSpoolRequest(join(dirs.spool, 'in-worker'), { v: 1, id, type: 'art', expectedSize: fxBuf('art.jpg').length })
+    await processOne('in-worker', id, { ...dirs, spool: dirs.spool })
+    expect(await readSpoolResult(join(dirs.spool, 'out'), id)).toMatchObject({ ok: false, error: 'type_not_allowed_in_inbox' })
   })
 })

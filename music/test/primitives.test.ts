@@ -40,7 +40,7 @@ describe('CSRF gate', () => {
 describe('CSP', () => {
   it('is exactly the plan directives', () => {
     expect(buildCsp('N')).toBe(
-      "default-src 'self'; script-src 'self' 'nonce-N'; img-src 'self' data: blob: https://cdn.discordapp.com; media-src 'self' blob:; connect-src 'self'; form-action 'self' https://discord.com; frame-ancestors 'none'; base-uri 'none'",
+      "default-src 'self'; script-src 'self' 'nonce-N'; img-src 'self' data: blob: https://cdn.discordapp.com https://euphoric.fm; media-src 'self' blob:; connect-src 'self'; form-action 'self' https://discord.com; frame-ancestors 'none'; base-uri 'none'",
     )
   })
 })

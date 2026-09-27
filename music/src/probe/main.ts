@@ -2,7 +2,8 @@
 // two inboxes and processes ONE request at a time.
 //
 // Inbox rules (enforced here, on top of the mounts): in-web may carry only
-// 'probe'; in-worker only 'finalize' | 'cover' | 'probe_fetch'. A request of
+// 'probe' | 'art' | 'art_release'; in-worker only 'finalize' | 'cover' |
+// 'probe_fetch'. A request of
 // the wrong type is answered {ok:false, error:'type_not_allowed_in_inbox'}
 // and never executed. Every result records its source inbox.
 
@@ -20,6 +21,7 @@ import {
   type SpoolResult,
 } from '../server/spool/protocol'
 import { findStraysAfterGrace, killAll, snapshotBaseline, type ProcInfo } from './containment'
+import { runArt, runArtRelease } from './art'
 import { runFinalize } from './finalize'
 import { runProbe } from './probe'
 
@@ -28,6 +30,8 @@ export const DIRS = {
   uploads: '/staging/uploads',
   final: '/staging/final',
   work: '/staging/work',
+  artIn: '/staging/art-in',
+  art: '/staging/art',
   mmChild: new URL('./mm-child.mjs', import.meta.url).pathname,
 }
 
@@ -61,6 +65,10 @@ export async function handleClaimed(inbox: Inbox, id: string, claimedPath: strin
       return runProbe(req, { uploads: dirs.uploads, work: dirs.work, mmChild: dirs.mmChild })
     case 'finalize':
       return runFinalize(req, { uploads: dirs.uploads, work: dirs.work, final: dirs.final })
+    case 'art':
+      return runArt(req, { artIn: dirs.artIn, art: dirs.art, work: dirs.work })
+    case 'art_release':
+      return runArtRelease(req, { artIn: dirs.artIn, art: dirs.art, work: dirs.work })
     default:
       return fail(id, inbox, req.type, 'not_implemented') // P5 SoundCloud types
   }
@@ -113,7 +121,7 @@ async function recoverInterrupted(dirs = DIRS) {
 
 export async function main() {
   assertProbeEnvClean()
-  for (const d of [join(DIRS.spool, 'claimed'), join(DIRS.spool, 'out'), DIRS.work, DIRS.final]) await mkdir(d, { recursive: true, mode: 0o750 })
+  for (const d of [join(DIRS.spool, 'claimed'), join(DIRS.spool, 'out'), DIRS.work, DIRS.final, DIRS.art]) await mkdir(d, { recursive: true, mode: 0o750 })
   await recoverInterrupted()
   // Start-up process table: tini (PID 1) and this process. Anything else
   // alive after a job is a stray (containment.ts).

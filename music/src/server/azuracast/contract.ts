@@ -12,6 +12,9 @@ export type ContractBaseline = {
   paths: Record<string, string>
   schemasBundleSha256: string
   schemas: Record<string, string>
+  // Request bodies the used paths reference (#/components/requestBodies/X),
+  // hashed individually (album art upload: FlowFileUpload).
+  requestBodies?: Record<string, string>
 }
 
 export const BASELINE = baseline as ContractBaseline
@@ -44,7 +47,15 @@ export function schemaSlice(lines: string[], name: string): string | null {
   return i < 0 ? null : sliceFrom(lines, i, 4)
 }
 
+export function requestBodySlice(lines: string[], name: string): string | null {
+  const start = lines.findIndex((l) => l === '  requestBodies:')
+  if (start < 0) return null
+  const i = lines.findIndex((l, idx) => idx > start && l === `    ${name}:`)
+  return i < 0 ? null : sliceFrom(lines, i, 4)
+}
+
 const REF = /#\/components\/schemas\/([A-Za-z0-9_]+)/g
+const BODY_REF = /#\/components\/requestBodies\/([A-Za-z0-9_]+)/g
 
 export type DriftReport = { ok: boolean; drift: { name: string; expected: string; actual: string | null }[] }
 
@@ -57,6 +68,16 @@ export function checkContract(openapiYaml: string, base: ContractBaseline = BASE
     const actual = s === null ? null : sha(s)
     if (actual !== expected) drift.push({ name: `path ${p}`, expected, actual })
     if (s) slices.push(s)
+  }
+  for (const [n, expected] of Object.entries(base.requestBodies ?? {})) {
+    const s = requestBodySlice(lines, n)
+    const actual = s === null ? null : sha(s)
+    if (actual !== expected) drift.push({ name: `requestBody ${n}`, expected, actual })
+  }
+  for (const s of slices) {
+    for (const m of s.matchAll(BODY_REF)) {
+      if (!(m[1]! in (base.requestBodies ?? {}))) drift.push({ name: `requestBody ${m[1]} (new ref)`, expected: '', actual: sha(requestBodySlice(lines, m[1]!) ?? '') })
+    }
   }
   const seen = new Set<string>()
   const queue: string[] = []

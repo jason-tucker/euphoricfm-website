@@ -6,7 +6,8 @@ const spec = readFileSync(new URL('./fixtures/openapi-min.yml', import.meta.url)
 
 describe('AzuraCast contract drift probe', () => {
   it('the fixture spec reproduces the P0d baseline hashes exactly', () => {
-    expect(Object.keys(BASELINE.paths)).toHaveLength(5)
+    expect(Object.keys(BASELINE.paths)).toHaveLength(6)
+    expect(Object.keys(BASELINE.requestBodies ?? {})).toEqual(['FlowFileUpload'])
     expect(checkContract(spec)).toEqual({ ok: true, drift: [] })
   })
 
@@ -22,6 +23,11 @@ describe('AzuraCast contract drift probe', () => {
     const r = checkContract(changed)
     expect(r.ok).toBe(false)
     expect(r.drift.map((d) => d.name)).toEqual(expect.arrayContaining(['schemas bundle', 'schema Api_UploadFile']))
+  })
+
+  it('detects a change to the art upload body (multipart field)', () => {
+    const r = checkContract(spec.replace("            properties:\n              file:", "            properties:\n              art:"))
+    expect(r.drift.map((d) => d.name)).toContain('requestBody FlowFileUpload')
   })
 
   it('detects a removed path', () => {

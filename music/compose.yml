@@ -144,9 +144,12 @@ services:
       - /app/.next/cache:size=16m,uid=1000,gid=1000
     mem_limit: 256m
     memswap_limit: 256m # no swap on top of the limit (2 GB botvps)
-    # PINNED MOUNTS (plan §3): web writes only the tus dir and in-web.
+    # PINNED MOUNTS (plan §3): web writes only the tus dir, art-in and
+    # in-web; the probe's art JPEGs are read-only here.
     volumes:
       - ${MUSIC_DATA_DIR:-./data}/staging/uploads:/staging/uploads:rw
+      - ${MUSIC_DATA_DIR:-./data}/staging/art-in:/staging/art-in:rw
+      - ${MUSIC_DATA_DIR:-./data}/staging/art:/staging/art:ro
       - ${MUSIC_DATA_DIR:-./data}/spool/probe/in-web:/spool/probe/in-web:rw
       - ${MUSIC_DATA_DIR:-./data}/spool/probe/out:/spool/probe/out:ro
     networks:
@@ -168,10 +171,12 @@ services:
       - /tmp:size=8m
     mem_limit: 160m
     memswap_limit: 160m # no swap on top of the limit (2 GB botvps)
-    # PINNED MOUNTS: final is read-only; the worker submits finalize/cover/
-    # fetch-probe requests via in-worker and reads results from out (ro).
+    # PINNED MOUNTS: final and art are read-only; the worker submits
+    # finalize/cover/fetch-probe requests via in-worker and reads results
+    # from out (ro).
     volumes:
       - ${MUSIC_DATA_DIR:-./data}/staging/final:/staging/final:ro
+      - ${MUSIC_DATA_DIR:-./data}/staging/art:/staging/art:ro
       - ${MUSIC_DATA_DIR:-./data}/spool/probe/in-worker:/spool/probe/in-worker:rw
       - ${MUSIC_DATA_DIR:-./data}/spool/fetch/in:/spool/fetch/in:rw
       - ${MUSIC_DATA_DIR:-./data}/spool/probe/out:/spool/probe/out:ro
@@ -205,6 +210,8 @@ services:
       - ${MUSIC_DATA_DIR:-./data}/staging/uploads:/staging/uploads:rw
       - ${MUSIC_DATA_DIR:-./data}/staging/final:/staging/final:rw
       - ${MUSIC_DATA_DIR:-./data}/staging/work:/staging/work:rw
+      - ${MUSIC_DATA_DIR:-./data}/staging/art:/staging/art:rw
+      - ${MUSIC_DATA_DIR:-./data}/staging/art-in:/staging/art-in:ro
       - ${MUSIC_DATA_DIR:-./data}/spool/probe:/spool/probe:rw
     depends_on:
       music-init:

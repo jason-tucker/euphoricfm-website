@@ -68,6 +68,9 @@ const webSchema = z.object({
   TICKETS_GUILD_READ_KEY: z.string().default(''),
   TICKETS_WEBHOOK_SECRET: z.string().min(32),
   STAGING_UPLOADS_DIR: z.string().default('/staging/uploads'),
+  // Album art: raw uploads (web rw) and the probe's JPEGs (web ro).
+  STAGING_ART_IN_DIR: z.string().default('/staging/art-in'),
+  STAGING_ART_DIR: z.string().default('/staging/art'),
   SPOOL_PROBE_IN_DIR: z.string().default('/spool/probe/in-web'),
   SPOOL_PROBE_OUT_DIR: z.string().default('/spool/probe/out'),
   // Required: with trustHost, Auth.js would otherwise derive its base URL
@@ -135,6 +138,8 @@ const workerSchema = z.object({
   SPOOL_PROBE_IN_DIR: z.string().default('/spool/probe/in-worker'),
   SPOOL_PROBE_OUT_DIR: z.string().default('/spool/probe/out'),
   STAGING_FINAL_DIR: z.string().default('/staging/final'),
+  // The probe's album-art JPEGs (read-only mount); uploadArt reads only here.
+  STAGING_ART_DIR: z.string().default('/staging/art'),
   ALLOW_TEST_ENDPOINTS: boolFlag,
 })
 

@@ -50,6 +50,12 @@ export default async function setup() {
     // a single valid-looking MPEG frame header in front of the playlist
     writeFileSync(join(DIR, 'hls-fakeframe.mp3'), Buffer.concat([Buffer.from([0xff, 0xfb, 0x90, 0x64]), Buffer.from(m3u8)]))
     writeFileSync(join(DIR, 'html.mp3'), Buffer.from('<html><script>alert(1)</script></html>'))
+    // album-art fixtures (standalone uploads)
+    ff(['-f', 'lavfi', '-i', 'testsrc2=s=1600x1200', '-frames:v', '1', join(DIR, 'art.png')])
+    ff(['-f', 'lavfi', '-i', 'testsrc2=s=800x800', '-frames:v', '1', '-q:v', '3', join(DIR, 'art.jpg')])
+    ff(['-f', 'lavfi', '-i', 'testsrc2=s=640x480', '-frames:v', '1', '-c:v', 'libwebp', join(DIR, 'art.webp')])
+    ff(['-f', 'lavfi', '-i', 'testsrc2=s=64x64', '-frames:v', '1', join(DIR, 'art.gif')])
+    writeFileSync(join(DIR, '.done-art'), '')
     writeFileSync(join(DIR, '.done'), '')
   }
 

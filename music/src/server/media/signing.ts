@@ -7,7 +7,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 import { deriveSubkey, parseEncKey } from '../crypto'
 
 export const MEDIA_URL_TTL_S = 300
-export type MediaKind = 'audio' | 'cover'
+export type MediaKind = 'audio' | 'cover' | 'art'
 
 let key: Buffer | null = null
 function mediaKey(): Buffer {
@@ -15,18 +15,19 @@ function mediaKey(): Buffer {
   return key
 }
 
-function mac(kind: MediaKind, itemId: number, userId: string, exp: number, k: Buffer) {
+// `itemId` is an item id, or an art upload id (uuid) for kind 'art'.
+function mac(kind: MediaKind, itemId: number | string, userId: string, exp: number, k: Buffer) {
   return createHmac('sha256', k).update(`${kind}|${itemId}|${userId}|${exp}`).digest()
 }
 
-export function signMediaUrl(kind: MediaKind, itemId: number, userId: string, nowS = Math.floor(Date.now() / 1000), k = mediaKey()): string {
+export function signMediaUrl(kind: MediaKind, itemId: number | string, userId: string, nowS = Math.floor(Date.now() / 1000), k = mediaKey()): string {
   const exp = nowS + MEDIA_URL_TTL_S
   return `/api/media/${kind}/${itemId}?exp=${exp}&sig=${mac(kind, itemId, userId, exp, k).toString('base64url')}`
 }
 
 export function verifyMediaSig(
   kind: MediaKind,
-  itemId: number,
+  itemId: number | string,
   userId: string,
   expRaw: string | null,
   sigRaw: string | null,
