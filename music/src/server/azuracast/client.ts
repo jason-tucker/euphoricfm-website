@@ -20,7 +20,9 @@
 //
 // Batch requests are reachable only through setPlaylists(),
 // setPlaylistsReply() and moveFile(). Album art (POST /art/{id}) only through
-// uploadArt(), which gets the same media-id target checks as a metadata PUT.
+// uploadArt(), which gets the same media-id target checks as a metadata PUT;
+// its read-only counterpart (GET /art/{id}, the public art route) only
+// through getArt(), which never follows a redirect.
 // moveFile() adds its own live checks, because AzuraCast's doMove does NOT:
 // the source must be an exact media entry and the destination path must be
 // free (any entry type), both read with flushCache=true, and the moved id is
@@ -56,6 +58,9 @@ export class AzuraCastError extends Error {
 const SID_ROUTE = /^\/api\/station\/(\d+)\//
 // The probe's re-encoded art is ≤1000 px; anything bigger is not ours.
 const MAX_ART_JPEG_BYTES = 2 * 1024 * 1024
+// AzuraCast re-encodes stored art (≤1500 px): a read may be a bit larger.
+const MAX_ART_READ_BYTES = 4 * 1024 * 1024
+const ART_READ_ROUTE = /^\/api\/station\/(\d+)\/art\/([1-9]\d{0,9})$/
 
 // Test-only transport seam (see header).
 export const TEST_SEND = Symbol('azuracast.testSend')
@@ -198,6 +203,10 @@ export const ALLOWLIST: readonly Entry[] = [
   { method: 'GET', re: /^\/api\/station\/(\d+)\/file\/([1-9]\d{0,9})$/, kind: 'read' },
   { method: 'GET', re: /^\/api\/nowplaying\/([a-z0-9_]{1,64})$/, kind: 'read' },
   { method: 'GET', re: /^\/api\/openapi\.yml$/, kind: 'read' },
+  // Current album art of a media id (Stations\Art\GetArtAction, public: 200
+  // with the stored JPEG, or a 302 to the generic image when there is none).
+  // Read-only, numeric media id, same station check as every route.
+  { method: 'GET', re: ART_READ_ROUTE, kind: 'read' },
   { method: 'POST', re: /^\/api\/station\/(\d+)\/files$/, kind: 'upload' },
   { method: 'PUT', re: /^\/api\/station\/(\d+)\/file\/([1-9]\d{0,9})$/, kind: 'metadata' },
   // Album art (verified on the live 0.21.0 build: Stations\Art\PostArtAction,
@@ -236,6 +245,8 @@ type SendOpts = {
   maxResponseBytes?: number
 }
 
+type SendResult = { status: number; text: string; bytes?: Buffer; location?: string | null }
+
 export class AzuraCastClient {
   private readonly root: string
   private readonly f: typeof fetch
@@ -264,14 +275,14 @@ export class AzuraCastClient {
   // Test-only seam: the same validate() + transport as every typed method,
   // so tests can prove a hand-built forbidden request is refused before any
   // I/O. Refuses outside vitest.
-  async [TEST_SEND](method: string, pathAndQuery: string, opts: SendOpts = {}): Promise<{ status: number; text: string }> {
+  async [TEST_SEND](method: string, pathAndQuery: string, opts: SendOpts = {}): Promise<SendResult> {
     if (process.env.VITEST !== 'true') throw new AzuraCastError('test_seam_disabled')
     return this.#send(method, pathAndQuery, opts)
   }
 
   // Validates everything, then performs the request. Private: only the typed
   // methods of this class can build a request.
-  async #send(method: string, pathAndQuery: string, opts: SendOpts = {}): Promise<{ status: number; text: string }> {
+  async #send(method: string, pathAndQuery: string, opts: SendOpts = {}): Promise<SendResult> {
     // Serialize ONCE and validate the parsed copy of exactly those bytes, so
     // getters / toJSON cannot make what is sent differ from what was checked.
     const serialized = opts.body === undefined ? undefined : JSON.stringify(opts.body)
@@ -301,17 +312,21 @@ export class AzuraCastClient {
       headers['content-type'] = 'application/json'
       body = serialized
     }
+    // The art read is binary and answers "no custom art" with a redirect,
+    // which is reported, never followed. Everything else refuses redirects.
+    const artRead = method === 'GET' && ART_READ_ROUTE.test(u.pathname)
     const res = await this.f(url, {
       method,
       headers,
       body,
-      redirect: 'error',
+      redirect: artRead ? 'manual' : 'error',
       cache: 'no-store',
       signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
       ...(opts.uploadBytes ? { duplex: 'half' } : {}),
     } as RequestInit)
-    const text = await readLimited(res, opts.maxResponseBytes ?? 8 * 1024 * 1024)
-    return { status: res.status, text }
+    const raw = await readLimited(res, opts.maxResponseBytes ?? 8 * 1024 * 1024)
+    if (artRead) return { status: res.status, text: '', bytes: raw, location: res.headers.get('location') }
+    return { status: res.status, text: raw.toString('utf8') }
   }
 
   private async validate(method: string, pathAndQuery: string, opts: SendOpts): Promise<void> {
@@ -490,6 +505,20 @@ export class AzuraCastClient {
   async nowPlaying(shortcode: string): Promise<unknown> {
     const { status, text } = await this.#send('GET', `/api/nowplaying/${shortcode}`)
     return this.json(status, text, z.unknown(), 'nowplaying')
+  }
+
+  // The media's current album art as AzuraCast serves it (apply_art: old-art
+  // hash for the snapshot, and the post-upload verify). 'none' = the generic
+  // image redirect (no custom art). Station check as always; read-only, so
+  // no write gate and no prefix rule (it names no path).
+  async getArt(mediaId: number): Promise<{ kind: 'art'; bytes: Buffer; sha256: string } | { kind: 'none' }> {
+    if (!Number.isSafeInteger(mediaId) || mediaId <= 0) throw new AzuraCastError('bad_id')
+    const { status, bytes } = await this.#send('GET', this.sidPath(`/art/${mediaId}`), { maxResponseBytes: MAX_ART_READ_BYTES })
+    if (status >= 300 && status < 400) return { kind: 'none' }
+    if (status === 403) throw new AzuraCastError('forbidden', { what: 'art' })
+    if (status === 404) throw new AzuraCastError('not_found', { what: 'art' })
+    if (status !== 200 || !bytes) throw new AzuraCastError('http_error', { what: 'art', status })
+    return { kind: 'art', bytes, sha256: createHash('sha256').update(bytes).digest('hex') }
   }
 
   async openapi(): Promise<string> {
@@ -675,8 +704,8 @@ export function base64JsonStream(path: string, bytes: Buffer): { body: ReadableS
   return { body, length: head.length + b64Len + tail.length }
 }
 
-async function readLimited(res: Response, max: number): Promise<string> {
-  if (!res.body) return ''
+async function readLimited(res: Response, max: number): Promise<Buffer> {
+  if (!res.body) return Buffer.alloc(0)
   const reader = res.body.getReader()
   const chunks: Uint8Array[] = []
   let total = 0
@@ -690,7 +719,7 @@ async function readLimited(res: Response, max: number): Promise<string> {
     }
     chunks.push(value)
   }
-  return Buffer.concat(chunks).toString('utf8')
+  return Buffer.concat(chunks)
 }
 
 // Playlist merge for manager edits (plan §3.7 "Playlist edits … merge"):

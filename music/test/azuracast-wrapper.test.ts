@@ -175,6 +175,32 @@ describe('AzuraCast wrapper refusals (no request leaves the process)', () => {
     expect(posts()[0]!.ct).toMatch(/^multipart\/form-data; boundary=efm[0-9a-f]{32}$/)
   })
 
+  it('art read: station-checked, numeric id only, read-only, and a redirect is reported (never followed)', async () => {
+    const { c, calls } = fakeClient()
+    await refused(send(c, 'GET', '/api/station/7/art/5'), 'refused_station')
+    await refused(send(c, 'GET', '/api/station/1/art/abc'), 'refused_not_allowlisted')
+    await refused(send(c, 'GET', '/api/station/1/art/5?x=1'), 'refused_query')
+    await refused(send(c, 'GET', '/api/station/1/art/5', { body: {} }), 'refused_body_on_read')
+    expect(calls).toHaveLength(0)
+    const seen: RequestInit[] = []
+    const redirecting = new AzuraCastClient({
+      baseUrl: 'https://az.invalid',
+      apiKey: 'k'.repeat(20),
+      profile: resolveProfile(PREFIX_ENV),
+      canaryStationId: 7,
+      env: PREFIX_ENV,
+      writeGate: async () => {
+        throw new Error('a read must not hit the write gate')
+      },
+      fetchImpl: (async (_url: string, init: RequestInit) => {
+        seen.push(init)
+        return new Response(null, { status: 302, headers: { location: 'https://elsewhere.invalid/generic.jpg' } })
+      }) as unknown as typeof fetch,
+    })
+    expect(await redirecting.getArt(5)).toEqual({ kind: 'none' })
+    expect(seen[0]).toMatchObject({ method: 'GET', redirect: 'manual' })
+  })
+
   it('a wrong station id is refused on every route', async () => {
     const { c, calls } = fakeClient()
     await refused(send(c, 'GET', '/api/station/7/files/list?currentDirectory=&flushCache=true'), 'refused_station')
@@ -422,6 +448,15 @@ describe.skipIf(!MOCKS())('AzuraCast wrapper against the P0d-B mock', () => {
     const ups = (await control('/__mock/az/art-uploads')) as { mediaId: number; field: string; sha256: string }[]
     expect(ups.at(-1)).toMatchObject({ mediaId: media.id, field: 'file', sha256: sha })
     expect(((await c.getFile(media.id)) as { art_updated_at?: number }).art_updated_at).toBeGreaterThan(0)
+    // The read-only art GET: the stored image (no key or prefix rule needed:
+    // it names no path), and before any upload the generic-image redirect,
+    // reported as 'none', never followed.
+    const got = await c.getArt(media.id)
+    expect(got).toMatchObject({ kind: 'art', sha256: sha })
+    const other = `Portal-Test/Music/Artists/Art${Date.now()}b/y.mp3`
+    await control('/__mock/az/seed', { files: [{ path: other }] })
+    const bare = (await c.listDirectory(other.slice(0, other.lastIndexOf('/'))))[0]!.media!
+    expect(await c.getArt(bare.id)).toEqual({ kind: 'none' })
   })
 
   it('full list uses pagination', async () => {

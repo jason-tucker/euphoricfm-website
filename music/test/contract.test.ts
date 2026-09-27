@@ -30,6 +30,11 @@ describe('AzuraCast contract drift probe', () => {
     expect(r.drift.map((d) => d.name)).toContain('requestBody FlowFileUpload')
   })
 
+  it('detects a change to the art GET the apply_art verify reads (same path object as the upload)', () => {
+    const r = checkContract(spec.replace("summary: 'Returns the album art for a song, or a generic image.'", "summary: 'Returns the album art.'"))
+    expect(r.drift.map((d) => d.name)).toContain('path /station/{station_id}/art/{media_id}')
+  })
+
   it('detects a removed path', () => {
     const r = checkContract(spec.replace("  '/station/{station_id}/files/batch':", "  '/station/{station_id}/files/batch2':"))
     expect(r.drift).toContainEqual(expect.objectContaining({ name: 'path /station/{station_id}/files/batch', actual: null }))
