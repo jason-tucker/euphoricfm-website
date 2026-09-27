@@ -56,6 +56,8 @@ export default async function AdminPage() {
           initial={{
             assignablePlaylistIds: s.assignablePlaylistIds,
             stationPlaylistIds: s.stationPlaylistIds,
+            foreignPlaylistIds: s.foreignPlaylistIds,
+            unconfirmedPlaylistIds: s.unconfirmedPlaylistIds,
             defaultPlaylistIds: s.defaultPlaylistIds,
             playlistNames: s.playlistNames,
             autoCloseDays: s.autoCloseDays,

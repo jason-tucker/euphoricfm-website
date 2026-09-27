@@ -12,7 +12,10 @@ import { Notice } from '../ui'
 
 export type SettingsInput = {
   assignablePlaylistIds: number[]
+  // Read-only: the worker's library sync owns it.
   stationPlaylistIds: number[]
+  foreignPlaylistIds: number[]
+  unconfirmedPlaylistIds?: number[]
   defaultPlaylistIds: number[]
   playlistNames: Record<string, string>
   autoCloseDays: number
@@ -41,7 +44,7 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
   const router = useRouter()
   const [assignable, setAssignable] = useState(initial.assignablePlaylistIds.join(', '))
   const [defaults, setDefaults] = useState(initial.defaultPlaylistIds.join(', '))
-  const [station, setStation] = useState(initial.stationPlaylistIds.join(', '))
+  const [foreign, setForeign] = useState(initial.foreignPlaylistIds.join(', '))
   const [names, setNames] = useState(Object.entries(initial.playlistNames).map(([k, v]) => `${k} = ${v}`).join('\n'))
   const [autoClose, setAutoClose] = useState(String(initial.autoCloseDays))
   const [maxItems, setMaxItems] = useState(String(initial.caps.maxItemsPerBatch))
@@ -56,12 +59,13 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
     setMsg(null)
     const a = ids(assignable)
     const d = ids(defaults)
-    const st = ids(station)
+    const fo = ids(foreign)
     const nm = parseNames(names)
     const posInt = (v: string) => /^\d+$/.test(v.trim()) && Number(v) > 0
     if (a.some((n) => !Number.isInteger(n) || n <= 0) || a.length === 0) return setMsg({ tone: 'error', text: 'Assignable playlists must be a list of playlist ids, e.g. 2, 15.' })
     if (d.some((n) => !a.includes(n)) || d.length === 0) return setMsg({ tone: 'error', text: 'Default playlists must be chosen from the assignable playlists.' })
-    if (st.some((n) => !Number.isInteger(n) || n <= 0)) return setMsg({ tone: 'error', text: 'Station playlist ids must be a list of playlist ids.' })
+    if (fo.some((n) => !Number.isInteger(n) || n <= 0)) return setMsg({ tone: 'error', text: 'Events playlist ids must be a list of playlist ids.' })
+    if (fo.some((n) => a.includes(n))) return setMsg({ tone: 'error', text: 'An Events playlist cannot also be assignable.' })
     if (!nm) return setMsg({ tone: 'error', text: 'Playlist names must be one per line, like: 2 = 1General Rotation' })
     if (![autoClose, maxItems, perHour, spacing].every(posInt)) return setMsg({ tone: 'error', text: 'Numbers must be whole numbers greater than zero.' })
     if (!rightsText.trim()) return setMsg({ tone: 'error', text: 'The rights statement cannot be empty.' })
@@ -71,7 +75,7 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
     const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y)
     if (!same(a, initial.assignablePlaylistIds)) changes.push({ key: 'assignable_playlist_ids', value: a })
     if (!same(d, initial.defaultPlaylistIds)) changes.push({ key: 'default_playlist_ids', value: d })
-    if (st.length && !same(st, initial.stationPlaylistIds)) changes.push({ key: 'station_playlist_ids', value: st })
+    if (!same(fo, initial.foreignPlaylistIds)) changes.push({ key: 'foreign_playlist_ids', value: fo })
     if (!same(nm, initial.playlistNames)) changes.push({ key: 'playlist_names', value: nm })
     if (Number(autoClose) !== initial.autoCloseDays) changes.push({ key: 'auto_close_days', value: Number(autoClose) })
     const caps = { ...initial.caps, maxItemsPerBatch: Number(maxItems), ingestPerHour: Number(perHour), ingestSpacingS: Number(spacing) }
@@ -112,12 +116,21 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
         <Text id="defaults" label="Default playlist ids" value={defaults} onChange={setDefaults} help="Pre-selected on approval; must be assignable." />
         <div className="sm:col-span-2">
           <Text
-            id="station"
-            label="All playlist ids of this station"
-            value={station}
-            onChange={setStation}
-            help="Every playlist that belongs to the station (listings also include the Events station's playlists). Playlist merges only touch these."
+            id="foreign"
+            label="Events station playlist ids"
+            value={foreign}
+            onChange={setForeign}
+            help="Playlists of the Events station (listings also include them). Songs in these are never archived, and playlist changes never touch them. An id the station already uses can only be added while it is unconfirmed."
           />
+        </div>
+        <div className="sm:col-span-2">
+          <p className="label">All playlist ids of this station (kept up to date by the library sync)</p>
+          <p className="font-mono text-sm" id="station">
+            {initial.stationPlaylistIds.length ? initial.stationPlaylistIds.join(', ') : 'not synced yet'}
+          </p>
+          {initial.unconfirmedPlaylistIds?.length ? (
+            <p className="mt-1 text-xs text-cream/50">Unconfirmed (new since the first sync; could be Events playlists): {initial.unconfirmedPlaylistIds.join(', ')}</p>
+          ) : null}
         </div>
         <div className="sm:col-span-2">
           <label className="label" htmlFor="names">

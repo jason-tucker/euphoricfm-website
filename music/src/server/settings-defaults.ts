@@ -20,14 +20,19 @@ export const DEFAULT_SETTINGS: Record<string, unknown> = {
   default_playlist_ids: [2],
   // Every playlist id that belongs to STATION_ID. Listings aggregate
   // memberships across all stations on the storage (P0d-B (d)), so playlist
-  // merges must filter by this set. Must be configured before P4 merges.
+  // merges must filter by this set. SYNC-OWNED (worker/library/sync.ts
+  // stationSet), read-only for admins; null until the first library sync.
   station_playlist_ids: null,
-  // Playlist ids that belong to OTHER stations on storage 2 (the Events
-  // station 14; P0d-B (d) saw 74, 75, 77, 78 on station-1 files). The library
-  // sync records station_playlist_ids = ids seen on Music/Artists/** minus
-  // these, plus the assignable/default ids. Confirm against the DB
-  // (station_playlists.station_id) before removing PORTAL_TEST_PREFIX.
-  foreign_playlist_ids: [74, 75, 77, 78],
+  // Playlist ids that belong to OTHER stations on storage 2: the Events
+  // station 14 (from the live DB, station_playlists.station_id = 14: 74
+  // Stinger, 75 ForeverStinger, 76 default, 77 Fasion Show (Test), 78
+  // Renfair). The ADMIN control: the sync keeps these out of
+  // station_playlist_ids, and a song in any of them is never archived.
+  foreign_playlist_ids: [74, 75, 76, 77, 78],
+  // Ids the sync counted as station 1 after first seeing them (alerted);
+  // sync-owned. Only these (and ids outside the station set) may be added
+  // to foreign_playlist_ids.
+  unconfirmed_playlist_ids: [],
   auto_close_days: 7,
   caps: DEFAULT_CAPS,
   nowplaying_shortcode: 'euphoricfm',

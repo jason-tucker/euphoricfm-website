@@ -52,9 +52,14 @@ const capsSchema = z
 export const SETTING_SCHEMAS: Record<string, z.ZodType<unknown>> = {
   assignable_playlist_ids: idSet(64),
   default_playlist_ids: idSet(16),
-  // Every playlist id of STATION_ID (P0d-B: listings mix in other stations'
-  // ids on the shared storage); P4 playlist merges filter through it.
-  station_playlist_ids: idSet(512),
+  // The Events station's playlist ids (P0d-B: listings mix in other
+  // stations' ids on the shared storage). station_playlist_ids, which P4
+  // playlist merges filter through, is derived from this by the library
+  // sync and is NOT editable here.
+  foreign_playlist_ids: z
+    .array(playlistId)
+    .max(64)
+    .refine((a) => new Set(a).size === a.length, 'duplicate ids'),
   playlist_names: z
     .record(z.string().regex(/^[1-9]\d{0,9}$/), plainText(1, 100))
     .refine((r) => Object.keys(r).length <= 200, 'too many names'),
@@ -90,6 +95,24 @@ export async function putSetting(db: DB, v: Viewer, input: unknown) {
   if (p.data.key === 'assignable_playlist_ids') {
     const set = new Set(value as number[])
     if ((await getIntList(db, 'default_playlist_ids')).some((id) => !set.has(id))) throw badRequest('default_not_assignable')
+    const foreign = new Set(await getIntList(db, 'foreign_playlist_ids'))
+    if ((value as number[]).some((id) => foreign.has(id))) throw badRequest('assignable_is_foreign')
+  }
+  if (p.data.key === 'foreign_playlist_ids') {
+    // Marking an id foreign removes it from the station set at the next sync,
+    // and merges then drop memberships in it. So only ids the station set
+    // does not hold, or that the sync counted as station 1 only because it
+    // had never seen them (unconfirmed, alerted), may be added: an admin
+    // edit never shrinks the confirmed station set.
+    const current = new Set(await getIntList(db, 'foreign_playlist_ids'))
+    const added = (value as number[]).filter((id) => !current.has(id))
+    const configured = new Set([...(await getIntList(db, 'assignable_playlist_ids')), ...(await getIntList(db, 'default_playlist_ids'))])
+    if (added.some((id) => configured.has(id))) throw badRequest('foreign_is_assignable')
+    const ids = (k: string) => getSetting(db, k).then((v) => (Array.isArray(v) ? v.filter((x): x is number => Number.isSafeInteger(x)) : []))
+    const station = await ids('station_playlist_ids')
+    const unconfirmed = new Set(await ids('unconfirmed_playlist_ids'))
+    const confirmed = added.filter((id) => station.includes(id) && !unconfirmed.has(id))
+    if (confirmed.length > 0) throw badRequest('foreign_is_station_playlist', { playlistIds: confirmed })
   }
   const before = await getSetting(db, p.data.key)
   return db.transaction(async (tx) => {

@@ -6,7 +6,7 @@
 //
 // It also seeds `artists` from the live layout (insert-if-absent; the folder
 // is the actual path segment, the name the first-listed artist that matches
-// it) and records station_playlist_ids.
+// it) and maintains station_playlist_ids (sync-owned; see stationSet).
 
 import { notInArray, sql } from 'drizzle-orm'
 import type { StationMedia } from '../../server/azuracast/client'
@@ -81,17 +81,46 @@ export function artUrlFor(m: Pick<StationMedia, 'unique_id'> & { art?: unknown }
 
 export type SyncResult = { total: number; library: number; removed: number; artistsAdded: number; stationPlaylistIds: number[] }
 
+const intList = (v: unknown): number[] | null => (Array.isArray(v) && v.every((x) => Number.isSafeInteger(x) && x > 0) ? (v as number[]) : null)
+const sorted = (xs: Iterable<number>) => [...new Set(xs)].sort((a, b) => a - b)
+
+// station_playlist_ids is SYNC-OWNED (read-only in the admin UI; the admin
+// control is foreign_playlist_ids, the Events station's playlists). The
+// known set never shrinks by observation: it is the previous set plus the
+// configured assignable/default ids plus every id seen on the library
+// surface, minus the ids an admin marked foreign. A seen id that is neither
+// known nor foreign may be a NEW Events playlist: it is alerted once and
+// counted as station 1 (the safe side for merges, which then never drop the
+// membership) and recorded in unconfirmed_playlist_ids, the only station ids
+// an admin may still move to foreign. The first sync (no previous set)
+// classifies silently against the configured foreign list.
+export function stationSet(opts: {
+  prev: readonly number[] | null
+  prevUnconfirmed: readonly number[]
+  configured: readonly number[]
+  foreign: ReadonlySet<number>
+  observed: ReadonlySet<number>
+}): { station: number[]; unconfirmed: number[]; fresh: number[] } {
+  const configured = new Set(opts.configured)
+  const known = new Set([...(opts.prev ?? []), ...configured])
+  const fresh = opts.prev === null ? [] : sorted([...opts.observed].filter((id) => !known.has(id) && !opts.foreign.has(id)))
+  const station = sorted([...known, ...opts.observed].filter((id) => configured.has(id) || !opts.foreign.has(id)))
+  const unconfirmed = sorted([...opts.prevUnconfirmed, ...fresh].filter((id) => station.includes(id) && !configured.has(id)))
+  return { station, unconfirmed, fresh }
+}
+
 export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
   const all = await ctx.azuracast.listAllFiles(100)
   const rows = all.filter((f) => isLibraryPath(f.path))
 
-  // Station playlist ids: memberships seen on the library surface minus the
-  // known other-station ids, plus the admin-configured ones.
+  // Station playlist ids (stationSet above).
   const foreign = new Set(await getIntList(ctx.db, 'foreign_playlist_ids'))
   const observed = new Set<number>()
-  for (const r of rows) for (const p of r.playlists) if (!foreign.has(p.id)) observed.add(p.id)
+  for (const r of rows) for (const p of r.playlists) observed.add(p.id)
   const configured = [...(await getIntList(ctx.db, 'assignable_playlist_ids')), ...(await getIntList(ctx.db, 'default_playlist_ids'))]
-  const stationIds = [...new Set([...observed, ...configured])].sort((a, b) => a - b)
+  const prev = intList(await getSetting(ctx.db, 'station_playlist_ids'))
+  const prevUnconfirmed = intList(await getSetting(ctx.db, 'unconfirmed_playlist_ids')) ?? []
+  const { station: stationIds, unconfirmed, fresh } = stationSet({ prev, prevUnconfirmed, configured, foreign, observed })
 
   const [{ n: existing } = { n: 0 }] = (await ctx.db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM library_cache`)) as unknown as { n: number }[]
   // A listing that suddenly shrinks by half is more likely an API problem
@@ -165,10 +194,15 @@ export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
   }
   if (artistsAdded > 0) await audit(ctx.db, { action: 'artists.seed', targetType: 'artists', detail: { added: artistsAdded } })
 
-  const prev = await getSetting(ctx.db, 'station_playlist_ids')
   if (JSON.stringify(prev) !== JSON.stringify(stationIds)) {
     await putSetting(ctx, 'station_playlist_ids', stationIds)
-    await audit(ctx.db, { action: 'settings.station_playlist_ids', targetType: 'settings', detail: { from: prev ?? null, to: stationIds } })
+    await audit(ctx.db, { action: 'settings.station_playlist_ids', targetType: 'settings', detail: { from: prev ?? null, to: stationIds, fresh } })
+  }
+  if (JSON.stringify(prevUnconfirmed) !== JSON.stringify(unconfirmed)) await putSetting(ctx, 'unconfirmed_playlist_ids', unconfirmed)
+  if (fresh.length > 0) {
+    await ctx.alert(`library sync: new playlist id(s) ${fresh.join(', ')} counted as station 1; if any belongs to the Events station, add it to foreign_playlist_ids (admin settings)`, {
+      playlistIds: fresh,
+    })
   }
   return { total: all.length, library: rows.length, removed, artistsAdded, stationPlaylistIds: stationIds }
 }
