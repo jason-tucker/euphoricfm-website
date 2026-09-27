@@ -116,3 +116,62 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=requests
           cache-to: type=gha,mode=max,scope=requests
+
+  # EFM Music Portal (music/, compose project efm-music). Own package and
+  # lockfile, so it never touches the site build above. Gate: pnpm audit
+  # --prod, typecheck, then the full Docker harness (music/test/run.sh:
+  # vitest + mount + start-up-guard checks against mocks; no real
+  # credentials). On main, the exact images the harness tested are retagged
+  # and pushed as ghcr.io/<owner>/euphoricfm-website-music:<target>-<sha7>
+  # (+ <target>-latest). Watchtower is off for these; deploys set MUSIC_TAG.
+  build-music:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: music
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: music/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: pnpm audit (production dependencies)
+        run: pnpm audit --prod
+
+      - name: Typecheck
+        run: |
+          printf '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\n' > next-env.d.ts
+          pnpm exec tsc --noEmit
+
+      - name: Test harness (Docker, mocks only)
+        run: sh test/run.sh
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push the tested images
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          REPO: ghcr.io/${{ github.repository_owner }}/euphoricfm-website-music
+        run: |
+          sha7="$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
+          for t in web worker probe; do
+            docker tag "ghcr.io/jason-tucker/euphoricfm-website-music:$t-local-test" "$REPO:$t-$sha7"
+            docker tag "ghcr.io/jason-tucker/euphoricfm-website-music:$t-local-test" "$REPO:$t-latest"
+            docker push "$REPO:$t-$sha7"
+            docker push "$REPO:$t-latest"
+          done

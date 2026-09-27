@@ -1,0 +1,26 @@
+/* Copied from the site's src/styles/tokens.css (EuphoricFM brand palette +
+ * semantic roles). Keep in sync by hand; the portal is its own app. */
+:root {
+  /* --- Brand anchors (RGB channels) ------------------------------------- */
+  --efm-ink-rgb: 10 10 10;        /* #0a0a0a  page surface (near-black)      */
+  --efm-cream-rgb: 255 255 255;   /* #ffffff  text + lines (always via alpha)*/
+  --efm-midnight-rgb: 41 52 98;   /* #293462  deep brand blue                */
+  --efm-ruby-rgb: 214 28 78;      /* #d61c4e  brand red — "FM", LIVE         */
+  --efm-sunburst-rgb: 254 177 57; /* #feb139  brand gold — "Euphoric", accent*/
+
+  /* Retuned from the old neon "lemon" #fff80a (255 248 10). That green-yellow
+     clashed against the warm gold wherever the two sat adjacent (progress bar,
+     button + toggle gradients). #ffd23e is the same warm family as sunburst,
+     one step brighter — a smooth amber ramp instead of an orange→neon jump. */
+  --efm-gold-rgb: 255 210 62;     /* #ffd23e  warm highlight gold            */
+
+  /* --- Semantic roles (full colours, for bespoke CSS) ------------------- */
+  --efm-surface: rgb(var(--efm-ink-rgb));
+  --efm-surface-card: rgb(var(--efm-cream-rgb) / 0.03);
+  --efm-line: rgb(var(--efm-cream-rgb) / 0.10);
+  --efm-text: rgb(var(--efm-cream-rgb));
+  --efm-text-muted: rgb(var(--efm-cream-rgb) / 0.70);
+  --efm-accent: rgb(var(--efm-sunburst-rgb));        /* primary accent  */
+  --efm-accent-bright: rgb(var(--efm-gold-rgb));     /* highlight        */
+  --efm-live: rgb(var(--efm-ruby-rgb));              /* live / danger    */
+}

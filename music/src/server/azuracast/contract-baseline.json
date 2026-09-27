@@ -1,0 +1,38 @@
+{
+  "source": "P0d baseline /mnt/user/Backup/euphoricfm/portal-contract-baseline/ (2026-09-27 UTC); anonymous GET https://euphoric.fm/api/openapi.yml, spec info.version 0.21.0, AzuraCast COMMIT_LONG 6499e9314481d6836fa0d47ee733f2ee66fceecd",
+  "openapiFullSha256": "be158023b4576dee6facf59245e99139771cbae247c920ef3d4fcf7412f2ade9",
+  "paths": {
+    "/station/{station_id}/files": "6fd2738cb83cb9b22f47415127f250f6d31238a158e365bb5651ad93b9077738",
+    "/station/{station_id}/files/list": "506b6a3989140b70a528c9ab079990a3aac4ca34d3dde75fbe5cdedf0a4b1049",
+    "/station/{station_id}/file/{id}": "33af292e0b81a0774f1e520bec39ab84c96070b5106860940a12402b5bfdee9c",
+    "/station/{station_id}/files/batch": "dd567b4dcfbb95751458524df730b66c24de062562dfe66219fb7262b07bdf7c",
+    "/nowplaying/{station_id}": "c752df0707bd03418b6967bb3e3fcf8048456d03bd74f13449cb1bb86b436cad",
+    "/station/{station_id}/art/{media_id}": "e9e27df2c73c85b676949a9eba4c3ec88c365136c3e4319a2e53d129d13b4362"
+  },
+  "schemasBundleSha256": "047946ed89663b4702705eb5dc3bda08655d8891e5370b2d363135f3b06770c7",
+  "schemas": {
+    "Api_FileList": "e446b7bd361da213eba6c0409c1864453f4d1ec5383726f0b2f3ab85b16eae43",
+    "Api_FileListDir": "41408646eefc9cc9a23148232ab3af01954b8f7436424a20e5b89a42514b80ae",
+    "Api_HasSongFields": "32bb85231bf3cba936c1236fa8291b5e139b03c2c939adcce956b45c54337c13",
+    "Api_NowPlaying": "cf149ceb3529b9cf05299d732d74c37d92963ceaa76ccc72f6990e351ab9a0da",
+    "Api_NowPlaying_CurrentSong": "7324101386dc8c517d9680915dc96f74f1c34d9a5ccc688d9df0db9f0e0d6478",
+    "Api_NowPlaying_Listeners": "c032af668f0a77806593ab8ebf77fcd951ef1f08e254fa24692bd1998142e982",
+    "Api_NowPlaying_Live": "40e8a538a9654719ff746d8b70642ca81725d5beac44ea769efdef359ac950e7",
+    "Api_NowPlaying_SongHistory": "fcd1bdaa0cd3ff8a2f8b7c6f2b945d2469b5b5e95990cf51dce1e98b7423c79a",
+    "Api_NowPlaying_Station": "fc0b30579fd87302b56bba2c6ed870ed23901fc1dc8849b0b19e7216e16d72e6",
+    "Api_NowPlaying_StationMount": "1d89d4d13ff9cecd0471f4a9a13ba8cfb52bae8a465fe4531fd3767d66372790",
+    "Api_NowPlaying_StationQueue": "8e9a61fb8996b2c73866be94a933b1cd21d62a9e7c22ab42d9e9e7fd5d6753a5",
+    "Api_NowPlaying_StationRemote": "adf0bd5e9aa9c346867b52bd7ca366c1ae4bcbc7b5ae66a66ddf52aa64e075ec",
+    "Api_Song": "ef45cab7825555b2bc2bcfcae1977c7ad648ef8e66245b2b45285cd5dbc634bf",
+    "Api_StationMedia": "eec4c3b3f9f0a64b9086ea4bcad913c0cb7e226184d88cd2b9ebb231a84c2e09",
+    "Api_StationMediaPlaylist": "bcf121701eb2734423ad0271a31f5d31f67b702d7d790f749abcebd53393f11c",
+    "Api_UploadFile": "83cb7fcccfdf66c94539ab5d3fc14f2f4192a1883b5a15e22e807382ec1a583a",
+    "FileTypes": "0671bbd831d498c9a037fb4913ca9a47df11520bbac74c0d63a4d2771d0df400",
+    "HasLinks": "dd968e89860b82d08d56d214ab1409a6ecff29f70c7e58277ced85e18e19d98c",
+    "HashMap": "ebacd4c9a942d7c63f454e6af112ec62e27c88efca3f062810ad26c52eaf3c6d"
+  },
+  "notes": "Path slices = the path object text from its `  '<path>':` line to the next line indented <=2; schema slices likewise at indent 4 under components.schemas; bundle = transitive $ref closure sorted by name, concatenated. PUT /files/batch declares no requestBody schema, so body-shape drift there is invisible to these hashes. requestBodies: slices at indent 4 under components.requestBodies, for every #/components/requestBodies/<name> a used path references (album art: POST /station/{station_id}/art/{media_id} takes FlowFileUpload, multipart field 'file'); added 2026-09-27 from the same P0d openapi-full.yml (sha be158023\u2026).",
+  "requestBodies": {
+    "FlowFileUpload": "bb26a3d647dd0cf62d01a51129e287b1edca135ebd137955aa8429c5b5598113"
+  }
+}

@@ -1,0 +1,7 @@
+# Optional overlay (test/run.sh adds it only when MUSIC_TEST_WEB_PORT is set):
+# publishes the test web on 127.0.0.1:<port> for manual browsing. The tests
+# themselves reach music-web:3000 over the compose network.
+services:
+  music-web:
+    ports: !override
+      - "127.0.0.1:${MUSIC_TEST_WEB_PORT}:3000"

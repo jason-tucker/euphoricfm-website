@@ -1,0 +1,65 @@
+# gitleaks configuration. gitleaks v8 auto-discovers this file at the root of
+# the scanned source, which is how gitleaks/gitleaks-action picks it up in
+# .github/workflows/security.yml (no GITLEAKS_CONFIG needed).
+#
+# The full DEFAULT ruleset stays active; nothing here disables a rule. The only
+# additions are allowlists for known false positives, scoped twice: to EXACT
+# file paths, and only on the two rules that misfire on them
+# (generic-api-key, discord-client-id). Every other rule (AWS, GitHub, Slack,
+# Discord client secret, private keys, ...) still fires on these same files,
+# and these two rules still fire on every other file in the repo.
+#
+# Why per-rule [[rules.allowlists]] (extending the default rule by id) instead
+# of a global [[allowlists]] with targetRules: gitleaks 8.24.3 silently
+# ignores the latter, and gitleaks-action may run either version. This form
+# is honoured by 8.24.3 and 8.30.1 (both verified locally).
+#
+# Why a PATH allowlist rather than a commit-scoped .gitleaksignore:
+# gitleaks-action scans every commit of a pull request, so fingerprints would
+# have to name each historical commit; a path rule covers old and new commits.
+#
+# Verified 2026-09-27 (16 findings across the PR's commits, all false
+# positives): the real Discord client id/secret, AzuraCast API key,
+# AUTH_SECRET and APP_ENC_KEY were searched for across the full branch history
+# with zero occurrences. What each path holds:
+#   music/env/*.env.example   "replace-with-..." placeholders, plus
+#                             DISCORD_GUILD_ID / PORTAL_OWNER_IDS, which are
+#                             public Discord snowflakes (guild id, user id),
+#                             not credentials.
+#   music/test/compose.test.yml
+#                             test harness overlay; every value is a
+#                             documented TEST CONSTANT ("test-only-...",
+#                             "0123456789abcdef..." key) plus the same public
+#                             snowflakes.
+#   music/test/primitives.test.ts
+#                             public Discord snowflakes (role/user ids) used
+#                             as unit-test fixtures.
+#   music/src/server/azuracast/contract-baseline.json
+#                             sha256 digests of AzuraCast OpenAPI contract
+#                             slices (drift detection), not keys.
+# Keep the two path lists below identical. Do not widen them to directories.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "EFM Music Portal verified false positives (2026-09-27)"
+paths = [
+  '''^music/env/[A-Za-z0-9_-]+\.env\.example$''',
+  '''^music/test/compose\.test\.yml$''',
+  '''^music/test/primitives\.test\.ts$''',
+  '''^music/src/server/azuracast/contract-baseline\.json$''',
+]
+
+[[rules]]
+id = "discord-client-id"
+[[rules.allowlists]]
+description = "EFM Music Portal verified false positives (2026-09-27)"
+paths = [
+  '''^music/env/[A-Za-z0-9_-]+\.env\.example$''',
+  '''^music/test/compose\.test\.yml$''',
+  '''^music/test/primitives\.test\.ts$''',
+  '''^music/src/server/azuracast/contract-baseline\.json$''',
+]

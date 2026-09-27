@@ -1,0 +1,8 @@
+node_modules
+.next
+dist
+data
+env/*.env
+.env
+test/.out
+*.md
