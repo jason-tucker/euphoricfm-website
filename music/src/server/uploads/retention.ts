@@ -8,7 +8,7 @@
 
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, lt, or } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { items, uploads } from '../db/schema'
 import { COVER_FILE_RE, UPLOAD_ID_RE } from '../spool/protocol'
@@ -30,8 +30,10 @@ export async function sweepStaging(db: DB, dir: string, now = Date.now()): Promi
     .select()
     .from(uploads)
     .where(
-      sql`(${uploads.status} = 'uploading' AND ${uploads.createdAt} < ${new Date(now - D)})
-       OR (${uploads.status} = 'complete' AND ${uploads.createdAt} < ${new Date(now - 7 * D)})`,
+      or(
+        and(eq(uploads.status, 'uploading'), lt(uploads.createdAt, new Date(now - D))),
+        and(eq(uploads.status, 'complete'), lt(uploads.createdAt, new Date(now - 7 * D))),
+      ),
     )
     .limit(500)
   for (const u of stale) {
@@ -43,9 +45,13 @@ export async function sweepStaging(db: DB, dir: string, now = Date.now()): Promi
     .select({ id: items.id, uploadId: items.uploadId, coverFile: items.coverFile })
     .from(items)
     .where(
-      sql`((${items.status} IN ('denied','withdrawn','rejected') AND ${items.updatedAt} < ${new Date(now - 7 * D)})
-        OR (${items.status} = 'live' AND ${items.liveAt} < ${new Date(now - 7 * D)}))
-        AND ${items.uploadId} IS NOT NULL`,
+      and(
+        isNotNull(items.uploadId),
+        or(
+          and(inArray(items.status, ['denied', 'withdrawn', 'rejected']), lt(items.updatedAt, new Date(now - 7 * D))),
+          and(eq(items.status, 'live'), lt(items.liveAt, new Date(now - 7 * D))),
+        ),
+      ),
     )
     .limit(500)
   for (const it of done) {

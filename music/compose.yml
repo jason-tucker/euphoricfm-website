@@ -31,6 +31,9 @@ name: efm-music
 
 x-hardening: &hardening
   restart: unless-stopped
+  # tini as PID 1: reaps orphaned children (busybox `timeout` watchers in the
+  # probe) and forwards signals.
+  init: true
   read_only: true
   security_opt:
     - no-new-privileges:true
@@ -189,7 +192,7 @@ services:
     tmpfs:
       - /tmp:size=32m
     mem_limit: 256m
-    pids_limit: 64
+    pids_limit: 128
     # PINNED MOUNTS: the probe owns /staging and /spool/probe; the inbox a
     # request arrives in decides which request types it may carry.
     volumes:

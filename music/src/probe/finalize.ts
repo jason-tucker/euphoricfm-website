@@ -24,6 +24,7 @@ export function stripArgs(input: string, output: string): string[] {
     '-map', '0:a:0',
     '-map_metadata', '-1',
     '-c', 'copy',
+    '-threads', '1',
     '-id3v2_version', '0',
     '-write_id3v1', '0',
     '-fflags', '+bitexact',

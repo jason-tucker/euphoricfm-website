@@ -63,7 +63,7 @@ export async function runMigrate(): Promise<void> {
     await sql.unsafe(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${APP_ROLE}`)
 
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
-      await sql`INSERT INTO settings (key, value, updated_by) VALUES (${key}, ${sql.json(value as never)}, 'seed')
+      await sql`INSERT INTO settings (key, value, updated_by) VALUES (${key}, ${JSON.stringify(value)}::jsonb, 'seed')
                 ON CONFLICT (key) DO NOTHING`
     }
 
@@ -79,8 +79,8 @@ export async function runMigrate(): Promise<void> {
           }
         }
         await tx`INSERT INTO audit_log (action, target_type, detail)
-                 VALUES ('role_bindings.seed', 'role_bindings', ${tx.json({ roleIds: seedRoles, permissions: ['review', 'manage'] })})`
-        await tx`INSERT INTO settings (key, value, updated_by) VALUES ('role_bindings_seeded', ${tx.json(true)}, 'seed')`
+                 VALUES ('role_bindings.seed', 'role_bindings', ${JSON.stringify({ roleIds: seedRoles, permissions: ['review', 'manage'] })}::jsonb)`
+        await tx`INSERT INTO settings (key, value, updated_by) VALUES ('role_bindings_seeded', 'true'::jsonb, 'seed')`
       })
     }
     console.log(`[migrate] ok (seed roles: ${seeded.length === 0 ? seedRoles.length : 'already seeded'})`)

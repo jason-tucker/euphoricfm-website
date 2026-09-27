@@ -26,6 +26,8 @@ function sliceFrom(lines: string[], start: number, indent: number): string {
     if (m && m[1]!.length <= indent) break
     j++
   }
+  // At end of file, drop the empty element(s) left by the final newline.
+  if (j === lines.length) while (j > start + 1 && lines[j - 1] === '') j--
   return lines.slice(start, j).join('\n') + '\n'
 }
 
