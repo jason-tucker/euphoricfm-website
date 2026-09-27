@@ -1,6 +1,6 @@
 // 'probe' requests (from in-web only): plan §3.4 steps 1–6.
 
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { MAX_UPLOAD_BYTES, type ProbeRequest, type SpoolResult } from '../server/spool/protocol'
@@ -70,6 +70,8 @@ export async function runProbe(req: ProbeRequest, dirs: ProbeDirs): Promise<Spoo
     // 6. sha256 of the exact bytes every later step (and the reviewer's
     //    preview) is about.
     const { sha256, size } = await copyNoFollowHashed(join(dirs.uploads, req.upload), copy, MAX_UPLOAD_BYTES, req.expectedSize)
+    // The parsers get this private copy read-only, in a per-job work dir.
+    await chmod(copy, 0o400)
     const read = reader(copy)
 
     // 1. magic bytes

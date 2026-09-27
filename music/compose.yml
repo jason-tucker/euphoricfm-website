@@ -193,10 +193,13 @@ services:
       - /tmp:size=32m
     mem_limit: 256m
     pids_limit: 128
-    # PINNED MOUNTS: the probe owns /staging and /spool/probe; the inbox a
-    # request arrives in decides which request types it may carry.
+    # PINNED MOUNTS: only the staging subtrees the probe works on (not
+    # /staging/fetch, which is P5's), plus /spool/probe; the inbox a request
+    # arrives in decides which request types it may carry.
     volumes:
-      - ${MUSIC_DATA_DIR:-./data}/staging:/staging:rw
+      - ${MUSIC_DATA_DIR:-./data}/staging/uploads:/staging/uploads:rw
+      - ${MUSIC_DATA_DIR:-./data}/staging/final:/staging/final:rw
+      - ${MUSIC_DATA_DIR:-./data}/staging/work:/staging/work:rw
       - ${MUSIC_DATA_DIR:-./data}/spool/probe:/spool/probe:rw
     depends_on:
       music-init:

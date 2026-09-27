@@ -8,7 +8,9 @@ import { join, resolve } from 'node:path'
 import NodeID3 from 'node-id3'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { runFinalize } from '@/probe/finalize'
-import { processOne } from '@/probe/main'
+import { ContainmentBreach, processOne } from '@/probe/main'
+import { findStrays, snapshotBaseline } from '@/probe/containment'
+import { runLimited } from '@/probe/exec'
 import { ffprobeArgs, judgeFfprobe, runProbe } from '@/probe/probe'
 import { scanId3 } from '@/probe/id3scan'
 import { checkMp3Magic } from '@/probe/magic'
@@ -205,5 +207,54 @@ describe('probe inbox rules', () => {
     await writeSpoolRequest(join(dirs.spool, 'in-web'), { v: 1, id, type: 'probe', upload: 'b'.repeat(32), expectedSize: 5 })
     await processOne('in-web', id, { ...dirs, spool: dirs.spool })
     expect(await readSpoolResult(join(dirs.spool, 'out'), id)).toMatchObject({ error: 'bad_request_file' }) // first result kept
+  })
+})
+
+// ------------------------------------------------ probe containment ---
+
+function alive(pid: number): boolean {
+  try {
+    const st = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    const state = st.slice(st.lastIndexOf(')') + 2, st.lastIndexOf(')') + 3)
+    return state !== 'Z' && state !== 'X'
+  } catch {
+    return false
+  }
+}
+
+describe('probe containment: parser children cannot outlive their job', () => {
+  it('a timeout kills the whole process group, grandchildren included', async () => {
+    const t0 = Date.now()
+    const r = await runLimited('sh', ['-c', 'sleep 30 & echo $!; sleep 60'], { timeoutS: 1, vmemKb: 1 << 20 })
+    expect(r.timedOut).toBe(true)
+    expect(Date.now() - t0).toBeLessThan(8000)
+    const grandchild = Number(r.stdout.toString().trim())
+    expect(grandchild).toBeGreaterThan(1)
+    await new Promise((res) => setTimeout(res, 200))
+    expect(alive(grandchild)).toBe(false)
+  })
+
+  it('a background grandchild left behind by a child that exits normally dies with the job (and does not hold the call open)', async () => {
+    const t0 = Date.now()
+    const r = await runLimited('sh', ['-c', 'sleep 30 & echo $!'], { timeoutS: 20, vmemKb: 1 << 20 })
+    expect(Date.now() - t0).toBeLessThan(5000)
+    expect(r.code).toBe(0)
+    const grandchild = Number(r.stdout.toString().trim())
+    await new Promise((res) => setTimeout(res, 200))
+    expect(alive(grandchild)).toBe(false)
+  })
+
+  it('a process that escapes the group (setsid) is found by the post-job check; processOne refuses the result and throws', async () => {
+    const baseline = await snapshotBaseline()
+    await runLimited('sh', ['-c', 'setsid sleep 45 </dev/null >/dev/null 2>&1 & sleep 1'], { timeoutS: 5, vmemKb: 1 << 20 })
+    await new Promise((res) => setTimeout(res, 200))
+    const strays = (await findStrays(baseline)).filter((p) => p.cmd === 'sleep')
+    expect(strays.length).toBe(1)
+    const id = randomUUID()
+    await writeSpoolRequest(join(dirs.spool, 'in-worker'), { v: 1, id, type: 'probe', upload: 'c'.repeat(32), expectedSize: 5 })
+    await expect(processOne('in-worker', id, { ...dirs, spool: dirs.spool }, async () => strays)).rejects.toBeInstanceOf(ContainmentBreach)
+    expect(await readSpoolResult(join(dirs.spool, 'out'), id)).toMatchObject({ ok: false, error: 'containment_breach' })
+    await new Promise((res) => setTimeout(res, 200))
+    expect(alive(strays[0]!.pid)).toBe(false) // killed
   })
 })

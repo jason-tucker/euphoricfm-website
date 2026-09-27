@@ -5,7 +5,7 @@
 //      re-encoded JPEG, itself sha-verified);
 //   4. publish /staging/final/<id>.mp3 and report final_sha256.
 
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import NodeID3 from 'node-id3'
 import { MAX_UPLOAD_BYTES, type FinalizeRequest, type SpoolResult } from '../server/spool/protocol'
@@ -40,6 +40,7 @@ export async function runFinalize(req: FinalizeRequest, dirs: FinalizeDirs): Pro
   try {
     const copy = join(work, 'in.mp3')
     const { sha256 } = await copyNoFollowHashed(join(dirs.uploads, req.upload), copy, MAX_UPLOAD_BYTES)
+    await chmod(copy, 0o400)
     if (sha256 !== req.approvedSha256) throw new ProbeReject('sha_mismatch')
     const size = (await stat(copy)).size
     const m = await checkMp3Magic(reader(copy), size)

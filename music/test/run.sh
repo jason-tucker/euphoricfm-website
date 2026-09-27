@@ -51,6 +51,7 @@ check "worker cannot write /spool/probe/out" music-worker 'touch /spool/probe/ou
 check "worker cannot see /staging/uploads"  music-worker 'test -e /staging/uploads' fail
 check "worker can write in-worker"          music-worker 'touch /spool/probe/in-worker/.mc && rm /spool/probe/in-worker/.mc' ok
 check "probe has no network"                music-probe 'wget -q -T 3 -O /dev/null http://mocks:4104/egress' fail
+check "probe cannot see /staging/fetch"     music-probe 'test -e /staging/fetch' fail
 check "web rootfs is read-only"             music-web   'touch /app/x' fail
 [ $mc -eq 0 ] || status=1
 

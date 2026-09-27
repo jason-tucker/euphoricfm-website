@@ -19,6 +19,7 @@ import {
   type Inbox,
   type SpoolResult,
 } from '../server/spool/protocol'
+import { findStrays, killAll, snapshotBaseline, type ProcInfo } from './containment'
 import { runFinalize } from './finalize'
 import { runProbe } from './probe'
 
@@ -65,7 +66,18 @@ export async function handleClaimed(inbox: Inbox, id: string, claimedPath: strin
   }
 }
 
-export async function processOne(inbox: Inbox, id: string, dirs = DIRS): Promise<boolean> {
+export class ContainmentBreach extends Error {
+  constructor(readonly strays: ProcInfo[]) {
+    super(`stray process(es) after a job: ${strays.map((p) => `${p.pid}:${p.cmd}`).join(', ')}`)
+    this.name = 'ContainmentBreach'
+  }
+}
+
+// `strayCheck` (main loop: findStrays against the start-up baseline) runs
+// after the job and BEFORE its result is published: a breach replaces the
+// result with a failure, kills the strays and throws ContainmentBreach, on
+// which main() exits so the container (and its PID namespace) restarts.
+export async function processOne(inbox: Inbox, id: string, dirs = DIRS, strayCheck?: () => Promise<ProcInfo[]>): Promise<boolean> {
   const claimedDir = join(dirs.spool, 'claimed')
   const claimed = join(claimedDir, `${inbox}-${id}.json`)
   try {
@@ -74,11 +86,17 @@ export async function processOne(inbox: Inbox, id: string, dirs = DIRS): Promise
   } catch {
     return false
   }
-  const result = await handleClaimed(inbox, id, claimed, dirs)
+  let result = await handleClaimed(inbox, id, claimed, dirs)
+  const strays = strayCheck ? await strayCheck() : []
+  if (strays.length > 0) {
+    killAll(strays)
+    result = fail(id, inbox, result.type, 'containment_breach')
+  }
   const written = await writeSpoolResultNoClobber(join(dirs.spool, 'out'), result)
   if (!written) console.warn(`[probe] result for ${id} already exists; not overwritten`)
   await unlink(claimed).catch(() => {})
   console.log(`[probe] ${inbox} ${id} ${result.type} ${result.ok ? 'ok' : `fail:${(result as { error: string }).error}`}`)
+  if (strays.length > 0) throw new ContainmentBreach(strays)
   return true
 }
 
@@ -97,6 +115,10 @@ export async function main() {
   assertProbeEnvClean()
   for (const d of [join(DIRS.spool, 'claimed'), join(DIRS.spool, 'out'), DIRS.work, DIRS.final]) await mkdir(d, { recursive: true, mode: 0o750 })
   await recoverInterrupted()
+  // Start-up process table: tini (PID 1) and this process. Anything else
+  // alive after a job is a stray (containment.ts).
+  const baseline = await snapshotBaseline()
+  const strayCheck = () => findStrays(baseline)
   let stopping = false
   process.on('SIGTERM', () => (stopping = true))
   process.on('SIGINT', () => (stopping = true))
@@ -111,7 +133,15 @@ export async function main() {
         ids = []
       }
       if (ids.length > 0) {
-        did = (await processOne(inbox, ids[0]!)) || did
+        try {
+          did = (await processOne(inbox, ids[0]!, DIRS, strayCheck)) || did
+        } catch (e) {
+          if (e instanceof ContainmentBreach) {
+            console.error(`[probe] SECURITY: ${e.message}; killed them, refused the result, exiting so the container restarts`)
+            process.exit(70)
+          }
+          throw e
+        }
       }
     }
     if (!did) await new Promise((r) => setTimeout(r, 1000))
