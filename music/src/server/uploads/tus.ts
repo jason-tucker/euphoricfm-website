@@ -14,6 +14,7 @@ import { FileStore } from '@tus/file-store'
 import { getDb } from '../db/client'
 import { uploads } from '../db/schema'
 import { webEnv } from '../env'
+import { loadCaps } from '../settings'
 import { DEFAULT_CAPS } from '../settings-defaults'
 import { admitUpload, UPLOAD_ID_RE } from './caps'
 
@@ -56,7 +57,7 @@ export function tusServer(): Server {
     async onUploadCreate(_req, upload) {
       const ctx = tusContext.getStore()
       if (!ctx) throw refuse(401, 'Unauthorized')
-      const refusal = await admitUpload(db, ctx.userId, upload.id, upload.size ?? 0)
+      const refusal = await admitUpload(db, ctx.userId, upload.id, upload.size ?? 0, await loadCaps(db))
       if (refusal) throw refuse(refusal.status, refusal.code)
       // Replace (not merge) whatever the client sent.
       return { metadata: { owner: ctx.userId } }

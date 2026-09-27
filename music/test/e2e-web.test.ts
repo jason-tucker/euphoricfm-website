@@ -7,6 +7,7 @@ import { ownerSql } from './helpers/db'
 import { fxBuf } from './helpers/fixtures'
 import { req } from './helpers/http'
 import { tusCreate, tusHead, tusPatch, tusUpload } from './helpers/tus'
+import { waitFor } from './helpers/wait'
 
 let seq = 0
 const newId = () => `5${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
@@ -153,16 +154,34 @@ describe.skipIf(!E2E())('tus uploads', () => {
     expect(r.status).toBe(429)
   })
 
-  it('1 GB in flight per member', async () => {
-    const id = newId()
-    const a = await loginOk({ id })
-    const uid = (await ownerSql()`SELECT id FROM "user" WHERE discord_id = ${id}`)[0]!.id
-    const big = 'f'.repeat(24) + String(Date.now()).slice(-8)
-    await ownerSql()`INSERT INTO uploads (id, owner_user_id, length, status) VALUES (${big}, ${uid}, ${1024 * 1024 * 1024 - 100}, 'uploading')`
+  it('the per-member in-flight cap counts finished and attached-but-undecided uploads (real tus flow)', async () => {
+    // Lower the admin-editable cap so the real flow reaches it quickly:
+    // ~1.5 MB per member with ~0.55 MB uploads.
+    const data = fxBuf('raw35.mp3')
+    const cap = Math.floor(data.length * 2.5)
+    const prev = (await ownerSql()`SELECT value FROM settings WHERE key = 'caps'`)[0]?.value
+    await ownerSql()`UPDATE settings SET value = value || ${ownerSql().json({ maxInflightBytesPerUser: cap })} WHERE key = 'caps'`
     try {
-      expect((await tusCreate(a, 1000)).status).toBe(429)
+      const a = await loginOk({ id: newId() })
+      const u1 = await tusUpload(a, data) // complete, unattached
+      await tusUpload(a, data) // complete, unattached
+      // none is 'uploading' (so the 3-concurrent rule is not what refuses)
+      const third = await tusCreate(a, data.length)
+      expect(third.status).toBe(429)
+      expect(await third.text()).toContain('inflight_quota')
+      // another member is unaffected
+      const b = await loginOk({ id: newId() })
+      expect((await tusCreate(b, data.length)).status).toBe(201)
+      // attaching keeps the bytes counted while the item is undecided …
+      const batch = ((await (await req(a, '/api/batches', { method: 'POST' })).json()) as { id: number }).id
+      const item = ((await (await req(a, `/api/batches/${batch}/items`, { json: { uploadId: u1 } })).json()) as { id: number }).id
+      expect((await tusCreate(a, data.length)).status).toBe(429)
+      // … and a decision (here: the member withdraws it) releases them.
+      await waitFor(async () => (await ownerSql()`SELECT status FROM items WHERE id = ${item}`)[0]!.status !== 'probing', 45_000)
+      expect((await req(a, `/api/items/${item}/withdraw`, { method: 'POST' })).status).toBe(200)
+      expect((await tusCreate(a, data.length)).status).toBe(201)
     } finally {
-      await ownerSql()`DELETE FROM uploads WHERE id = ${big}`
+      await ownerSql()`UPDATE settings SET value = ${ownerSql().json(prev as never)} WHERE key = 'caps'`
     }
   })
 

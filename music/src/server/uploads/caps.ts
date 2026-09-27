@@ -1,5 +1,6 @@
 // Upload admission (plan §3.4): Upload-Length 1..35 MB, no defer-length, no
-// concatenation, no creation-with-upload body; per user ≤1 GB in flight and
+// concatenation, no creation-with-upload body; per user ≤1 GB in flight
+// (uploading + complete + attached-but-undecided bytes) and
 // ≤3 concurrent uploads; ≤5 GB staged globally; pause above 85 % disk use.
 // Header rules are pure (unit-tested); quota rules run in one transaction
 // under advisory locks so concurrent creates cannot overshoot.
@@ -52,8 +53,19 @@ export async function admitUpload(db: DB, userId: string, id: string, length: nu
     const [g] = await tx.execute<{ staged: string }>(
       sql`SELECT COALESCE(SUM(length), 0)::bigint AS staged FROM ${uploads} WHERE status IN ('uploading','complete','attached')`,
     )
+    // Per-user "in flight" = every staged byte the user still holds that no
+    // decision has released: uploads being written or finished but not
+    // attached, plus attached uploads whose item is still undecided
+    // (probing / draft / pending). The concurrency count is 'uploading' only.
     const [u] = await tx.execute<{ inflight: string; n: string }>(
-      sql`SELECT COALESCE(SUM(length), 0)::bigint AS inflight, COUNT(*)::int AS n FROM ${uploads} WHERE owner_user_id = ${userId} AND status = 'uploading'`,
+      sql`SELECT
+            COALESCE(SUM(up.length) FILTER (
+              WHERE up.status IN ('uploading', 'complete')
+                 OR (up.status = 'attached' AND EXISTS (
+                      SELECT 1 FROM items i WHERE i.upload_id = up.id AND i.status IN ('probing', 'draft', 'pending')))
+            ), 0)::bigint AS inflight,
+            COUNT(*) FILTER (WHERE up.status = 'uploading')::int AS n
+          FROM ${uploads} up WHERE up.owner_user_id = ${userId}`,
     )
     if (Number(g?.staged ?? 0) + length > caps.maxStagingBytes) return { status: 503, code: 'staging_full', retryAfterS: 600 }
     if (Number(u?.n ?? 0) >= caps.maxConcurrentUploadsPerUser) return { status: 429, code: 'too_many_concurrent_uploads', retryAfterS: 30 }
