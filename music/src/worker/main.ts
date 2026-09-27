@@ -23,6 +23,8 @@ import {
   ticketOpen,
   type WorkerCtx,
 } from './handlers'
+import { REQUEST_JOB_KINDS, runRequestJob, sweepParkedRequests, type RequestsCtx } from './requests/jobs'
+import { Deferred } from './requests/window'
 
 export type StartupDeps = { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch }
 
@@ -98,11 +100,22 @@ export async function runJob(ctx: WorkerCtx, job: JobRow): Promise<void> {
         await contractProbe(ctx)
         break
       default:
+        if (REQUEST_JOB_KINDS.has(job.kind)) {
+          await runRequestJob(ctx as RequestsCtx, job)
+          break
+        }
         throw new Permanent(`unknown job kind ${job.kind}`)
     }
     await ctx.db.execute(sql`UPDATE jobs SET status = 'done', updated_at = now(), last_error = NULL WHERE id = ${job.id}`)
   } catch (e) {
     const msg = e instanceof Error ? `${e.name}: ${e.message}`.slice(0, 500) : 'error'
+    if (e instanceof Deferred) {
+      // Waiting (scan window, song on air) is not a failed attempt.
+      await ctx.db.execute(
+        sql`UPDATE jobs SET status = 'queued', locked_at = NULL, attempts = GREATEST(attempts - 1, 0), updated_at = now(), last_error = ${msg}, run_after = now() + make_interval(secs => ${e.delayS}) WHERE id = ${job.id}`,
+      )
+      return
+    }
     if (e instanceof Permanent || job.attempts >= job.max_attempts) {
       await ctx.db.execute(sql`UPDATE jobs SET status = 'dead', updated_at = now(), last_error = ${msg} WHERE id = ${job.id}`)
       await ctx.alert(`job ${job.kind} #${job.id} failed permanently`, { error: msg })
@@ -119,7 +132,8 @@ export async function main() {
   const { env, profile, azuracast } = await startupChecks()
   console.log(`[worker] profile=${profile.profile} station=${profile.stationId} prefix=${profile.testPrefix || '(none)'} self-check ok`)
   const db = getDb(env.DATABASE_URL, 3)
-  const ctx: WorkerCtx = {
+  const ctx: RequestsCtx = {
+    root: profile.testPrefix,
     db,
     azuracast,
     tickets: new TicketsClient({ baseUrl: env.TICKETS_API_BASE, key: env.TICKETS_WRITE_KEY, portalOrigin: env.PORTAL_ORIGIN }),
@@ -140,6 +154,7 @@ export async function main() {
   while (!stopping) {
     try {
       await collectProbeResults(ctx)
+      await sweepParkedRequests(ctx)
       if (Date.now() - lastDaily > 24 * 3600_000) {
         lastDaily = Date.now()
         await enqueue(db, 'contract_probe', {}, { dedupeKey: `contract_probe:${new Date().toISOString().slice(0, 10)}` })

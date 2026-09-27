@@ -27,6 +27,15 @@ export const DEFAULT_SETTINGS: Record<string, unknown> = {
   nowplaying_shortcode: 'euphoricfm',
   scan_end_offset_s: 10,
   queues_paused: null,
+  // UI-facing settings (admin-editable via PUT /api/admin/settings).
+  playlist_names: { '2': '1General Rotation' },
+  rights_attestation: {
+    version: '2026-09-27',
+    text:
+      'I own this recording, or I have permission from everyone who holds rights in it, to have it played on EuphoricFM. ' +
+      'I understand managers can decline it, and that it can be removed from rotation later.',
+  },
+  discord_invite_url: null,
 }
 
 export type Caps = typeof DEFAULT_CAPS

@@ -269,6 +269,16 @@ export const requests = pgTable(
     // zod-typed {title?, artist?, album?, genre?} (src/server/requests.ts)
     proposed: jsonb('proposed'),
     reason: text('reason'),
+    // P4: the library metadata at filing time ({path, title, artist, album,
+    // genre, playlistIds}); the ticket card and the reviewer diff use it.
+    snapshot: jsonb('snapshot'),
+    denyReason: text('deny_reason'),
+    // Machine code of the last failure (apply / move / archive / recovery).
+    error: text('error'),
+    // An edit whose new main artist is unknown waits on this artist's
+    // new-artist approval before anything is written.
+    pendingArtistId: integer('pending_artist_id').references(() => artists.id),
+    appliedAt: ts('applied_at'),
     status: requestStatusEnum('status').notNull().default('pending'),
     ticketId: integer('ticket_id'),
     ticketNumber: integer('ticket_number'),

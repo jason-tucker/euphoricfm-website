@@ -70,6 +70,12 @@ const webSchema = z.object({
   STAGING_UPLOADS_DIR: z.string().default('/staging/uploads'),
   SPOOL_PROBE_IN_DIR: z.string().default('/spool/probe/in-web'),
   SPOOL_PROBE_OUT_DIR: z.string().default('/spool/probe/out'),
+  // Library root the portal surfaces (requests, search): '' in production,
+  // the worker's PORTAL_TEST_PREFIX in the prefix profile. Same format rule.
+  PORTAL_TEST_PREFIX: z
+    .string()
+    .default('')
+    .refine((v) => v === '' || /^Portal-Test[A-Za-z0-9-]*\/$/.test(v), 'PORTAL_TEST_PREFIX invalid'),
   ALLOW_TEST_ENDPOINTS: boolFlag,
 })
 

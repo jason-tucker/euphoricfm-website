@@ -23,6 +23,7 @@ x-web-env: &web-env
   TICKETS_API_BASE: http://mocks:4102
   TICKETS_GUILD_READ_KEY: test-tickets-web-key
   TICKETS_WEBHOOK_SECRET: test-only-webhook-secret-not-real-0000000
+  PORTAL_TEST_PREFIX: Portal-Test/
   ALLOW_TEST_ENDPOINTS: "1"
   HOSTNAME: 0.0.0.0
   NODE_OPTIONS: --max-old-space-size=160
