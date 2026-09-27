@@ -1,15 +1,29 @@
 # Changelog — EFM Music Portal (`music/`)
 
-## [Unreleased] — P4 requests and library management
+## [0.2.0] — 2026-09-27 — Integrated portal: P3 ingest, P4 requests, UI, album art
+
+One deployable build: the P2 foundation (0.1.1) with P3 (`feat/music-ingest`), P4 (`feat/music-requests`) and the UI (`feat/music-ui`) merged. P5 (SoundCloud) is not included. Where the branches overlapped, the foundation's version was kept.
 
 ### Added
-- Edit and removal requests (`request`): `POST /api/requests`, list/get, withdraw; one ticket each (`songedit` / `songremoval`) with a current → proposed card; targets only `Music/Artists/<folder>/<file>` in `library_cache`, not archived; 10 edits and 10 removals per member per day; one open request per song and kind.
-- Review (`review`): `POST /api/requests/:id/decision` (409 on a race, deny needs a reason) and `POST /api/requests/artists/:id/decision` for the new-artist approval an edit is parked on.
-- Manager actions (`manage`), each queued for the worker and audited: `PATCH /api/library/:mediaId`, `PUT /api/library/:mediaId/playlists` (merge), `POST /api/library/:mediaId/archive`, `POST /api/archive/:id/restore`, `GET /api/archive`.
-- Admin (`admin`): `PUT /api/admin/settings` (zod schema per key; caps can only be lowered), `POST /api/admin/role-bindings`, `DELETE /api/admin/role-bindings/:id`. Seeded `playlist_names`, `rights_attestation`, `discord_invite_url`.
-- Worker jobs `apply_edit`, `move`, `archive`, `restore`, `set_playlists`, `reverify` (post-scan, with lost-row recovery) and the request ticket posts. Moves run only inside the scan window and never while the song is playing or next; waiting does not spend attempts; `queues_paused` is re-checked before each write.
-- Album art (art contract): edit requests accept `proposed.artId` (a ready upload of the member's own; the card says "New album art proposed"); manager `PUT /api/library/:mediaId/art {artId}`; worker `apply_art` (snapshot with had_art / old art hash, `uploadArt`, verify `art_updated_at`, ticket post; scan window and `queues_paused`), run after `apply_edit` and any move. `art_uploads` and `uploadArt` are stubbed until the foundation lands them.
-- Migration `0002_p4_requests` (requests: snapshot, deny_reason, error, pending_artist_id, applied_at; media_snapshots: had_art, art_sha256). Web accepts an optional `PORTAL_TEST_PREFIX`.
+- **Review and ingest (P3).** New-artist items (one per unknown main artist, created at submit) and their approval with a reviewer-confirmed folder from the strict sanitizer; `PATCH /api/items/:id` metadata overrides; `attestVersion` recorded with the attestation; year in the probe prefill. Approving a song enqueues `ingest`: artist gate → probe `finalize` (effective cover) → worker re-hash → scan window + pacing (≥ 90 s, ≤ 6/h) → path build + collision walk → upload → playlists → verify + snapshot → post-scan re-verify → `live`, with lost-row recovery. `library_cache` sync every 10 min (artist seeding, `station_playlist_ids`, `art_url`), per-item ticket posts (live / failed), the batch summary with `completed`, 7-day auto-close, final-file cleanup through the probe (`cleanup_final`), an optional Kuma disk push, and a behavioural `/files/batch` contract check.
+- **Requests and library management (P4).** Edit and removal requests (one ticket each, `songedit` / `songremoval`, current → proposed card; `Music/Artists/<folder>/<file>` targets only, not archived; 10 per kind per day; one open per song and kind), request decisions and the new-artist approval an edit parks on; manager edits, playlist merges, archive and restore; admin settings (zod per key, caps only lowered) and role bindings. Worker jobs `apply_edit`, `apply_art`, `move`, `archive`, `restore`, `set_playlists` and `reverify`, never while the song is on air.
+- **Album art.** `PUT`/`DELETE /api/items/:id/art` (`items.custom_art_id`, FK to `art_uploads`); edit requests may propose `artId`; managers set art directly; `apply_art` pushes the probe JPEG through the wrapper's `uploadArt` and verifies it. `/api/media/cover/:id` and the signed preview serve the effective cover (custom, else embedded). Art still referenced by an open item, request or queued `apply_art` job is kept.
+- **UI.** Landing, denied, dashboard, submit (tus, per-song art prompt, the no-art list in the confirm dialog), batch detail, review queue and item, request review, library (browse, song, archived) with manager tools, admin; CSP-safe error pages.
+- Migration `0003_integration` (generated from the merged schema on the foundation's 0002 snapshot).
+- Harness: `MUSIC_TEST_TAG`, optional `MUSIC_TEST_WEB_PORT` (`test/compose.webport.yml`); `pnpm test:ui` (jsdom).
+
+### Security
+- One mutation-safety path for every AzuraCast-writing job: all P3/P4 kinds are in `MUTATING_JOB_KINDS`; handlers re-check the foundation's `assertQueuesNotPaused` right before writes and the wrapper's write gate refuses writes while paused; a paused job is parked without an attempt (P4 no longer fails a request on a pause). Waits use the foundation's age-bounded `RetryLater`.
+- No branch reaches the raw AzuraCast transport; P3's own `setPlaylistsReply` (which bypassed the allowed-playlist-set check) is replaced by the foundation's.
+- Decisions and reviewer edits require a batch submitted with the attestation (`BATCH_DECIDABLE_SQL` in every conditional UPDATE and in the review queue); drafts never reach the review surface, and reviewer duplicate hints skip other members' drafts.
+- One scan-window / now-playing module and one recovery implementation (remaps every table incl. `ingest_runs`); an archived file is only re-linked during recovery.
+- Art ids are UUIDs; art is read from the real `art_uploads` table (no raw-SQL guesses, no test stub tables); `apply_art` refusals from `uploadArt` (sha mismatch, missing JPEG) fail the request.
+- `worker-egress` is pinned to 172.31.252.0/24, the subnet botvps's `efm-music-egress.service` DOCKER-USER guard matches.
+
+### Changed
+- The admin `rights_attestation.version` must pass the submit route's version check.
+- The mock AzuraCast stays upstream-faithful; P3/P4 tests that relied on its old safety nets were adjusted in their setup.
+
 ## [0.1.1] — 2026-09-27 — P2 review fix round + album-art foundation
 
 ### Security

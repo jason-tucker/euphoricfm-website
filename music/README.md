@@ -1,8 +1,15 @@
 # EFM Music Portal (`music/`)
 
-`https://music.euphoric.fm`: members of the EuphoricFM Discord server submit music, and staff review it. Each batch or request becomes a ticket through the euphoric-tickets Integration API, and approved files go to AzuraCast station 1.
+`https://music.euphoric.fm`: members of the EuphoricFM Discord server submit music and file edit or removal requests, and staff review them. Each batch or request becomes a ticket through the euphoric-tickets Integration API. Approved songs are finalized by the network-less probe and ingested into AzuraCast station 1; approved edits, moves, archives, restores and album art are applied there by the worker.
 
-The design contract is the vault plan **"EFM Music Portal — Plan"** (v3.2, with its changelog amendments). This directory is **phase P2**: the security foundation. The UI pages are a later pass.
+The design contract is the vault plan **"EFM Music Portal — Plan"** (v3.2, with its changelog amendments) and the album-art contract of 2026-09-27. This directory is the **integrated v0.2.0**:
+
+- **P2 foundation** (auth, CSRF, headers, authz, tus, probe, path builder, the AzuraCast wrapper, album-art uploads) with its fix round;
+- **P3** review and ingest (decisions, new artists, the ingest pipeline with post-scan re-verify and lost-row recovery, library sync, ticket posts, batch summary, auto-close);
+- **P4** requests and library management (edit/removal requests, manager edits, playlist merges, archive/restore, `apply_art`, admin settings and role bindings);
+- the **UI** (every page).
+
+**P5** (SoundCloud fetch, the site entry) is not in this build: `music-fetch` is still a stub.
 
 This is a separate package from the Astro site. It has its own `package.json`, `pnpm-lock.yaml`, Dockerfile and compose project (`efm-music`). The site build ignores `music/` (see the root `tsconfig.json` and `.dockerignore`).
 
@@ -11,7 +18,7 @@ This is a separate package from the Astro site. It has its own `package.json`, `
 | Service | Image target | Networks | Holds |
 |---|---|---|---|
 | `music-web` | `web` (Next.js 15.5 standalone) | `music-int`, `efm-music-hooks` (external) | `web.env`: Auth.js, the Discord app, `APP_ENC_KEY`, the tickets **guild:read** key and the webhook secret. **No AzuraCast key and no `tickets:*` key.** It refuses to start if it sees either. |
-| `music-worker` | `worker` | `music-int`, `efm-public-net` (external), `worker-egress` | `worker.env`: the AzuraCast key and the tickets write key. It refuses to start if it sees web secrets. |
+| `music-worker` | `worker` | `music-int`, `efm-public-net` (external), `worker-egress` (172.31.252.0/24) | `worker.env`: the AzuraCast key and the tickets write key. It refuses to start if it sees web secrets. It runs the job queue and the periodic duties (library sync, batch summaries, auto-close, final-file cleanup, disk push, the batch contract check, parked-request sweep). |
 | `music-probe` | `probe` (ffprobe/ffmpeg/rsvg-convert, music-metadata, node-id3) | `network_mode: none` | Nothing. It has no env_file and refuses secret-like env. |
 | `music-db` | `postgres:16-alpine` | `music-int` (internal) | `db.env` |
 | `music-migrate` | `worker` (`node migrate.mjs`), one-shot | `music-int` | `migrate.env`: the owner URL, the `music_app` password and `SEED_REVIEW_ROLE_IDS` |
@@ -35,15 +42,15 @@ These are the plan's §3 mounts, from `${MUSIC_DATA_DIR:-./data}`:
 The probe also enforces **which request types each inbox may carry**:
 
 - `in-web` may carry `probe`, `art` and `art_release` only.
-- `in-worker` may carry `finalize`, `cover` and `probe_fetch`.
+- `in-worker` may carry `finalize`, `cover`, `probe_fetch` and `cleanup_final` (the worker's mount of `staging/final` is read-only, so the probe deletes finalized files 7 days after they went live or failed).
 
 Every result records the inbox it came from.
 
 `test/run.sh` proves the mount rules on the real compose definitions:
 
-- web cannot see `in-worker`, and cannot write `out` or `final`;
-- the worker cannot write `final` or `out`, and cannot see `uploads`;
-- the probe has no network.
+- web cannot see `in-worker`, and cannot write `out`, `final` or `art`;
+- the worker cannot write `final`, `out` or `art`, can read `art`, and cannot see `uploads` or `art-in`;
+- the probe has no network and cannot write `art-in`.
 
 ## Security model
 
@@ -62,8 +69,16 @@ For each control, the table gives the plan section and the code that implements 
 | Probe checks, in order: magic bytes (plus a second-frame check), then ID3 ≤5 MB with no compressed or encrypted frames, then `ffprobe -f mp3 -protocol_whitelist file,pipe -threads 1` under `timeout` + `ulimit -v`, then music-metadata in a heap-capped child. Covers are re-encoded to a JPEG ≤1000 px, with raster dimensions bounded first and SVG rasterised. Then sha256 and `finalize`. | §3.4 | `src/probe/*` |
 | Probe containment: each parser child is its own process group and the **whole group** is SIGKILLed on timeout, on output overflow and as soon as the child exits; the parsers get a per-job private work dir with a read-only (0400) copy of the input; the probe mounts only `staging/{uploads,final,work}` and `spool/probe`. After **every** job the probe compares the process table with its start-up baseline (tini + itself): any other live process (e.g. a `setsid` escapee) is killed, the job's result is replaced by `containment_breach`, and the probe exits so Docker restarts the container and the kernel tears down its PID namespace. **Residual:** parsers still run as the probe's uid, so *during* a job (≤ ~45 s) a compromised parser can write what the probe can write (`staging/final`, `spool/probe/out`, other staged uploads) and could `ptrace`/signal the probe loop. Closing that needs a second uid (CAP_SETUID/SETGID in the probe, today `cap_drop: ALL` + `no-new-privileges`) or Landlock (ENOSYS on the test host; botvps unverified), i.e. a separate parse-only container. A `docker exec` into the probe container also counts as a stray and restarts it after the next job. | §3.4, §8 | `src/probe/exec.ts`, `src/probe/containment.ts`, `src/probe/main.ts` |
 | Path builder: every destination and source assertion, the collision walk ` (2)`…` (9)`, and the `Portal-Test/` root. | §3.5 | `paths/builder.ts` |
+| Decisions: a reviewer may decide (or edit the metadata / art of) an item only once its batch was **submitted with the rights attestation**: `assertBatchDecidable` for the readable 409, `BATCH_DECIDABLE_SQL` inside every conditional UPDATE and in the review queue, so an unsubmitted draft never shows up to reviewers. Approving a song copies the **probe-time** sha256 and enqueues `ingest`; approving a `new_artist` item creates the artist with a folder from the strict sanitizer (or links an existing one) and ungates the batch's songs. Public comments on a draft wait for submit. | §3.3, §3.4 | `submissions.ts`, `library/artists.ts`, `ui/queries.ts` |
+| Mutation safety: every AzuraCast-writing job kind is in `MUTATING_JOB_KINDS` (`ingest`, `ingest_verify`, `move`, `archive`, `restore`, `apply_edit`, `apply_art`, `set_playlists`, `recovery`, `reverify`). While `settings.queues_paused` is set (contract drift, an unverifiable spec, a failed key self-check, a behavioural batch drift, or an operator) they are not claimed, every handler re-checks `assertQueuesNotPaused` right before its writes, and the wrapper's write gate refuses every write. A paused job is parked without spending an attempt. Waits (scan window, on air, pacing, a ticket not open yet) throw `RetryLater`: no attempt is spent, bounded by the job's age. | §3.7 | `pause.ts`, `worker/main.ts`, `worker/handlers.ts` |
+| Scan window (one module for ingest and P4): a mutation may start only when `now ≥ :x1 + scan_end_offset_s + 20 s` and `now + 30 s < :x6` (clock only, the accepted residual); a misconfigured offset holds and alerts. Moves, archives and restores also wait while the song is now playing or playing next. Ingest is serial: ≥ 90 s apart and ≤ 6 per hour. | §3.7, P0d-A | `worker/ingest/window.ts` |
+| Ingest: artist gate → `finalize` in the probe (verifies `approved_sha256`, strips and re-tags, embeds the **effective cover**: custom art, else the embedded cover) → the worker re-hashes `final.mp3` → window + pacing → path build and collision walk → `POST /files` (re-hashed in the wrapper) → playlists (assignable ∩ station ids) → GET verify and snapshot → `verifying` → a re-verify after the next two scans → `live`, or recovery. | §3.7 | `worker/ingest/pipeline.ts` |
+| Lost-row recovery (ingest and P4 re-verify share it): poll by path (≥ 3 cycles and ≥ 20 min), then the snapshot **metadata** first and the snapshot playlists, then remap the media id in `library_cache`, `items`, `requests`, `archive`, `media_snapshots` and `ingest_runs`, and alert. An archived file (`Removed/<id>/`) is only re-linked. | §3.7 | `worker/library/recovery.ts` |
+| Requests and library management: targets only `Music/Artists/<folder>/<file>` rows of `library_cache` that are not archived; one open request per song and kind, 10 per kind per day; `proposed` is strict `{title?, artist?, album?, genre?, artId?}` (a ready art upload of the member's own). Manager edits, playlist merges (memberships outside the assignable set are kept; foreign-station ids are never sent), archive (`playlists:[]`, verify zero memberships, move to `Removed/<media_id>/`; the playlists are re-applied if the move fails) and restore (exact recorded paths, snapshot playlists) are queued for the worker and audited. An edit that changes the main artist to an unknown one parks on a new-artist approval. | §3.3, §3.5, §3.7 | `requests/*`, `worker/requests/*` |
+| Admin: settings have a zod schema per key (caps can only be lowered; the attestation version must pass the submit check); role bindings are admin-only and audited; `admin` itself comes only from `PORTAL_OWNER_IDS`. | §3.1, §3.3 | `admin/settings.ts` |
 | AzuraCast wrapper: the raw transport is **private** (tests use the `TEST_SEND` seam, which runs the same checks and refuses outside vitest). Every request passes an async `validate()`: an allowlist of (method, path template, query, body schema); `sid == STATION_ID`; the profile guard re-asserted on every call; the prefix guard on every write; **every** metadata PUT first GETs its id and requires the prefix and the `Music/Artists/<folder>/<file>` pattern; a playlist batch must carry the caller's allowed id set and stay inside it. `delete`, `queue`, `immediate`, `reprocess`, any other `do`, a non-empty `dirs`, `path` or `playlists` in a file PUT, and string playlist ids are all refused. The self-check expects station 1 → 200 and station 7 → 403. The contract drift probe compares against the P0d baseline. | §3.7 and amendments | `azuracast/client.ts`, `azuracast/guard.ts`, `azuracast/contract.ts` |
 | Album art (contract 2026-09-27): `POST /api/uploads/art` (multipart, exactly one `art` file, ≤5 MB, JPEG/PNG/WebP by magic bytes, never SVG/GIF; header dims ≤12 MP and a complete file checked before spooling) → 202 `{artId}`; `GET /api/uploads/art/:artId` (uploader or `review`, else 404) → `processing`/`ready`/`rejected` + a signed 5-min `previewUrl` (`/api/media/art/:id`, `image/jpeg`, nosniff, `CSP: sandbox`). Raw bytes live in `staging/art-in` (web rw); the probe alone writes `staging/art/<artId>/cover.jpg` (web + worker ro), a ≤1000 px baseline JPEG under the same decode bounds as embedded covers; the web re-hashes it before recording `jpeg_sha256`. Unreferenced art expires after 7 days (the probe deletes the JPEG on an `art_release` request). The worker's `uploadArt(mediaId, jpegPath, expectedSha256)` reads only `<STAGING_ART_DIR>/<uuid>/cover.jpg` (no symlinks), re-hashes it, and posts it through `validate()` (the media id must be a `Music/Artists` file under the prefix; write gate; station). | contract | `server/art/*`, `app/api/uploads/art/*`, `app/api/media/art/*`, `probe/art.ts`, `azuracast/client.ts` |
+| Album art on songs: `PUT`/`DELETE /api/items/:id/art` (owner while the batch is a draft, a reviewer while the item is pending in a submitted batch; the upload must be the viewer's own and ready) sets `items.custom_art_id` (FK to `art_uploads`, `ON DELETE SET NULL`). `/api/media/cover/:id` and the signed preview serve the **effective cover** with the same session, owner-or-review predicate and viewer-bound signature. Edit requests may propose art; managers set it directly (`PUT /api/library/:mediaId/art`); the worker's `apply_art` snapshots, runs `uploadArt` and verifies `art_updated_at` moved. Art referenced by an open item, request or queued `apply_art` job is kept. | contract | `submissions.ts`, `media/cover.ts`, `requests/*`, `worker/requests/jobs.ts`, `art/retention.ts` |
 | The tickets client (worker only) never forwards a staff comment. The webhook receiver enforces ±300 s, HMAC over the raw bytes checked with `timingSafeEqual` **before** parsing, delivery-id dedupe in the same transaction, and anchoring only within the ticket's own batch. | §3.1, §4.5 | `tickets/client.ts`, `hooks/*` |
 | `audit_log` is append-only by trigger. Web and worker connect as the **non-owner** `music_app` role (DML only; `audit_log` is SELECT + INSERT only). | §3.1 | `drizzle/0001_audit_append_only.sql`, `migrate/main.ts` |
 
@@ -76,6 +91,10 @@ For each control, the table gives the plan section and the code that implements 
 | `PORTAL_TEST_PREFIX` (e.g. `Portal-Test/`) | Optional in `prod`, and set for the first live verifications. Required in `test`. When it is set, every write path must start with it. A metadata PUT (which names only an id) first GETs the id and checks its path. |
 
 The worker refuses to start on any violation. It also refuses to start if the key can read the canary station (7).
+
+## Database migrations
+
+`drizzle/` holds `0000_init`, `0001_audit_append_only` (the append-only trigger, hand-written), `0002_foundation_art` (album-art uploads) and `0003_integration` (P3 + P4, generated by drizzle-kit from the merged `schema.ts` on the 0002 snapshot: `ingest_runs`, `batches.attest_version`, `items.custom_art_id` with its FK, the P4 request and snapshot columns). `music-migrate` applies them as the owner, then (re)grants `music_app`. `schema.ts` and the migrations are equivalent (drizzle-kit `generate` reports no changes; a migrated database matches one built from `schema.ts` column for column, apart from the 0001 triggers). drizzle-kit `push` always proposes re-setting the five `'{}'::int[]` / `'{}'::text[]` array defaults: that is a drizzle-kit comparison artefact that does not converge and was already present at 0002, not drift.
 
 ## Deploy (botvps, as botuser)
 
@@ -106,30 +125,34 @@ docker compose -p efm-music up -d
 
 ## Tests
 
-Everything runs in Docker; the host needs no Node:
+Everything runs in Docker; the host needs no Node.
 
 ```sh
-sh music/test/run.sh            # KEEP=1 leaves the stack up; DOCKER_COMPOSE overrides the compose command
+sh music/test/run.sh
 ```
 
-It builds the images, starts Postgres, the mocks and the real containers, and then runs:
+- `KEEP=1` leaves the stack up; `DOCKER_COMPOSE` overrides the compose command.
+- `MUSIC_TEST_PROJECT=<name>` (default `efm-music-test`) isolates parallel runs from different worktrees: compose project, networks, and the test and runtime image tags. `MUSIC_TEST_TAG` overrides the runtime image tag.
+- The test web has no host port. `MUSIC_TEST_WEB_PORT=<port>` publishes it on `127.0.0.1:<port>` for a browser (through `test/compose.webport.yml`).
 
-- `vitest` (unit, DB and e2e);
+The harness builds the images, starts Postgres, the mocks and the real containers (the worker runs its real job loop against the mocks), and then runs:
+
+- `vitest` (unit, DB and e2e for every phase: foundation, ingest, requests, UI page smoke);
 - the mount checks;
 - the worker start-up refusals.
 
-Finally it prints idle `docker stats`.
+Finally it prints idle `docker stats`. The web's own retention sweeper is off in the harness (`MUSIC_DISABLE_SWEEPER=1`), because the retention tests call it directly.
 
-The mocks in `test/mocks/server.mjs` stand in for Discord OAuth and the member API, the tickets Integration API, AzuraCast (per the P0d and P0d-B contracts), and an egress canary. **No production credential is used anywhere in the tests.**
+The UI component and route tests run without the stack (jsdom): `pnpm test:ui` (`vitest.ui.config.ts`).
 
-## For the UI pass
+The mocks in `test/mocks/server.mjs` stand in for Discord OAuth and the member API, the tickets Integration API, AzuraCast (per the P0d and P0d-B contracts, **upstream-faithful**: a batch skips a missing source silently and a move overwrites an occupied destination, so the wrapper's own checks are what the tests exercise), and an egress canary. Controls cover seeding, per-record batch errors, the next move failing, a lost or dropped row, now-playing, drift, and art uploads. **No production credential is used anywhere in the tests.**
 
-- Import server helpers only from server components, route handlers and server actions:
-  - `requirePermission` / `optionalViewer` from `@/server/authz/viewer`;
-  - the action functions in `@/server/submissions`;
-  - the DB types in `@/server/db/schema`.
-- **CSP:** there is no `'unsafe-inline'`. That means no inline `<script>` and no `style={{…}}` attributes (style-src falls back to `'self'`). Next stamps the nonce on its own scripts.
+## Pages and client notes
+
+- Pages: landing and denied, dashboard (own batches and requests), submit, batch detail, review queue and item, request review, library (browse, song, archived), admin.
+- Import server helpers only from server components, route handlers and server actions.
+- **CSP:** there is no `'unsafe-inline'`: no inline `<script>` and no `style={{…}}` attributes. Next stamps the nonce on its own scripts. `img-src` allows `https://euphoric.fm` for AzuraCast's public art (`library_cache.art_url`).
 - Mutations from the browser are same-origin `fetch` or forms, which send `Origin` and `Sec-Fetch-Site` automatically.
-- Preview audio and cover URLs come from `GET /api/items/:id/preview`: they are signed, expire in 5 minutes, and are bound to the viewer.
+- Preview audio and cover URLs come from `GET /api/items/:id/preview`: signed, 5 minutes, bound to the viewer. The cover is the effective one.
 - **tus client:** `endpoint: '/api/uploads'`, `chunkSize: 8 * 1024 * 1024`, and **no** `uploadDataDuringCreation`. Then `POST /api/batches/:id/items {uploadId}`.
-- **Album art:** `POST /api/uploads/art` with a `FormData` holding one file field `art`; poll `GET /api/uploads/art/:artId` until `ready` (show `previewUrl`) or `rejected` (show `reason`). The CSP allows `img-src https://euphoric.fm` for AzuraCast's public art (`library_cache.art_url`).
+- **Album art:** `POST /api/uploads/art` with a `FormData` holding one file field `art`; poll `GET /api/uploads/art/:artId` until it leaves `processing` (`ready` → `previewUrl`; `rejected` or `expired` → `reason`), then attach the id.
