@@ -19,7 +19,8 @@ export function route<P = Record<string, string>>(fn: (req: Request, params: P) 
     try {
       if (!SAFE_METHODS.has(req.method.toUpperCase())) {
         const v = checkCsrf(req.method, new URL(req.url).pathname, req.headers, webEnv().PORTAL_ORIGIN)
-        if (!v.ok) throw new HttpError(403, `csrf_${v.reason}`)
+        // Connection: close: the refused request's body is never read.
+        if (!v.ok) throw new HttpError(403, `csrf_${v.reason}`, undefined, { Connection: 'close' })
       }
       return await fn(req, (await ctx.params) ?? ({} as P))
     } catch (err) {

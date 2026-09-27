@@ -4,17 +4,18 @@
 // advisory lock. The e2e block repeats the gate against the real container.
 import { randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { acceptArtUpload, admitArtUpload, ArtGate, artQuotaRefusal, ART_BODY_LIMIT, MAX_PROCESSING_ART_PER_USER, readArtUpload } from '@/server/art/uploads'
+import { acceptArtUpload, admitArtUpload, createArtUpload, ArtGate, artQuotaRefusal, ART_BODY_LIMIT, MAX_PROCESSING_ART_PER_USER, readArtUpload } from '@/server/art/uploads'
 import { SETTING_SCHEMAS } from '@/server/admin/settings'
 import { multipartBoundary, parseDisposition, singlePart } from '@/server/art/multipart'
 import type { Viewer } from '@/server/authz/predicates'
-import { closeDb, getDb, schema } from '@/server/db/client'
+import { closeDb, getDb, schema, type DB } from '@/server/db/client'
+import { auditLog } from '@/server/db/schema'
 import { readBodyExact } from '@/server/http/body'
 import { HttpError } from '@/server/http/errors'
 import { DEFAULT_CAPS, MB, type Caps } from '@/server/settings-defaults'
@@ -216,6 +217,43 @@ describe.skipIf(!DBENV())('art admission (Postgres)', () => {
     expect(readFileSync(join(dirs.artIn, r.artId)).equals(fxBuf('art.png'))).toBe(true)
     expect(readdirSync(dirs.spoolIn).some((f) => f.startsWith(r.artId))).toBe(true)
     expect(await rows(u.id)).toEqual([{ status: 'processing', raw_size: fxBuf('art.png').length, reason: null }])
+  })
+
+  // A DB whose audit insert (and optionally every update) throws.
+  const failingDb = (o: { update?: boolean }) =>
+    new Proxy(db(), {
+      get(t, k) {
+        if (k === 'insert')
+          return (table: unknown) => {
+            if (table === auditLog) throw new Error('audit down')
+            return t.insert(table as never)
+          }
+        if (k === 'update' && o.update)
+          return () => {
+            throw new Error('db down')
+          }
+        const val = Reflect.get(t, k)
+        return typeof val === 'function' ? val.bind(t) : val
+      },
+    }) as DB
+
+  it('a failure after admission (audit throws) never leaves the row processing: rejected, raw file removed, no spool request', async () => {
+    const u = await mkUser()
+    const png = fxBuf('art.png')
+    await expect(createArtUpload(failingDb({}), viewer(u), png, dirs)).rejects.toThrow('audit down')
+    const [row] = await ownerSql()`SELECT id, status, reason, raw_path FROM art_uploads WHERE owner = ${u.id}`
+    expect(row).toMatchObject({ status: 'rejected', reason: 'audit_failed' })
+    expect(existsSync(row!.raw_path as string)).toBe(false)
+    expect(readdirSync(dirs.spoolIn).some((f) => f.startsWith(row!.id as string))).toBe(false)
+    expect(await artQuotaRefusal(db(), u.id, 1)).toBeNull() // no processing slot held
+  })
+
+  it('the cleanup is best effort: a DB error while rejecting does not mask the original error', async () => {
+    const u = await mkUser()
+    await expect(createArtUpload(failingDb({ update: true }), viewer(u), fxBuf('art.png'), dirs)).rejects.toThrow('audit down')
+    const [row] = await ownerSql()`SELECT status, raw_path FROM art_uploads WHERE owner = ${u.id}`
+    expect(row!.status).toBe('processing') // could not be marked; the 24 h sweep rejects it
+    expect(existsSync(row!.raw_path as string)).toBe(false)
   })
 
   it('readArtUpload keeps the old refusals (field name, string field, empty, >5 MB in the part, no Content-Length)', async () => {

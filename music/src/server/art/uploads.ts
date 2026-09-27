@@ -191,10 +191,12 @@ export async function createArtUpload(db: DB, v: Viewer, bytes: Buffer, dirs: Ar
   const rawPath = join(dirs.artIn, artId)
   const refusal = await admitArtUpload(db, v.userId, artId, rawPath, bytes.length, caps)
   if (refusal) throw refusalError(refusal)
-  const fail = async (reason: string) => {
-    await db.update(artUploads).set({ status: 'rejected', reason, updatedAt: new Date() }).where(eq(artUploads.id, artId))
-    await unlink(rawPath).catch(() => {})
-  }
+  // The row exists from here on (admission inserted it), so every later
+  // failure must take it out of 'processing' (it counts toward the
+  // processing limit and staged bytes until the 24 h sweep otherwise):
+  // write, audit and spool share one catch that marks the row rejected and
+  // removes the raw file, best effort, never masking the original error.
+  let stage: 'write' | 'audit' | 'spool' = 'write'
   try {
     const fh = await open(rawPath, FS.O_WRONLY | FS.O_CREAT | FS.O_EXCL | FS.O_NOFOLLOW, 0o640)
     try {
@@ -203,16 +205,24 @@ export async function createArtUpload(db: DB, v: Viewer, bytes: Buffer, dirs: Ar
     } finally {
       await fh.close()
     }
-  } catch {
-    await fail('write_failed')
-    throw new HttpError(503, 'art_write_failed', undefined, { 'Retry-After': '60' })
-  }
-  await audit(db, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'art.upload', targetType: 'art', targetId: artId, detail: { size: bytes.length } })
-  try {
+    stage = 'audit'
+    await audit(db, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'art.upload', targetType: 'art', targetId: artId, detail: { size: bytes.length } })
+    stage = 'spool'
     await writeSpoolRequest(dirs.spoolIn, { v: 1, id: artId, type: 'art', expectedSize: bytes.length })
-  } catch {
-    await fail('probe_unavailable')
-    throw new HttpError(503, 'probe_unavailable')
+  } catch (err) {
+    const reason = stage === 'write' ? 'write_failed' : stage === 'audit' ? 'audit_failed' : 'probe_unavailable'
+    try {
+      await db
+        .update(artUploads)
+        .set({ status: 'rejected', reason, updatedAt: new Date() })
+        .where(and(eq(artUploads.id, artId), eq(artUploads.status, 'processing')))
+    } catch (e) {
+      console.error('[art] could not reject', artId, e instanceof Error ? e.message : e)
+    }
+    await unlink(rawPath).catch(() => {})
+    if (stage === 'write') throw new HttpError(503, 'art_write_failed', undefined, { 'Retry-After': '60' })
+    if (stage === 'spool') throw new HttpError(503, 'probe_unavailable')
+    throw err
   }
   return { artId, status: 'processing' }
 }

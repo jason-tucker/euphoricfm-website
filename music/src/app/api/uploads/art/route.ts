@@ -18,14 +18,21 @@ export const dynamic = 'force-dynamic'
 
 const limiter = new RateLimiter()
 
+// Refusals before the body is read close the connection, so the unread body
+// cannot be taken for the next request on a keep-alive socket.
+const CLOSE = { Connection: 'close' }
+const closing = (e: unknown) => (e instanceof HttpError ? new HttpError(e.status, e.code, e.extra, { ...e.headers, ...CLOSE }) : e)
+
 export const POST = route(async (req) => {
   const r = limiter.hit(LIMITS.mutation, clientKey(req.headers))
-  if (!r.ok) throw new HttpError(429, 'rate_limited', undefined, { 'Retry-After': String(r.retryAfterS) })
-  const v = await requirePermission('submit')
+  if (!r.ok) throw new HttpError(429, 'rate_limited', undefined, { 'Retry-After': String(r.retryAfterS), ...CLOSE })
+  const v = await requirePermission('submit').catch((e: unknown) => {
+    throw closing(e)
+  })
   const env = webEnv()
   const db = getDb()
   const caps = await loadCaps(db)
-  if (await diskPaused(env.STAGING_ART_IN_DIR, caps)) throw new HttpError(503, 'uploads_paused', undefined, { 'Retry-After': '300' })
+  if (await diskPaused(env.STAGING_ART_IN_DIR, caps)) throw new HttpError(503, 'uploads_paused', undefined, { 'Retry-After': '300', ...CLOSE })
   const res = await acceptArtUpload(db, v, req, { artIn: env.STAGING_ART_IN_DIR, art: env.STAGING_ART_DIR, spoolIn: env.SPOOL_PROBE_IN_DIR, spoolOut: env.SPOOL_PROBE_OUT_DIR }, caps)
   return jsonResponse(202, res)
 })
