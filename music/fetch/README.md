@@ -209,9 +209,9 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop A
 - Submit `probe_fetch` to `/spool/probe/in-worker` only.
 - Write `in/<uuid>.release` once the probe result is collected (portal v0.4.0).
 
-## Host step (not applied): DOCKER-USER egress rules for fetch-egress
+## Host step (not applied by this repo, REQUIRED before music-fetch starts): DOCKER-USER and INPUT rules for fetch-egress
 
-These rules belong to P0b and Deploy-1, next to the worker-egress rules. **Apply them before the first real fetch** on botvps, as root:
+These rules belong to P0b and Deploy-1, next to the worker-egress rules. **Both the DOCKER-USER and the INPUT rules are required, not optional:** yt-dlp's own connections (SoundCloud's API and CDN) do not go through the in-process connect-time guard, which covers only the shortlink and artwork requests. Apply them on botvps, as root, and verify them (below and in the portal's `music/README.md`, "Pre-deploy: fetch-egress host rules") **before music-fetch is started**:
 
 ```sh
 SUBNET=172.31.251.0/24
@@ -232,14 +232,14 @@ iptables -I INPUT -i br-efm-fetch -j DROP
 ```sh
 docker exec efm-music-music-fetch-1 python -I -c '
 import socket
-for h,p in [("169.254.169.254",80),("10.0.0.1",80),("172.31.251.1",22),("192.168.1.1",80),("100.100.100.100",53),("1.1.1.1",443)]:
+for h,p in [("169.254.169.254",80),("10.0.0.1",80),("172.31.251.1",22),("192.168.1.1",80),("100.100.100.100",53),("PUBLIC_IP",22),("1.1.1.1",443)]:
     s=socket.socket(); s.settimeout(3)
     try: s.connect((h,p)); print(h,"OPEN")
     except OSError as e: print(h,"blocked:",type(e).__name__)
     finally: s.close()'
 ```
 
-Only `1.1.1.1` may print `OPEN`.
+Replace `PUBLIC_IP` with the droplet's own public address (the INPUT rule's case). Only `1.1.1.1` may print `OPEN`.
 
 ## Version pins and the monthly bump
 
@@ -299,5 +299,5 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop A
 
 - **No ffmpeg in fetch**, although the plan's §3 table says "yt-dlp + ffmpeg". Leaving it out keeps a remote-input media parser out of the only container with internet egress. yt-dlp's native HLS downloader handles SoundCloud; the smoke output was fMP4 AAC and probes correctly. If a future SoundCloud format needs ffmpeg, adding it here is a plan change.
 - **"Original download" format.** When an uploader enables downloads, yt-dlp prefers the original file (`format_id=download`, quality 10). That file can be a large WAV or FLAC, which fails with `too_large`, or AIFF, which fails with `bad_media`, even when a stream format would fit. Fixing this means adding `-f` to the pinned invocation, for example `-f 'bestaudio[format_id!=download]/bestaudio'`, which is a plan change.
-- **Input host is strict.** `m.soundcloud.com` and `www.soundcloud.com` are rejected on **input**, following the brief's "accept only". `m.` is accepted only as a shortlink's final host. Relaxing the input rule is a one-line change in `urls.py`.
+- **Input host is strict.** `m.soundcloud.com` and `www.soundcloud.com` are rejected on **input**, following the brief's "accept only". `m.` is accepted only as a shortlink's final host. Relaxing the input rule is a one-line change in `urls.py`. The portal (v0.4.0) accepts `m.soundcloud.com` and `www.soundcloud.com` links from members but always sends music-fetch the link rebuilt on `soundcloud.com`, so this rule stays strict.
 - **Artwork host violation fails the whole job**, because `artwork_host` is a contract error code. A transfer problem only drops the artwork.

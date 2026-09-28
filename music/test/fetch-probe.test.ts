@@ -3,12 +3,13 @@
 // probe image). The e2e suite repeats the flow through the real containers.
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { AUDIO_BUDGET_BYTES } from '@/lib/fit'
-import { fetchedFfprobeArgs, fetchedTranscodeArgs, runProbeFetch, sniffFetched } from '@/probe/fetched'
+import { fetchedFfprobeArgs, fetchedTranscodeArgs, runProbeFetch, sniffFetched, withJobDir } from '@/probe/fetched'
+import { copyNoFollowHashed } from '@/probe/files'
 import { processOne, recoverInterrupted } from '@/probe/main'
 import { probeFetchRequest, readSpoolResult, writeSpoolRequest, type ProbeFetchRequest } from '@/server/spool/protocol'
 import { HLS_PLAYLIST, scFx, scFxBuf, SVG_ART } from './helpers/soundcloud'
@@ -168,6 +169,26 @@ describe('probe_fetch: refusals', () => {
     writeFileSync(join(elsewhere, 'audio.m4a'), scFxBuf('sc-aac-40s.m4a'))
     symlinkSync(elsewhere, join(dirs.fetch, other))
     expect(await runProbeFetch(request(other, scFxBuf('sc-aac-40s.m4a'), 'm4a'), dirs)).toMatchObject({ ok: false, error: 'input_missing' })
+  })
+
+  it('SC-SEC-2: a job dir swapped for a symlink AFTER the check cannot redirect the read', async () => {
+    // music-fetch (compromised) renames the checked dir away and plants a link
+    // to another dir the probe can read, between the check and the open.
+    const real = scFxBuf('sc-aac-40s.m4a')
+    const fetchId = stage(real, 'm4a')
+    const elsewhere = join(root, `swap-${fetchId}`)
+    mkdirSync(elsewhere)
+    const decoy = Buffer.concat([real, Buffer.from('decoy')])
+    writeFileSync(join(elsewhere, 'audio.m4a'), decoy)
+    const out = join(root, `swap-copy-${fetchId}`)
+    const r = await withJobDir(dirs, fetchId, async (dir) => {
+      renameSync(join(dirs.fetch, fetchId), join(dirs.fetch, `${fetchId}-moved`))
+      symlinkSync(elsewhere, join(dirs.fetch, fetchId))
+      return copyNoFollowHashed(join(dir, 'audio.m4a'), out, 64 * 1024 * 1024)
+    })
+    // the bytes of the directory that was checked, never the decoy's
+    expect(r).toEqual({ sha256: sha(real), size: real.length })
+    expect(readFileSync(out).equals(real)).toBe(true)
   })
 })
 

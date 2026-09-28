@@ -5,9 +5,10 @@
 // music-fetch is the only container with internet egress, so what it wrote
 // is untrusted input. It is handled like an upload, and more narrowly:
 //   1. the path is built here from the request's fetch id and extension
-//      (/staging/fetch/<fetchId>/audio.<ext>, mounted READ-ONLY); the file is
-//      copied once, without following links, into a private work dir, and
-//      its size and sha256 must be the ones music-fetch reported;
+//      (/staging/fetch/<fetchId>/audio.<ext>, mounted READ-ONLY); the job dir
+//      is opened once without following links and the file, relative to that
+//      handle, is copied once, without following links, into a private work
+//      dir; its size and sha256 must be the ones music-fetch reported;
 //   2. ONLY the formats yt-dlp returns for SoundCloud are decoded: AAC in MP4
 //      / M4A, Opus in Ogg, MP3. The container is checked by magic bytes here
 //      again (music-fetch's check is not trusted), the extension must match
@@ -38,7 +39,8 @@
 // The raw download is never modified here (the mount is read-only): the
 // worker asks music-fetch to delete it once this result is collected.
 
-import { chmod, lstat, mkdtemp, readFile, rename, rm, stat, unlink } from 'node:fs/promises'
+import { constants as FS } from 'node:fs'
+import { chmod, mkdtemp, open, readFile, rename, rm, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { AUDIO_BUDGET_BYTES, MAX_DURATION_S, mp3FitsUntouched, pickBitrate } from '../lib/fit'
@@ -217,20 +219,35 @@ async function convertMp3(job: Job, copy: string, size: number): Promise<Encoded
 }
 
 // The job directory itself must be a real directory, not a link music-fetch
-// could have planted to point the probe elsewhere (the files in it are opened
-// with O_NOFOLLOW, and their sha256 must be the reported one).
-async function assertJobDir(dirs: FetchedDirs, fetchId: string): Promise<void> {
-  const st = await lstat(join(dirs.fetch, fetchId)).catch(() => null)
-  if (!st || !st.isDirectory()) throw new ProbeReject('input_missing')
+// could have planted to point the probe elsewhere. It is opened ONCE with
+// O_DIRECTORY | O_NOFOLLOW and its files are then opened relative to that
+// handle (/proc/self/fd/<n>/<name>, the last component with O_NOFOLLOW), so
+// swapping the directory for a symlink after the check cannot redirect the
+// reads (SC-SEC-2: a check by path and an open by path were two lookups).
+// The fd path is only ever used while the handle is open (libuv opens
+// every fd close-on-exec, so ffmpeg never inherits it).
+export async function withJobDir<T>(dirs: FetchedDirs, fetchId: string, fn: (dirPath: string) => Promise<T>): Promise<T> {
+  let dh
+  try {
+    dh = await open(join(dirs.fetch, fetchId), FS.O_RDONLY | FS.O_DIRECTORY | FS.O_NOFOLLOW)
+  } catch {
+    throw new ProbeReject('input_missing')
+  }
+  try {
+    const st = await dh.stat()
+    if (!st.isDirectory()) throw new ProbeReject('input_missing')
+    return await fn(`/proc/self/fd/${dh.fd}`)
+  } finally {
+    await dh.close()
+  }
 }
 
 // The album-art path (art.ts) for artwork.raw; any problem drops the cover.
 async function publishFetchedCover(job: Job, flags: string[]): Promise<Cover | null> {
   if (!job.req.artworkSha256) return null
   try {
-    await assertJobDir(job.dirs, job.req.fetchId)
     const raw = join(job.work, 'art.raw')
-    const { sha256 } = await copyNoFollowHashed(join(job.dirs.fetch, job.req.fetchId, 'artwork.raw'), raw, MAX_ART_BYTES)
+    const { sha256 } = await withJobDir(job.dirs, job.req.fetchId, (dir) => copyNoFollowHashed(join(dir, 'artwork.raw'), raw, MAX_ART_BYTES))
     if (sha256 !== job.req.artworkSha256) throw new ProbeReject('cover_hash_mismatch')
     await chmod(raw, 0o400)
     const bytes = await readFile(raw)
@@ -259,8 +276,7 @@ export async function runProbeFetch(req: ProbeFetchRequest, dirs: FetchedDirs): 
   try {
     if (FETCH_PROBE_FORMATS[req.ext] !== req.format) throw new ProbeReject('sc_format_mismatch')
     const raw = join(work, 'in.raw')
-    await assertJobDir(dirs, req.fetchId)
-    const { sha256, size } = await copyNoFollowHashed(join(dirs.fetch, req.fetchId, `audio.${req.ext}`), raw, MAX_FETCH_INPUT_BYTES, req.size)
+    const { sha256, size } = await withJobDir(dirs, req.fetchId, (dir) => copyNoFollowHashed(join(dir, `audio.${req.ext}`), raw, MAX_FETCH_INPUT_BYTES, req.size))
     if (sha256 !== req.sha256) throw new ProbeReject('sc_hash_mismatch')
     const format = sniffFetched(await reader(raw)(0, 64))
     if (format !== req.format) throw new ProbeReject('sc_format_mismatch')

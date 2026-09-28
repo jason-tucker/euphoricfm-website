@@ -18,7 +18,7 @@ import { DEFAULT_CAPS } from '@/server/settings-defaults'
 import { addSoundCloudToBatch } from '@/server/soundcloud'
 import { clipTag } from '@/probe/tags'
 import { collectProbeResults, RetryLater } from '@/worker/handlers'
-import { collectFetchResults, runSoundcloudFetch, type FetchCtx } from '@/worker/soundcloud'
+import { collectFetchResults, FETCH_RELEASE_WINDOW_S, reissueFetchReleases, runSoundcloudFetch, type FetchCtx } from '@/worker/soundcloud'
 import { ownerSql } from './helpers/db'
 import { DBENV } from './helpers/env'
 import { mkBatch, mkUser } from './helpers/p3'
@@ -390,5 +390,23 @@ describe.skipIf(!DBENV())('SoundCloud links: worker ↔ music-fetch spool (v0.4.
     expect(await item(z.id)).toMatchObject({ status: 'rejected', probe_error: 'sc_codec_unsupported' })
     expect(await upload(z.upload)).toMatchObject({ status: 'expired' })
     expect(existsSync(join(ctx.fetchInDir, `${z.fetchId}.release`))).toBe(true)
+  })
+  it('lost release markers are re-issued for recent items that left probing (m2), never for one still probing', async () => {
+    // a worker restart between the item's final transition and the marker
+    const done = await mkScItem({ status: 'pending', stage: 'converting' })
+    const gaveUp = await mkScItem({ status: 'rejected', stage: 'fetching' })
+    const busy = await mkScItem({ stage: 'converting', requestedAgoS: 5 })
+    const old = await mkScItem({ status: 'rejected', createdAgoS: FETCH_RELEASE_WINDOW_S + 3600 })
+    await ownerSql()`UPDATE items SET fetch_stage = NULL WHERE id = ANY(${[done.id, gaveUp.id, old.id]})`
+    const marker = (id: string) => existsSync(join(ctx.fetchInDir, `${id}.release`))
+    for (const x of [done, gaveUp, busy, old]) expect(marker(x.fetchId)).toBe(false)
+    expect(await reissueFetchReleases(ctx, 100_000)).toBeGreaterThanOrEqual(2)
+    expect(marker(done.fetchId)).toBe(true)
+    expect(marker(gaveUp.fetchId)).toBe(true)
+    expect(marker(busy.fetchId)).toBe(false) // the probe may still need its raw download
+    expect(marker(old.fetchId)).toBe(false) // music-fetch's own 24 h sweep has it
+    // idempotent: the same marker again, never an error
+    expect(await reissueFetchReleases(ctx, 100_000)).toBeGreaterThanOrEqual(2)
+    expect(readdirSync(ctx.fetchInDir).filter((n) => n.startsWith(done.fetchId))).toEqual([`${done.fetchId}.release`])
   })
 })

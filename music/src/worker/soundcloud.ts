@@ -19,6 +19,10 @@
 //   collectProbeResults (handlers.ts) then takes the probe_fetch result like
 //   an upload's probe result, and asks music-fetch to delete the raw media
 //   (/spool/fetch/in/<id>.release).
+//   reissueFetchReleases (at start-up, then every FETCH_RELEASE_REISSUE_S)
+//     writes the marker again for every recent SoundCloud item that is no
+//     longer 'probing', so a marker lost to a restart (or an item withdrawn by
+//     retention) still frees the raw download before music-fetch's 24 h sweep.
 //
 // Every step is idempotent, so a worker restart at any point repeats at most
 // a request that music-fetch / the probe answer once: a request is not
@@ -27,7 +31,7 @@
 // transition is a conditional UPDATE on the stage it expects.
 
 import { join } from 'node:path'
-import { and, eq, ne, sql } from 'drizzle-orm'
+import { and, eq, gt, isNotNull, ne, sql } from 'drizzle-orm'
 import { MAX_DURATION_S } from '../lib/fit'
 import { FETCH_CODEC, FETCH_EXT_FORMAT, FETCH_QUEUE_MAX_S, FETCH_RESULT_TIMEOUT_S, parseSoundCloudUrl } from '../lib/soundcloud'
 import { clipTag } from '../probe/tags'
@@ -213,6 +217,37 @@ export async function collectFetchResults(ctx: FetchCtx): Promise<number> {
       })
       .where(and(eq(items.id, it.id), eq(items.status, 'probing'), eq(items.fetchStage, 'fetching')))
     n++
+  }
+  return n
+}
+
+// A marker the worker meant to write can be lost: a restart between an item's
+// final DB transition and writeFetchRelease, or an item that left 'probing'
+// some other way (retention). Re-issuing is harmless: music-fetch deletes a
+// FINISHED job's staging dir, cancels a job still queued in in/, keeps the
+// marker of the job it is fetching until its result is written, and drops a
+// marker for a job it does not know. Only items no longer 'probing' qualify
+// (a 'probing' one may still need its raw download), and only recent ones:
+// music-fetch sweeps anything older than 24 h itself.
+export const FETCH_RELEASE_REISSUE_S = 30 * 60
+export const FETCH_RELEASE_WINDOW_S = 28 * 3600
+
+export async function reissueFetchReleases(ctx: FetchCtx, limit = 500): Promise<number> {
+  const rows = await ctx.db
+    .select({ fetchRequestId: items.fetchRequestId })
+    .from(items)
+    .where(
+      and(
+        eq(items.source, 'soundcloud'),
+        isNotNull(items.fetchRequestId),
+        ne(items.status, 'probing'),
+        gt(items.createdAt, sql`now() - make_interval(secs => ${FETCH_RELEASE_WINDOW_S})`),
+      ),
+    )
+    .limit(limit)
+  let n = 0
+  for (const r of rows) {
+    if (r.fetchRequestId && (await writeFetchRelease(ctx.fetchInDir, r.fetchRequestId))) n++
   }
   return n
 }

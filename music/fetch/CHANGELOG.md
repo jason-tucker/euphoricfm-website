@@ -8,7 +8,7 @@ Service-local history. The repo-level `CHANGELOG.md` entry and the `package.json
 - **The duration cap is the portal's 24 min** (1440 s; was 20 min): `too_long` is now over 1440 s. The probe re-checks the decoded stream against the same cap.
 
 ### Added
-- **Release markers**: the worker writes `in/<uuid>.release` once the probe has converted (or refused) a job's audio, and fetch deletes that job's staging directory at once (only a finished job: a result in `out/` and no claim; the marker is never followed or read; the 24 h sweep stays as the backstop). 5 new tests (73 in all).
+- **Release markers**: the worker writes `in/<uuid>.release` once the probe has converted (or refused) a job's audio, or once it has given up on the job, and fetch deletes that job's staging directory at once (a finished job: a result in `out/` and no claim; the marker is never followed or read; the 24 h sweep stays as the backstop). A marker for a job still queued in `in/` **cancels** it (no download, no result), a marker for the claimed job is **kept** until its result is written and then released, and a marker for an unknown job is dropped, so a job the worker timed out never leaves its download behind. 8 new tests (76 in all).
 
 ## [0.1.0] — 2026-09-27 — SoundCloud import service (plan P5)
 

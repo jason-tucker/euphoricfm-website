@@ -383,9 +383,50 @@ class ReleaseTests(E2EBase):
         claimed = os.path.join(self.env.spool, 'claimed', f'{uid}.json')
         with open(claimed, 'w') as f:
             f.write('{}')
-        self.marker(uid)
+        m = self.marker(uid)
         self.assertEqual(self.env.svc.process_releases(), 0)
         self.assertTrue(os.path.isdir(self.env.job_dir(uid)))
+        self.assertTrue(os.path.lexists(m), 'the marker of a job in progress is kept')
+        # once the job is no longer claimed, a later pass releases it
+        os.unlink(claimed)
+        self.assertEqual(self.env.svc.process_releases(), 1)
+        self.assertFalse(os.path.lexists(self.env.job_dir(uid)))
+        self.assertFalse(os.path.lexists(m))
+
+    def test_release_before_fetch_cancels_the_job(self):
+        # SC-SEC-3: the worker gave up (sc_fetch_unanswered) while the request
+        # was still queued; it must never be downloaded afterwards.
+        uid = self.env.submit(SC + 'ok-m4a')
+        m = self.marker(uid)
+        self.assertEqual(self.env.svc.process_releases(), 1)
+        self.assertFalse(os.path.lexists(m))
+        self.assertFalse(os.path.lexists(os.path.join(self.env.spool, 'in', f'{uid}.json')))
+        self.env.svc.run_until_empty()
+        self.assertIsNone(self.env.stub_env(uid), 'yt-dlp must not run for a released job')
+        self.assertFalse(os.path.lexists(self.env.job_dir(uid)))
+        self.assertEqual(os.listdir(os.path.join(self.env.spool, 'out')), [])
+        self.assertEqual(os.listdir(os.path.join(self.env.spool, 'in')), [])
+
+    def test_release_before_fetch_cancels_it_in_the_service_loop(self):
+        # the same through run_until_empty: releases are processed before the
+        # next request is claimed
+        a = self.env.submit(SC + 'ok-mp3')
+        self.marker(a)
+        b = self.env.submit(SC + 'ok-m4a')
+        self.env.svc.run_until_empty()
+        self.assertIsNone(self.env.stub_env(a))
+        self.assertFalse(os.path.lexists(self.env.job_dir(a)))
+        self.assertEqual(self.env.result(b)['status'], 'ok')
+        self.assertEqual(os.listdir(os.path.join(self.env.spool, 'out')), [f'{b}.json'])
+
+    def test_symlinked_request_is_cancelled_by_unlinking_the_link_only(self):
+        import uuid as u
+        uid = str(u.uuid4())
+        os.symlink(self.env.decoy, os.path.join(self.env.spool, 'in', f'{uid}.json'))
+        self.marker(uid)
+        self.env.svc.process_releases()
+        self.assertFalse(os.path.lexists(os.path.join(self.env.spool, 'in', f'{uid}.json')))
+        self.assertTrue(os.path.isfile(self.env.decoy))
 
     def test_symlinked_marker_and_job_dir_never_followed(self):
         uid, _ = self.env.run(SC + 'ok-mp3')

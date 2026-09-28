@@ -4,10 +4,12 @@
 // The rules mirror music-fetch's own validator (fetch/fetchsvc/urls.py), which
 // checks the URL again before anything is requested:
 //   * printable ASCII only (no IDN / fullwidth look-alikes), https only, no
-//     userinfo, port, percent-encoding, backslash or fragment;
-//   * host exactly soundcloud.com, m.soundcloud.com (mobile share links; sent
-//     on as soundcloud.com) or on.soundcloud.com (a shortlink, which music-fetch
-//     resolves with its own redirect checks);
+//     userinfo, port, percent-encoding or backslash; a short plain fragment
+//     (a share link's timestamp, e.g. #t=1:23) is tolerated and dropped;
+//   * host exactly soundcloud.com, www.soundcloud.com or m.soundcloud.com
+//     (both sent on as soundcloud.com: music-fetch accepts only that) or
+//     on.soundcloud.com (a shortlink, which music-fetch resolves with its own
+//     redirect checks);
 //   * a track is exactly two path segments of [A-Za-z0-9_-], neither a
 //     reserved word: sets / playlists, likes, reposts, user pages and site
 //     sections are refused as `sc_not_a_track`;
@@ -17,6 +19,7 @@
 
 export const SC_TRACK_HOST = 'soundcloud.com'
 export const SC_MOBILE_HOST = 'm.soundcloud.com'
+export const SC_WWW_HOST = 'www.soundcloud.com'
 export const SC_SHORT_HOST = 'on.soundcloud.com'
 export const MAX_SC_URL_LEN = 512
 
@@ -25,6 +28,9 @@ const URL_RE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)(\/[^?#]*)?(?:\?([^#]*))
 const SEGMENT_RE = /^[A-Za-z0-9_-]{1,100}$/
 const SHORT_ID_RE = /^[A-Za-z0-9]{1,32}$/
 const QUERY_VALUE_RE = /^[A-Za-z0-9._~%:/+-]{0,200}$/
+// A fragment never reaches the server nor music-fetch (the URL is rebuilt
+// without it); only a short plain one is tolerated (#t=1:23 from a share).
+const FRAGMENT_RE = /^#[A-Za-z0-9=:._~-]{0,64}$/
 
 export const TOLERATED_QUERY_KEYS = new Set(['si', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'ref', 'p', 'c', 'in'])
 
@@ -60,8 +66,8 @@ export function parseSoundCloudUrl(input: unknown): ScUrl {
   if (scheme!.toLowerCase() !== 'https') return bad()
   if (/[@:[\]%]/.test(authority!)) return bad()
   const host = authority!.toLowerCase()
-  if (host !== SC_TRACK_HOST && host !== SC_MOBILE_HOST && host !== SC_SHORT_HOST) return bad()
-  if (fragment !== undefined) return bad()
+  if (host !== SC_TRACK_HOST && host !== SC_MOBILE_HOST && host !== SC_WWW_HOST && host !== SC_SHORT_HOST) return bad()
+  if (fragment !== undefined && !FRAGMENT_RE.test(fragment)) return bad()
   if (query !== undefined && query !== '') {
     const seen = new Set<string>()
     for (const pair of query.split('&')) {

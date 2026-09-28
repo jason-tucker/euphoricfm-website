@@ -35,7 +35,7 @@ from .errors import FetchError
 from .magic import EXT_CONTAINERS, detect_fd
 from .net import GuardedHttpsOpener, Opener
 from .runner import INFO_JSON_NAME, MAX_AUDIO_BYTES, build_argv, run_ytdlp
-from .spool import (MAX_REQUEST_BYTES, UUID_RE, BadRequest, claim, list_release_ids, list_request_ids,
+from .spool import (MAX_REQUEST_BYTES, UUID_RE, BadRequest, cancel_request, claim, list_release_ids, list_request_ids,
                     parse_request, read_small_nofollow, remove_release_marker, write_result_noclobber)
 from .urls import resolve_input
 
@@ -417,25 +417,37 @@ class Service:
     # -- housekeeping --
     def process_releases(self) -> int:
         """Portal v0.4.0: the worker writes `in/<uuid>.release` once the probe has
-        converted (or refused) a job's audio, and fetch deletes that job's
-        staging directory right away instead of waiting for the 24 h sweep.
+        converted (or refused) a job's audio, or once it has given up on the job
+        (rejected, or no answer in time). The marker only NAMES the job (its
+        content is never read), and the name is a v4 UUID, so the path cannot
+        leave the staging directory; `_remove_job_dir` never follows a link.
 
-        Only a finished job is released: one that has a result in out/ and is
-        not claimed right now. The marker only NAMES the job (its content is
-        never read), so the worst a forged marker can do is delete a finished
-        job's raw media early. The name is a v4 UUID, so the path cannot
-        leave the staging directory; `_remove_job_dir` never follows a link."""
+        Per job:
+          * finished (a result in out/, not claimed): its staging directory is
+            deleted right away instead of at the 24 h sweep; the marker goes;
+          * still queued (its request is in in/): the worker no longer wants
+            it, so it is CANCELLED (the request is removed, nothing is fetched,
+            no result is written); the marker goes;
+          * claimed (being fetched now): the marker is KEPT, and the job is
+            released by a later pass once its result is written, so a late
+            download never stays behind until the sweep;
+          * unknown (no request, not claimed, no result): the marker goes.
+        The worst a forged marker can do is delete a finished job's raw media
+        early or cancel a queued one: the worker would see its job fail."""
         n = 0
         for uuid in list_release_ids(self.in_dir):
+            if os.path.lexists(os.path.join(self.claimed_dir, f'{uuid}.json')):
+                continue  # in progress: released once it has a result
             if not remove_release_marker(self.in_dir, uuid):
                 continue
-            if os.path.lexists(os.path.join(self.claimed_dir, f'{uuid}.json')):
-                continue  # in progress: the sweep removes it later
-            if not os.path.lexists(os.path.join(self.out_dir, f'{uuid}.json')):
-                continue  # never fetched (or not yet): nothing of ours to release
-            if os.path.lexists(self._job_dir(uuid)):
-                self._remove_job_dir(uuid)
-                _log(f'{uuid} released')
+            if os.path.lexists(os.path.join(self.out_dir, f'{uuid}.json')):
+                if os.path.lexists(self._job_dir(uuid)):
+                    self._remove_job_dir(uuid)
+                    _log(f'{uuid} released')
+                    n += 1
+                continue
+            if cancel_request(self.in_dir, uuid):
+                _log(f'{uuid} cancelled (released before it was fetched)')
                 n += 1
         return n
 

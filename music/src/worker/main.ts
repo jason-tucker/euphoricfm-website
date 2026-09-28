@@ -32,7 +32,7 @@ import {
   type WorkerCtx,
 } from './handlers'
 import { failRequest, isRequestsCtx, REQUEST_JOB_KINDS, runRequestJob, sweepParkedRequests } from './requests/jobs'
-import { collectFetchResults, rejectFetchItem, type FetchCtx } from './soundcloud'
+import { collectFetchResults, FETCH_RELEASE_REISSUE_S, rejectFetchItem, reissueFetchReleases, type FetchCtx } from './soundcloud'
 
 export type StartupDeps = { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch }
 
@@ -230,10 +230,15 @@ export async function main() {
   process.on('SIGTERM', () => (stopping = true))
   process.on('SIGINT', () => (stopping = true))
   let lastDaily = Date.now()
+  let lastReleaseReissue = 0
   while (!stopping) {
     try {
       await collectProbeResults(ctx)
       await collectFetchResults(ctx)
+      if (Date.now() - lastReleaseReissue > FETCH_RELEASE_REISSUE_S * 1000) {
+        lastReleaseReissue = Date.now()
+        await reissueFetchReleases(ctx)
+      }
       await scheduler.tick(ctx)
       await sweepParkedRequests(ctx)
       if (Date.now() - lastDaily > 24 * 3600_000) {

@@ -124,6 +124,19 @@ def remove_release_marker(in_dir: str, uuid: str) -> bool:
     return True
 
 
+def cancel_request(in_dir: str, uuid: str) -> bool:
+    """Drop a queued request the worker has released (portal v0.4.0). unlink
+    removes the name itself (a symlink, never its target). True only if a
+    request was removed by this call."""
+    if not UUID_RE.match(uuid):
+        return False
+    try:
+        os.unlink(os.path.join(in_dir, f'{uuid}.json'))
+    except OSError:
+        return False
+    return True
+
+
 def claim(in_dir: str, claimed_dir: str, uuid: str) -> str | None:
     if not UUID_RE.match(uuid):
         return None

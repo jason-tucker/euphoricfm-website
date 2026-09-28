@@ -30,6 +30,12 @@ describe('SoundCloud link shape (shared by the page and the server)', () => {
     ok('https://soundcloud.com/artist-name/track_name-2', 'https://soundcloud.com/artist-name/track_name-2')
     ok('https://SoundCloud.com/Artist/Track/', 'https://soundcloud.com/artist/track')
     ok('https://m.soundcloud.com/artist/track', 'https://soundcloud.com/artist/track')
+    // m1: the www host and a share link's timestamp fragment (both dropped)
+    ok('https://www.soundcloud.com/artist/track', 'https://soundcloud.com/artist/track')
+    ok('https://WWW.SoundCloud.com/a/b/', 'https://soundcloud.com/a/b')
+    ok('https://soundcloud.com/a/b#t=1:00', 'https://soundcloud.com/a/b')
+    ok('https://soundcloud.com/a/b?si=abc&utm_source=clipboard#t=12', 'https://soundcloud.com/a/b')
+    ok('https://on.soundcloud.com/AbC123xyz#', 'https://on.soundcloud.com/AbC123xyz')
     ok('  https://soundcloud.com/a/b?si=0123abc&utm_source=clipboard&utm_medium=text&utm_campaign=social_sharing \n', 'https://soundcloud.com/a/b')
     ok('https://on.soundcloud.com/AbC123xyz', 'https://on.soundcloud.com/AbC123xyz')
   })
@@ -52,14 +58,18 @@ describe('SoundCloud link shape (shared by the page and the server)', () => {
   it('refuses every other host, scheme and trick', () => {
     for (const u of [
       'http://soundcloud.com/a/b',
-      'https://www.soundcloud.com/a/b',
+      'https://www.soundcloud.com.evil.example/a/b',
+      'https://www.on.soundcloud.com/AbC',
+      'https://w.soundcloud.com/a/b',
       'https://api.soundcloud.com/tracks/1',
       'https://soundcloud.com.evil.example/a/b',
       'https://evil.example/soundcloud.com/a/b',
       'https://soundcloud.com@evil.example/a/b',
       'https://user@soundcloud.com/a/b',
       'https://soundcloud.com:443/a/b',
-      'https://soundcloud.com/a/b#frag',
+      'https://soundcloud.com/a/b#@evil.example/x',
+      'https://soundcloud.com/a/b#' + 't'.repeat(65),
+      'https://soundcloud.com/a/b#t=1#2',
       'https://soundcloud.com/a/b?url=https://evil.example',
       'https://soundcloud.com/a/b?si=1&si=2',
       'https://soundcloud.com/a%2Fb/c',

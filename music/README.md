@@ -113,11 +113,11 @@ Owner request: "Direct SoundCloud links auto-download the MP3 plus info, which t
 **Flow.**
 
 1. The member pastes a link under **Add from a SoundCloud link** on the submit page. The page checks its shape (the server does again), then `POST /api/batches/:id/soundcloud {url}`.
-2. **Web** (`server/soundcloud.ts`): only `https://soundcloud.com/<user>/<track>`, `https://m.soundcloud.com/<user>/<track>` or `https://on.soundcloud.com/<id>` (SoundCloud's share parameters are dropped; the URL is rebuilt from the validated parts). Sets, playlists, likes, reposts, profiles and secret links are refused (`sc_not_a_track`), anything else too (`sc_bad_url`). It records a `probing` item (`source 'soundcloud'`, `fetch_stage 'queued'`), an upload row for the future MP3 (charged 60 MiB for now) and a `soundcloud_fetch` job. The web has no egress to SoundCloud and never talks to music-fetch.
+2. **Web** (`server/soundcloud.ts`): only `https://soundcloud.com/<user>/<track>` (also on `www.` or `m.`, sent on as `soundcloud.com`) or `https://on.soundcloud.com/<id>` (SoundCloud's share parameters and a short fragment such as `#t=1:23` are dropped; the URL is rebuilt from the validated parts). Sets, playlists, likes, reposts, profiles and secret links are refused (`sc_not_a_track`), anything else too (`sc_bad_url`). It records a `probing` item (`source 'soundcloud'`, `fetch_stage 'queued'`), an upload row for the future MP3 (charged 60 MiB for now) and a `soundcloud_fetch` job. The web has no egress to SoundCloud and never talks to music-fetch.
 3. **Worker** (`worker/soundcloud.ts`): writes `/spool/fetch/in/<id>.json`, one link at a time for the whole portal (`fetch_stage 'fetching'`). music-fetch validates the URL again, resolves a shortlink with its own redirect checks, runs the pinned yt-dlp and writes `/spool/fetch/out/<id>.json` plus `/staging/fetch/<id>/audio.<ext>` (+ `artwork.raw`). See `fetch/README.md`.
 4. The worker reads the result with a strict schema and re-checks every path, the format (AAC in MP4, Opus in Ogg or MP3 only), the canonical URL and the duration (≤ 24 min). The metadata becomes the pre-fill (title; uploader → artist; genre; cleaned with `clipTag`; the description is ignored), the license is kept, and it writes a `probe_fetch` request (`fetch_stage 'converting'`).
 5. **Probe** (`probe/fetched.ts`, network none, `staging/fetch` read-only): copies and re-hashes the download, checks the container by magic bytes, decodes it with a forced demuxer and decoder (file protocol only, prlimit / timeout / nice 19) and encodes a CBR MP3 on the fit ladder (320 / 256 / 192 kbps, the highest that fits the 35 MiB final file; an MP3 that already fits is kept untouched), published as `/staging/uploads/<upload>`. The artwork goes through the album-art path (JPEG / PNG / WebP only, → JPEG ≤ 1000 px).
-6. The worker collects the result like an upload's: the item becomes `pending` with the pre-fill, the upload row is charged the MP3's size, and it writes `/spool/fetch/in/<id>.release`: music-fetch deletes the raw download at once.
+6. The worker collects the result like an upload's: the item becomes `pending` with the pre-fill, the upload row is charged the MP3's size, and it writes `/spool/fetch/in/<id>.release`: music-fetch deletes the raw download at once. A rejected link gets the marker too; for a job music-fetch has not started, the marker cancels it, and for the job it is fetching, the marker waits for that job's result. The worker re-issues the markers of the last 28 h's finished SoundCloud items at start-up and every 30 min, so a marker lost to a restart only delays the cleanup.
 7. The member edits the fields and submits with the rights attestation. Reviewers see **From SoundCloud (<license>)** and the source URL (review queue, item page, batch page, the ticket card).
 
 **Limits.** Per member: 10 attempts a minute, `caps.fetchesPerUserPerDay` links a day (default 20, Admin → Settings; every link counts), 3 in progress. Globally: one link at a time (a link waits at most 3 h for its turn). Duration 30 s – 24 min (the fit ladder's floor), media ≤ 60 MiB (music-fetch). music-fetch gives up after 10 min (`sc_timeout`); the worker gives up 15 min after its request with no answer (`sc_fetch_unanswered`, alerted). Every failure code has a message (`components/messages.ts`, `sc_*`).
@@ -130,7 +130,7 @@ Owner request: "Direct SoundCloud links auto-download the MP3 plus info, which t
 
 **Operations.**
 
-- **Egress.** `music-fetch` is alone on `fetch-egress` (172.31.251.0/24, bridge `br-efm-fetch`, no IPv6) and on no other network, so it cannot reach `music-db` or any container. `efm-music-egress.service` on botvps already DROPs RFC1918, 169.254.0.0/16 and 100.64.0.0/10 from that subnet (DOCKER-USER). Recommended once, with it: `iptables -I INPUT -i br-efm-fetch -j DROP` (traffic to the host itself goes through INPUT, which DOCKER-USER does not see), persisted the same way. Verify with the snippet in `fetch/README.md` ("Only `1.1.1.1` may print `OPEN`"). music-fetch also refuses non-public addresses in-process.
+- **Egress.** `music-fetch` is alone on `fetch-egress` (172.31.251.0/24, bridge `br-efm-fetch`, no IPv6) and on no other network, so it cannot reach `music-db` or any container. yt-dlp talks to SoundCloud's API and CDN **directly** (only the shortlink and artwork requests go through music-fetch's in-process address guard), so the host rules are the only guard for yt-dlp's own connections, and they are **required**: see [Pre-deploy: fetch-egress host rules](#pre-deploy-fetch-egress-host-rules-v040-required). music-fetch must not run on a host where they are missing.
 - **The monthly yt-dlp bump** (next review 2026-10-27; sooner for a yt-dlp security release or when SoundCloud extraction breaks): follow `fetch/README.md` → "Version pins and the monthly bump" (new version and wheel hash from PyPI, OSV check, `requirements.txt`, re-pin the base image digest, rebuild, run the test stage under the runtime constraints, check the pinned flags offline, `fetch/CHANGELOG.md`). Dependabot opens monthly PRs for `music/fetch` (pip + docker). A bump ships like any release: CI tests it and pushes `fetch-<sha7>`; set `MUSIC_TAG`, `up -d`.
 - **Memory** (v0.4.0 measurements in `CHANGELOG.md`): `mem_limit: 160m`. Check `memory.peak` of the container after the first real fetches (only a loopback HLS origin was measured).
 - **Logs.** `docker compose -p efm-music logs music-fetch`: one line per job (`<uuid> ok mp4 <bytes> <s>` or `<uuid> error <code>`), `released`, `swept`. The worker alerts on `sc_fetch_unanswered`.
@@ -170,7 +170,7 @@ docker compose -p efm-music up -d
 
 - **Roll back:** set the previous `MUSIC_TAG`, then `up -d`.
 - **Images:** CI pushes `ghcr.io/jason-tucker/euphoricfm-website-music:{web,worker,probe,fetch}-<sha7>` and `-latest`. Only images that passed `test/run.sh` are pushed.
-- **v0.4.0:** `compose.yml` creates `fetch-egress` itself (172.31.251.0/24): check that the subnet is free on botvps first (`docker network inspect`), and see [SoundCloud links](#soundcloud-links-v040) → Operations for the INPUT rule.
+- **v0.4.0:** `compose.yml` creates `fetch-egress` itself (172.31.251.0/24): check that the subnet is free on botvps first (`docker network inspect`). **Do not `up -d` v0.4.0 before the [fetch-egress host rules](#pre-deploy-fetch-egress-host-rules-v040-required) are in place and verified.**
 - **Networks:** `efm-music-hooks` must exist first. The main session creates it at P1-net/Deploy-1:
 
   ```sh
@@ -178,6 +178,31 @@ docker compose -p efm-music up -d
   ```
 
   `efm-public-net` already exists.
+
+### Pre-deploy: fetch-egress host rules (v0.4.0, REQUIRED)
+
+`music-fetch` is the only container with internet egress, and yt-dlp inside it connects to whatever SoundCloud's API, a redirect or a playlist names (only shortlink resolution and the artwork request go through music-fetch's own public-address check). Two host rules keep a steered or compromised yt-dlp away from everything that is not the public internet; both are **required before music-fetch starts**, and a deploy that cannot show them stops here (leave `soundcloud_fetch_enabled` false and `music-fetch` stopped).
+
+1. **DOCKER-USER** (forwarded traffic): `efm-music-egress.service` DROPs 10/8, 172.16/12, 192.168/16, 100.64/10 and 169.254/16 from `172.31.251.0/24` (the unit already covers the subnet; check, do not assume).
+2. **INPUT** (traffic to the host itself: the bridge gateway `172.31.251.1`, the droplet's public IP, `docker0`, any host-bound service). DOCKER-USER never sees it. Add it to the same unit so it survives reboots:
+
+   ```sh
+   # as root on botvps; the interface need not exist yet
+   iptables -C INPUT -i br-efm-fetch -j DROP 2>/dev/null || iptables -I INPUT -i br-efm-fetch -j DROP
+   ```
+
+   Persist it in `efm-music-egress.service` next to the DOCKER-USER rules (ExecStart inserts it with the `-C || -I` guard above, ExecStop removes it with `iptables -D INPUT -i br-efm-fetch -j DROP`). Container DNS is unaffected: Docker's embedded resolver answers inside the container's own namespace and forwards from the host.
+
+**Verify, before `up -d`** (root on botvps):
+
+```sh
+iptables -S DOCKER-USER | grep -c -- '-s 172.31.251.0/24 .* -j DROP'   # 5
+iptables -S INPUT | grep -- '-i br-efm-fetch -j DROP'                   # present, and above any ACCEPT that could match
+systemctl is-enabled efm-music-egress.service                           # enabled
+grep -c 'br-efm-fetch' /etc/systemd/system/efm-music-egress.service     # ≥ 1 (the INPUT rule is persisted)
+```
+
+**Verify, after `up -d`** (the subnet and bridge now exist): `docker network inspect efm-music_fetch-egress --format '{{(index .IPAM.Config 0).Subnet}} {{index .Options "com.docker.network.bridge.name"}}'` prints `172.31.251.0/24 br-efm-fetch`, then run the connect probe from `fetch/README.md` ("Only `1.1.1.1` may print `OPEN`"), adding the droplet's public IP (`("<public IP>",22)`) to its list. Anything else `OPEN` → `docker compose -p efm-music stop music-fetch`, set the kill switch, fix the rules, re-verify. Re-run both checks after every botvps reboot or Docker upgrade until the unit has been seen to restore them. Record the result in the vault's botvps note.
 
 ### DOCKER-USER egress rules (applied on botvps by `efm-music-egress.service`, not by this repo)
 

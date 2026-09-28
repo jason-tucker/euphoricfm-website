@@ -158,6 +158,9 @@ jobs:
           printf '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\n' > next-env.d.ts
           pnpm exec tsc --noEmit
 
+      - name: UI tests (jsdom, no stack)
+        run: pnpm test:ui
+
       - name: Test harness (Docker, mocks only)
         run: sh test/run.sh
 
