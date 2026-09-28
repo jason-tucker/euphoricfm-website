@@ -75,6 +75,11 @@ html { scroll-padding-top: calc(var(--efmh-h) + 12px); }
   text-decoration: none;
   white-space: nowrap;
 }
+/* Reserve the wordmark's loaded width (Begaron + Cortado Script, padding
+   included) so the web-font swap does not push the nav and buttons sideways. */
+.efmh-brand { min-width: 147px; }
+@media (min-width: 768px) { .efmh-brand { min-width: 178px; } }
+@media (max-width: 339px) { .efmh-brand { min-width: 133px; } }
 .efmh-brand:hover { background: rgb(var(--efm-cream-rgb) / 0.06); border-color: rgb(var(--efm-cream-rgb) / 0.12); }
 .efmh-euph { font-family: 'Begaron', system-ui, sans-serif; color: rgb(var(--efm-sunburst-rgb)); font-size: 17px; line-height: 1; letter-spacing: 0.01em; text-transform: uppercase; }
 .efmh-fm { font-family: 'Cortado Script', cursive; color: rgb(var(--efm-ruby-rgb)); font-size: 21px; line-height: 1; margin-left: 2px; }

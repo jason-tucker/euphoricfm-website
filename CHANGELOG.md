@@ -23,6 +23,13 @@ can always tell which build is live.
 - Page content (`.phone`) is capped at the bar's width (72rem) so it lines up under the bar on wide screens instead of running edge to edge.
 - `BaseLayout` has a `header` slot, rendered outside `<main>`.
 
+### Fixed
+- **Home page layout shift on phones.** Recently Played now renders five placeholder rows the same height as the real ones (one of them says "Loading recent tracks…"), so the list no longer pushes About, Stats and the footer down when the history arrives. Home-page CLS at 800px viewport height: 320px 0.15 → 0.000, 390px 0.108 → 0.000, 600px 0.127 → 0.000.
+- **Section links from other pages land on the section on phones.** Arriving on `/#about`, `/#stats` … keeps the section under the bar while late content (recently played, requested songs, stats) loads, and stops as soon as the visitor scrolls, taps or types (or after 8 seconds). Needs JavaScript; without it the browser's normal jump applies.
+- **Home page no longer scrolls sideways at 320px** (pre-existing: the hero grid column grew to its widest child, 357px). The hero column is `minmax(0, 1fr)`.
+- **Web Player lines up under the bar**: from 1100px the player uses the bar's width (72rem) and side gutter (content x = 88..1192 at 1280, same as the bar), and the sticky Song history panel sits below the sticky bar instead of sliding under it.
+- The bar reserves the logo's loaded width, so the web-font swap no longer nudges the nav and buttons sideways.
+
 ## [0.20.0] — 2026-09-28 — Web Player at /player/
 
 ### Added

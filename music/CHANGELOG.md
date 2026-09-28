@@ -12,6 +12,7 @@
 - Page width is 72rem (was 64rem), the same as the top bar, with 24px side padding from 768px, so content lines up under the bar.
 - `tokens.css` gains `--efm-ok-rgb` so it matches the site's tokens exactly (enforced by the site's drift test).
 - Removed the unused `.menu-panel` / `.menu-item` styles.
+- The top bar reserves the logo's loaded width, so the web-font swap no longer nudges the nav and buttons sideways (shared `efm-bar.css`).
 
 ## [0.3.6] — 2026-09-28 — Unreleased songs in the archive
 

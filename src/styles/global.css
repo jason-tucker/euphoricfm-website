@@ -172,7 +172,9 @@
      barely room for a single entry. */
   .efm-hero {
     display: grid;
-    grid-template-columns: 1fr;
+    /* minmax(0, …) so a wide child cannot stretch the column past the
+       viewport (1fr alone let the page scroll sideways at 320px). */
+    grid-template-columns: minmax(0, 1fr);
     gap: clamp(0.5rem, 1.5vw, 1.25rem);
     align-items: start;
   }

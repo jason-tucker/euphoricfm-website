@@ -181,4 +181,21 @@ const sheetStation = [...items, nav.webPlayer];
   };
   window.addEventListener('hashchange', markHash);
   markHash();
+
+  // Arriving from another page on /#about, /#stats …: the recently-played
+  // list, requested songs and stats load after the browser's jump and can
+  // push the section away. Keep it under the bar while the page settles,
+  // and stop the moment the visitor scrolls, taps or types (or after 8 s).
+  const target = location.hash.length > 1 ? document.getElementById(location.hash.slice(1)) : null;
+  if (target && 'ResizeObserver' in window) {
+    const inputs = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+    const ro = new ResizeObserver(() => target.scrollIntoView({ block: 'start' }));
+    const stop = () => {
+      ro.disconnect();
+      inputs.forEach((t) => window.removeEventListener(t, stop));
+    };
+    ro.observe(document.body);
+    inputs.forEach((t) => window.addEventListener(t, stop, { passive: true }));
+    window.setTimeout(stop, 8000);
+  }
 </script>

@@ -120,7 +120,7 @@
 }
 
 /* ---- Page grid ---------------------------------------------------------- */
-.efmp-main { max-width: 760px; margin: 0 auto; padding: 16px 16px 28px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+.efmp-main { max-width: 760px; margin: 0 auto; padding: 16px var(--efmh-gutter, 16px) 28px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
 
 .efmp-card.card {
   padding: 18px;
@@ -333,7 +333,7 @@ html.efm-cef .efmp-no-cef { display: none; }
 
 /* ---- 700–1099: art beside details, history below in 2 columns ------------ */
 @media (min-width: 700px) {
-  .efmp-main { padding: 32px 20px 40px; gap: 20px; }
+  .efmp-main { padding: 32px var(--efmh-gutter, 20px) 40px; gap: 20px; }
   .efmp-card.card { padding: 28px; border-radius: 24px; }
   .efmp-grid { grid-template-columns: 240px minmax(0, 1fr); gap: 24px; text-align: left; }
   .efmp-art { width: 100%; }
@@ -359,13 +359,15 @@ html.efm-cef .efmp-no-cef { display: none; }
 
 /* ---- ≥1100: card + Song history side panel -------------------------------- */
 @media (min-width: 1100px) {
-  .efmp-main { max-width: 1200px; grid-template-columns: minmax(0, 1fr) 360px; padding: 32px 16px 40px; }
+  /* Same width and gutter as the shared top bar, so the player lines up under it. */
+  .efmp-main { max-width: var(--efmh-max, 72rem); grid-template-columns: minmax(0, 1fr) 360px; padding: 32px var(--efmh-gutter, 16px) 40px; }
   .efmp-grid { grid-template-columns: 340px minmax(0, 1fr); gap: 32px; }
   .efmp-title { font-size: 42px; line-height: 1.05; }
   .efmp-artist { font-size: 21px; }
   .efmp-links { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .efmp-hist-btn { display: none; }
-  .efmp-hist.card { position: sticky; top: 16px; }
+  /* Clears the sticky shared top bar. */
+  .efmp-hist.card { position: sticky; top: calc(var(--efmh-h, 0px) + 16px); }
   .efmp-hist-list { display: block; max-height: 609px; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; scrollbar-color: rgb(var(--efm-cream-rgb) / 0.25) transparent; }
   .efmp-hist .efmp-hist-item,
   .efmp-hist:not(.is-expanded) .efmp-hist-item:nth-child(n) { display: flex; border-bottom: 1px solid var(--efmp-line); }
