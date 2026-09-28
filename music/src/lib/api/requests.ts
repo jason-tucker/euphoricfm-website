@@ -86,3 +86,20 @@ export function reconcileArchive(archiveId: number) {
 export function setLibraryArt(mediaId: number, artId: ArtId) {
   return api(`/api/library/${mediaId}/art`, { method: 'PUT', json: { artId } })
 }
+
+// ---- v0.3.3: Unreleased songs ----
+
+// POST /api/archive/:archiveId/release {artist, newArtist?, playlistIds} → 202
+// (409 artist_unknown / artist_folder_taken / artist_pending / not_a_release)
+export function releaseSong(archiveId: number, body: { artist: string; newArtist?: boolean; playlistIds: number[] }) {
+  return api<{ queued: string; archiveId: number; folder?: string }>(`/api/archive/${archiveId}/release`, { json: body })
+}
+
+// PUT /api/archive/:archiveId/link {userId} / DELETE: a member who may see
+// the archived song (manage, audited).
+export function linkArchiveMember(archiveId: number, userId: string) {
+  return api<{ archiveId: number; linkedUser: { id: string; name: string | null; discordId: string } | null }>(`/api/archive/${archiveId}/link`, { method: 'PUT', json: { userId } })
+}
+export function unlinkArchiveMember(archiveId: number) {
+  return api<{ archiveId: number; linkedUser: null }>(`/api/archive/${archiveId}/link`, { method: 'DELETE' })
+}

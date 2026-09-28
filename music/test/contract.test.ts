@@ -6,7 +6,9 @@ const spec = readFileSync(new URL('./fixtures/openapi-min.yml', import.meta.url)
 
 describe('AzuraCast contract drift probe', () => {
   it('the fixture spec reproduces the P0d baseline hashes exactly', () => {
-    expect(Object.keys(BASELINE.paths)).toHaveLength(6)
+    // v0.3.3: + /files/rename (release of an Unreleased song, ' (n)' name)
+    expect(Object.keys(BASELINE.paths)).toHaveLength(7)
+    expect(BASELINE.paths['/station/{station_id}/files/rename']).toMatch(/^[0-9a-f]{64}$/)
     expect(Object.keys(BASELINE.requestBodies ?? {})).toEqual(['FlowFileUpload'])
     expect(checkContract(spec)).toEqual({ ok: true, drift: [] })
   })
@@ -33,6 +35,11 @@ describe('AzuraCast contract drift probe', () => {
   it('detects a change to the art GET the apply_art verify reads (same path object as the upload)', () => {
     const r = checkContract(spec.replace("summary: 'Returns the album art for a song, or a generic image.'", "summary: 'Returns the album art.'"))
     expect(r.drift.map((d) => d.name)).toContain('path /station/{station_id}/art/{media_id}')
+  })
+
+  it('detects a change to the rename route the release uses', () => {
+    const r = checkContract(spec.replace("summary: 'Rename the specified files in the station media directory.'", "summary: 'Rename files.'"))
+    expect(r.drift.map((d) => d.name)).toContain('path /station/{station_id}/files/rename')
   })
 
   it('detects a removed path', () => {

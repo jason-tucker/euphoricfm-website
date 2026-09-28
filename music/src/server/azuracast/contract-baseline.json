@@ -1,5 +1,6 @@
 {
   "source": "P0d baseline /mnt/user/Backup/euphoricfm/portal-contract-baseline/ (2026-09-27 UTC); anonymous GET https://euphoric.fm/api/openapi.yml, spec info.version 0.21.0, AzuraCast COMMIT_LONG 6499e9314481d6836fa0d47ee733f2ee66fceecd",
+  "renameAdded": "v0.3.3 (2026-09-27): the /station/{station_id}/files/rename slice was taken from the live 0.21.0 build (azuracast container web/static/openapi.yml, read-only); the other six path slices of that file reproduce this baseline byte for byte.",
   "openapiFullSha256": "be158023b4576dee6facf59245e99139771cbae247c920ef3d4fcf7412f2ade9",
   "paths": {
     "/station/{station_id}/files": "6fd2738cb83cb9b22f47415127f250f6d31238a158e365bb5651ad93b9077738",
@@ -7,7 +8,8 @@
     "/station/{station_id}/file/{id}": "33af292e0b81a0774f1e520bec39ab84c96070b5106860940a12402b5bfdee9c",
     "/station/{station_id}/files/batch": "dd567b4dcfbb95751458524df730b66c24de062562dfe66219fb7262b07bdf7c",
     "/nowplaying/{station_id}": "c752df0707bd03418b6967bb3e3fcf8048456d03bd74f13449cb1bb86b436cad",
-    "/station/{station_id}/art/{media_id}": "e9e27df2c73c85b676949a9eba4c3ec88c365136c3e4319a2e53d129d13b4362"
+    "/station/{station_id}/art/{media_id}": "e9e27df2c73c85b676949a9eba4c3ec88c365136c3e4319a2e53d129d13b4362",
+    "/station/{station_id}/files/rename": "dccd3173520fe9426799f49e5712187b55d05f36d09ab736e6c0dc8135028f9e"
   },
   "schemasBundleSha256": "047946ed89663b4702705eb5dc3bda08655d8891e5370b2d363135f3b06770c7",
   "schemas": {

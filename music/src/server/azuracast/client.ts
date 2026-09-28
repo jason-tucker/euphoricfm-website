@@ -19,7 +19,13 @@
 //    ("new" creates a playlist, P0d-B (d)).
 //
 // Batch requests are reachable only through setPlaylists(),
-// setPlaylistsReply() and moveFile(). Album art (POST /art/{id}) only through
+// setPlaylistsReply(), moveFile() and the two legacy-import methods
+// (setLegacyPlaylists(), moveLegacyToArchive(): the ONLY requests that may
+// name a file under <root>UNRELEASED-DO NOT ADD TO ROTATION/, and only to
+// clear / put back its station memberships or move it to Removed/<id>/).
+// PUT /files/rename only through renameInArchive(): a file inside
+// Removed/<id>/ gets a ' (n)' name in the same folder before a release, and
+// nothing else. Album art (POST /art/{id}) only through
 // uploadArt(), which gets the same media-id target checks as a metadata PUT;
 // its read-only counterpart (GET /art/{id}, the public art route) only
 // through getArt(), which never follows a redirect.
@@ -77,7 +83,12 @@ export type Metadata = z.infer<typeof MetadataBody>
 
 const dirsEmpty = z.array(z.never()).max(0).optional()
 
-function batchSchemas(root: string) {
+// `legacy`: the request was built by setLegacyPlaylists() or
+// moveLegacyToArchive() (SendOpts.legacySource). Only then may the file be a
+// legacy UNRELEASED source, and then it may ONLY be one: a playlist batch on
+// it, or a move of it to Removed/<id>. Every other batch keeps the
+// Music/Artists / Removed rules.
+function batchSchemas(root: string, legacy = false) {
   const pat = patterns(root)
   const filePath = z.string().max(1024)
   const playlist = z
@@ -97,7 +108,7 @@ function batchSchemas(root: string) {
         ctx.addIssue({ code: 'custom', message: 'unsafe file path' })
         return
       }
-      if (!pat.artistFile.test(f)) ctx.addIssue({ code: 'custom', message: 'playlist file outside Music/Artists' })
+      if (legacy ? !pat.legacySource.test(f) : !pat.artistFile.test(f)) ctx.addIssue({ code: 'custom', message: legacy ? 'legacy playlist file outside the UNRELEASED folder' : 'playlist file outside Music/Artists' })
       if (b.currentDirectory !== dirname(f)) ctx.addIssue({ code: 'custom', message: 'currentDirectory mismatch' })
       if (new Set(b.playlists).size !== b.playlists.length) ctx.addIssue({ code: 'custom', message: 'duplicate playlist ids' })
     })
@@ -125,13 +136,43 @@ function batchSchemas(root: string) {
       const toArtist = pat.artistDir.test(b.directory)
       const toArchive = pat.archiveDir.test(b.directory)
       // archive: artist file → Removed/<id>; artist move: artist file → artist dir;
-      // restore: Removed/<id>/<file> → artist dir. Nothing else.
-      if (!((fromArtist && (toArchive || toArtist)) || (fromArchive && toArtist))) {
-        ctx.addIssue({ code: 'custom', message: 'move source/destination not allowed' })
-      }
+      // restore: Removed/<id>/<file> → artist dir. Nothing else. A legacy
+      // request: UNRELEASED .mp3/.m4a → Removed/<id>, and nothing else.
+      const ok = legacy ? pat.legacySource.test(f) && toArchive : (fromArtist && (toArchive || toArtist)) || (fromArchive && toArtist)
+      if (!ok) ctx.addIssue({ code: 'custom', message: 'move source/destination not allowed' })
       if (b.directory === b.currentDirectory) ctx.addIssue({ code: 'custom', message: 'no-op move' })
     })
   return z.discriminatedUnion('do', [playlist, move])
+}
+
+// PUT /files/rename (upstream RenameAction: fs move + the media row's path,
+// same id, no tag write, NO destination check). Allowed only as a rename
+// inside one Removed/<id>/ folder, keeping the extension: the ' (n)' name a
+// release needs when the artist folder already has the name.
+function renameSchema(root: string) {
+  const pat = patterns(root)
+  return z
+    .object({ file: z.string().max(1024), newPath: z.string().max(1024) })
+    .strict()
+    .superRefine((b, ctx) => {
+      try {
+        assertSafePath(b.file)
+        assertSafePath(b.newPath)
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'unsafe path' })
+        return
+      }
+      if (!pat.restoreSource.test(b.file) || !pat.restoreSource.test(b.newPath)) ctx.addIssue({ code: 'custom', message: 'rename outside Removed/<id>/' })
+      if (dirname(b.file) !== dirname(b.newPath)) ctx.addIssue({ code: 'custom', message: 'rename must stay in its folder' })
+      if (b.file === b.newPath) ctx.addIssue({ code: 'custom', message: 'no-op rename' })
+      if (extOf(b.file) !== extOf(b.newPath) || extOf(b.file) === '') ctx.addIssue({ code: 'custom', message: 'rename must keep the extension' })
+    })
+}
+
+const extOf = (p: string) => {
+  const b = basename(p)
+  const i = b.lastIndexOf('.')
+  return i > 0 ? b.slice(i).toLowerCase() : ''
 }
 
 const mediaSchema = z
@@ -191,7 +232,7 @@ type Entry = {
   // allowed query keys → value validator; any other key is refused
   query?: Record<string, (v: string) => boolean>
   requiredQuery?: string[]
-  kind: 'read' | 'upload' | 'metadata' | 'batch' | 'art'
+  kind: 'read' | 'upload' | 'metadata' | 'batch' | 'art' | 'rename'
 }
 
 const dirParam = (v: string) =>
@@ -214,6 +255,9 @@ export const ALLOWLIST: readonly Entry[] = [
   // multipart file part, OpenAPI field `file`). Numeric media id only.
   { method: 'POST', re: /^\/api\/station\/(\d+)\/art\/([1-9]\d{0,9})$/, kind: 'art' },
   { method: 'PUT', re: /^\/api\/station\/(\d+)\/files\/batch$/, kind: 'batch' },
+  // v0.3.3 (verified on the live 0.21.0 build: Stations\Files\RenameAction,
+  // {file, newPath}, Status::updated()). renameInArchive() only.
+  { method: 'PUT', re: /^\/api\/station\/(\d+)\/files\/rename$/, kind: 'rename' },
 ]
 
 export type ClientDeps = {
@@ -241,6 +285,7 @@ type SendOpts = {
   artBytes?: Buffer // POST /art/{id}: sent as multipart, one `file` part (JPEG)
   canary?: boolean // self-check only
   allowedPlaylistIds?: ReadonlySet<number> // required for a do=playlist batch
+  legacySource?: boolean // set only by setLegacyPlaylists() / moveLegacyToArchive()
   timeoutMs?: number
   maxResponseBytes?: number
 }
@@ -368,6 +413,7 @@ export class AzuraCastClient {
     }
     if (opts.canary && !sidMatch) throw new AzuraCastError('refused_canary')
     if (opts.allowedPlaylistIds && entry.kind !== 'batch') throw new AzuraCastError('refused_playlist_set_misuse')
+    if (opts.legacySource && entry.kind !== 'batch') throw new AzuraCastError('refused_legacy_misuse')
 
     // Bodies.
     if (entry.kind === 'read') {
@@ -394,6 +440,13 @@ export class AzuraCastClient {
       return
     }
     if (opts.uploadBytes) throw new AzuraCastError('refused_upload_shape')
+    if (entry.kind === 'rename') {
+      const r = renameSchema(this.root).safeParse(opts.body)
+      if (!r.success) throw new AzuraCastError('refused_rename_body', r.error.issues.map((i) => i.message))
+      this.assertWritePath(r.data.file)
+      this.assertWritePath(r.data.newPath)
+      return
+    }
     if (entry.kind === 'metadata') {
       const r = MetadataBody.safeParse(opts.body)
       if (!r.success) throw new AzuraCastError('refused_metadata_body', r.error.issues.map((i) => i.message))
@@ -409,7 +462,7 @@ export class AzuraCastClient {
       throw new AzuraCastError('refused_batch_action', { do: raw.do })
     }
     if (raw && Array.isArray(raw.dirs) && raw.dirs.length > 0) throw new AzuraCastError('refused_batch_dirs')
-    const r = batchSchemas(this.root).safeParse(opts.body)
+    const r = batchSchemas(this.root, opts.legacySource === true).safeParse(opts.body)
     if (!r.success) throw new AzuraCastError('refused_batch_body', r.error.issues.map((i) => i.message))
     const b = r.data
     this.assertWritePath(b.files[0])
@@ -626,20 +679,68 @@ export class AzuraCastClient {
   //   4. move, then GET the id and require the exact new path.
   // Callers run this inside the scan-safe window to keep 2–4 close together.
   async moveFile(filePath: string, directory: string): Promise<void> {
+    await this.#checkedMove(filePath, directory, false)
+  }
+
+  // v0.3.3 legacy import ONLY (worker/requests/legacy.ts): moves a .mp3 /
+  // .m4a file from <root>UNRELEASED-DO NOT ADD TO ROTATION/… to
+  // <root>Removed/<id>. Same live checks as moveFile (exact media source,
+  // free destination, same-id re-read); validate() accepts the legacy source
+  // only for requests this method builds, and only towards Removed/<id>.
+  async moveLegacyToArchive(filePath: string, archiveDir: string): Promise<void> {
+    await this.#checkedMove(filePath, archiveDir, true)
+  }
+
+  async #checkedMove(filePath: string, directory: string, legacy: boolean): Promise<void> {
     const body = { do: 'move' as const, files: [filePath], dirs: [], currentDirectory: dirname(filePath), directory }
-    await this.validate('PUT', this.sidPath('/files/batch'), { body })
+    const opts: SendOpts = { body, ...(legacy ? { legacySource: true } : {}) }
+    await this.validate('PUT', this.sidPath('/files/batch'), opts)
     const dest = `${directory}/${basename(filePath)}`
     const src = (await this.listDirectory(dirname(filePath))).find((e) => e.path === filePath)
     const mediaId = src?.media?.id
     if (!src || !mediaId) throw new AzuraCastError('move_source_missing', { path: filePath })
     if (await this.pathTaken(directory, dest)) throw new AzuraCastError('refused_move_collision', { path: dest })
-    await this.batch(body)
+    await this.batch(body, undefined, legacy)
     const moved = await this.getFile(mediaId)
     if (moved.path !== dest) throw new AzuraCastError('move_verify_failed', { expected: dest, actual: moved.path })
   }
 
-  private async batch(body: Record<string, unknown>, allowedPlaylistIds?: ReadonlySet<number>): Promise<void> {
-    const { status, text } = await this.#send('PUT', this.sidPath('/files/batch'), { body, ...(allowedPlaylistIds ? { allowedPlaylistIds } : {}) })
+  // v0.3.3 legacy import ONLY: REPLACES the station playlist set of a file
+  // still in the UNRELEASED folder ([] clears it before the move; a rollback
+  // puts the snapshot's memberships back). Same allowed-set rule as
+  // setPlaylists; validate() accepts only a legacy source for it.
+  async setLegacyPlaylists(filePath: string, playlistIds: readonly number[], allowedIds: ReadonlySet<number>): Promise<void> {
+    for (const id of playlistIds) {
+      if (!Number.isSafeInteger(id) || id <= 0 || !allowedIds.has(id)) throw new AzuraCastError('refused_playlist_id', { id })
+    }
+    const body = { do: 'playlist' as const, files: [filePath], dirs: [], currentDirectory: dirname(filePath), playlists: [...playlistIds] }
+    await this.batch(body, allowedIds, true)
+  }
+
+  // v0.3.3 release of a legacy row: gives a file inside Removed/<id>/ another
+  // name in the same folder (the ' (n)' name when the artist folder already
+  // has the original one). Upstream RenameAction moves the file on disk and
+  // updates the media row's path (same id, tags untouched) and does NOT
+  // check the destination, so, like moveFile: the source must be an exact
+  // media entry, the new path must be free (any entry type), both read with
+  // flushCache=true, and the id is re-read afterwards.
+  async renameInArchive(filePath: string, newPath: string): Promise<void> {
+    const body = { file: filePath, newPath }
+    const path = this.sidPath('/files/rename')
+    await this.validate('PUT', path, { body })
+    const src = (await this.listDirectory(dirname(filePath))).find((e) => e.path === filePath)
+    const mediaId = src?.media?.id
+    if (!src || !mediaId) throw new AzuraCastError('move_source_missing', { path: filePath })
+    if (await this.pathTaken(dirname(newPath), newPath)) throw new AzuraCastError('refused_move_collision', { path: newPath })
+    const { status, text } = await this.#send('PUT', path, { body })
+    const r = this.json(status, text, statusResponseSchema, 'rename')
+    if (!r.success) throw new AzuraCastError('rename_failed')
+    const moved = await this.getFile(mediaId)
+    if (moved.path !== newPath) throw new AzuraCastError('move_verify_failed', { expected: newPath, actual: moved.path })
+  }
+
+  private async batch(body: Record<string, unknown>, allowedPlaylistIds?: ReadonlySet<number>, legacySource = false): Promise<void> {
+    const { status, text } = await this.#send('PUT', this.sidPath('/files/batch'), { body, ...(allowedPlaylistIds ? { allowedPlaylistIds } : {}), ...(legacySource ? { legacySource: true } : {}) })
     const r = this.json(status, text, batchResponseSchema, 'batch')
     // HTTP 200 does not mean every file succeeded (P0d-B (e)).
     if (!r.success || r.errors.length > 0) throw new AzuraCastError('batch_errors', r.errors.slice(0, 10))

@@ -34,6 +34,7 @@ export const MUTATING_JOB_KINDS: readonly string[] = [
   'recovery',
   'reverify',
   'reconcile_archive',
+  'import_legacy_archive',
 ]
 
 export type PauseState = { reason: string; at: string; [k: string]: unknown }

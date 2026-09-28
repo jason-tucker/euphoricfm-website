@@ -29,8 +29,17 @@ export function stationIdsOf(m: Pick<StationMedia, 'playlists'>, stationIds: Rea
   return [...new Set(m.playlists.map((p) => p.id).filter((id) => stationIds.has(id)))].sort((a, b) => a - b)
 }
 
-export async function reapplySnapshot(az: AzuraCastClient, mediaId: number, path: string, snap: Snapshot, stationIds: ReadonlySet<number>): Promise<number[]> {
-  await az.updateMetadata(mediaId, { title: snap.title ?? '', artist: snap.artist ?? '', album: snap.album ?? '', genre: snap.genre ?? '' })
+// opts.metadata false (a released legacy song, whose tags are never
+// rewritten): the playlists only.
+export async function reapplySnapshot(
+  az: AzuraCastClient,
+  mediaId: number,
+  path: string,
+  snap: Snapshot,
+  stationIds: ReadonlySet<number>,
+  opts: { metadata?: boolean } = {},
+): Promise<number[]> {
+  if (opts.metadata !== false) await az.updateMetadata(mediaId, { title: snap.title ?? '', artist: snap.artist ?? '', album: snap.album ?? '', genre: snap.genre ?? '' })
   const ids = snap.playlistIds.filter((id) => stationIds.has(id))
   await az.setPlaylists(path, ids, new Set(ids))
   return ids
