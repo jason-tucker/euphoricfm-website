@@ -1,5 +1,7 @@
 // Small pure formatters shared by server and client components.
 
+import { transcodeLabel } from '@/lib/fit'
+
 export function playlistLabel(names: Record<string, string>, id: number): string {
   const n = names[String(id)]
   return n ? `${n} (#${id})` : `Playlist #${id}`
@@ -26,11 +28,11 @@ export function when(iso: string | null | undefined): string {
   return `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`
 }
 
-// v0.3.0: an item uploaded as a WAV plays and ships as the probe's MP3.
-export const CONVERTED_FROM_WAV = 'Converted from WAV (320 kbps MP3)'
-
-export function convertedLabel(inputFormat: string | null | undefined): string | null {
-  return inputFormat === 'wav' ? CONVERTED_FROM_WAV : null
+// v0.3.0: an item uploaded as a WAV plays and ships as the probe's MP3;
+// v0.3.2: so does an MP3 the probe re-encoded to fit (src/lib/fit.ts).
+// "Converted from WAV (256 kbps MP3)" / "Re-encoded to 192 kbps to fit".
+export function convertedLabel(inputFormat: string | null | undefined, transcodeKbps?: number | null): string | null {
+  return transcodeLabel(inputFormat, transcodeKbps)
 }
 
 export function songName(it: { title?: string | null; artist?: string | null }): string {

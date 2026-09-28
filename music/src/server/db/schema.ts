@@ -228,9 +228,14 @@ export const items = pgTable(
     durationS: integer('duration_s'),
     bitrate: integer('bitrate'),
     // What the member uploaded (v0.3.0): 'mp3', or 'wav' when the probe
-    // converted it to the 320 kbps MP3 that is now the item's source. Null
-    // for items probed before v0.3.0 (all MP3).
+    // converted it to the MP3 that is now the item's source. Null for items
+    // probed before v0.3.0 (all MP3).
     inputFormat: text('input_format'),
+    // v0.3.2: the CBR bitrate (kbps: 320 / 256 / 192) of the MP3 the probe
+    // ENCODED for this item (a WAV, or an MP3 too big to fit the final-file
+    // cap). Null = the member's own MP3, untouched (or a WAV probed before
+    // v0.3.2, which was always 320).
+    transcodeKbps: integer('transcode_kbps'),
     prefill: jsonb('prefill'),
     title: text('title'),
     artist: text('artist'),

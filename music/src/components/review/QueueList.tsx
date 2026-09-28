@@ -10,7 +10,7 @@ import { useState } from 'react'
 import type { UiItem } from '@/server/ui/queries'
 import { api, ApiError, messageFor } from '../api'
 import { ConfirmDialog } from '../ConfirmDialog'
-import { duration, songName, when } from '../format'
+import { convertedLabel, duration, songName, when } from '../format'
 import { Thumb } from '../Thumb'
 import { NewArtistBadge, Notice } from '../ui'
 
@@ -137,6 +137,7 @@ export function QueueList({ groups, defaultPlaylistLabels }: { groups: QueueGrou
                     <span className="min-w-0 truncate">{it.kind === 'new_artist' ? (it.newArtistName ?? it.artist) : songName(it)}</span>
                     {it.source === 'soundcloud' ? <span className="chip chip-pending">SoundCloud</span> : null}
                     {it.isOwn ? <span className="chip chip-pending">yours</span> : null}
+                    {convertedLabel(it.inputFormat, it.transcodeKbps) ? <span className="chip chip-neutral">{convertedLabel(it.inputFormat, it.transcodeKbps)}</span> : null}
                   </span>
                   <span className="shrink-0 text-xs text-cream/50">{duration(it.durationS)}</span>
                 </Link>

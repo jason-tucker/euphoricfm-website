@@ -244,10 +244,11 @@ describe('service env isolation', () => {
 })
 
 describe('tus header admission', () => {
-  it('Upload-Length 1..35 MB, no defer, no concat, no creation body', () => {
+  it('Upload-Length 1..100 MB (v0.3.2: a too-big MP3 is converted down), no defer, no concat, no creation body', () => {
     expect(checkCreateHeaders(H({ 'upload-length': '1000' }))).toEqual({ length: 1000, kind: 'mp3' })
-    expect(checkCreateHeaders(H({ 'upload-length': String(35 * 1024 * 1024) }))).toEqual({ length: 35 * 1024 * 1024, kind: 'mp3' })
-    expect(checkCreateHeaders(H({ 'upload-length': String(35 * 1024 * 1024 + 1) }))).toMatchObject({ status: 413, code: 'upload_too_large' })
+    expect(checkCreateHeaders(H({ 'upload-length': String(35 * 1024 * 1024 + 1) }))).toEqual({ length: 35 * 1024 * 1024 + 1, kind: 'mp3' })
+    expect(checkCreateHeaders(H({ 'upload-length': String(100 * 1024 * 1024) }))).toEqual({ length: 100 * 1024 * 1024, kind: 'mp3' })
+    expect(checkCreateHeaders(H({ 'upload-length': String(100 * 1024 * 1024 + 1) }))).toMatchObject({ status: 413, code: 'upload_too_large' })
     expect(checkCreateHeaders(H({ 'upload-length': '-1' }))).toMatchObject({ status: 400 })
     expect(checkCreateHeaders(H({ 'upload-length': '0' }))).toMatchObject({ status: 400 })
     expect(checkCreateHeaders(H({}))).toMatchObject({ code: 'upload_length_required' })
@@ -263,7 +264,7 @@ describe('tus header admission', () => {
 describe('tus admission by DECLARED type (v0.3.0 WAV)', () => {
   const MB = 1024 * 1024
   const md = (filetype: string) => ({ 'upload-metadata': `filetype ${Buffer.from(filetype).toString('base64')}` })
-  it('Upload-Metadata filetype audio/wav (and its aliases) allows up to 250 MB; anything else stays at 35 MB', () => {
+  it('Upload-Metadata filetype audio/wav (and its aliases) allows up to 250 MB; anything else stays at 100 MB', () => {
     for (const t of ['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave', 'AUDIO/WAV', 'audio/wav; codecs=1']) {
       expect(declaredKind(H(md(t))), t).toBe('wav')
     }
@@ -271,7 +272,7 @@ describe('tus admission by DECLARED type (v0.3.0 WAV)', () => {
     expect(checkCreateHeaders(H({ 'upload-length': String(250 * MB + 1), ...md('audio/wav') }))).toEqual({ status: 413, code: 'wav_upload_too_large' })
     // a declared MP3 (or no / unknown / malformed type) keeps the MP3 cap
     for (const extra of [md('audio/mpeg'), md('audio/flac'), {}, { 'upload-metadata': 'filetype' }, { 'upload-metadata': 'filetype !!notbase64' }, { 'upload-metadata': `filename ${Buffer.from('a.wav').toString('base64')}` }]) {
-      expect(checkCreateHeaders(H({ 'upload-length': String(36 * MB), ...extra })), JSON.stringify(extra)).toEqual({ status: 413, code: 'upload_too_large' })
+      expect(checkCreateHeaders(H({ 'upload-length': String(101 * MB), ...extra })), JSON.stringify(extra)).toEqual({ status: 413, code: 'upload_too_large' })
     }
     // a repeated filetype is ambiguous → the smaller cap
     const two = `filetype ${Buffer.from('audio/wav').toString('base64')},filetype ${Buffer.from('audio/mpeg').toString('base64')}`
@@ -284,8 +285,20 @@ describe('tus admission by DECLARED type (v0.3.0 WAV)', () => {
     const caps = { ...DEFAULT_CAPS, maxWavUploadBytes: 100 * MB }
     expect(maxBytesFor('wav', caps)).toBe(100 * MB)
     expect(maxBytesFor('wav', { ...DEFAULT_CAPS, maxWavUploadBytes: 999 * MB })).toBe(250 * MB)
-    expect(maxBytesFor('mp3', caps)).toBe(35 * MB)
+    expect(maxBytesFor('mp3', caps)).toBe(100 * MB)
     expect(checkCreateHeaders(H({ 'upload-length': String(101 * MB), ...md('audio/wav') }), caps)).toEqual({ status: 413, code: 'wav_upload_too_large' })
+  })
+  it('v0.3.2: the MP3 input cap is its own key (maxMp3UploadBytes), admin-lowerable, 100 MB ceiling; maxUploadBytes (the 35 MB final cap) never caps an upload', () => {
+    expect(DEFAULT_CAPS.maxMp3UploadBytes).toBe(100 * MB)
+    expect(DEFAULT_CAPS.maxUploadBytes).toBe(35 * MB)
+    expect(maxBytesFor('mp3', { ...DEFAULT_CAPS, maxMp3UploadBytes: 50 * MB })).toBe(50 * MB)
+    expect(maxBytesFor('mp3', { ...DEFAULT_CAPS, maxMp3UploadBytes: 999 * MB })).toBe(100 * MB)
+    // the stale production row (maxUploadBytes 36700160 = 35 MB) does not cap MP3 uploads
+    expect(maxBytesFor('mp3', { ...DEFAULT_CAPS, maxUploadBytes: 36700160 })).toBe(100 * MB)
+    expect(SETTING_SCHEMAS.caps!.safeParse({ ...DEFAULT_CAPS, maxMp3UploadBytes: 50 * MB }).success).toBe(true)
+    expect(SETTING_SCHEMAS.caps!.safeParse({ ...DEFAULT_CAPS, maxMp3UploadBytes: 101 * MB }).success).toBe(false)
+    const { maxMp3UploadBytes: _omit, ...older } = DEFAULT_CAPS
+    expect(SETTING_SCHEMAS.caps!.safeParse({ ...older, maxUploadBytes: 36700160 }).success).toBe(true) // the stale production row stays valid
   })
   it('loadCaps-style overrides: the admin schema accepts a lower WAV cap and refuses a higher one', () => {
     const base = { ...DEFAULT_CAPS }

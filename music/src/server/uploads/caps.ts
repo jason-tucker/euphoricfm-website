@@ -1,5 +1,6 @@
-// Upload admission (plan §3.4): Upload-Length 1..35 MB (1..250 MB for an
-// upload DECLARED as a WAV, v0.3.0), no defer-length, no
+// Upload admission (plan §3.4): Upload-Length 1..100 MB (v0.3.2; an MP3 too
+// big for the 35 MB final file is re-encoded down by the probe), 1..250 MB
+// for an upload DECLARED as a WAV (v0.3.0), no defer-length, no
 // concatenation, no creation-with-upload body; per user ≤1 GB in flight
 // (uploading + complete + attached-but-undecided bytes) and
 // ≤3 concurrent uploads; ≤5 GB staged globally (album art included, v0.2.1);
@@ -12,7 +13,7 @@ import { sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { artUploads, uploads } from '../db/schema'
 import { DEFAULT_CAPS, type Caps } from '../settings-defaults'
-import { MAX_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES } from '../spool/protocol'
+import { MAX_MP3_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES } from '../spool/protocol'
 
 export type Refusal = { status: number; code: string; retryAfterS?: number }
 
@@ -45,7 +46,7 @@ export function declaredKind(h: Headers): DeclaredKind {
 // Per-file cap for a declared type: the (possibly admin-lowered) setting,
 // never above the compiled limit.
 export function maxBytesFor(kind: DeclaredKind, caps: Caps = DEFAULT_CAPS): number {
-  return kind === 'wav' ? Math.min(caps.maxWavUploadBytes, MAX_WAV_UPLOAD_BYTES) : Math.min(caps.maxUploadBytes, MAX_UPLOAD_BYTES)
+  return kind === 'wav' ? Math.min(caps.maxWavUploadBytes, MAX_WAV_UPLOAD_BYTES) : Math.min(caps.maxMp3UploadBytes, MAX_MP3_UPLOAD_BYTES)
 }
 
 export function tooLarge(kind: DeclaredKind): Refusal {
@@ -109,9 +110,10 @@ export async function stagedBytes(q: Pick<DB, 'execute'>): Promise<{ uploads: nu
 
 // Reserve quota and record the upload row (owner from the SESSION only).
 // `kind` is the declared type: its per-file cap is checked again here with
-// the LOADED caps (an admin may have lowered maxWavUploadBytes). A WAV is
-// charged at its full length until the probe's MP3 replaces it (the worker
-// then sets `length` to the MP3's size) or a rejection releases it.
+// the LOADED caps (an admin may have lowered maxWavUploadBytes /
+// maxMp3UploadBytes). A WAV (or an MP3 too big to fit, v0.3.2) is charged at
+// its full length until the probe's MP3 replaces it (the worker then sets
+// `length` to the MP3's size) or a rejection releases it.
 export async function admitUpload(db: DB, userId: string, id: string, length: number, caps: Caps = DEFAULT_CAPS, kind: DeclaredKind = 'mp3'): Promise<Refusal | null> {
   if (length > maxBytesFor(kind, caps)) return tooLarge(kind)
   return db.transaction(async (tx) => {

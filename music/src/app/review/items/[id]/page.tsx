@@ -70,7 +70,7 @@ export default async function ReviewItemPage({ params }: { params: Promise<{ id:
           )}
           <AudioPreview itemId={it.id} hideCover />
           <p className="text-xs text-cream/60">
-            {[duration(it.durationS), it.bitrate ? `${Math.round(it.bitrate / 1000)} kbps` : null, convertedLabel(it.inputFormat)].filter(Boolean).join(' · ')}
+            {[duration(it.durationS), it.bitrate ? `${Math.round(it.bitrate / 1000)} kbps` : null, convertedLabel(it.inputFormat, it.transcodeKbps)].filter(Boolean).join(' · ')}
           </p>
           <details className="text-xs text-cream/60">
             <summary className="cursor-pointer hover:text-cream">Original file tags</summary>

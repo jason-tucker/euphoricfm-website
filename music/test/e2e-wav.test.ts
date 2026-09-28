@@ -5,7 +5,7 @@
 // running worker has the probe finalize it (ID3 + APIC), uploads it to the
 // mock AzuraCast and the ticket flow completes. Names and declared types
 // never decide the format: a WAV named .mp3 is converted, an MP3 named .wav
-// stays an MP3, and a >35 MB MP3 admitted as a WAV is refused and released.
+// stays an MP3, and a >100 MB MP3 admitted as a WAV is refused and released.
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
@@ -29,7 +29,7 @@ let seq = 0
 const newId = () => `7${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
 const uploadsDir = () => join(process.env.TEST_DATA_DIR!, 'staging/uploads')
 
-type Item = { id: number; status: string; title: string | null; artist: string | null; probeError: string | null; hasCover: boolean; inputFormat: string | null; bitrate: number | null; durationS: number | null }
+type Item = { id: number; status: string; title: string | null; artist: string | null; probeError: string | null; hasCover: boolean; inputFormat: string | null; transcodeKbps: number | null; bitrate: number | null; durationS: number | null }
 
 async function batchOf(jar: Jar): Promise<number> {
   const r = await req(jar, '/api/batches', { method: 'POST' })
@@ -59,13 +59,13 @@ function ffprobe(file: string) {
 }
 
 describe.skipIf(!E2E())('WAV uploads through the real containers (v0.3.0)', () => {
-  it('tus creation caps by the declared type: WAV ≤ 250 MB, MP3 / undeclared ≤ 35 MB', async () => {
+  it('tus creation caps by the declared type: WAV ≤ 250 MB, MP3 / undeclared ≤ 100 MB', async () => {
     const a = await loginOk({ id: newId() })
     const wav = await tusCreate(a, 250 * MB + 1, declare('audio/wav'))
     expect(wav.status).toBe(413)
     expect(await wav.text()).toContain('wav_upload_too_large')
     for (const h of [declare('audio/mpeg'), {}, declare('audio/flac'), { 'upload-metadata': 'filetype not-base64!' }]) {
-      const r = await tusCreate(a, 35 * MB + 1, h)
+      const r = await tusCreate(a, 100 * MB + 1, h)
       expect(r.status, JSON.stringify(h)).toBe(413)
       expect(await r.text()).toContain('upload_too_large')
     }
@@ -108,7 +108,7 @@ describe.skipIf(!E2E())('WAV uploads through the real containers (v0.3.0)', () =
     const b = await batchOf(owner)
     const { itemId, uploadId } = await add(owner, b, wav, 'audio/wav')
     const it = await settled(owner, itemId)
-    expect(it).toMatchObject({ status: 'pending', inputFormat: 'wav', bitrate: 320000, title: 'E2E Wav Title', artist, hasCover: true })
+    expect(it).toMatchObject({ status: 'pending', inputFormat: 'wav', transcodeKbps: 320, bitrate: 320000, title: 'E2E Wav Title', artist, hasCover: true })
     expect(it.durationS).toBe(250)
 
     // The staged bytes are now the MP3 (the WAV is gone) and the quota follows.
@@ -187,8 +187,8 @@ describe.skipIf(!E2E())('WAV uploads through the real containers (v0.3.0)', () =
     expect(await settled(owner, mp3.itemId)).toMatchObject({ status: 'pending', inputFormat: 'mp3', bitrate: 128000 })
     expect(readFileSync(join(uploadsDir(), mp3.uploadId)).equals(fxBuf('tagged-png.mp3'))).toBe(true)
 
-    // a >35 MB MP3 admitted under the WAV cap is refused by its actual type
-    const big = await add(owner, b, fxBuf('big-36mb.mp3'), 'audio/wav')
+    // a >100 MB MP3 admitted under the WAV cap is refused by its actual type
+    const big = await add(owner, b, fxBuf('big-101mb.mp3'), 'audio/wav')
     expect(await settled(owner, big.itemId)).toMatchObject({ status: 'rejected', probeError: 'mp3_too_large' })
     // … and an ADPCM WAV with a clear reason
     const adpcm = await add(owner, b, fxBuf('adpcm.wav'), 'audio/wav')

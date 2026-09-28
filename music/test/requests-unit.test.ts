@@ -124,6 +124,8 @@ describe('admin setting schemas', () => {
     const caps = { maxUploadBytes: 35 * 1024 * 1024, chunkBytes: 8 * 1024 * 1024, maxInflightBytesPerUser: 1024 * 1024 * 1024, maxConcurrentUploadsPerUser: 3, maxStagingBytes: 5 * 1024 * 1024 * 1024, diskPausePercent: 85, maxItemsPerBatch: 20, ingestPerHour: 6, ingestSpacingS: 90 }
     expect(SETTING_SCHEMAS.caps!.safeParse(caps).success).toBe(true)
     expect(SETTING_SCHEMAS.caps!.safeParse({ ...caps, maxUploadBytes: 100 * 1024 * 1024 }).success).toBe(false)
+    expect(SETTING_SCHEMAS.caps!.safeParse({ ...caps, maxMp3UploadBytes: 100 * 1024 * 1024 }).success).toBe(true)
+    expect(SETTING_SCHEMAS.caps!.safeParse({ ...caps, maxMp3UploadBytes: 100 * 1024 * 1024 + 1 }).success).toBe(false)
     expect(SETTING_SCHEMAS.caps!.safeParse({ ...caps, ingestPerHour: 60 }).success).toBe(false)
     expect(SETTING_SCHEMAS.caps!.safeParse({ ...caps, extra: 1 }).success).toBe(false)
     expect(SETTING_SCHEMAS.rights_attestation!.safeParse({ version: '1', text: 'I own it' }).success).toBe(true)

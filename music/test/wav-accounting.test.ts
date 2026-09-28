@@ -73,6 +73,36 @@ describe.skipIf(!DBENV())('WAV staging accounting (v0.3.0)', () => {
     expect(before.uploads - after.uploads).toBe(200 * MB - 9 * MB + 150 * MB)
   })
 
+  it('v0.3.2: an MP3 re-encoded to fit is re-charged at the new size and records its bitrate; an untouched MP3 records none', async () => {
+    const out = mkdtempSync(join(tmpdir(), 'fitacct-'))
+    const u = await mkUser()
+    const b = await mkBatch(u.id, { status: 'draft' })
+    const mk = async (length: number) => {
+      const upload = hex()
+      const req = randomUUID()
+      await ownerSql()`INSERT INTO uploads (id, owner_user_id, length, status) VALUES (${upload}, ${u.id}, ${length}, 'attached')`
+      await ownerSql()`INSERT INTO items (batch_id, owner_user_id, status, upload_id, probe_request_id) VALUES (${b}, ${u.id}, 'probing', ${upload}, ${req})`
+      return { upload, req }
+    }
+    const big = await mk(60 * MB)
+    const small = await mk(8 * MB)
+    const wav = await mk(120 * MB)
+    const base = { v: 1, source: 'in-web', type: 'probe', ok: true, tags: { title: 'T', artist: 'A', album: null, genre: null, year: null }, cover: null }
+    writeFileSync(join(out, `${big.req}.json`), JSON.stringify({ ...base, id: big.req, sha256: 'c'.repeat(64), size: 31 * MB, durationS: 1300, bitrate: 192000, flags: ['reencoded_to_fit'], inputFormat: 'mp3', transcodeKbps: 192 }))
+    writeFileSync(join(out, `${small.req}.json`), JSON.stringify({ ...base, id: small.req, sha256: 'd'.repeat(64), size: 8 * MB, durationS: 200, bitrate: 320000, flags: [], inputFormat: 'mp3' }))
+    writeFileSync(join(out, `${wav.req}.json`), JSON.stringify({ ...base, id: wav.req, sha256: 'e'.repeat(64), size: 30 * MB, durationS: 1000, bitrate: 256000, flags: ['converted_from_wav'], inputFormat: 'wav', transcodeKbps: 256 }))
+    await collectProbeResults({ db: db(), spoolOutDir: out } as unknown as WorkerCtx)
+    const row = async (upload: string) => (await ownerSql()`SELECT u.length, i.status, i.input_format, i.transcode_kbps, i.bitrate FROM uploads u JOIN items i ON i.upload_id = u.id WHERE u.id = ${upload}`)[0]!
+    expect(await row(big.upload)).toMatchObject({ length: 31 * MB, status: 'pending', input_format: 'mp3', transcode_kbps: 192, bitrate: 192000 })
+    expect(await row(small.upload)).toMatchObject({ length: 8 * MB, status: 'pending', input_format: 'mp3', transcode_kbps: null })
+    expect(await row(wav.upload)).toMatchObject({ length: 30 * MB, status: 'pending', input_format: 'wav', transcode_kbps: 256 })
+    // tus admission: a 60 MB MP3 is admitted (v0.3.2), 101 MB is not
+    expect(await admitUpload(db(), u.id, hex(), 101 * MB, DEFAULT_CAPS, 'mp3')).toEqual({ status: 413, code: 'upload_too_large' })
+    const ok = hex()
+    expect(await admitUpload(db(), u.id, ok, 60 * MB, DEFAULT_CAPS, 'mp3')).toBeNull()
+    await ownerSql()`UPDATE uploads SET status = 'expired' WHERE id = ${ok}`
+  })
+
   it('an MP3 result from an older probe (no inputFormat) is recorded as mp3 and keeps its length', async () => {
     const out = mkdtempSync(join(tmpdir(), 'wavacct-'))
     const u = await mkUser()

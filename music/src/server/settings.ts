@@ -29,15 +29,19 @@ const capsOverride = z
     artBytesPerUserPerDay: z.number().int().positive(),
     maxArtBytes: z.number().int().positive(),
     maxWavUploadBytes: z.number().int().positive().max(DEFAULT_CAPS.maxWavUploadBytes),
+    maxMp3UploadBytes: z.number().int().positive().max(DEFAULT_CAPS.maxMp3UploadBytes),
   })
   .partial()
 
 // Admin-editable quota caps (settings.caps) over DEFAULT_CAPS. The hard
-// per-file limits (maxUploadBytes, chunkBytes) are NOT editable: tus maxSize,
-// the header checks and the probe all enforce the defaults. maxWavUploadBytes
-// (v0.3.0) may be LOWERED: the tus admission and the probe request carry the
-// loaded value, and the compiled 250 MB stays the ceiling everywhere. An
-// invalid value falls back to the default for that field.
+// per-file limits (maxUploadBytes = the final-file cap, chunkBytes) are NOT
+// editable: finalize, the tus PATCH cap and the probe all enforce the
+// defaults, and a stored value is ignored here AND in the UI (ui/settings.ts
+// reads caps through this function). maxWavUploadBytes (v0.3.0) and
+// maxMp3UploadBytes (v0.3.2) may be LOWERED: the tus admission and the probe
+// request carry the loaded value, and the compiled 250 MB / 100 MB stay the
+// ceiling everywhere. An invalid value falls back to the default for that
+// field.
 export async function loadCaps(db: DB): Promise<Caps> {
   const raw = await getSetting(db, 'caps')
   const out: Record<string, number> = { ...DEFAULT_CAPS }
