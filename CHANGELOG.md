@@ -5,6 +5,10 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.19.1] — 2026-09-27 — Listeners graph shows peak listeners
+
+- The Listeners graph now plots each bucket's **peak** listener count (the full number tuned in at the busiest moment of that day/hour) instead of the average across it. The table's first value column is now Peak, and Avg stays as the second column.
+
 ## [0.19.0] — 2026-09-27 — Music portal entry: /music redirect and Submit music button
 
 ### Added
