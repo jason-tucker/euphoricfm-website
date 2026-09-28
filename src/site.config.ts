@@ -85,12 +85,24 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       webPlayer: 'Web Player',
       ways: 'Ways to listen',
     },
-    recent: { title: 'Recently played', history: 'Song history' },
-    requested: {
-      title: 'Requested songs',
-      empty: 'Nothing waiting right now. Pick a song and it joins the queue.',
-      waiting: '{count} waiting',
+    // One sidebar card with two tabs (SongsCard.astro): Recently played is
+    // selected by default; the Requested tab carries the pending count.
+    songs: {
+      tabsLabel: 'Songs',
+      recent: 'Recently played',
+      requested: 'Requested',
+      history: 'Song history',
+      empty: 'No requests right now',
       button: 'Request a song',
+    },
+    // Up next row on the player card (PlayerCard.astro). The next song shows
+    // for the whole of the current one; these lines fill the same fixed-height
+    // row when there is no song to show.
+    upNext: {
+      label: 'Up Next',
+      choosing: 'Choosing the next song…',
+      stationBreak: 'Station break next',
+      live: 'Back to the playlist after the live set',
     },
     about: {
       eyebrow: 'About',

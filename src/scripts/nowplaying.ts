@@ -14,7 +14,7 @@ import type {
   AzuraNowPlayingResponse,
   AzuraNowPlayingEntry,
 } from '../lib/azuracast';
-import { fmtTime, fmtElapsed, fmtAgo, escapeHtml as escape } from '../lib/player-data';
+import { fmtTime, fmtElapsed, fmtAgo, escapeHtml as escape, isBreakEntry } from '../lib/player-data';
 import {
   getConfig,
   subscribeNowPlaying,
@@ -43,17 +43,24 @@ import {
   const elCard = $('np-card');
   const elRecent = $('recent-list');
   const elStatus = $('np-status');
-  // Up-next slide-down panel.
+  // Up-next row (fixed height: a track layer and a note layer).
   const elUpNext = $('np-up-next');
   const elUpNextArt = $<HTMLImageElement>('up-next-art');
   const elUpNextTitle = $('up-next-title');
   const elUpNextArtist = $('up-next-artist');
-  // Pending-requests card (sibling of recently-played in the sidebar).
-  const elPendingSection = $('req-pending-section');
+  const elUpNextWhen = $('up-next-when');
+  const elUpNextNote = $('up-next-note');
+  const upNextCopy = {
+    choosing: elUpNext?.dataset.choosing || '',
+    stationBreak: elUpNext?.dataset.break || '',
+    live: elUpNext?.dataset.live || '',
+  };
+  let excludePlaylists: string[] = [];
+  try { excludePlaylists = JSON.parse(elUpNext?.dataset.exclude || '[]'); } catch { /* keep [] */ }
+  // Requested tab of the sidebar songs card (SongsCard.astro).
   const elPendingList = $('req-pending-list');
   const elPendingCount = $('req-pending-count');
   const elPendingEmpty = $('req-pending-empty');
-  const waitingLabel = elPendingCount?.dataset.label || '{count}';
   // REQUESTED badges — toggled from `is_request` on each entry.
   const elNpRequested = $('np-requested');
   const elUpNextRequested = $('up-next-requested');
@@ -82,10 +89,10 @@ import {
   const baseTitle = document.title;
   const eyebrowDefault = elEyebrow?.textContent || 'Now Playing';
 
-  // Up-next reveal threshold: slide in when this many seconds (or fewer) remain
-  // on the current track. 40s sits in the sweet spot the user asked for (30–45s).
-  const UP_NEXT_REVEAL_SEC = 40;
-  let upNextReady = false; // becomes true once we have a valid playing_next song
+  const BLANK_ART = "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E";
+  // True while #np-up-next shows a track (then tick() paints its countdown).
+  let upNextShown = false;
+  let upNextWhen = '';
 
   const applyNowPlaying = (np: AzuraNowPlayingEntry) => {
     const song = np.song;
@@ -105,23 +112,31 @@ import {
     duration = np.duration || 0;
   };
 
-  // Keep the panel's content primed at all times — the actual reveal is timed
-  // off the current song's remaining seconds in the RAF tick loop below.
+  // Up next shows for the whole of the current song: AzuraCast cues
+  // playing_next when a song starts, so whenever it is a real song it is on
+  // screen. Ads / station IDs (the /player/ break filter), a live set, or no
+  // entry at all show a one-line note in the same fixed-height row instead.
+  const setUpNextNote = (text: string) => {
+    if (elUpNextNote && elUpNextNote.textContent !== text) elUpNextNote.textContent = text;
+  };
   const applyUpNext = (next: AzuraNowPlayingEntry | null) => {
     if (!elUpNext) return;
-    if (!next || !next.song || !(next.song.title || next.song.text)) {
-      upNextReady = false;
-      elUpNext.classList.remove('is-open');
-      if (elUpNextRequested) elUpNextRequested.classList.add('hidden');
+    const song = next?.song;
+    const known = !!song && !!(song.title || song.text);
+    const brk = known && isBreakEntry(next, excludePlaylists);
+    upNextShown = known && !brk && !isLive;
+    elUpNext.classList.toggle('is-open', upNextShown);
+    if (!upNextShown) {
+      setUpNextNote(isLive ? upNextCopy.live : brk ? upNextCopy.stationBreak : upNextCopy.choosing);
       return;
     }
-    const song = next.song;
-    if (elUpNextTitle) elUpNextTitle.textContent = song.title || song.text || '';
-    if (elUpNextArtist) elUpNextArtist.textContent = song.artist || '';
-    if (elUpNextArt && song.art) elUpNextArt.src = toSameOriginArt(song.art);
-    if (elUpNextRequested) elUpNextRequested.classList.toggle('hidden', !next.is_request);
-    upNextReady = true;
-    // Don't add .is-open here — tick() decides based on remaining seconds.
+    if (elUpNextTitle) elUpNextTitle.textContent = song!.title || song!.text || '';
+    if (elUpNextArtist) elUpNextArtist.textContent = song!.artist || '';
+    if (elUpNextArt) {
+      const art = song!.art ? toSameOriginArt(song!.art) : BLANK_ART;
+      if (elUpNextArt.getAttribute('src') !== art) elUpNextArt.src = art;
+    }
+    if (elUpNextRequested) elUpNextRequested.classList.toggle('hidden', !next!.is_request);
   };
 
   // ---- Pending requests (your-requests sidebar card) ------------------
@@ -153,13 +168,13 @@ import {
   };
 
   const renderPending = (pending: PendingRequest[]) => {
-    if (!elPendingSection || !elPendingList) return;
-    // The card always stays on the page (an empty state instead of hiding),
-    // so nothing below it moves when a request comes or goes.
+    if (!elPendingList) return;
+    // The Requested tab lives in a fixed-height card body: the empty note or
+    // the list fills it (more rows scroll inside), so nothing below moves.
     elPendingEmpty?.classList.toggle('hidden', pending.length > 0);
     if (elPendingCount) {
-      elPendingCount.textContent = pending.length ? waitingLabel.replace('{count}', String(pending.length)) : '';
-      elPendingCount.classList.toggle('hidden', !pending.length);
+      elPendingCount.textContent = String(pending.length);
+      elPendingCount.classList.toggle('is-zero', !pending.length);
     }
     if (!pending.length) {
       elPendingList.innerHTML = '';
@@ -318,8 +333,7 @@ import {
 
   // RAF loop: paint the progress bar between polls using the server-anchored
   // playedAt timestamp + duration. This makes the UI feel real-time. The Up
-  // Next panel is also toggled here so the reveal lines up smoothly with the
-  // progress bar rather than only on the 5-second poll cadence.
+  // next countdown is painted here too.
   const tick = () => {
     if (isLive) {
       // Live event: the bar is a CSS indeterminate sweep (.np-live on the
@@ -332,9 +346,6 @@ import {
             ? `${liveCopy.elapsedPrefix} · ${fmtElapsed(Math.max(0, (Date.now() - broadcastStartMs) / 1000))}`
             : liveCopy.elapsedPrefix;
       }
-      // playing_next is meaningless mid-broadcast — keep the panel shut.
-      // applyUpNext keeps priming content, so normal reveal resumes on exit.
-      if (elUpNext) elUpNext.classList.remove('is-open');
     } else if (duration > 0 && playedAt > 0) {
       const elapsedSec = (Date.now() - playedAt) / 1000;
       const pct = Math.min(100, Math.max(0, (elapsedSec / duration) * 100));
@@ -343,16 +354,12 @@ import {
         elTimes.textContent = `${fmtTime(elapsedSec)} / ${fmtTime(duration)}`;
       }
 
-      // Slide Up Next in when remaining ≤ threshold; slide out otherwise.
-      // (Without `upNextReady`, the panel only animates the empty content.)
-      if (elUpNext) {
+      // Countdown to the change on the Up next row (text only rewritten
+      // when it changes).
+      if (upNextShown && elUpNextWhen) {
         const remaining = duration - elapsedSec;
-        const shouldShow = upNextReady && remaining > 0 && remaining <= UP_NEXT_REVEAL_SEC;
-        if (shouldShow && !elUpNext.classList.contains('is-open')) {
-          elUpNext.classList.add('is-open');
-        } else if (!shouldShow && elUpNext.classList.contains('is-open')) {
-          elUpNext.classList.remove('is-open');
-        }
+        const when = remaining > 1 ? `in ${fmtTime(remaining)}` : 'next';
+        if (when !== upNextWhen) elUpNextWhen.textContent = upNextWhen = when;
       }
     }
     requestAnimationFrame(tick);

@@ -79,9 +79,9 @@ test('home: the sections are there, in the approved order, each once', () => {
 
 test('home: the pieces each section promises', () => {
   const html = read('index.html');
-  // Hero: player + recently played + requested songs + the three buttons.
+  // Hero: player + the Recently played / Requested card + the three buttons.
   assert.match(html, /id="recent-list"/);
-  assert.match(html, /id="req-pending-section"/);
+  assert.match(html, /id="req-pending-list"/);
   assert.match(html, /id="open-request"[^>]*data-open="request"|data-open="request"[^>]*id="open-request"/);
   assert.match(html, /href="#ways"/);
   // About: the live facts card (filled by station-facts.ts), no team section.
@@ -119,9 +119,9 @@ test('home: the pieces each section promises', () => {
 
 test('home: no layout shift from requests or up-next, no dead controls without JS, no View Transitions', () => {
   const html = read('index.html');
-  // Requested songs: fixed-height body with the empty note inside it.
-  assert.match(html, /class="hm-req-body"[^>]*>\s*<p id="req-pending-empty"[\s\S]*?id="req-pending-list"/);
-  // Up next: the row always shows (a note until the next track is known).
+  // Both tabs of the songs card share one constant-height body.
+  assert.match(html, /class="hm-tab-body"[^>]*>\s*<div role="tabpanel" id="songs-panel-recent"[\s\S]*?id="songs-panel-requested"/);
+  // Up next: one fixed-height row, a note layer and a track layer.
   assert.match(html, /id="np-up-next"[\s\S]*?class="np-un-wait[\s\S]*?class="np-un-track/);
   // JS off: html.efm-js is set by the pre-paint script; live facts + transport
   // are marked JS-only and the player explains itself in a <noscript>.
@@ -136,6 +136,54 @@ test('home: no layout shift from requests or up-next, no dead controls without J
   }
   // No unbacked claim in the facts card.
   assert.doesNotMatch(html, /live specials/i);
+});
+
+const src = (p) => readFileSync(join(ROOT, p), 'utf8');
+
+test('home: Up next shows for the whole song — no reveal delay, no "near the end" note', () => {
+  const js = src('src/scripts/nowplaying.ts');
+  assert.doesNotMatch(js, /UP_NEXT_REVEAL|REVEAL_SEC|remaining\s*<=/, 'no reveal threshold');
+  const html = read('index.html');
+  assert.doesNotMatch(html, /near the end of this song/i);
+  const row = /<div[^>]*id="np-up-next"[^>]*>/.exec(html)?.[0] ?? '';
+  // The neutral lines for "not known yet" / an ad next / a live set are copy.
+  assert.ok(row.includes(`data-choosing="${site.home.upNext.choosing}"`), 'choosing copy');
+  assert.ok(row.includes(`data-break="${site.home.upNext.stationBreak}"`), 'station-break copy');
+  assert.match(row, /data-exclude="[^"]*2Ads/, 'break filter playlists handed to the script');
+  assert.match(html, /id="up-next-note"[^>]*>[^<]+</, 'note row is never empty');
+  assert.match(html, /id="up-next-when"/, 'countdown slot');
+  // The Web Player never had a reveal delay; keep it that way.
+  assert.doesNotMatch(src('src/scripts/player.ts'), /REVEAL/);
+});
+
+test('home: ONE side card with Recently played / Requested tabs (ARIA tablist), no standalone Requested card', () => {
+  const html = read('index.html');
+  const aside = /<aside class="efm-sidebar[^"]*"[\s\S]*?<\/aside>/.exec(html)?.[0] ?? '';
+  assert.equal(aside.match(/<section\b/g)?.length, 1, 'a single sidebar card');
+  assert.doesNotMatch(html, /id="req-pending-section"|id="req-h"|id="recent-h"|hm-req-body/, 'old cards are gone');
+  assert.ok(!existsSync(join(ROOT, 'src/components/RequestedSongs.astro')), 'RequestedSongs.astro removed');
+  assert.ok(!existsSync(join(ROOT, 'src/components/RecentlyPlayed.astro')), 'RecentlyPlayed.astro merged');
+  // Tablist semantics.
+  assert.match(aside, /role="tablist"[^>]*aria-label="[^"]+"/);
+  const tabs = [...aside.matchAll(/<button\b[^>]*role="tab"[^>]*>/g)].map((m) => m[0]);
+  assert.equal(tabs.length, 2, 'two tabs');
+  const attr = (tag, a) => new RegExp(`\\s${a}="([^"]*)"`).exec(tag)?.[1];
+  assert.deepEqual(tabs.map((t) => attr(t, 'aria-selected')), ['true', 'false'], 'Recently played selected by default');
+  assert.deepEqual(tabs.map((t) => attr(t, 'tabindex')), ['0', '-1'], 'roving tabindex');
+  for (const t of tabs) {
+    const panel = attr(t, 'aria-controls');
+    const id = attr(t, 'id');
+    assert.ok(panel && id, 'tab has id + aria-controls');
+    assert.match(aside, new RegExp(`role="tabpanel" id="${panel}"[^>]*aria-labelledby="${id}"`), `${panel} labelled by ${id}`);
+  }
+  assert.match(aside, /id="songs-panel-requested"[^>]*\shidden/, 'Requested panel hidden at first');
+  // Order: tabs are Recently played, then Requested with the count badge.
+  assert.match(aside, new RegExp(`${site.home.songs.recent}[\\s\\S]*?role="tab"[\\s\\S]*?${site.home.songs.requested}[\\s\\S]*?id="req-pending-count"`));
+  // Empty Requested tab: the note + a button that opens the request pop-up.
+  assert.match(aside, /id="req-pending-empty"[\s\S]*?data-open="request"/);
+  // Arrow-key handling ships with the page.
+  const comp = src('src/components/SongsCard.astro');
+  for (const k of ['ArrowRight', 'ArrowLeft', 'Home', 'End']) assert.ok(comp.includes(`'${k}'`), `${k} key`);
 });
 
 test('pop-ups sit above the sticky top bar: outside <main> (a z-[1] stacking context) and z-[70]', () => {
