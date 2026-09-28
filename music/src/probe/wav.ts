@@ -1,8 +1,8 @@
 // WAV input (v0.3.0). A member may upload a WAV instead of an MP3; the probe
 // checks it as strictly as an MP3 and CONVERTS it here, in the network-less
-// container, to a CBR 320 kbps MP3 that then replaces the WAV under the same
-// upload id. Everything downstream (prefill, review, finalize, AzuraCast)
-// only ever sees that MP3.
+// container, to a CBR MP3 that then replaces the WAV under the same upload
+// id. Everything downstream (prefill, review, finalize, AzuraCast) only ever
+// sees that MP3.
 //
 // Order (all on the probe-private, read-only copy):
 //   1. magic bytes: RIFF....WAVE only (RF64 / BW64 / RIFX refused by name);
@@ -19,23 +19,24 @@
 //      header: one PCM audio stream, same channels / rate / duration;
 //   4. music-metadata (heap-capped child) reads LIST/INFO and 'id3 ' tags
 //      and an embedded APIC, which takes the same hardened cover path;
-//   5. ffmpeg -f wav → libmp3lame CBR 320k at nice 19, under prlimit +
-//      timeout; >2 channels are downmixed to stereo, a rate other than
-//      44.1 / 48 kHz is resampled (to 48 kHz for multiples of 48 kHz, else
-//      44.1 kHz);
-//   6. the MP3 is checked like an uploaded one (magic, ffprobe -f mp3,
-//      320 kbps, duration within 1 s of the WAV's, ≤ MAX_UPLOAD_BYTES).
+//   5. ffmpeg -f wav → libmp3lame CBR at nice 19, under prlimit + timeout,
+//      at the highest ladder rate (320 → 256 → 192 kbps, v0.3.2) whose MP3
+//      fits the final-file cap with its cover and tags (src/lib/fit.ts);
+//      >2 channels are downmixed to stereo, a rate other than 44.1 / 48 kHz
+//      is resampled (to 48 kHz for multiples of 48 kHz, else 44.1 kHz);
+//   6. the MP3 is checked like an uploaded one (magic, ffprobe -f mp3, the
+//      chosen bitrate, duration within 1 s of the WAV's, ≤ the audio budget).
 //
-// MAX_WAV_DURATION_S is 15 min, not the MP3 rule's 20: a 320 kbps MP3 of 900 s
-// is ~36.0 MB, the most that still fits MAX_UPLOAD_BYTES (35 MiB), which
-// finalize and the worker's final-file cap are sized for.
+// The duration cap is MAX_DURATION_S (fit.ts, 24 min), the same as an MP3's:
+// the longest song whose 192 kbps MP3 still fits. (v0.3.0 had 15 min, the
+// longest that fitted at a fixed 320 kbps.)
 
 import { z } from 'zod'
+import { MAX_DURATION_S } from '../lib/fit'
 import { MAX_TAG_BYTES } from './id3scan'
 import { ProbeReject } from './files'
 
 export const MIN_WAV_DURATION_S = 30 // same as the MP3 rule (probe.ts MIN_DURATION_S)
-export const MAX_WAV_DURATION_S = 15 * 60
 export const MIN_WAV_RATE = 8000
 export const MAX_WAV_RATE = 192_000
 export const MAX_WAV_CHANNELS = 8
@@ -51,14 +52,14 @@ export const MAX_WAV_FMT_BYTES = 1024
 // chunks under the in-RIFF rules); more than this is refused.
 export const MAX_WAV_TRAILING_BYTES = 64 * 1024
 
-export const OUT_BITRATE = 320_000
 // ffmpeg + libmp3lame peak at ~152 MB of address space (measured, 5.1 24-bit
-// downmix and 96 kHz resample); RSS ~42 MB.
+// downmix and 96 kHz resample); RSS ~42 MB. The same limits apply to the
+// MP3 → MP3 re-encode (v0.3.2, transcode.ts).
 export const CONVERT_VMEM_KB = 256 * 1024
-// A 900 s WAV (the longest allowed) converts in ~23 s on one 2.1 GHz Xeon
-// E5-2620 v4 vCPU (docker --cpus 1); 300 s leaves >10x for a slower or busy
-// vCPU at nice 19.
-export const CONVERT_TIMEOUT_S = 300
+// v0.3.2: sized for the largest inputs (a 250 MB WAV, a 100 MB MP3 of up to
+// 24 min) on the 1-vCPU botvps, where the probe has cpu_shares 256 and runs
+// ffmpeg at nice 19: CHANGELOG [0.3.2] has the measured times.
+export const CONVERT_TIMEOUT_S = 600
 export const CONVERT_NICE = 19
 
 export const PCM_CODECS = new Set(['pcm_u8', 'pcm_s16le', 'pcm_s24le', 'pcm_s32le', 'pcm_f32le', 'pcm_f64le'])
@@ -227,7 +228,7 @@ export async function scanWav(readAt: (offset: number, len: number) => Promise<B
   if (data.size < fmt.blockAlign) throw new ProbeReject('wav_no_audio')
   const durationS = data.size / fmt.byteRate
   if (durationS < MIN_WAV_DURATION_S) throw new ProbeReject('too_short')
-  if (durationS > MAX_WAV_DURATION_S) throw new ProbeReject('wav_too_long')
+  if (durationS > MAX_DURATION_S) throw new ProbeReject('wav_too_long')
   return { fmt, dataOffset: data.offset, dataSize: data.size, durationS, id3, chunks }
 }
 
@@ -280,7 +281,7 @@ export function judgeWavFfprobe(json: unknown, info: WavInfo): { durationS: numb
   if (!Number.isFinite(durationS)) throw new ProbeReject('no_duration')
   if (Math.abs(durationS - info.durationS) > 1) throw new ProbeReject('wav_header_mismatch')
   if (durationS < MIN_WAV_DURATION_S) throw new ProbeReject('too_short')
-  if (durationS > MAX_WAV_DURATION_S) throw new ProbeReject('wav_too_long')
+  if (durationS > MAX_DURATION_S) throw new ProbeReject('wav_too_long')
   return { durationS, codec: s.codec_name }
 }
 
@@ -291,7 +292,9 @@ export function targetRate(sampleRate: number): number {
   return sampleRate % 48000 === 0 ? 48000 : 44100
 }
 
-export function convertArgs(input: string, output: string, fmt: Pick<WavFmt, 'channels' | 'sampleRate'>): string[] {
+// `bitrate`: the ladder rate fit.ts pickBitrate chose (bits per second).
+export function convertArgs(input: string, output: string, fmt: Pick<WavFmt, 'channels' | 'sampleRate'>, bitrate: number): string[] {
+  if (!Number.isInteger(bitrate) || bitrate < 8000 || bitrate > 320_000 || bitrate % 1000 !== 0) throw new Error('convertArgs: bad bitrate')
   const rate = targetRate(fmt.sampleRate)
   return [
     '-hide_banner', '-nostdin', '-loglevel', 'error',
@@ -306,7 +309,7 @@ export function convertArgs(input: string, output: string, fmt: Pick<WavFmt, 'ch
     ...(fmt.channels > 2 ? ['-ac', '2'] : []),
     ...(rate !== fmt.sampleRate ? ['-ar', String(rate)] : []),
     '-c:a', 'libmp3lame',
-    '-b:a', '320k',
+    '-b:a', `${bitrate / 1000}k`,
     '-threads', '1',
     '-id3v2_version', '0',
     '-write_id3v1', '0',

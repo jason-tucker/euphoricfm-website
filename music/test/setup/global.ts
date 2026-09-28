@@ -47,9 +47,37 @@ function wavFixtures() {
   writeFileSync(join(DIR, 'piped.wav'), piped)
   // > 35 MB: 4 min 10 s of 16-bit 44.1 kHz stereo (~44 MB), with INFO tags
   w('big-44mb.wav', ['-f', 'lavfi', '-i', 'anoisesrc=color=pink:amplitude=0.2:duration=250:sample_rate=44100', ...meta, '-ac', '2', '-c:a', 'pcm_s16le'])
-  // an MP3 over 35 MB: a real MP3 followed by padding (the magic check passes)
+  // an MP3 over the 100 MB MP3 input cap (v0.3.2): a real MP3 followed by
+  // padding (the magic check passes)
   const mp3 = readFileSync(join(DIR, 'raw35.mp3'))
-  writeFileSync(join(DIR, 'big-36mb.mp3'), Buffer.concat([mp3, Buffer.alloc(36 * 1024 * 1024 - mp3.length + 1024)]))
+  writeFileSync(join(DIR, 'big-101mb.mp3'), Buffer.concat([mp3, Buffer.alloc(100 * 1024 * 1024 - mp3.length + 1024)]))
+}
+
+// v0.3.2 fit-to-size inputs. A 60 s clip is encoded once, then long files are
+// built by stream-copying it (concat demuxer, fast), so each keeps its exact
+// CBR/VBR bitrate and gets a Xing header with the frame count (ffprobe then
+// reads the exact duration).
+function fitFixtures() {
+  const noise = (d: number, r: number) => ['-f', 'lavfi', '-i', `anoisesrc=color=pink:amplitude=0.3:duration=${d}:sample_rate=${r}`]
+  const plain = ['-id3v2_version', '0', '-write_id3v1', '0']
+  ff([...noise(60, 44100), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '320k', ...plain, join(DIR, 'clip-320k-44k.mp3')])
+  ff([...noise(60, 48000), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '320k', ...plain, join(DIR, 'clip-320k-48k.mp3')])
+  ff([...noise(60, 22050), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '160k', ...plain, join(DIR, 'clip-160k-22k.mp3')])
+  // LAME V0 on independent white noise per channel: ~250 kbps VBR
+  const white = (seed: number) => ['-f', 'lavfi', '-i', `anoisesrc=color=white:amplitude=0.9:duration=60:sample_rate=44100:seed=${seed}`]
+  ff([...white(1), ...white(2), '-filter_complex', '[0][1]amerge=inputs=2', '-ac', '2', '-c:a', 'libmp3lame', '-q:a', '0', ...plain, join(DIR, 'clip-v0-44k.mp3')])
+  const loop = (clip: string, seconds: number, name: string) => {
+    const list = join(DIR, `${name}.txt`)
+    writeFileSync(list, Array.from({ length: Math.ceil(seconds / 60) }, () => `file '${join(DIR, clip)}'`).join('\n'))
+    // (-loglevel fatal: the concat demuxer warns at every clip boundary)
+    ff(['-loglevel', 'fatal', '-f', 'concat', '-safe', '0', '-i', list, '-t', String(seconds), '-c', 'copy', ...plain, join(DIR, name)])
+  }
+  loop('clip-320k-44k.mp3', 14 * 60, 'fit-14m-320k.mp3') // 33.6 MB: fits, stays untouched
+  loop('clip-320k-44k.mp3', 16 * 60, 'fit-16m-320k.mp3') // 38.4 MB → 256 kbps
+  loop('clip-320k-48k.mp3', 22 * 60, 'fit-22m-320k-48k.mp3') // 52.8 MB, 48 kHz → 192 kbps at 48 kHz
+  loop('clip-320k-44k.mp3', 26 * 60, 'fit-26m-320k.mp3') // 62.4 MB, 26 min → too long even at 192 kbps
+  loop('clip-v0-44k.mp3', 20 * 60, 'fit-20m-v0.mp3') // VBR (~250 kbps), ~37 MB → 192 kbps
+  loop('clip-160k-22k.mp3', 10 * 60, 'fit-10m-160k-22k.mp3') // 22.05 kHz, 12 MB: fits
 }
 
 export default async function setup() {
@@ -95,6 +123,7 @@ export default async function setup() {
     ff(['-f', 'lavfi', '-i', 'testsrc2=s=64x64', '-frames:v', '1', join(DIR, 'art.gif')])
   }
   wavFixtures()
+  fitFixtures()
 
   if (process.env.REQUIRE_ALL === '1' && process.env.E2E_WEB_URL) {
     const deadline = Date.now() + 120_000

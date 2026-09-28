@@ -1,6 +1,7 @@
 // v0.3.0 WAV inputs, probe side, run in-process in the test image (same
 // ffmpeg / ffprobe / prlimit / bundled music-metadata child as the probe
-// image). Accepted WAVs are converted to a CBR 320 kbps MP3 that replaces the
+// image). Accepted WAVs are converted to a CBR MP3 (320 kbps when it fits,
+// v0.3.2: else the fit.ts ladder; tests in fit-probe.test.ts) that replaces the
 // WAV under the upload id; everything else is refused with a reason code,
 // and a refused upload's bytes are deleted (`released`).
 import { createHash, randomUUID } from 'node:crypto'
@@ -16,7 +17,8 @@ import { checkMp3Magic } from '@/probe/magic'
 import { clearStaleWork, recoverInterrupted } from '@/probe/main'
 import { runProbe } from '@/probe/probe'
 import { reader } from '@/probe/files'
-import { CONVERT_NICE, CONVERT_TIMEOUT_S, convertArgs, judgeWavFfprobe, MAX_WAV_DURATION_S, scanWav, sniffWav, targetRate, wavFfprobeArgs } from '@/probe/wav'
+import { CONVERT_NICE, CONVERT_TIMEOUT_S, convertArgs, judgeWavFfprobe, scanWav, sniffWav, targetRate, wavFfprobeArgs } from '@/probe/wav'
+import { MAX_DURATION_S } from '@/lib/fit'
 import { MAX_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES, probeRequest, readSpoolResult, spoolResult } from '@/server/spool/protocol'
 import { fx, fxBuf } from './helpers/fixtures'
 import { apicV3, frameV3, frameV4, tag, textV3, zlibBombFrame } from './helpers/id3'
@@ -71,7 +73,7 @@ describe('WAV → 320 kbps MP3 (accepted inputs)', () => {
     it(`${name} → CBR 320k MP3, ${rate} Hz, ${ch} ch; the MP3 replaces the WAV`, async () => {
       const { r, path } = await probeFx(name)
       if (!r.ok || r.type !== 'probe' || !('sha256' in r)) throw new Error(JSON.stringify(r))
-      expect(r).toMatchObject({ inputFormat: 'wav', bitrate: 320000, flags: ['converted_from_wav'] })
+      expect(r).toMatchObject({ inputFormat: 'wav', bitrate: 320000, transcodeKbps: 320, flags: ['converted_from_wav'] })
       expect(r.durationS).toBeGreaterThanOrEqual(34.9)
       expect(r.durationS).toBeLessThanOrEqual(35.2)
       const mp3 = readFileSync(path)
@@ -198,7 +200,7 @@ describe('WAV refusals (bounded, before any decoder where possible)', () => {
     ['384 kHz', () => riff([chunk('fmt ', fmtBody({ rate: 384000, channels: 1 })), chunk('data', pcm())]), 'wav_sample_rate'],
     ['12-bit PCM', () => riff([chunk('fmt ', fmtBody({ rate: 8000, channels: 1, bits: 12, blockAlign: 2, byteRate: 16000 })), chunk('data', pcm())]), 'wav_codec_unsupported'],
     ['10 s', () => fxBuf('short.wav'), 'too_short'],
-    ['16 min (converted MP3 would not fit 35 MB)', () => riff([chunk('fmt ', fmtBody({ rate: 8000, channels: 1, bits: 8 })), chunk('data', Buffer.alloc(16 * 60 * 8000, 0x80))]), 'wav_too_long'],
+    ['24 min 1 s (would not fit 35 MB even at 192 kbps)', () => riff([chunk('fmt ', fmtBody({ rate: 8000, channels: 1, bits: 8 })), chunk('data', Buffer.alloc((24 * 60 + 1) * 8000, 0x80))]), 'wav_too_long'],
     ["'id3 ' chunk with a zlib-compressed frame (bomb)", () => simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', tag(4, [zlibBombFrame(64 * 1024 * 1024)]))] }), 'id3_compressed_frame'],
     ["'id3 ' chunk over 5 MB", () => simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', tag(3, [frameV3('APIC', apicV3('image/png', Buffer.alloc(6 * 1024 * 1024)))]))] }), 'id3_too_large'],
     ["'id3 ' chunk that is not an ID3 tag", () => simpleWav({ seconds: 31, rate: 8000, channels: 1, after: [chunk('id3 ', Buffer.from('<html>not a tag</html>'))] }), 'wav_bad_id3'],
@@ -223,8 +225,8 @@ describe('WAV refusals (bounded, before any decoder where possible)', () => {
     expect((await probeBuf(data, { maxWavBytes: data.length })).r).toMatchObject({ ok: true, inputFormat: 'wav' })
   })
 
-  it('an MP3 over 35 MB is refused by its ACTUAL type even when it was declared (and admitted) as a WAV', async () => {
-    const { r, path } = await probeFx('big-36mb.mp3')
+  it('an MP3 over 100 MB is refused by its ACTUAL type even when it was declared (and admitted) as a WAV', async () => {
+    const { r, path } = await probeFx('big-101mb.mp3')
     expect(r).toMatchObject({ ok: false, error: 'mp3_too_large', released: true })
     expect(existsSync(path)).toBe(false)
   })
@@ -411,14 +413,16 @@ describe('WAV helpers', () => {
 
   it('ffprobe and ffmpeg are forced to the wav demuxer, file/pipe only, one thread; conversion is CBR 320k libmp3lame', () => {
     expect(wavFfprobeArgs('/w/in.wav').join(' ')).toContain('-protocol_whitelist file,pipe -f wav -threads 1')
-    const a = convertArgs('/w/in.wav', '/w/out.mp3', { channels: 6, sampleRate: 96000 }).join(' ')
+    const a = convertArgs('/w/in.wav', '/w/out.mp3', { channels: 6, sampleRate: 96000 }, 320_000).join(' ')
     expect(a).toContain('-protocol_whitelist file,pipe -threads 1 -filter_threads 1 -f wav -i file:/w/in.wav')
     expect(a).toContain('-map 0:a:0 -map_metadata -1')
     expect(a).toContain('-ac 2 -ar 48000 -c:a libmp3lame -b:a 320k -threads 1')
     expect(a.endsWith('-f mp3 file:/w/out.mp3')).toBe(true)
-    const mono = convertArgs('/w/in.wav', '/w/out.mp3', { channels: 1, sampleRate: 44100 }).join(' ')
+    const mono = convertArgs('/w/in.wav', '/w/out.mp3', { channels: 1, sampleRate: 44100 }, 192_000).join(' ')
     expect(mono).not.toContain('-ac ')
     expect(mono).not.toContain('-ar ')
+    expect(mono).toContain('-c:a libmp3lame -b:a 192k -threads 1')
+    expect(() => convertArgs('/w/in.wav', '/w/out.mp3', { channels: 1, sampleRate: 44100 }, 321_000)).toThrow()
   })
 
   it('the conversion runs under prlimit → timeout → nice 19', () => {
@@ -438,6 +442,6 @@ describe('WAV helpers', () => {
     expect(() => judgeWavFfprobe({ ...ok, streams: [{ ...ok.streams[0], channels: 1 }] }, info)).toThrow('wav_header_mismatch')
     expect(() => judgeWavFfprobe({ ...ok, format: { ...ok.format, duration: '70' } }, info)).toThrow('wav_header_mismatch')
     expect(() => judgeWavFfprobe({ ...ok, format: { ...ok.format, format_name: 'mp3' } }, info)).toThrow('not_wav')
-    expect(MAX_WAV_DURATION_S).toBe(900)
+    expect(MAX_DURATION_S).toBe(1440) // v0.3.2: 24 min, the same as an MP3 (was 15 min)
   })
 })

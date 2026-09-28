@@ -16,19 +16,22 @@ import { open, link, rename, unlink, readdir } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { z } from 'zod'
+import { MAX_MP3_UPLOAD_BYTES, MAX_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES } from '../../lib/fit'
 
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 export const UPLOAD_ID_RE = /^[0-9a-f]{32}$/
 export const COVER_FILE_RE = /^cover-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.jpg$/
 export const SHA256_RE = /^[0-9a-f]{64}$/
-// MP3 uploads (and every MP3 the probe publishes into /staging/uploads,
-// including one converted from a WAV) are at most MAX_UPLOAD_BYTES; a WAV
-// upload is at most MAX_WAV_UPLOAD_BYTES (v0.3.0). The web caps a tus upload
-// by its DECLARED type; the probe caps it again by its ACTUAL type (magic
-// bytes), so the effective limit is the stricter of the two.
-export const MAX_UPLOAD_BYTES = 35 * 1024 * 1024
-export const MAX_WAV_UPLOAD_BYTES = 250 * 1024 * 1024
-export const MAX_PROBE_INPUT_BYTES = Math.max(MAX_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES)
+// Every MP3 the probe leaves in /staging/uploads for finalize (an untouched
+// upload, or one it converted from a WAV / re-encoded to fit, v0.3.2) is at
+// most MAX_UPLOAD_BYTES, the final-file cap. The INPUTS are capped by type:
+// an MP3 upload at most MAX_MP3_UPLOAD_BYTES (v0.3.2), a WAV upload at most
+// MAX_WAV_UPLOAD_BYTES (v0.3.0). The web caps a tus upload by its DECLARED
+// type; the probe caps it again by its ACTUAL type (magic bytes), so the
+// effective limit is the stricter of the two. The numbers live in
+// src/lib/fit.ts (shared with the UI texts).
+export { MAX_MP3_UPLOAD_BYTES, MAX_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES } from '../../lib/fit'
+export const MAX_PROBE_INPUT_BYTES = Math.max(MAX_UPLOAD_BYTES, MAX_MP3_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES)
 export const MAX_SPOOL_DOC_BYTES = 64 * 1024
 // Album art (art contract 2026-09-27): the web writes the raw upload to
 // <art-in>/<artId>; the probe writes the re-encoded JPEG to
@@ -59,6 +62,9 @@ export const probeRequest = z
     // probe applies it to an actual WAV on top of MAX_WAV_UPLOAD_BYTES.
     // Optional so a request spooled by an older web still parses.
     maxWavBytes: z.number().int().min(1).max(MAX_WAV_UPLOAD_BYTES).optional(),
+    // v0.3.2, the same for an actual MP3 (caps.maxMp3UploadBytes) on top of
+    // MAX_MP3_UPLOAD_BYTES.
+    maxMp3Bytes: z.number().int().min(1).max(MAX_MP3_UPLOAD_BYTES).optional(),
   })
   .strict()
 
@@ -139,10 +145,15 @@ export const probeOk = z.object({
   cover: z.object({ file: z.string().regex(COVER_FILE_RE), sha256: z.string().regex(SHA256_RE), width: z.number().int(), height: z.number().int() }).nullable(),
   flags: z.array(z.string().max(64)).max(16),
   // v0.3.0: what the member uploaded. 'wav' = the probe converted it to a
-  // 320 kbps MP3, which replaced the WAV under the same upload id; sha256 /
-  // size / durationS / bitrate above describe that MP3. Optional: results
-  // written by an older probe have no field (= mp3).
+  // CBR MP3 (320 kbps; since v0.3.2 the ladder rate in transcodeKbps), which
+  // replaced the WAV under the same upload id; sha256 / size / durationS /
+  // bitrate above describe that MP3. Optional: results written by an older
+  // probe have no field (= mp3).
   inputFormat: z.enum(['mp3', 'wav']).optional(),
+  // v0.3.2: set when the probe ENCODED the MP3 above (a WAV, or an MP3 too
+  // big to fit the final-file cap): its CBR bitrate in kbps (320 / 256 / 192).
+  // Absent = the upload is the member's own MP3, untouched.
+  transcodeKbps: z.number().int().min(8).max(320).optional(),
 })
 
 export const finalizeOk = z.object({
