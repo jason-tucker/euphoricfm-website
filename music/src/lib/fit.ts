@@ -1,4 +1,4 @@
-// Fit-to-size (v0.3.2): every song the portal ships must fit the final-file
+// Fit-to-size (v0.3.5): every song the portal ships must fit the final-file
 // cap, so the probe converts a too-big song DOWN instead of rejecting it.
 //
 // Pure constants and functions (no Node imports): the probe, the web, the
@@ -77,7 +77,7 @@ export function mp3FitsUntouched(size: number, id3Size: number): boolean {
 }
 
 // What the member and the reviewers see about a converted song. `kbps` null
-// on a WAV item probed before v0.3.2 means 320 (the only rate then).
+// on a WAV item probed before v0.3.5 means 320 (the only rate then).
 export function transcodeLabel(inputFormat: string | null | undefined, kbps: number | null | undefined): string | null {
   if (inputFormat === 'wav') return `Converted from WAV (${kbps ?? 320} kbps MP3)`
   if (kbps) return `Re-encoded to ${kbps} kbps to fit`
@@ -85,12 +85,3 @@ export function transcodeLabel(inputFormat: string | null | undefined, kbps: num
 }
 
 export const mibOf = (bytes: number) => Math.round(bytes / MIB)
-
-// "MP3 up to 100 MB or WAV up to 250 MB, up to about 24 minutes. Big files
-// are converted down (as low as 192 kbps) so they fit."
-export function limitsSentence(mp3Bytes = MAX_MP3_UPLOAD_BYTES, wavBytes = MAX_WAV_UPLOAD_BYTES): string {
-  return (
-    `MP3 up to ${mibOf(mp3Bytes)} MB or WAV up to ${mibOf(wavBytes)} MB, up to about ${MAX_DURATION_MIN} minutes. ` +
-    `Big files are converted down (as low as ${MIN_LADDER_BITRATE / 1000} kbps) so they fit.`
-  )
-}

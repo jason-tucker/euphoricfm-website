@@ -34,10 +34,12 @@ export function faqEntries({ limits: l, requestCaps, autoCloseDays }: FaqContext
         'Comments you write on your batch in the portal are copied into the ticket under your name.',
     },
     {
-      // probe.ts (MP3 rules), wav.ts (WAV rules and conversion).
+      // probe.ts (MP3 rules), wav.ts (WAV rules), fit.ts + transcode.ts (fit-to-size re-encode, v0.3.5).
       id: 'file',
       q: 'Which file should I upload?',
-      a: `An MP3 (${l.text.mp3Quality}, ${l.text.mp3Size}) or a WAV (${l.text.wavSize}). ${l.note} Other formats such as ${l.text.refusedShort} are refused: export an MP3 or WAV first.`,
+      a:
+        `The best-quality export you have: an MP3 (${l.text.mp3Quality}, ${l.text.mp3Size}) or a WAV (${l.text.wavSize}), ${l.text.mp3Length} long. ` +
+        `${l.note} Other formats such as ${l.text.refusedShort} are refused: export an MP3 or WAV first.`,
     },
     {
       // Probe rejections are shown on the file card (messages.ts PROBE_ERROR_TEXT).

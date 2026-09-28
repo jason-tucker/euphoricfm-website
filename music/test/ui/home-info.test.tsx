@@ -7,8 +7,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SITE_LINKS } from '@/components/site-links'
 import { ITEM_STATUS } from '@/components/messages'
 import { SubmitPanel } from '@/components/submit/SubmitPanel'
-import { MAX_DURATION_S, MIN_BITRATE, MIN_DURATION_S } from '@/probe/probe'
-import { MAX_WAV_DURATION_S, OUT_BITRATE } from '@/probe/wav'
+import { MAX_DURATION_S, MAX_MP3_UPLOAD_BYTES, MIN_LADDER_BITRATE } from '@/lib/fit'
+import { MIN_BITRATE, MIN_DURATION_S } from '@/probe/probe'
 import { MAX_EDGE, MAX_PIXELS } from '@/probe/cover'
 import { DEFAULT_CAPS, MB, type Caps } from '@/server/settings-defaults'
 import { uploadLimitsForUi } from '@/server/ui/limits'
@@ -52,29 +52,40 @@ beforeEach(() => {
 describe('uploadLimitsForUi (the one source of upload figures)', () => {
   it('reads the compiled constants and the default caps', () => {
     const l = uploadLimitsForUi(DEFAULT_CAPS)
-    expect(l.mp3MaxBytes).toBe(DEFAULT_CAPS.maxUploadBytes)
+    expect(l.mp3MaxBytes).toBe(DEFAULT_CAPS.maxMp3UploadBytes)
+    expect(l.mp3MaxBytes).toBe(MAX_MP3_UPLOAD_BYTES)
     expect(l.wavMaxBytes).toBe(DEFAULT_CAPS.maxWavUploadBytes)
     expect(l.maxMinutes).toBe(MAX_DURATION_S / 60)
-    expect(l.wavMaxMinutes).toBe(MAX_WAV_DURATION_S / 60)
     expect(l.minSeconds).toBe(MIN_DURATION_S)
     expect(l.minKbps).toBe(MIN_BITRATE / 1000)
-    expect(l.wavOutKbps).toBe(OUT_BITRATE / 1000)
+    expect(l.ladderKbps).toEqual([320, 256, 192])
+    expect(l.minFitKbps).toBe(MIN_LADDER_BITRATE / 1000)
     expect(l.maxItemsPerBatch).toBe(DEFAULT_CAPS.maxItemsPerBatch)
-    expect(l.text.mp3Size).toBe(`up to ${DEFAULT_CAPS.maxUploadBytes / MB} MB`)
+    expect(l.text.mp3Size).toBe('up to 100 MB')
     expect(l.text.wavSize).toBe(`up to ${DEFAULT_CAPS.maxWavUploadBytes / MB} MB`)
     expect(l.text.mp3Length).toBe(`${MIN_DURATION_S} seconds to ${MAX_DURATION_S / 60} minutes`)
-    expect(l.note).toContain(`${OUT_BITRATE / 1000} kbps MP3`)
+    expect(l.text.mp3Length).toBe('30 seconds to 24 minutes')
+    expect(l.text.wavLength).toBe('30 seconds to 24 minutes')
+    // Fit-to-size (v0.3.5): the ladder and the untouched-MP3 promise.
+    expect(l.note).toContain('as low as 192 kbps')
+    expect(l.note).toContain('320 kbps for songs up to 14 minutes, 256 kbps up to 18, 192 kbps up to 24')
+    expect(l.note).toContain('An MP3 that already fits is never changed.')
+    expect(l.text.wavConvert).toBe('convert it to a 320, 256 or 192 kbps MP3, the highest that fits')
+    expect(l.text.tooLong).toBe('MP3s over 100 MB or WAVs over 250 MB, songs under 30 seconds, and songs over 24 minutes (the most that fits even at 192 kbps).')
     // Cover art: the pixel cap the probe enforces (dimsAcceptable) is shown, not just the edge.
     expect(l.text.artSize).toContain(`${MAX_PIXELS / 1_000_000} megapixels`)
     expect(l.text.artSize).toContain(`${MAX_EDGE} px on a side`)
   })
 
-  it('a lowered WAV cap is shown; the MP3 cap is the enforced compiled default; nothing exceeds the defaults', () => {
-    // loadCaps skips a saved maxUploadBytes (tus + probe enforce the default), so the page must too.
-    expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxUploadBytes: 20 * MB } as unknown as Caps).mp3MaxBytes).toBe(DEFAULT_CAPS.maxUploadBytes)
+  it('lowered MP3 / WAV caps are shown; the final-file cap is not an upload limit; nothing exceeds the defaults', () => {
+    // maxUploadBytes is the 35 MB final-file cap (loadCaps skips a saved one): it never changes the MP3 upload limit.
+    expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxUploadBytes: 20 * MB } as unknown as Caps).mp3MaxBytes).toBe(DEFAULT_CAPS.maxMp3UploadBytes)
+    expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxMp3UploadBytes: 60 * MB } as unknown as Caps).text.mp3Size).toBe('up to 60 MB')
+    expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxMp3UploadBytes: 60 * MB } as unknown as Caps).text.tooLong).toContain('MP3s over 60 MB')
+    expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxMp3UploadBytes: 999 * MB } as unknown as Caps).mp3MaxBytes).toBe(DEFAULT_CAPS.maxMp3UploadBytes)
     expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxWavUploadBytes: 100 * MB } as unknown as Caps).text.wavSize).toBe('up to 100 MB')
     expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxWavUploadBytes: 999 * MB } as unknown as Caps).wavMaxBytes).toBe(DEFAULT_CAPS.maxWavUploadBytes)
-    expect(uploadLimitsForUi({ maxUploadBytes: 'x' } as unknown as Caps).mp3MaxBytes).toBe(DEFAULT_CAPS.maxUploadBytes)
+    expect(uploadLimitsForUi({ maxMp3UploadBytes: 'x' } as unknown as Caps).mp3MaxBytes).toBe(DEFAULT_CAPS.maxMp3UploadBytes)
     expect(uploadLimitsForUi(null).maxItemsPerBatch).toBe(DEFAULT_CAPS.maxItemsPerBatch)
   })
 })
@@ -92,18 +103,19 @@ describe('home page, signed out', async () => {
     expect(screen.getByRole('heading', { name: 'What you’ll need' })).toBeTruthy()
     const steps = within(screen.getByTestId('steps')).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)
     expect(steps).toEqual(['Step 1: Sign in with Discord', 'Step 2: Upload your songs', 'Step 3: Managers review', 'Step 4: On air'])
+    expect(screen.getByTestId('steps').textContent).toContain(uploadLimitsForUi(DEFAULT_CAPS).text.fitShort)
     const legend = screen.getByTestId('status-legend').textContent
     for (const s of ['pending', 'approved', 'applying', 'verifying', 'live', 'denied']) expect(legend).toContain(ITEM_STATUS[s]!.label)
     expect(screen.queryByTestId('action-cards')).toBeNull()
   })
 
-  it('files and limits are the helper’s text (follows a lowered WAV cap, not an unenforced MP3 one)', async () => {
-    state.caps = { maxUploadBytes: 20 * MB, maxWavUploadBytes: 100 * MB, maxItemsPerBatch: 12 }
+  it('files and limits are the helper’s text (follows lowered MP3 / WAV caps, not the final-file cap)', async () => {
+    state.caps = { maxUploadBytes: 20 * MB, maxMp3UploadBytes: 80 * MB, maxWavUploadBytes: 100 * MB, maxItemsPerBatch: 12 }
     render(await Home())
     const l = uploadLimitsForUi({ ...DEFAULT_CAPS, ...state.caps } as unknown as Caps)
     const mp3 = screen.getByTestId('limits-mp3').textContent
-    for (const t of [l.text.mp3Size, l.text.mp3Quality, l.text.mp3Length, l.text.mp3Tags]) expect(mp3).toContain(t)
-    expect(mp3).toContain(`up to ${DEFAULT_CAPS.maxUploadBytes / MB} MB`)
+    for (const t of [l.text.mp3Size, l.text.mp3Quality, l.text.mp3Length, l.text.mp3Tags, l.text.mp3Fit]) expect(mp3).toContain(t)
+    expect(mp3).toContain('up to 80 MB')
     expect(mp3).not.toContain('up to 20 MB')
     const wav = screen.getByTestId('limits-wav').textContent
     for (const t of [l.text.wavSize, l.text.wavFormat, l.text.wavLength, l.text.wavConvert]) expect(wav).toContain(t)
@@ -151,6 +163,8 @@ describe('home page, signed out', async () => {
     expect(text('how-long')).toContain('depends on the managers')
     expect(text('how-long')).toContain('after 9 days without activity')
     expect(text('file')).toContain(uploadLimitsForUi(DEFAULT_CAPS).note)
+    expect(text('file')).toContain('re-encoded')
+    expect(text('file')).toContain('30 seconds to 24 minutes')
     expect(text('edits')).toContain('4 edit and 6 removal requests a day')
     expect(text('edits')).toContain('one open edit and one open removal request per song')
     expect(text('ticket')).toContain('mentions only you')

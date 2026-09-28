@@ -1,4 +1,4 @@
-// v0.3.2 fit-to-size, probe side, run in-process in the test image (same
+// v0.3.5 fit-to-size, probe side, run in-process in the test image (same
 // ffmpeg / ffprobe / prlimit / bundled music-metadata child as the probe
 // image). The final MP3 must fit MAX_UPLOAD_BYTES (35 MiB) with its cover and
 // tags: an MP3 that already fits is kept byte for byte; a bigger MP3 (or any
@@ -16,7 +16,6 @@ import {
   AUDIO_PAYLOAD_BYTES,
   BITRATE_LADDER,
   CONTAINER_MARGIN_BYTES,
-  limitsSentence,
   MAX_DURATION_S,
   MAX_FINAL_COVER_BYTES,
   MAX_MP3_UPLOAD_BYTES,
@@ -149,11 +148,10 @@ describe('fit.ts: the budget and the ladder (one shared function for probe, UI a
     expect(t.length - MAX_FINAL_COVER_BYTES).toBeLessThanOrEqual(TAG_MARGIN_BYTES)
   })
 
-  it('labels and the limits sentence', () => {
+  it('labels', () => {
     expect(transcodeLabel('wav', 256)).toBe('Converted from WAV (256 kbps MP3)')
     expect(transcodeLabel('mp3', 192)).toBe('Re-encoded to 192 kbps to fit')
     expect(transcodeLabel('mp3', null)).toBeNull()
-    expect(limitsSentence()).toBe('MP3 up to 100 MB or WAV up to 250 MB, up to about 24 minutes. Big files are converted down (as low as 192 kbps) so they fit.')
   })
 
   it('the ticket card says so, and keeps the note whole when the name is long', () => {
