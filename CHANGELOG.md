@@ -5,6 +5,12 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.19.2] — 2026-09-28 — tickets.euphoric.gg: 404 the machine-only APIs at Caddy
+
+### Fixed
+- **`tickets.euphoric.gg` no longer exposes `/api/internal/*` or `/api/v1/*`.** The `.gg` Caddy block now answers a plain 404 (site headers kept) for `path_regexp (?i)^/api/(internal|v1)(/.*)?$` before proxying to `tickets-web:3000`, matching rule #5 of the `tickets.euphoric.fm` Cloudflare tunnel, so both hostnames expose the same surface. Before this, `/api/internal/notify` was reachable on `.gg` (GET 405 / POST 401, guarded only by `INTERNAL_TOKEN`). The bot and the music portal call these routes over the private docker networks at `tickets-web:3000`, never through the public hostnames, so nothing legitimate is affected. The match runs on Caddy's decoded, cleaned path, so encoded (`/api/%69nternal`, `/api/internal%2fnotify`), dot-segment and doubled-slash forms are blocked too; `/api/internalx` and `/api/v10` are not.
+- `test/caddy-tickets-internal-block.sh` — runs the Caddyfile in `caddy:2.10-alpine` next to a stub `tickets-web` on a throwaway docker network and asserts every blocked form (including the bypass attempts) gets 404 without reaching the stub, and that normal pages, auth and `/_next/static` still proxy through.
+
 ## [0.19.1] — 2026-09-27 — Listeners graph shows peak listeners
 
 - The Listeners graph now plots each bucket's **peak** listener count (the full number tuned in at the busiest moment of that day/hour) instead of the average across it. The table's first value column is now Peak, and Avg stays as the second column.
