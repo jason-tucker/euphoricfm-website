@@ -3,6 +3,7 @@
 // archive/restore and recovery (P3/P4) plug into the same runner.
 
 import { and, eq, isNull, sql } from 'drizzle-orm'
+import { transcodeLabel } from '../lib/fit'
 import type { AzuraCastClient } from '../server/azuracast/client'
 import { checkContract } from '../server/azuracast/contract'
 import { audit } from '../server/audit'
@@ -74,8 +75,8 @@ function fromTickets(e: unknown): never {
 // mount). Only a result that the probe stamped as coming from the in-web
 // inbox with type 'probe' is accepted for an upload item.
 //
-// Staging accounting (v0.3.0): a WAV the probe converted was replaced by its
-// MP3, so the upload row's `length` (what the per-user and global staging
+// Staging accounting (v0.3.0): a WAV the probe converted (or, v0.3.5, an MP3
+// it re-encoded to fit) was replaced by its MP3, so the upload row's `length` (what the per-user and global staging
 // caps sum) becomes the MP3's size; a rejection whose bytes the probe deleted
 // (`released`) marks the upload expired. Both only in the same transaction
 // as the item's own probing → pending/rejected transition.
@@ -114,6 +115,7 @@ export async function collectProbeResults(ctx: WorkerCtx): Promise<number> {
             durationS: Math.round(ok.durationS),
             bitrate: ok.bitrate,
             inputFormat: ok.inputFormat ?? 'mp3',
+            transcodeKbps: ok.transcodeKbps ?? null,
             prefill: ok.tags,
             title: ok.tags.title,
             artist: ok.tags.artist,
@@ -126,7 +128,8 @@ export async function collectProbeResults(ctx: WorkerCtx): Promise<number> {
           .where(and(eq(items.id, it.id), eq(items.status, 'probing')))
           .returning({ id: items.id })
         // Only a plausible MP3 size (what finalize accepts) re-charges the row.
-        if (moved.length === 1 && ok.inputFormat === 'wav' && it.uploadId && ok.size >= 1 && ok.size <= MAX_UPLOAD_BYTES) {
+        const replaced = ok.inputFormat === 'wav' || ok.transcodeKbps !== undefined
+        if (moved.length === 1 && replaced && it.uploadId && ok.size >= 1 && ok.size <= MAX_UPLOAD_BYTES) {
           await tx.update(uploads).set({ length: ok.size }).where(and(eq(uploads.id, it.uploadId), eq(uploads.status, 'attached')))
         }
       })
@@ -150,6 +153,16 @@ export async function collectProbeResults(ctx: WorkerCtx): Promise<number> {
 
 // ------------------------------------------------------------- tickets ---
 
+// One card line per pending item (≤ 200 chars). A song the probe encoded (a
+// WAV, or an MP3 re-encoded to fit, v0.3.5) says so, so the managers know
+// before they listen; the note is kept whole and the name is cut instead.
+export function ticketLine(i: Pick<typeof items.$inferSelect, 'id' | 'kind' | 'newArtistName' | 'artist' | 'title' | 'inputFormat' | 'transcodeKbps'>): string {
+  if (i.kind === 'new_artist') return `#${i.id} New artist: ${i.newArtistName ?? '?'}`.slice(0, 200)
+  const note = transcodeLabel(i.inputFormat, i.transcodeKbps)
+  const suffix = note ? ` (${note})` : ''
+  return `#${i.id} ${i.artist ?? '?'} - ${i.title ?? '?'}`.slice(0, 200 - suffix.length) + suffix
+}
+
 export async function ticketOpen(ctx: WorkerCtx, payload: { batchId: number }) {
   const b = await ctx.db.query.batches.findFirst({ where: eq(batches.id, payload.batchId) })
   if (!b) throw new Permanent('batch missing')
@@ -160,7 +173,7 @@ export async function ticketOpen(ctx: WorkerCtx, payload: { batchId: number }) {
   const lines = its
     .filter((i) => i.status === 'pending')
     .slice(0, 24)
-    .map((i) => (i.kind === 'new_artist' ? `#${i.id} New artist: ${i.newArtistName ?? '?'}` : `#${i.id} ${i.artist ?? '?'} - ${i.title ?? '?'}`).slice(0, 200))
+    .map(ticketLine)
   let res
   try {
     res = await ctx.tickets.openTicket({

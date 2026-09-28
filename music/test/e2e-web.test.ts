@@ -157,10 +157,10 @@ describe.skipIf(!E2E())('tus uploads', () => {
     expect((await req(a, `/api/uploads/${id}`)).status).toBe(405)
   })
 
-  it('refuses Upload-Length −1 / >35 MB / missing, defer-length, concatenation, creation bodies', async () => {
+  it('refuses Upload-Length −1 / >100 MB / missing, defer-length, concatenation, creation bodies', async () => {
     const a = await loginOk({ id: newId() })
     expect((await tusCreate(a, -1)).status).toBe(400)
-    expect((await tusCreate(a, 35 * 1024 * 1024 + 1)).status).toBe(413)
+    expect((await tusCreate(a, 100 * 1024 * 1024 + 1)).status).toBe(413)
     expect((await req(a, '/api/uploads', { method: 'POST', headers: { 'tus-resumable': '1.0.0', 'upload-defer-length': '1' } })).status).toBe(400)
     expect((await req(a, '/api/uploads', { method: 'POST', headers: { 'tus-resumable': '1.0.0', 'upload-concat': 'final;/api/uploads/a /api/uploads/b' } })).status).toBe(400)
     expect((await req(a, '/api/uploads', { method: 'POST', headers: { 'tus-resumable': '1.0.0' } })).status).toBe(400)

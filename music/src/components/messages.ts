@@ -2,6 +2,8 @@
 // probe's rejection codes, and item/batch/request statuses. Pure; shared by
 // server and client components.
 
+import { MAX_DURATION_MIN, MAX_MP3_UPLOAD_BYTES, MAX_UPLOAD_BYTES, mibOf, MIN_LADDER_BITRATE } from '@/lib/fit'
+
 export const ERROR_TEXT: Record<string, string> = {
   unauthorized: 'Your session has ended. Sign in again to continue.',
   forbidden: "You don't have permission to do that.",
@@ -102,7 +104,7 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   unexpected_streams: 'This file contains extra streams that are not allowed.',
   bitrate_too_low: 'The bitrate is too low. Upload at least 128 kbps.',
   too_short: 'The song is shorter than 30 seconds.',
-  too_long: 'The song is longer than 20 minutes.',
+  too_long: `The song is longer than ${MAX_DURATION_MIN} minutes, the most that fits even when converted down to ${MIN_LADDER_BITRATE / 1000} kbps.`,
   no_duration: "The file's length could not be read.",
   id3_too_large: 'The embedded tags or cover art are too large (over 5 MB).',
   ffprobe_timeout: 'Checking the file took too long. The file may be damaged.',
@@ -110,7 +112,12 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   metadata_timeout: 'Reading the tags took too long. The file may be damaged.',
   metadata_unparseable: "The file's tags could not be read.",
   input_size: 'The file is empty or larger than the upload limit.',
-  mp3_too_large: 'MP3 files can be at most 35 MB.',
+  mp3_too_large: `MP3 files can be at most ${mibOf(MAX_MP3_UPLOAD_BYTES)} MB.`,
+  // Fit-to-size re-encode of a too-big MP3 (v0.3.5)
+  reencode_timeout: 'Converting the MP3 down to fit took too long. Try again later, or upload a smaller MP3.',
+  reencode_failed: "The MP3 couldn't be converted down to fit. Export it again, or upload a smaller MP3.",
+  reencode_invalid: "The MP3 couldn't be converted to a valid smaller MP3. Export it again, or upload a smaller MP3.",
+  reencoded_too_large: `The converted MP3 would still be larger than ${mibOf(MAX_UPLOAD_BYTES)} MB. Upload a shorter song.`,
   bad_id3_header: "The file's ID3 tag header is damaged.",
   id3_compressed_frame: "The file's tags use compressed frames, which are not accepted. Re-save the tags without compression.",
   id3_encrypted_frame: "The file's tags contain encrypted frames, which are not accepted.",
@@ -139,11 +146,11 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   wav_bad_id3: "The WAV file's ID3 tag section is damaged.",
   wav_not_single_stream: 'The WAV file must contain exactly one audio stream.',
   wav_header_mismatch: "The WAV file's header does not match its audio. Export it again.",
-  wav_too_long: 'WAV files can be at most 15 minutes long (the converted 320 kbps MP3 must fit in 35 MB). For a longer song, upload an MP3.',
+  wav_too_long: `WAV files can be at most ${MAX_DURATION_MIN} minutes long, the most that fits even when converted down to ${MIN_LADDER_BITRATE / 1000} kbps.`,
   convert_timeout: 'Converting the WAV to MP3 took too long. Try again later, or upload an MP3.',
   convert_failed: "The WAV couldn't be converted to MP3. Export it again, or upload an MP3.",
   convert_invalid: "The WAV couldn't be converted to a valid MP3. Export it again, or upload an MP3.",
-  converted_too_large: 'The converted MP3 would be larger than 35 MB. Upload a shorter song, or an MP3.',
+  converted_too_large: `The converted MP3 would be larger than ${mibOf(MAX_UPLOAD_BYTES)} MB. Upload a shorter song.`,
   input_size_mismatch: 'The upload was incomplete. Upload the file again.',
   input_missing: 'The upload could not be found. Upload the file again.',
   input_not_regular: 'The upload could not be read. Upload the file again.',

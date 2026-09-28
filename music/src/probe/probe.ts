@@ -1,11 +1,15 @@
 // 'probe' requests (from in-web only): plan §3.4 steps 1–6, plus (v0.3.0)
-// WAV inputs, which are checked and converted to a 320 kbps MP3 (wav.ts).
+// WAV inputs, which are checked and converted to a CBR MP3 (wav.ts), and
+// (v0.3.5) fit-to-size: an MP3 whose audio does not fit the final-file cap
+// is re-encoded to a smaller CBR MP3 (transcode.ts). The rules and numbers
+// are in src/lib/fit.ts.
 //
 // The input type is decided by magic bytes on the probe-private copy, never
 // by the upload's name or declared type: RIFF....WAVE → the WAV path,
 // anything else → the MP3 path. Each path applies its own size cap (MP3
-// ≤ MAX_UPLOAD_BYTES, WAV ≤ the request's maxWavBytes ≤ MAX_WAV_UPLOAD_BYTES),
-// on top of the web's cap by declared type.
+// ≤ the request's maxMp3Bytes ≤ MAX_MP3_UPLOAD_BYTES, WAV ≤ the request's
+// maxWavBytes ≤ MAX_WAV_UPLOAD_BYTES), on top of the web's cap by declared
+// type.
 //
 // A rejected upload's bytes are useless (no preview, never submitted), so the
 // probe deletes them from /staging/uploads at once and says so (`released`);
@@ -15,29 +19,22 @@
 import { chmod, mkdtemp, readFile, rename, rm, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { MAX_PROBE_INPUT_BYTES, MAX_UPLOAD_BYTES, MAX_WAV_UPLOAD_BYTES, type ProbeRequest, type SpoolResult } from '../server/spool/protocol'
+import { AUDIO_BUDGET_BYTES, MAX_DURATION_S, mp3FitsUntouched, pickBitrate } from '../lib/fit'
+import { MAX_MP3_UPLOAD_BYTES, MAX_PROBE_INPUT_BYTES, MAX_WAV_UPLOAD_BYTES, type ProbeRequest, type SpoolResult } from '../server/spool/protocol'
 import { imageDims, reencodeCover } from './cover'
 import { runLimited } from './exec'
 import { copyNoFollowHashed, ProbeReject, publishFile, reader, sha256File } from './files'
 import { MAX_TAG_BYTES, scanId3 } from './id3scan'
 import { checkMp3Magic, id3v2TagSize } from './magic'
-import {
-  CONVERT_NICE,
-  CONVERT_TIMEOUT_S,
-  CONVERT_VMEM_KB,
-  convertArgs,
-  judgeWavFfprobe,
-  OUT_BITRATE,
-  scanWav,
-  sniffWav,
-  wavFfprobeArgs,
-  type WavInfo,
-} from './wav'
+import { mp3TranscodeArgs } from './transcode'
+import { CONVERT_NICE, CONVERT_TIMEOUT_S, CONVERT_VMEM_KB, convertArgs, judgeWavFfprobe, scanWav, sniffWav, wavFfprobeArgs, type WavInfo } from './wav'
 
 export type ProbeDirs = { uploads: string; work: string; mmChild: string }
 
 export const MIN_DURATION_S = 30
-export const MAX_DURATION_S = 20 * 60
+// v0.3.5: the longest song that fits at the ladder's floor (fit.ts, 24 min),
+// for MP3 and WAV alike (was 20 min for an MP3).
+export { MAX_DURATION_S }
 export const MIN_BITRATE = 128_000
 
 export function ffprobeArgs(file: string): string[] {
@@ -61,6 +58,8 @@ const ffprobeOut = z.object({
         codec_type: z.string(),
         codec_name: z.string().optional(),
         bit_rate: z.string().optional(),
+        sample_rate: z.string().optional(),
+        channels: z.number().int().optional(),
         disposition: z.object({ attached_pic: z.number().optional() }).passthrough().optional(),
       })
       .passthrough(),
@@ -68,7 +67,12 @@ const ffprobeOut = z.object({
   format: z.object({ format_name: z.string(), duration: z.string().optional(), bit_rate: z.string().optional() }).passthrough(),
 })
 
-export function judgeFfprobe(json: unknown): { durationS: number; bitrate: number } {
+// sampleRate / channels: what a re-encode needs (null if ffprobe did not say).
+export type Mp3Info = { durationS: number; bitrate: number; sampleRate: number | null; channels: number | null }
+
+// `maxDurationS`: MAX_DURATION_S for an upload; the probe's own encoded
+// output is judged with a few seconds' allowance (its -t cap).
+export function judgeFfprobe(json: unknown, maxDurationS: number = MAX_DURATION_S): Mp3Info {
   const r = ffprobeOut.safeParse(json)
   if (!r.success) throw new ProbeReject('ffprobe_unparseable')
   const { streams, format } = r.data
@@ -80,15 +84,68 @@ export function judgeFfprobe(json: unknown): { durationS: number; bitrate: numbe
   const durationS = Number(format.duration)
   if (!Number.isFinite(durationS)) throw new ProbeReject('no_duration')
   if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
-  if (durationS > MAX_DURATION_S) throw new ProbeReject('too_long')
+  if (durationS > maxDurationS) throw new ProbeReject('too_long')
   const bitrate = Number(audio[0]!.bit_rate ?? format.bit_rate)
   if (!Number.isFinite(bitrate) || bitrate < MIN_BITRATE) throw new ProbeReject('bitrate_too_low')
-  return { durationS, bitrate: Math.round(bitrate) }
+  const sampleRate = Number(audio[0]!.sample_rate)
+  const channels = audio[0]!.channels
+  return {
+    durationS,
+    bitrate: Math.round(bitrate),
+    sampleRate: Number.isInteger(sampleRate) && sampleRate > 0 ? sampleRate : null,
+    channels: channels !== undefined && channels > 0 ? channels : null,
+  }
+}
+
+// The frames the mp3 demuxer actually reads, counted over the WHOLE file
+// (demux only, nothing decoded): the duration a decode would really produce.
+// ffprobe's -show_format duration comes from the upload's own Xing / Info
+// header when it has one, and a forged frame count there makes a long file
+// look short; a file without one gets an estimate that trailing data inflates.
+export function countFramesArgs(file: string): string[] {
+  return [
+    '-hide_banner',
+    '-v', 'error',
+    '-protocol_whitelist', 'file,pipe',
+    '-f', 'mp3',
+    '-threads', '1',
+    '-count_packets',
+    '-select_streams', 'a:0',
+    '-show_entries', 'stream=nb_read_packets,sample_rate',
+    '-print_format', 'json',
+    `file:${file}`,
+  ]
+}
+
+const countOut = z.object({
+  streams: z.array(z.object({ nb_read_packets: z.string().regex(/^\d{1,9}$/), sample_rate: z.string().regex(/^\d{1,6}$/) }).passthrough()).length(1),
+})
+
+// Counted duration in seconds: frames × samples per frame (1152 for MPEG-1
+// Layer III, 576 for MPEG-2 / 2.5) / rate. The rate must be the one ffprobe
+// reported for the stream. ~1.3 s for 62 MB on the test host.
+export const COUNT_TIMEOUT_S = 60
+export async function countedDurationS(file: string, work: string, sampleRate: number): Promise<number> {
+  const fp = await runLimited('ffprobe', countFramesArgs(file), { timeoutS: COUNT_TIMEOUT_S, vmemKb: 524288, cwd: work, nice: CONVERT_NICE })
+  if (fp.timedOut) throw new ProbeReject('ffprobe_timeout')
+  if (fp.code !== 0) throw new ProbeReject('not_mp3')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fp.stdout.toString('utf8'))
+  } catch {
+    throw new ProbeReject('ffprobe_unparseable')
+  }
+  const r = countOut.safeParse(parsed)
+  if (!r.success) throw new ProbeReject('ffprobe_unparseable')
+  const s = r.data.streams[0]!
+  if (Number(s.sample_rate) !== sampleRate) throw new ProbeReject('not_mp3')
+  const frames = Number(s.nb_read_packets)
+  return (frames * (sampleRate >= 32000 ? 1152 : 576)) / sampleRate
 }
 
 // ffprobe, forced mp3 demuxer, file/pipe protocols only, 1 thread, timeout
 // 20 s, address-space limit; stdin is empty.
-async function ffprobeMp3(file: string, work: string): Promise<{ durationS: number; bitrate: number }> {
+async function ffprobeMp3(file: string, work: string, maxDurationS: number = MAX_DURATION_S): Promise<Mp3Info> {
   const fp = await runLimited('ffprobe', ffprobeArgs(file), { timeoutS: 20, vmemKb: 524288, cwd: work })
   if (fp.timedOut) throw new ProbeReject('ffprobe_timeout')
   if (fp.code !== 0) throw new ProbeReject('not_mp3')
@@ -98,7 +155,7 @@ async function ffprobeMp3(file: string, work: string): Promise<{ durationS: numb
   } catch {
     throw new ProbeReject('ffprobe_unparseable')
   }
-  return judgeFfprobe(parsed)
+  return judgeFfprobe(parsed, maxDurationS)
 }
 
 const mmOut = z.object({
@@ -154,25 +211,76 @@ async function publishCover(job: Job, tags: MmOut, flags: string[]): Promise<Cov
 
 const tagsOf = (t: MmOut) => ({ title: t.title, artist: t.artist, album: t.album, genre: t.genre, year: t.year ?? null })
 
+// The MPEG sample rates an MP3 may have (MPEG-1, -2, -2.5).
+const MP3_RATES = new Set([48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000])
+
 async function probeMp3(job: Job, copy: string, sha256: string, size: number): Promise<SpoolResult> {
   const read = reader(copy)
-  // 1. magic bytes, then the MP3 size cap (the upload may have been declared
-  //    a WAV, which the web allows up to 250 MB)
+  // 1. magic bytes, then the MP3 input cap (the upload may have been
+  //    declared a WAV, which the web allows up to 250 MB)
   const magic = await checkMp3Magic(read, size)
   if (!magic.ok) throw new ProbeReject(magic.reason)
-  if (size > MAX_UPLOAD_BYTES) throw new ProbeReject('mp3_too_large')
+  const cap = Math.min(job.req.maxMp3Bytes ?? MAX_MP3_UPLOAD_BYTES, MAX_MP3_UPLOAD_BYTES)
+  if (size > cap) throw new ProbeReject('mp3_too_large')
   // 2. ID3v2: declared size ≤ 5 MB, no compressed/encrypted frames
   if (magic.id3Size > 0) {
     if (magic.id3Size > MAX_TAG_BYTES) throw new ProbeReject('id3_too_large')
     const v = scanId3(await read(0, magic.id3Size), magic.id3Size)
     if (!v.ok) throw new ProbeReject(v.reason)
   }
-  // 3. ffprobe
-  const { durationS, bitrate } = await ffprobeMp3(copy, job.work)
-  // 4. music-metadata
+  // 3. ffprobe (bounds the duration BEFORE anything decodes the audio)
+  const info = await ffprobeMp3(copy, job.work)
+  // 4. music-metadata: tags and cover always come from the ORIGINAL file
   const tags = await readTags(copy, job.work, job.dirs)
-  // 5. cover
   const flags: string[] = []
+  // 5. an MP3 that already fits stays exactly as uploaded (no re-encode)
+  if (mp3FitsUntouched(size, magic.id3Size)) {
+    const cover = await publishCover(job, tags, flags)
+    return {
+      v: 1,
+      id: job.req.id,
+      type: 'probe',
+      source: 'in-web',
+      ok: true,
+      sha256,
+      size,
+      durationS: Math.round(info.durationS * 10) / 10,
+      bitrate: info.bitrate,
+      tags: tagsOf(tags),
+      cover,
+      flags,
+      inputFormat: 'mp3',
+    }
+  }
+  // 6. too big: re-encode (transcode.ts) at the highest ladder rate that fits.
+  //    The duration that picks the rate (and bounds the decode) is COUNTED
+  //    from the frames the demuxer reads, not taken from the upload's own
+  //    header: a forged Xing frame count would otherwise pass a 40-min file
+  //    as 10 min into a decode that only the -t cap stops, and trailing data
+  //    would inflate the estimate of a file without one.
+  if (info.sampleRate === null || !MP3_RATES.has(info.sampleRate) || info.channels === null || info.channels > 2) throw new ProbeReject('not_mp3')
+  const durationS = await countedDurationS(copy, job.work, info.sampleRate)
+  if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
+  const bitrate = pickBitrate(durationS)
+  if (bitrate === null) throw new ProbeReject('too_long')
+  const out = join(job.work, 'out.mp3')
+  const c = await runLimited('ffmpeg', mp3TranscodeArgs(copy, out, { sampleRate: info.sampleRate, channels: info.channels }, bitrate), {
+    timeoutS: CONVERT_TIMEOUT_S,
+    vmemKb: CONVERT_VMEM_KB,
+    cwd: job.work,
+    nice: CONVERT_NICE,
+  })
+  if (c.timedOut) throw new ProbeReject('reencode_timeout')
+  if (c.code !== 0) throw new ProbeReject('reencode_failed')
+  // 7. the MP3 must pass as an upload would, at the chosen rate, and as long
+  //    as the original's counted frames (the encoder's delay / padding
+  //    frames and a resample shift it a little, hence the tolerance)
+  const tolerance = Math.max(2, durationS * 0.02)
+  const enc = await checkEncoded(job, out, bitrate, durationS, tolerance, { tooLarge: 'reencoded_too_large', invalid: 'reencode_invalid' })
+  // 8. the MP3 replaces the original under the same upload id
+  const outSha = await publishEncoded(job, out)
+  // 9. cover (from the original's tags), last
+  flags.push('reencoded_to_fit')
   const cover = await publishCover(job, tags, flags)
   return {
     v: 1,
@@ -180,15 +288,51 @@ async function probeMp3(job: Job, copy: string, sha256: string, size: number): P
     type: 'probe',
     source: 'in-web',
     ok: true,
-    sha256,
-    size,
-    durationS: Math.round(durationS * 10) / 10,
-    bitrate,
+    sha256: outSha,
+    size: enc.size,
+    durationS: Math.round(enc.durationS * 10) / 10,
+    bitrate: enc.bitrate,
     tags: tagsOf(tags),
     cover,
     flags,
     inputFormat: 'mp3',
+    transcodeKbps: bitrate / 1000,
   }
+}
+
+// The probe's own encoder output (WAV conversion or MP3 re-encode) must fit
+// the audio budget and pass every check an uploaded MP3 passes, at exactly
+// the chosen CBR rate, and last as long as its source (± toleranceS).
+async function checkEncoded(
+  job: Job,
+  out: string,
+  bitrate: number,
+  sourceDurationS: number,
+  toleranceS: number,
+  codes: { tooLarge: string; invalid: string },
+): Promise<{ size: number; durationS: number; bitrate: number }> {
+  const size = (await stat(out)).size
+  if (size > AUDIO_BUDGET_BYTES) throw new ProbeReject(codes.tooLarge)
+  const m = await checkMp3Magic(reader(out), size)
+  if (!m.ok || m.id3Size !== 0) throw new ProbeReject(codes.invalid)
+  let mp3: Mp3Info
+  try {
+    mp3 = await ffprobeMp3(out, job.work, MAX_DURATION_S + 5)
+  } catch {
+    throw new ProbeReject(codes.invalid)
+  }
+  if (mp3.bitrate !== bitrate || Math.abs(mp3.durationS - sourceDurationS) > toleranceS) throw new ProbeReject(codes.invalid)
+  return { size, durationS: mp3.durationS, bitrate: mp3.bitrate }
+}
+
+// The encoded MP3 replaces the upload under the same id (tmp + rename), so
+// preview, finalize and retention need no change; the original's bytes are
+// freed here and released from the quota by the worker.
+async function publishEncoded(job: Job, out: string): Promise<string> {
+  const sha256 = await sha256File(out)
+  await publishFile(out, job.dirs.uploads, job.req.upload)
+  if ((await sha256File(join(job.dirs.uploads, job.req.upload))) !== sha256) throw new ProbeReject('publish_mismatch')
+  return sha256
 }
 
 // ffmpeg's ID3v2 reader (ff_id3v2_match) takes these 10 bytes for another tag.
@@ -244,9 +388,13 @@ async function probeWav(job: Job, copy: string, size: number): Promise<SpoolResu
   const wav = judgeWavFfprobe(parsed, info)
   // 4. LIST/INFO + id3 chunk tags (and APIC) via music-metadata
   const tags = await readTags(copy, job.work, job.dirs)
-  // 5. convert (nice 19, prlimit, timeout, own process group)
+  // 5. convert (nice 19, prlimit, timeout, own process group) at the
+  //    highest ladder rate whose MP3 fits (v0.3.5; scanWav and
+  //    judgeWavFfprobe bounded the duration, so the floor always fits)
+  const bitrate = pickBitrate(Math.max(wav.durationS, info.durationS))
+  if (bitrate === null) throw new ProbeReject('wav_too_long')
   const out = join(job.work, 'out.mp3')
-  const c = await runLimited('ffmpeg', convertArgs(copy, out, info.fmt), {
+  const c = await runLimited('ffmpeg', convertArgs(copy, out, info.fmt, bitrate), {
     timeoutS: CONVERT_TIMEOUT_S,
     vmemKb: CONVERT_VMEM_KB,
     cwd: job.work,
@@ -254,24 +402,11 @@ async function probeWav(job: Job, copy: string, size: number): Promise<SpoolResu
   })
   if (c.timedOut) throw new ProbeReject('convert_timeout')
   if (c.code !== 0) throw new ProbeReject('convert_failed')
-  // 6. the MP3 must pass as an upload would
-  const outSize = (await stat(out)).size
-  if (outSize > MAX_UPLOAD_BYTES) throw new ProbeReject('converted_too_large')
-  const m = await checkMp3Magic(reader(out), outSize)
-  if (!m.ok || m.id3Size !== 0) throw new ProbeReject('convert_invalid')
-  let mp3: { durationS: number; bitrate: number }
-  try {
-    mp3 = await ffprobeMp3(out, job.work)
-  } catch {
-    throw new ProbeReject('convert_invalid')
-  }
-  if (mp3.bitrate !== OUT_BITRATE || Math.abs(mp3.durationS - wav.durationS) > 1) throw new ProbeReject('convert_invalid')
-  // 7. the MP3 replaces the WAV under the same upload id (tmp + rename), so
-  //    preview, finalize and retention need no change; the WAV's bytes are
-  //    freed here and released from the quota by the worker.
-  const sha256 = await sha256File(out)
-  await publishFile(out, job.dirs.uploads, job.req.upload)
-  if ((await sha256File(join(job.dirs.uploads, job.req.upload))) !== sha256) throw new ProbeReject('publish_mismatch')
+  // 6. the MP3 must pass as an upload would (chosen rate, ±1 s, ≤ budget)
+  const mp3 = await checkEncoded(job, out, bitrate, wav.durationS, 1, { tooLarge: 'converted_too_large', invalid: 'convert_invalid' })
+  // 7. the MP3 replaces the WAV under the same upload id (the WAV's bytes
+  //    are freed here and released from the quota by the worker)
+  const sha256 = await publishEncoded(job, out)
   // 8. cover, last (a rejection above never leaves one behind)
   const flags: string[] = ['converted_from_wav']
   const cover = await publishCover(job, tags, flags)
@@ -282,13 +417,14 @@ async function probeWav(job: Job, copy: string, size: number): Promise<SpoolResu
     source: 'in-web',
     ok: true,
     sha256,
-    size: outSize,
+    size: mp3.size,
     durationS: Math.round(mp3.durationS * 10) / 10,
     bitrate: mp3.bitrate,
     tags: tagsOf(tags),
     cover,
     flags,
     inputFormat: 'wav',
+    transcodeKbps: bitrate / 1000,
   }
 }
 

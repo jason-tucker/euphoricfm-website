@@ -5,6 +5,7 @@
 // with its proposed folder, duplicate warnings and remove.
 
 import { useEffect, useState } from 'react'
+import { AUDIO_PAYLOAD_BYTES } from '@/lib/fit'
 import { ItemArtControl } from '../ItemArtControl'
 import { AudioPreview } from '../AudioPreview'
 import { Autocomplete } from '../Autocomplete'
@@ -69,8 +70,11 @@ export function FileCard({
   const base = fieldsOf(e.item)
   const changed = changedFields(e)
   const prefillYear = e.item?.prefill && typeof e.item.prefill.year === 'string' ? e.item.prefill.year : null
-  const converted = convertedLabel(e.item?.inputFormat)
+  const converted = convertedLabel(e.item?.inputFormat, e.item?.transcodeKbps)
   const isWav = fileKind({ name: e.fileName, type: '' }) === 'wav'
+  // An MP3 over the audio budget is re-encoded by the probe (a hint only:
+  // the probe decides, from the bytes).
+  const big = !isWav && e.size > AUDIO_PAYLOAD_BYTES
 
   return (
     <li className="card space-y-3" data-entry={e.key} data-phase={e.phase}>
@@ -86,7 +90,7 @@ export function FileCard({
           </p>
           {converted ? (
             <p className="mt-1">
-              <span className="chip chip-neutral" data-testid="converted-from-wav">
+              <span className="chip chip-neutral" data-testid="converted-note">
                 {converted}
               </span>
             </p>
@@ -136,7 +140,11 @@ export function FileCard({
       {e.phase === 'attaching' || e.phase === 'probing' ? (
         <p className="text-sm text-sky-300" role="status">
           <span className="mr-2 inline-block size-3 animate-pulse rounded-full bg-sky-300" aria-hidden="true" />
-          {isWav ? 'Checking the WAV and converting it to a 320 kbps MP3… Large files can take a few minutes.' : 'Checking the file and reading its tags…'}
+          {isWav
+            ? 'Checking the WAV and converting it to an MP3… Large files can take a few minutes.'
+            : big
+              ? 'Checking the file and converting it down so it fits… This can take a few minutes.'
+              : 'Checking the file and reading its tags…'}
         </p>
       ) : null}
 

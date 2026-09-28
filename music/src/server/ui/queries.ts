@@ -34,8 +34,11 @@ export function uiItem(v: Viewer, it: ItemRow) {
     prefill: (it.prefill ?? null) as Record<string, string | null> | null,
     probeError: it.probeError,
     denyReason: it.denyReason,
-    // 'wav' = uploaded as a WAV and converted to a 320 kbps MP3 (v0.3.0)
+    // 'wav' = uploaded as a WAV and converted to an MP3 (v0.3.0);
+    // transcodeKbps = the bitrate the probe encoded it at (a WAV, or an MP3
+    // re-encoded to fit, v0.3.5), null = the member's own MP3, untouched.
     inputFormat: it.inputFormat,
+    transcodeKbps: it.transcodeKbps,
     hasCover: Boolean(it.coverFile),
     hasArt: itemHasArt(it),
     hasCustomArt: customArtIdOf(it) !== null,

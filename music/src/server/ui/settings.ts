@@ -3,8 +3,8 @@
 
 import { z } from 'zod'
 import type { DB } from '../db/client'
-import { getIntList, getSetting } from '../settings'
-import { DEFAULT_CAPS, type Caps } from '../settings-defaults'
+import { getIntList, getSetting, loadCaps } from '../settings'
+import type { Caps } from '../settings-defaults'
 
 // Keys the UI reads that the foundation seed does not create yet. Admins
 // edit them through the settings form (see the report: PUT /api/admin/settings).
@@ -59,20 +59,22 @@ export async function inviteUrl(db: DB): Promise<string | null> {
 const idsOf = (v: unknown): number[] => (Array.isArray(v) ? v.filter((x): x is number => Number.isSafeInteger(x) && x > 0).slice(0, 512) : [])
 
 export async function uiSettings(db: DB): Promise<UiSettings> {
-  const [rights, invite, namesRaw, assignable, defaults, autoClose, capsRaw, station, foreign, unconfirmed] = await Promise.all([
+  const [rights, invite, namesRaw, assignable, defaults, autoClose, caps, station, foreign, unconfirmed] = await Promise.all([
     rightsText(db),
     inviteUrl(db),
     getSetting(db, UI_SETTING_KEYS.playlistNames),
     getIntList(db, 'assignable_playlist_ids'),
     getIntList(db, 'default_playlist_ids'),
     getSetting(db, 'auto_close_days'),
-    getSetting(db, 'caps'),
+    // The same validated view the server enforces (v0.3.5): stored hard
+    // per-file limits (maxUploadBytes, chunkBytes) are ignored, invalid or
+    // raised values fall back to the defaults.
+    loadCaps(db),
     getSetting(db, 'station_playlist_ids').then(idsOf),
     getIntList(db, 'foreign_playlist_ids'),
     getSetting(db, 'unconfirmed_playlist_ids').then(idsOf),
   ])
   const names = namesSchema.safeParse(namesRaw)
-  const caps = z.object({}).passthrough().safeParse(capsRaw)
   return {
     rights,
     inviteUrl: invite,
@@ -83,6 +85,6 @@ export async function uiSettings(db: DB): Promise<UiSettings> {
     unconfirmedPlaylistIds: unconfirmed,
     defaultPlaylistIds: defaults,
     autoCloseDays: typeof autoClose === 'number' && Number.isInteger(autoClose) ? autoClose : 7,
-    caps: { ...DEFAULT_CAPS, ...(caps.success ? (caps.data as Partial<Caps>) : {}) } as Caps,
+    caps,
   }
 }

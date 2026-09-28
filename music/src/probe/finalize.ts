@@ -68,6 +68,11 @@ export async function runFinalize(req: FinalizeRequest, dirs: FinalizeDirs): Pro
     if (w !== true) throw new ProbeReject('id3_write_failed')
 
     const outSize = (await stat(stripped)).size
+    // Defence in depth (v0.3.5): the probe's budget math (fit.ts) keeps every
+    // accepted song under the final-file cap with its cover and tags; this
+    // holds the cap even if that math, the cover cap or node-id3's padding
+    // ever drift, before AzuraCast's JSON route would refuse it after approval.
+    if (outSize > MAX_UPLOAD_BYTES) throw new ProbeReject('final_too_large')
     const m2 = await checkMp3Magic(reader(stripped), outSize)
     if (!m2.ok) throw new ProbeReject('final_not_mp3')
     const finalSha256 = await sha256File(stripped)

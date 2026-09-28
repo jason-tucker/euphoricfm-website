@@ -33,8 +33,8 @@ const idSet = (max: number) =>
     .max(max)
     .refine((a) => new Set(a).size === a.length, 'duplicate ids')
 
-// Caps may be lowered, never raised past the plan's limits (35 MB uploads,
-// 250 MB WAV uploads, 8 MB chunks, 1 GB/3 in flight per user, 5 GB staging,
+// Caps may be lowered, never raised past the plan's limits (35 MB final
+// files, 100 MB MP3 uploads, 250 MB WAV uploads, 8 MB chunks, 1 GB/3 in flight per user, 5 GB staging,
 // ≤6 ingests/h, ≥90 s, art: 30 uploads / 50 MB per user per day, 512 MB kept).
 const capsSchema = z
   .object({
@@ -54,6 +54,8 @@ const capsSchema = z
     maxArtBytes: z.number().int().min(1).max(DEFAULT_CAPS.maxArtBytes).optional(),
     // v0.3.0 (optional for the same reason): WAV uploads, ≤ 250 MB.
     maxWavUploadBytes: z.number().int().min(1).max(DEFAULT_CAPS.maxWavUploadBytes).optional(),
+    // v0.3.5 (optional for the same reason): MP3 uploads, ≤ 100 MB.
+    maxMp3UploadBytes: z.number().int().min(1).max(DEFAULT_CAPS.maxMp3UploadBytes).optional(),
   })
   .strict()
 

@@ -8,6 +8,7 @@
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as tus from 'tus-js-client'
+import { MAX_DURATION_MIN, mibOf, MIN_LADDER_BITRATE } from '@/lib/fit'
 import type { UiItem } from '@/server/ui/queries'
 import { api, ApiError, messageFor } from '../api'
 import { errorText, uploadErrorText } from '../messages'
@@ -21,7 +22,7 @@ import { ACCEPT, changedFields, declaredType, type Entry, type Fields, fieldsOf,
 const CONCURRENCY = 2
 const POLL_MS = [1000, 1500, 2000, 3000, 4000, 5000]
 
-type ItemApi = Pick<UiItem, 'id' | 'batchId' | 'status' | 'title' | 'artist' | 'album' | 'genre' | 'durationS' | 'bitrate' | 'probeError' | 'hasCover' | 'inputFormat'> & {
+type ItemApi = Pick<UiItem, 'id' | 'batchId' | 'status' | 'title' | 'artist' | 'album' | 'genre' | 'durationS' | 'bitrate' | 'probeError' | 'hasCover' | 'inputFormat' | 'transcodeKbps'> & {
   prefill?: unknown
 }
 
@@ -57,7 +58,7 @@ export function SubmitFlow({
   initialBatchId,
   initialItems,
   rights,
-  maxUploadBytes,
+  maxMp3UploadBytes,
   maxWavUploadBytes,
   chunkBytes,
   maxItemsPerBatch,
@@ -65,7 +66,9 @@ export function SubmitFlow({
   initialBatchId: number | null
   initialItems: UiItem[]
   rights: { version: string; text: string }
-  maxUploadBytes: number
+  // Per-file INPUT caps (the loaded, possibly admin-lowered caps). Not the
+  // 35 MB final-file cap: a bigger MP3 is converted down by the probe.
+  maxMp3UploadBytes: number
   maxWavUploadBytes: number
   chunkBytes: number
   maxItemsPerBatch: number
@@ -178,7 +181,7 @@ export function SubmitFlow({
       const up = new tus.Upload(file, {
         endpoint: '/api/uploads',
         chunkSize: chunkBytes,
-        // The server caps the upload by this declared type (MP3 35 MB, WAV
+        // The server caps the upload by this declared type (MP3 100 MB, WAV
         // 250 MB); the probe checks the real type from the bytes.
         metadata: { filetype: declaredType(file) },
         retryDelays: [0, 1000, 3000, 5000, 10000, 20000],
@@ -191,7 +194,7 @@ export function SubmitFlow({
         },
         onError: (err) => {
           active.current.delete(key)
-          if (mounted.current) update(key, { phase: 'error', error: tusErrorText(err, { mp3: maxUploadBytes, wav: maxWavUploadBytes }) })
+          if (mounted.current) update(key, { phase: 'error', error: tusErrorText(err, { mp3: maxMp3UploadBytes, wav: maxWavUploadBytes }) })
           pumpRef.current()
         },
         onSuccess: () => {
@@ -209,7 +212,7 @@ export function SubmitFlow({
       }
       up.start()
     },
-    [attach, chunkBytes, ensureBatch, maxUploadBytes, maxWavUploadBytes, update],
+    [attach, chunkBytes, ensureBatch, maxMp3UploadBytes, maxWavUploadBytes, update],
   )
 
   const pump = useCallback(() => {
@@ -242,7 +245,7 @@ export function SubmitFlow({
     const added: Entry[] = []
     for (const f of Array.from(list)) {
       const key = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
-      const c = precheck(f, { mp3: maxUploadBytes, wav: maxWavUploadBytes })
+      const c = precheck(f, { mp3: maxMp3UploadBytes, wav: maxWavUploadBytes })
       files.current.set(key, f)
       added.push({ key, fileName: f.name, size: f.size, phase: c.block ? 'blocked' : 'queued', progress: 0, warning: c.warn, error: c.block, edits: fieldsOf(undefined) })
     }
@@ -361,10 +364,13 @@ export function SubmitFlow({
           <span className="font-semibold">Drop MP3 or WAV files here</span>
           <span className="btn btn-secondary btn-sm pointer-events-none">or choose files</span>
           <span className="text-xs text-cream/55">
-            MP3: up to {Math.round(maxUploadBytes / 1024 / 1024)} MB each · 30 s to 20 min · at least 128 kbps
+            MP3: up to {mibOf(maxMp3UploadBytes)} MB each · 30 s to {MAX_DURATION_MIN} min · at least 128 kbps
           </span>
           <span className="text-xs text-cream/55">
-            WAV: up to {Math.round(maxWavUploadBytes / 1024 / 1024)} MB each · 30 s to 15 min · converted to a 320 kbps MP3 for you
+            WAV: up to {mibOf(maxWavUploadBytes)} MB each · 30 s to {MAX_DURATION_MIN} min · converted to an MP3 for you
+          </span>
+          <span className="text-xs text-cream/55">
+            Big files are converted down (as low as {MIN_LADDER_BITRATE / 1000} kbps) so they fit. An MP3 that already fits is never changed.
           </span>
         </label>
         <input

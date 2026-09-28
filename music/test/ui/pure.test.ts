@@ -39,14 +39,16 @@ describe('library whitelist and LIKE escaping', () => {
 })
 
 describe('advisory client pre-checks', () => {
-  const L = { mp3: 35 * MB, wav: 250 * MB }
-  it('blocks empty and over-35 MB MP3s, warns on names that are neither MP3 nor WAV', () => {
+  const L = { mp3: 100 * MB, wav: 250 * MB }
+  it('blocks empty and over-100 MB MP3s, warns on names that are neither MP3 nor WAV', () => {
     expect(precheck({ name: 'a.mp3', size: 0, type: '' }, L).block).toBeTruthy()
-    expect(precheck({ name: 'a.mp3', size: 36 * MB, type: 'audio/mpeg' }, L).block).toMatch(/limit for MP3 files is 35 MB/)
+    expect(precheck({ name: 'a.mp3', size: 36 * MB, type: 'audio/mpeg' }, L)).toEqual({}) // v0.3.5: converted down by the probe
+    expect(precheck({ name: 'a.mp3', size: 100 * MB, type: 'audio/mpeg' }, L)).toEqual({})
+    expect(precheck({ name: 'a.mp3', size: 101 * MB, type: 'audio/mpeg' }, L).block).toMatch(/limit for MP3 files is 100 MB/)
     expect(precheck({ name: 'a.MP3', size: MB, type: '' }, L)).toEqual({})
     expect(precheck({ name: 'a.flac', size: MB, type: 'audio/flac' }, L).warn).toMatch(/MP3 or WAV/)
     // an unknown type gets the MP3 limit (the server caps an undeclared upload the same way)
-    expect(precheck({ name: 'a.flac', size: 36 * MB, type: 'audio/flac' }, L).block).toMatch(/35 MB \(WAV files: 250 MB\)/)
+    expect(precheck({ name: 'a.flac', size: 101 * MB, type: 'audio/flac' }, L).block).toMatch(/100 MB \(WAV files: 250 MB\)/)
   })
   it('WAV (v0.3.0): accepted by name or MIME type, with its own 250 MB limit', () => {
     expect(precheck({ name: 'a.wav', size: MB, type: 'audio/wav' }, L)).toEqual({})
@@ -65,20 +67,25 @@ describe('advisory client pre-checks', () => {
     for (const t of ['.mp3', '.wav', 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/wave']) expect(ACCEPT.split(',')).toContain(t)
   })
   it('the converted-from-WAV label and the WAV rejection reasons are human text', () => {
-    expect(convertedLabel('wav')).toBe('Converted from WAV (320 kbps MP3)')
+    expect(convertedLabel('wav')).toBe('Converted from WAV (320 kbps MP3)') // probed before v0.3.5: always 320
+    expect(convertedLabel('wav', 256)).toBe('Converted from WAV (256 kbps MP3)')
+    expect(convertedLabel('mp3', 192)).toBe('Re-encoded to 192 kbps to fit')
     expect(convertedLabel('mp3')).toBeNull()
+    expect(convertedLabel('mp3', null)).toBeNull()
     expect(convertedLabel(null)).toBeNull()
     for (const code of [
       'wav_codec_unsupported', 'wav_rf64_unsupported', 'wav_truncated', 'wav_too_long', 'wav_too_large', 'mp3_too_large',
       'wav_bad_list', 'wav_bad_id3', 'wav_channels', 'wav_sample_rate', 'wav_header_mismatch', 'convert_timeout', 'convert_failed',
       'convert_invalid', 'converted_too_large', 'not_wav', 'wav_trailing_data', 'wav_chunk_too_large', 'wav_too_many_chunks',
       'wav_bad_fmt', 'wav_bad_data', 'wav_no_audio', 'wav_bad_riff', 'wav_bad_chunk', 'wav_not_single_stream', 'wav_unsupported',
-      'wav_unfinalized', 'interrupted',
+      'wav_unfinalized', 'interrupted', 'reencode_timeout', 'reencode_failed', 'reencode_invalid', 'reencoded_too_large', 'too_long',
     ]) {
       expect(PROBE_ERROR_TEXT[code], code).toBeTruthy()
     }
     expect(probeErrorText('wav_codec_unsupported')).toMatch(/ADPCM/)
-    expect(probeErrorText('wav_too_long')).toMatch(/15 minutes/)
+    expect(probeErrorText('wav_too_long')).toMatch(/24 minutes/)
+    expect(probeErrorText('too_long')).toMatch(/24 minutes.*192 kbps/)
+    expect(probeErrorText('mp3_too_large')).toMatch(/100 MB/)
     expect(probeErrorText('wav_unfinalized')).toMatch(/export it again/)
     // the caps are admin-lowerable: no hard-coded numbers, the loaded caps instead
     for (const code of ['wav_upload_too_large', 'upload_too_large']) expect(errorText(code)).not.toMatch(/\d+ MB/)

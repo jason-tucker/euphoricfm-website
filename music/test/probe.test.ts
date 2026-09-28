@@ -108,9 +108,11 @@ describe('probe: refuses hostile or unfit files', () => {
 
   it('judge: container and stream rules', () => {
     const ok = { format: { format_name: 'mp3', duration: '60', bit_rate: '192000' }, streams: [{ codec_type: 'audio', codec_name: 'mp3', bit_rate: '192000' }] }
-    expect(judgeFfprobe(ok)).toEqual({ durationS: 60, bitrate: 192000 })
+    expect(judgeFfprobe(ok)).toEqual({ durationS: 60, bitrate: 192000, sampleRate: null, channels: null })
     expect(() => judgeFfprobe({ ...ok, format: { ...ok.format, format_name: 'hls' } })).toThrow('not_mp3')
-    expect(() => judgeFfprobe({ ...ok, format: { ...ok.format, duration: '1201' } })).toThrow('too_long')
+    // v0.3.5: 24 min (the longest song that fits at 192 kbps), was 20 min
+    expect(judgeFfprobe({ ...ok, format: { ...ok.format, duration: '1440' } }).durationS).toBe(1440)
+    expect(() => judgeFfprobe({ ...ok, format: { ...ok.format, duration: '1441' } })).toThrow('too_long')
     expect(() => judgeFfprobe({ ...ok, streams: [...ok.streams, { codec_type: 'data' }] })).toThrow('unexpected_streams')
     expect(() => judgeFfprobe({ ...ok, streams: [...ok.streams, ok.streams[0]] })).toThrow('not_single_mp3_stream')
   })

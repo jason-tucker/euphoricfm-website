@@ -188,7 +188,7 @@ export function Timeline({ limits }: { limits: UiUploadLimits }) {
     { t: 'Sign in with Discord', d: 'The portal is for members of the EuphoricFM Discord. Signing in checks that you’re in the server.' },
     {
       t: 'Upload your songs',
-      d: `Drop in ${limits.text.batchShort} as MP3s or WAVs. We read the title, artist and cover art for you, and you can fix anything before you send.`,
+      d: `Drop in ${limits.text.batchShort} as MP3s or WAVs; ${limits.text.fitShort}. We read the title, artist and cover art for you, and you can fix anything before you send.`,
     },
     { t: 'Managers review', d: 'Each batch opens a ticket in Discord. Managers listen, ask questions there, then approve or decline each song, with a reason if declined.' },
     { t: 'On air', d: 'Approved songs are added to the station a few at a time and go into rotation. Follow every song in My music.' },
@@ -272,6 +272,7 @@ export function FilesAndLimits({ limits, rights }: { limits: UiUploadLimits; rig
               ['Quality', t.mp3Quality],
               ['Length', t.mp3Length],
               ['Tags', t.mp3Tags],
+              ['Too big?', t.mp3Fit],
             ]}
           />
         </section>
