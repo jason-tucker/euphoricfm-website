@@ -29,11 +29,24 @@ const browse = vi.hoisted(() => ({
   })),
 }))
 
-vi.mock('@/app/actions', () => ({ signInWithDiscord: vi.fn(), signOutAction: vi.fn() }))
+vi.mock('@/app/actions', () => ({ signInWithDiscord: vi.fn(), signOutAction: vi.fn(), signInToSuggestEdit: vi.fn(), signInToRequestRemoval: vi.fn() }))
 vi.mock('@/server/db/client', () => ({ getDb: () => ({}) }))
 vi.mock('@/server/ui/queries', () => q)
 vi.mock('@/server/ui/browse', () => browse)
-vi.mock('@/server/ui/settings', () => ({ uiSettings: async () => ({ assignablePlaylistIds: [], playlistNames: {} }) }))
+vi.mock('@/server/ui/settings', async () => {
+  const { DEFAULT_CAPS } = await import('@/server/settings-defaults')
+  return {
+    uiSettings: async () => ({
+      assignablePlaylistIds: [],
+      playlistNames: {},
+      rights: { version: 'v1', text: 'I own it.' },
+      inviteUrl: null,
+      autoCloseDays: 7,
+      caps: DEFAULT_CAPS,
+    }),
+  }
+})
+vi.mock('@/server/requests/service', () => ({ dailyCaps: async () => ({ edit: 10, removal: 10 }) }))
 vi.mock('@/server/http/route', () => ({ parseId: (s: string) => Number(s) }))
 vi.mock('@/server/ui/page', () => ({
   headerViewer: async () => state.viewer,
@@ -59,7 +72,7 @@ describe('home page (/)', async () => {
     expect(screen.getByRole('button', { name: /sign in with discord/i })).toBeTruthy()
     expect(screen.queryByTestId('action-cards')).toBeNull()
     expect(screen.queryByTestId('how-it-works')).toBeNull()
-    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toContain('Upload your MP3s or WAVs')
+    expect(within(screen.getByTestId('steps')).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toContain('Step 2: Upload your songs')
     expect(q.memberSummary).not.toHaveBeenCalled()
   })
 
@@ -80,15 +93,12 @@ describe('home page (/)', async () => {
     expect(screen.queryByTestId('review-card')).toBeNull()
     expect(q.reviewSummary).not.toHaveBeenCalled()
 
-    // The steps are still there, collapsed.
-    const how = screen.getByTestId('how-it-works') as HTMLDetailsElement
-    expect(how.tagName).toBe('DETAILS')
-    expect(how.open).toBe(false)
-    expect(within(how).getByText('How it works')).toBeTruthy()
-    // A signed-in member is not told to sign in: three steps, numbered from 1.
-    expect(within(how).queryByText('Sign in with Discord')).toBeNull()
+    // v0.3.4: a condensed "After you submit" replaces the collapsed steps.
+    const how = screen.getByTestId('how-it-works')
+    expect(within(how).getByRole('heading', { name: 'After you submit' })).toBeTruthy()
+    // A signed-in member is not told to sign in: three steps.
+    expect(screen.queryByText(/Sign in with Discord/)).toBeNull()
     expect(within(how).getAllByRole('listitem')).toHaveLength(3)
-    expect(within(how).getByText('Step 1').nextSibling?.textContent).toBe('Upload your MP3s or WAVs')
   })
 
   it('reviewer: highlighted review queue card with both counts', async () => {
@@ -238,14 +248,16 @@ describe('song page (?request=)', async () => {
 })
 
 describe('nav and helpers', () => {
-  it('members see Submit and "Edit or remove a song"; staff keep Review/Admin', () => {
+  it('members see My music, Submit and "Library"; staff keep Review/Admin', () => {
     expect(navFor(new Set(['submit', 'request']))).toEqual([
       { href: '/dashboard', label: 'My music' },
       { href: '/submit', label: 'Submit' },
-      { href: '/library', label: 'Edit or remove a song' },
+      { href: '/library', label: 'Library' },
     ])
+    expect(navFor(new Set(['submit'])).map((i) => i.label)).toEqual(['My music', 'Submit', 'Library'])
     const staff = navFor(new Set(['submit', 'request', 'review', 'admin'])).map((i) => i.label)
-    expect(staff).toEqual(['My music', 'Submit', 'Edit or remove a song', 'Review', 'Admin'])
+    expect(staff).toEqual(['My music', 'Submit', 'Library', 'Review', 'Admin'])
+    expect(staff).not.toContain('Edit or remove a song')
   })
   it('parseIntent / requestHref', () => {
     expect(parseIntent('edit')).toBe('edit')

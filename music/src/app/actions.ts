@@ -12,3 +12,13 @@ export async function signInWithDiscord() {
 export async function signOutAction() {
   await signOut({ redirectTo: '/' })
 }
+
+// Home page "Sign in to suggest an edit / request removal": sign in, then
+// land on the library with that request type picked. Fixed targets only.
+export async function signInToSuggestEdit() {
+  await signIn('discord', { redirectTo: '/library?intent=edit' })
+}
+
+export async function signInToRequestRemoval() {
+  await signIn('discord', { redirectTo: '/library?intent=remove' })
+}

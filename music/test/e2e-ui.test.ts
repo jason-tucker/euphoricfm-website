@@ -10,6 +10,10 @@ import { has } from './helpers/env'
 import { fxBuf } from './helpers/fixtures'
 import { Jar, req } from './helpers/http'
 import { tusUpload } from './helpers/tus'
+import { SITE_LINKS } from '@/components/site-links'
+import { DEFAULT_CAPS, type Caps } from '@/server/settings-defaults'
+import { uploadLimitsForUi } from '@/server/ui/limits'
+import { DEFAULT_RIGHTS } from '@/server/ui/settings'
 
 const E2E_UI = () => has('E2E_WEB_URL', 'MOCKS_CONTROL', 'TEST_OWNER_DATABASE_URL')
 const OWNER = '117501528641634310'
@@ -31,6 +35,24 @@ async function page(jar: Jar | null, path: string) {
   return { status: r.status, html, location: r.headers.get('location') ?? '' }
 }
 
+// React's text escaping, undone (for comparing rendered text with settings).
+const unescapeHtml = (s: string) =>
+  s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+
+// The settings the home page and the submit page both read.
+async function homeSettings() {
+  const rows = await ownerSql()<{ key: string; value: unknown }[]>`SELECT key, value FROM settings WHERE key IN ('caps', 'rights_attestation', 'discord_invite_url')`
+  const v = Object.fromEntries(rows.map((r) => [r.key, r.value])) as Record<string, unknown>
+  const r = v.rights_attestation as { text?: unknown } | undefined
+  return {
+    caps: { ...DEFAULT_CAPS, ...((v.caps as object) ?? {}) } as Caps,
+    rightsText: typeof r?.text === 'string' ? r.text : DEFAULT_RIGHTS.text,
+    invite: typeof v.discord_invite_url === 'string' ? v.discord_invite_url : SITE_LINKS.discordInvite,
+  }
+}
+
+const rightsOnHome = (html: string) => unescapeHtml(/<blockquote[^>]*data-testid="rights-text"[^>]*>([^<]*)<\/blockquote>/.exec(html)?.[1] ?? '')
+
 async function waitPending(jar: Jar, itemId: number) {
   const deadline = Date.now() + 60_000
   for (;;) {
@@ -48,6 +70,19 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     expect(home.html).toContain('Sign in with Discord')
     expect(home.html).not.toContain('What do you want to do?')
     expect(home.html).not.toContain('data-testid="how-it-works"') // steps stay open for visitors
+    // v0.3.4 home information.
+    const cfg = await homeSettings()
+    const l = uploadLimitsForUi(cfg.caps)
+    for (const t of ['Files, sizes and rights', 'From upload to on air', 'We can’t take', 'Edits and removals', 'Questions artists ask', 'Who can submit', 'At a glance'])
+      expect(home.html, t).toContain(t)
+    for (const t of [l.text.mp3Size, l.text.mp3Quality, l.text.mp3Length, l.text.wavSize, l.text.wavLength, l.text.wavConvert, l.text.batch, l.note]) expect(home.html, t).toContain(t)
+    expect(rightsOnHome(home.html)).toBe(cfg.rightsText)
+    expect(home.html).toContain('Sign in to suggest an edit')
+    expect(home.html).toContain('Sign in to request removal')
+    expect(home.html.match(/<details class="faq"/g) ?? []).toHaveLength(8)
+    expect(home.html).toContain(`href="${cfg.invite}"`)
+    expect(home.html).toContain(`href="${SITE_LINKS.listen}"`)
+    for (const s of ['Pending review', 'Approved', 'Ingesting', 'Verifying', 'Live', 'Denied']) expect(home.html, s).toContain(s)
     const denied = await page(null, '/denied?reason=not_member')
     expect(denied.status).toBe(200)
     expect(denied.html).toContain('not in the EuphoricFM Discord server')
@@ -72,7 +107,11 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     expect(home.html).toContain('data-testid="how-it-works"')
     expect(home.html).not.toContain('data-testid="review-card"')
     expect(home.html).not.toContain('Sign in with Discord') // no sign-in step for a signed-in member
-    expect(home.html).toContain('Edit or remove a song') // nav
+    expect(home.html).toMatch(/<a[^>]*href="\/library"[^>]*>Library<\/a>/) // nav (v0.3.4: "Library")
+    expect(home.html).not.toContain('Edit or remove a song')
+    expect(home.html).toContain('Welcome back')
+    expect(home.html).toContain('data-testid="before-you-upload"')
+    expect(home.html.match(/<details class="faq"/g) ?? []).toHaveLength(8)
 
     const dash = await page(member, '/dashboard')
     expect(dash.status).toBe(200)
@@ -88,6 +127,12 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     expect(submit.html).toContain('converted to a 320 kbps MP3 for you')
     expect(submit.html).toContain('Coming soon')
     expect(submit.html).toContain('Rights statement version')
+    // The home page shows the exact statement the submit page asks to confirm.
+    const signedOutHome = await page(null, '/')
+    const homeRights = rightsOnHome(signedOutHome.html)
+    expect(homeRights.length).toBeGreaterThan(20)
+    const submitRights = /<span class="text-sm">([^<]*)<span id="rights-version"/.exec(submit.html)?.[1]
+    expect(unescapeHtml(submitRights ?? '')).toBe(homeRights)
 
     // Create a batch with one probed file, as the client does.
     const b = (await (await req(member, '/api/batches', { method: 'POST' })).json()) as { id: number }
