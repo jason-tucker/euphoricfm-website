@@ -74,7 +74,7 @@ function fitFixtures() {
   }
   loop('clip-320k-44k.mp3', 14 * 60, 'fit-14m-320k.mp3') // 33.6 MB: fits, stays untouched
   loop('clip-320k-44k.mp3', 16 * 60, 'fit-16m-320k.mp3') // 38.4 MB → 256 kbps
-  loop('clip-320k-48k.mp3', 22 * 60, 'fit-22m-320k-48k.mp3') // 52.8 MB, 48 kHz → 192 kbps at 48 kHz
+  loop('clip-320k-48k.mp3', 1090, 'fit-1090s-320k-48k.mp3') // 43.6 MB, 48 kHz, just past 1080 s → 192 kbps at 48 kHz
   loop('clip-320k-44k.mp3', 26 * 60, 'fit-26m-320k.mp3') // 62.4 MB, 26 min → too long even at 192 kbps
   loop('clip-v0-44k.mp3', 20 * 60, 'fit-20m-v0.mp3') // VBR (~250 kbps), ~37 MB → 192 kbps
   loop('clip-160k-22k.mp3', 10 * 60, 'fit-10m-160k-22k.mp3') // 22.05 kHz, 12 MB: fits

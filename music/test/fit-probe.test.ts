@@ -223,13 +223,13 @@ describe('MP3 inputs', () => {
     expect(ffprobeJson(out).streams.find((s) => s.codec_type === 'audio')).toMatchObject({ bit_rate: '256000' })
   }, 600_000)
 
-  it('22 min of 320 kbps at 48 kHz (53 MB) → CBR 192k, 48 kHz kept', async () => {
-    const { r, path } = await probe(fxBuf('fit-22m-320k-48k.mp3'))
+  it('1090 s of 320 kbps at 48 kHz (43.6 MB, just past the 256k limit) → CBR 192k, 48 kHz kept', async () => {
+    const { r, path } = await probe(fxBuf('fit-1090s-320k-48k.mp3'))
     if (!r.ok || r.type !== 'probe' || !('sha256' in r)) throw new Error(JSON.stringify(r))
     expect(r).toMatchObject({ inputFormat: 'mp3', transcodeKbps: 192, bitrate: 192000 })
     expect(r.size).toBeLessThanOrEqual(AUDIO_BUDGET_BYTES)
     expect(ffprobeJson(path).streams[0]).toMatchObject({ sample_rate: '48000', channels: 2, bit_rate: '192000' })
-    expect(Number(ffprobeJson(path).format.duration)).toBeCloseTo(1320, 0)
+    expect(Number(ffprobeJson(path).format.duration)).toBeCloseTo(1090, 0)
   }, 600_000)
 
   it('a VBR MP3 (LAME V0, ~250 kbps, 20 min) over the budget → CBR at the rate its duration allows (192k)', async () => {
@@ -284,12 +284,14 @@ describe('MP3 inputs', () => {
 describe('WAV inputs take the same ladder', () => {
   // 8 kHz mono 16-bit sine (small files), resampled to 44.1 kHz by the conversion.
   const wav = (seconds: number) => riff([chunk('fmt ', fmtBody({ rate: 8000, channels: 1, bits: 16 })), chunk('data', sinePcm16(seconds, 8000, 1))])
+  // Just past each step: 870 s (> 864 s, the 320k limit) and 1090 s (> 1080 s,
+  // the 256k limit). A WAV that fits at 320k: wav-probe.test.ts (35 s WAVs).
   const cases: [number, number][] = [
-    [16 * 60, 256], // over 864 s → 256k
-    [22 * 60, 192], // over 1080 s → 192k
+    [870, 256],
+    [1090, 192],
   ]
   for (const [seconds, kbps] of cases) {
-    it(`a ${seconds / 60}-min WAV → CBR ${kbps}k MP3 within the audio budget`, async () => {
+    it(`a ${seconds} s WAV → CBR ${kbps}k MP3 within the audio budget`, async () => {
       const { r, path } = await probe(wav(seconds))
       if (!r.ok || r.type !== 'probe' || !('sha256' in r)) throw new Error(JSON.stringify(r))
       expect(r).toMatchObject({ inputFormat: 'wav', transcodeKbps: kbps, bitrate: kbps * 1000, flags: ['converted_from_wav'] })
@@ -298,10 +300,6 @@ describe('WAV inputs take the same ladder', () => {
       expect(Math.abs(r.durationS - seconds)).toBeLessThanOrEqual(1)
     }, 600_000)
   }
-  it('a 14-min WAV still gets 320k (the highest rate that fits)', async () => {
-    const { r } = await probe(wav(14 * 60))
-    expect(r).toMatchObject({ ok: true, inputFormat: 'wav', transcodeKbps: 320, bitrate: 320000 })
-  }, 600_000)
   it('a 24-min 1-s WAV → wav_too_long', async () => {
     expect((await probe(wav(24 * 60 + 1))).r).toMatchObject({ ok: false, error: 'wav_too_long', released: true })
   }, 120_000)
