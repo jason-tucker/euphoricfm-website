@@ -51,7 +51,7 @@ export const ERROR_TEXT: Record<string, string> = {
   archive_in_progress: 'This song is being archived or restored. Wait until that finishes (or resolve it under Archived songs), then try again.',
   archive_job_pending: 'The worker is still working on this archive or restore. Wait a few minutes, then reload.',
   not_in_progress: 'This archive is no longer in progress. Reload to see its status.',
-  // v0.3.3: Unreleased songs (release, member links, the folder import)
+  // v0.3.6: Unreleased songs (release, member links, the folder import)
   release_required: 'This is an Unreleased song: release it into an artist folder instead of restoring it.',
   not_a_release: 'Only Unreleased songs are released. Use Restore for this song.',
   invalid_release: 'The release is incomplete. Choose an artist (and any playlists), then try again.',

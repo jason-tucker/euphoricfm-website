@@ -7,7 +7,7 @@ import { releaseSong } from '@/server/requests/manage'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// v0.3.3: release a legacy (UNRELEASED) archived song into an artist folder
+// v0.3.6: release a legacy (UNRELEASED) archived song into an artist folder
 // with explicitly chosen playlists: {artist, newArtist?, playlistIds} →
 // worker restore (manage; 409 not_a_release, artist_unknown,
 // artist_folder_taken, artist_pending, archive_in_progress, …).

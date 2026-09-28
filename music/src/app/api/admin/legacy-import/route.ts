@@ -7,7 +7,7 @@ import { legacyImport, legacyImportState } from '@/server/requests/manage'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// v0.3.3: "Archive the UNRELEASED folder". GET: the current dry-run plan,
+// v0.3.6: "Archive the UNRELEASED folder". GET: the current dry-run plan,
 // the import jobs still queued and the imported rows by status.
 // POST {action:'dry_run'} queues the worker's read-only listing;
 // POST {action:'run', planId} confirms that plan (409 plan_not_ready,

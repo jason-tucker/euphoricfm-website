@@ -1,4 +1,4 @@
-// v0.3.3 end to end through the real web and worker containers: the
+// v0.3.6 end to end through the real web and worker containers: the
 // manager's "Archive the UNRELEASED folder" (dry run by the worker, then
 // confirm), the worker importing a file in the scan window, the Archived
 // songs page per role (members see only their own or linked songs), member
@@ -21,7 +21,7 @@ const newId = () => `3${String(Date.now()).slice(-9)}${String(++seq).padStart(8,
 type Media = { id: number; path: string; title: string; playlists: { id: number }[] }
 type Plan = { id: string; status: string; plan?: { files: { mediaId: number; path: string; dest: string; playlistIds: number[]; action: string }[] } }
 
-describe.skipIf(!E2E())('v0.3.3 UNRELEASED import and Archived songs through the real containers', () => {
+describe.skipIf(!E2E())('v0.3.6 UNRELEASED import and Archived songs through the real containers', () => {
   let member: Jar
   let memberId: string
   let manager: Jar

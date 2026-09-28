@@ -1,6 +1,6 @@
 'use client'
 
-// v0.3.3: release an Unreleased (legacy) archived song into an artist
+// v0.3.6: release an Unreleased (legacy) archived song into an artist
 // folder. The manager confirms or changes the artist (an existing artist, or
 // a new one, created only when "Create this new artist" is ticked) and picks
 // the playlists explicitly: none is pre-selected; the playlists it had

@@ -1,6 +1,6 @@
 'use client'
 
-// v0.3.3: managers link one member (anyone who has signed in to the
+// v0.3.6: managers link one member (anyone who has signed in to the
 // portal) to an archived song, so that member sees it under Archived
 // songs; or unlink. Audited server-side.
 

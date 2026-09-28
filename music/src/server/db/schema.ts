@@ -491,7 +491,7 @@ export const ingestRuns = pgTable(
 // a crash or a lost response resumes from the recorded state instead of
 // snapshotting a half-done one (requests/jobs.ts archiveMedia/restoreMedia).
 export const archiveStatusEnum = pgEnum('archive_status', ['archiving', 'archived', 'restoring', 'restored', 'failed'])
-// v0.3.3: where an archived song came from. 'portal': a removal request or a
+// v0.3.6: where an archived song came from. 'portal': a removal request or a
 // manager's archive of a library song (restore puts it back where it was).
 // 'legacy_unreleased': imported from the pre-portal UNRELEASED folder
 // (requests/legacy.ts); restoring one RELEASES it into Music/Artists/<folder>/
@@ -512,7 +512,7 @@ export const archive = pgTable(
     // Why it was archived, when a manager said (their archive reason); a
     // removal request's reason stays on the request.
     reason: text('reason'),
-    // A member a manager linked to this archived song (v0.3.3): besides the
+    // A member a manager linked to this archived song (v0.3.6): besides the
     // portal uploader (items → batch owner of the media id), the only member
     // who may see it on the Archived songs page. Audited (archive.link).
     linkedUserId: text('linked_user_id').references(() => users.id, { onDelete: 'set null' }),

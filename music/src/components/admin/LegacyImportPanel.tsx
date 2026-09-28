@@ -1,6 +1,6 @@
 'use client'
 
-// v0.3.3 "Archive the UNRELEASED folder" (managers). Step 1: a dry run (the
+// v0.3.6 "Archive the UNRELEASED folder" (managers). Step 1: a dry run (the
 // worker lists the folder read-only) shows every planned move, source →
 // destination, and the playlists each file leaves. Step 2: confirm that
 // exact plan; the worker then archives one file per scan window (~5 min).

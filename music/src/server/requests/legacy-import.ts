@@ -1,4 +1,4 @@
-// v0.3.3: the one-off import of the pre-portal UNRELEASED folder into the
+// v0.3.6: the one-off import of the pre-portal UNRELEASED folder into the
 // portal archive. Shared by the web (the manager's dry run + confirm on the
 // admin page), the worker (the plan job) and the operator CLI.
 //

@@ -27,7 +27,7 @@
 // whose job is gone, so no half-done archive stays open and a later archive
 // always starts from a fresh snapshot.
 //
-// v0.3.3: import_legacy_archive moves the pre-portal UNRELEASED folder into
+// v0.3.6: import_legacy_archive moves the pre-portal UNRELEASED folder into
 // the archive with the same machinery (continueArchive; rows with origin
 // 'legacy_unreleased'), and restoring such a row RELEASES it into an artist
 // folder (releaseMedia) instead of putting it back.
@@ -1043,7 +1043,7 @@ export async function releaseMedia(ctx: RequestsCtx, a0: ArchiveRow, payload: Ac
   await applied(ctx, null, post, offset, { noMetadataWrite: true })
 }
 
-// ------------------------------------------------ legacy import (v0.3.3) ---
+// ------------------------------------------------ legacy import (v0.3.6) ---
 //
 // import_legacy_archive: ONE file of the pre-portal UNRELEASED folder into
 // the portal archive (Removed/<media_id>/<name>), with the archive machinery
@@ -1197,7 +1197,7 @@ export async function setPlaylistsJob(ctx: RequestsCtx, payload: Actor & { media
 const RECOVERY_MIN_CYCLES = 3
 const RECOVERY_MIN_MS = 20 * 60_000
 
-// noMetadataWrite (v0.3.3, a released legacy song): its DB values are the
+// noMetadataWrite (v0.3.6, a released legacy song): its DB values are the
 // truth and its file's tags must never be rewritten, so a repair re-adds
 // memberships only; a metadata difference fails with an alert instead.
 type ReverifyPayload = { mediaId: number; snapshotId: number; requestId?: number | null; attempt?: number; lostSince?: number; noMetadataWrite?: boolean }

@@ -1,4 +1,4 @@
-// v0.3.3: the READ-ONLY half of the UNRELEASED import: list the folder,
+// v0.3.6: the READ-ONLY half of the UNRELEASED import: list the folder,
 // build the plan (every planned move, the playlists each file loses, what is
 // refused or skipped), format it for the dry run, and the legacy_import_plan
 // job that stores it for the manager's confirm. The writes are the

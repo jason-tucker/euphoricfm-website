@@ -250,7 +250,7 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     expect(song.html).not.toContain('Manager tools')
     expect(song.html).not.toContain('1General Rotation') // playlists are staff-only
     expect((await page(member, `/library/${mediaId + 1}`)).status).toBe(404) // outside Music/Artists/**
-    // v0.3.3: members reach Archived songs, filtered to their own / linked songs.
+    // v0.3.6: members reach Archived songs, filtered to their own / linked songs.
     const memberArchived = await page(member, '/library/archived')
     expect(memberArchived.status).toBe(200)
     expect(memberArchived.html).toContain('None of your songs are archived.')

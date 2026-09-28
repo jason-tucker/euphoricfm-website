@@ -471,10 +471,10 @@ describe.skipIf(!MOCKS())('AzuraCast wrapper against the P0d-B mock', () => {
   })
 })
 
-// v0.3.3: the UNRELEASED import may name that folder ONLY through the two
+// v0.3.6: the UNRELEASED import may name that folder ONLY through the two
 // legacy methods (memberships of the file, and its move to Removed/<id>),
 // and the release may rename ONLY inside one Removed/<id>/ folder.
-describe('v0.3.3 legacy import + release: the only requests that may name UNRELEASED or rename', () => {
+describe('v0.3.6 legacy import + release: the only requests that may name UNRELEASED or rename', () => {
   const L = 'Portal-Test/UNRELEASED-DO NOT ADD TO ROTATION'
   const R = 'Portal-Test/Removed/5'
 
@@ -530,7 +530,7 @@ describe('v0.3.3 legacy import + release: the only requests that may name UNRELE
   })
 })
 
-describe.skipIf(!MOCKS())('v0.3.3 rename + legacy move against the upstream-faithful mock', () => {
+describe.skipIf(!MOCKS())('v0.3.6 rename + legacy move against the upstream-faithful mock', () => {
   const env = { ...PREFIX_ENV }
   const client = () => new AzuraCastClient({ baseUrl: process.env.MOCKS_AZURACAST!, apiKey: process.env.AZURACAST_API_KEY!, profile: resolveProfile(env), canaryStationId: 7, env })
   const files = async () => (await control('/__mock/az/files')) as { id: number; path: string; playlists: { id: number }[] }[]

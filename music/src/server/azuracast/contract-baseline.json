@@ -1,6 +1,6 @@
 {
   "source": "P0d baseline /mnt/user/Backup/euphoricfm/portal-contract-baseline/ (2026-09-27 UTC); anonymous GET https://euphoric.fm/api/openapi.yml, spec info.version 0.21.0, AzuraCast COMMIT_LONG 6499e9314481d6836fa0d47ee733f2ee66fceecd",
-  "renameAdded": "v0.3.3 (2026-09-27): the /station/{station_id}/files/rename slice was taken from the live 0.21.0 build (azuracast container web/static/openapi.yml, read-only); the other six path slices of that file reproduce this baseline byte for byte.",
+  "renameAdded": "v0.3.6 (2026-09-27): the /station/{station_id}/files/rename slice was taken from the live 0.21.0 build (azuracast container web/static/openapi.yml, read-only); the other six path slices of that file reproduce this baseline byte for byte.",
   "openapiFullSha256": "be158023b4576dee6facf59245e99139771cbae247c920ef3d4fcf7412f2ade9",
   "paths": {
     "/station/{station_id}/files": "6fd2738cb83cb9b22f47415127f250f6d31238a158e365bb5651ad93b9077738",

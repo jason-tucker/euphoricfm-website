@@ -1,6 +1,6 @@
 // Manager library actions (`manage`, plan §3.3): direct metadata edit,
 // playlist change (the worker MERGES), archive and restore, and settling an
-// archive or restore that stopped part way. v0.3.3: the release of a legacy
+// archive or restore that stopped part way. v0.3.6: the release of a legacy
 // (UNRELEASED) archived song, linking a member to an archived song, and the
 // UNRELEASED import's dry run and confirm. The web holds no AzuraCast key,
 // so each one validates, audits and queues a worker job.
@@ -157,7 +157,7 @@ export async function listArchived(db: DB, v: Viewer) {
   }))
 }
 
-// ------------------------------------------------ release (v0.3.3) ---
+// ------------------------------------------------ release (v0.3.6) ---
 
 // {artist, newArtist?, playlistIds}: the artist folder the song goes to
 // (an existing ACTIVE artist by name, folder or alias; or, with newArtist:
@@ -247,7 +247,7 @@ export async function releaseSong(db: DB, v: Viewer, archiveId: number, input: u
   })
 }
 
-// ---------------------------------------- member links (v0.3.3) ---
+// ---------------------------------------- member links (v0.3.6) ---
 
 // A manager links one portal user (someone who has signed in) to an
 // archived song, so that member sees it on Archived songs; or unlinks.
@@ -296,7 +296,7 @@ export async function linkCandidates(db: DB, v: Viewer, q: string) {
   return rows
 }
 
-// ------------------------------------- UNRELEASED import (v0.3.3) ---
+// ------------------------------------- UNRELEASED import (v0.3.6) ---
 
 export async function legacyImportState(db: DB, v: Viewer) {
   requireManage(v)

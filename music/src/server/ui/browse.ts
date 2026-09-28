@@ -111,7 +111,7 @@ export async function pendingRequests(db: DB, v: Viewer) {
 }
 export type PendingRequest = Awaited<ReturnType<typeof pendingRequests>>[number]
 
-// Archived songs (v0.3.3 visibility, for every archive row, old and new):
+// Archived songs (v0.3.6 visibility, for every archive row, old and new):
 // staff (review or manage) see all of them, with their state; a member sees
 // an archived song only if they uploaded it through the portal (an item of
 // a batch they own carries that media id) or a manager linked them to it,

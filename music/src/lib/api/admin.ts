@@ -17,7 +17,7 @@ export function removeRoleBinding(id: number) {
   return api(`/api/admin/role-bindings/${id}`, { method: 'DELETE' })
 }
 
-// v0.3.3 "Archive the UNRELEASED folder" (manage). POST {action:'dry_run'}
+// v0.3.6 "Archive the UNRELEASED folder" (manage). POST {action:'dry_run'}
 // queues the worker's read-only listing; {action:'run', planId} confirms it.
 export function legacyImportDryRun() {
   return api<{ planId: string; status: string }>('/api/admin/legacy-import', { json: { action: 'dry_run' } })

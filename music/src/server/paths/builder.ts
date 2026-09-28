@@ -26,7 +26,7 @@ export const MAX_COMPONENT_BYTES = 150
 
 export const TEST_PREFIX_RE = /^Portal-Test[A-Za-z0-9-]*\/$/
 
-// v0.3.3: the pre-portal folder of unreleased songs on storage 2. Its files
+// v0.3.6: the pre-portal folder of unreleased songs on storage 2. Its files
 // are moved into the portal archive ONCE, by the import_legacy_archive job
 // only (worker/requests/legacy.ts), through the wrapper's legacy methods. No
 // other code path may name it: it is not on the library surface and it is

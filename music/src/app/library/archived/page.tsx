@@ -18,7 +18,7 @@ export const metadata = { title: 'Archived songs' }
 
 // Staff (review or manage) see every archived song; a member sees the ones
 // they uploaded through the portal or a manager linked them to, read-only
-// (v0.3.3). Restore, Release, Resolve and member links are manager-only,
+// (v0.3.6). Restore, Release, Resolve and member links are manager-only,
 // and so is "Archive the UNRELEASED folder" (here as well as on /admin, so
 // a manager who is not an admin reaches it too). Newest first, paged.
 export default async function ArchivedPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {

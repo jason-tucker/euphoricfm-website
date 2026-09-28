@@ -255,7 +255,7 @@ export const ALLOWLIST: readonly Entry[] = [
   // multipart file part, OpenAPI field `file`). Numeric media id only.
   { method: 'POST', re: /^\/api\/station\/(\d+)\/art\/([1-9]\d{0,9})$/, kind: 'art' },
   { method: 'PUT', re: /^\/api\/station\/(\d+)\/files\/batch$/, kind: 'batch' },
-  // v0.3.3 (verified on the live 0.21.0 build: Stations\Files\RenameAction,
+  // v0.3.6 (verified on the live 0.21.0 build: Stations\Files\RenameAction,
   // {file, newPath}, Status::updated()). renameInArchive() only.
   { method: 'PUT', re: /^\/api\/station\/(\d+)\/files\/rename$/, kind: 'rename' },
 ]
@@ -682,7 +682,7 @@ export class AzuraCastClient {
     await this.#checkedMove(filePath, directory, false)
   }
 
-  // v0.3.3 legacy import ONLY (worker/requests/legacy.ts): moves a .mp3 /
+  // v0.3.6 legacy import ONLY (worker/requests/legacy.ts): moves a .mp3 /
   // .m4a file from <root>UNRELEASED-DO NOT ADD TO ROTATION/… to
   // <root>Removed/<id>. Same live checks as moveFile (exact media source,
   // free destination, same-id re-read); validate() accepts the legacy source
@@ -705,7 +705,7 @@ export class AzuraCastClient {
     if (moved.path !== dest) throw new AzuraCastError('move_verify_failed', { expected: dest, actual: moved.path })
   }
 
-  // v0.3.3 legacy import ONLY: REPLACES the station playlist set of a file
+  // v0.3.6 legacy import ONLY: REPLACES the station playlist set of a file
   // still in the UNRELEASED folder ([] clears it before the move; a rollback
   // puts the snapshot's memberships back). Same allowed-set rule as
   // setPlaylists; validate() accepts only a legacy source for it.
@@ -717,7 +717,7 @@ export class AzuraCastClient {
     await this.batch(body, allowedIds, true)
   }
 
-  // v0.3.3 release of a legacy row: gives a file inside Removed/<id>/ another
+  // v0.3.6 release of a legacy row: gives a file inside Removed/<id>/ another
   // name in the same folder (the ' (n)' name when the artist folder already
   // has the original one). Upstream RenameAction moves the file on disk and
   // updates the media row's path (same id, tags untouched) and does NOT

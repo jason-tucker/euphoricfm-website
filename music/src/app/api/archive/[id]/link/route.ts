@@ -7,7 +7,7 @@ import { linkArchive, unlinkArchive } from '@/server/requests/manage'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// v0.3.3: link a portal user to an archived song ({userId}), so that member
+// v0.3.6: link a portal user to an archived song ({userId}), so that member
 // sees it under Archived songs; DELETE unlinks. Manage only, audited.
 export const PUT = route<{ id: string }>(async (req, p) => {
   const v = await requirePermission('manage')

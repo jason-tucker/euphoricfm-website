@@ -164,7 +164,7 @@ describe('segment hardening (review minor 3)', () => {
   })
 })
 
-describe('v0.3.3 legacy UNRELEASED import: the one extra source, and release names', () => {
+describe('v0.3.6 legacy UNRELEASED import: the one extra source, and release names', () => {
   it('the legacy source is exactly the UNRELEASED folder (≤3 levels below), .mp3 or .m4a, under the root', () => {
     for (const root of ROOTS) {
       for (const p of ['kokoro_-_aodhi_-_something.m4a', 'save_me_from_me.mp3', 'Music/KOKORO/kokoro_-_kokoro_-_rage.m4a', 'kokoro_-_ishii石井_-_cute.m4a']) {

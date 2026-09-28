@@ -1,4 +1,4 @@
-// v0.3.3 UI: releasing an Unreleased song (artist confirmation, explicit
+// v0.3.6 UI: releasing an Unreleased song (artist confirmation, explicit
 // playlists, the old membership only as a hint), linking a member to an
 // archived song, and the admin "Archive the UNRELEASED folder" dry run →
 // confirm flow.

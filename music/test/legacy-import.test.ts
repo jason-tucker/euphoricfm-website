@@ -1,4 +1,4 @@
-// v0.3.3: the UNRELEASED import (dry run, per-file archive job, pacing,
+// v0.3.6: the UNRELEASED import (dry run, per-file archive job, pacing,
 // resume, reconciler), the release of an Unreleased song into an artist
 // folder, and the Archived songs visibility / member links, against the
 // upstream-faithful AzuraCast mock and the real music-db. Handlers run
@@ -34,7 +34,7 @@ const SLOT = 300_000
 type Scheduled = { kind: string; payload: Record<string, unknown>; opts: { dedupeKey?: string; runAfter?: Date } }
 type Call = { method: string; path: string; body?: Record<string, unknown> }
 
-describe.skipIf(!(DBENV() && MOCKS()))('v0.3.3 UNRELEASED import, release and visibility (mock AzuraCast, Portal-Test/ root)', () => {
+describe.skipIf(!(DBENV() && MOCKS()))('v0.3.6 UNRELEASED import, release and visibility (mock AzuraCast, Portal-Test/ root)', () => {
   let ctx: RequestsCtx
   let scheduled: Scheduled[]
   let alerts: string[]

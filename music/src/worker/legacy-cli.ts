@@ -1,4 +1,4 @@
-// v0.3.3 operator CLI for the UNRELEASED import, run INSIDE the worker
+// v0.3.6 operator CLI for the UNRELEASED import, run INSIDE the worker
 // container (it needs the worker's env: the AzuraCast key, the profile, the
 // database):
 //

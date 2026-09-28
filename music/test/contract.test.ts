@@ -6,7 +6,7 @@ const spec = readFileSync(new URL('./fixtures/openapi-min.yml', import.meta.url)
 
 describe('AzuraCast contract drift probe', () => {
   it('the fixture spec reproduces the P0d baseline hashes exactly', () => {
-    // v0.3.3: + /files/rename (release of an Unreleased song, ' (n)' name)
+    // v0.3.6: + /files/rename (release of an Unreleased song, ' (n)' name)
     expect(Object.keys(BASELINE.paths)).toHaveLength(7)
     expect(BASELINE.paths['/station/{station_id}/files/rename']).toMatch(/^[0-9a-f]{64}$/)
     expect(Object.keys(BASELINE.requestBodies ?? {})).toEqual(['FlowFileUpload'])

@@ -87,7 +87,7 @@ export function setLibraryArt(mediaId: number, artId: ArtId) {
   return api(`/api/library/${mediaId}/art`, { method: 'PUT', json: { artId } })
 }
 
-// ---- v0.3.3: Unreleased songs ----
+// ---- v0.3.6: Unreleased songs ----
 
 // POST /api/archive/:archiveId/release {artist, newArtist?, playlistIds} → 202
 // (409 artist_unknown / artist_folder_taken / artist_pending / not_a_release)
