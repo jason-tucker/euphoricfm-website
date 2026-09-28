@@ -74,8 +74,8 @@ src/
     ListenButton.astro        HTML5 audio + volume (merged into PlayerCard)
     ModalControls.astro       opens pop-ups from any data-open="…" control,
                               [data-close] + Escape closing (every full-site page)
-    RecentlyPlayed.astro      list skeleton, hydrated by nowplaying.ts
-    RequestedSongs.astro      shared pending-requests card, hydrated client-side
+    SongsCard.astro           one side card, two tabs: Recently played + Requested
+                              (N) — constant height; lists hydrated by nowplaying.ts
     About.astro               #about: "What is EuphoricFM?" + live station facts
                               (scripts/station-facts.ts)
     EventsTeaser.astro        home events teaser + live status (scripts/events.ts)

@@ -7,8 +7,7 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 import Header from '../components/Header.astro';
 import PlayerCard from '../components/PlayerCard.astro';
-import RecentlyPlayed from '../components/RecentlyPlayed.astro';
-import RequestedSongs from '../components/RequestedSongs.astro';
+import SongsCard from '../components/SongsCard.astro';
 import About from '../components/About.astro';
 import EventsTeaser from '../components/EventsTeaser.astro';
 import ForArtists from '../components/ForArtists.astro';
@@ -35,8 +34,8 @@ const taglineTail = words.slice(-2).join(' ');
 <BaseLayout>
   <Header slot="header" current="listen" />
   <div class="phone">
-    <!-- 1. Listen: the player first, Recently played + Requested songs beside
-         it on desktop (below it on phones). -->
+    <!-- 1. Listen: the player first, the Recently played / Requested tabs
+         card beside it on desktop (below it on phones). -->
     <section id="listen" class="hm-hero" aria-labelledby="listen-h">
       <div class="hm-hero-head">
         <div>
@@ -63,8 +62,7 @@ const taglineTail = words.slice(-2).join(' ');
           </PlayerCard>
         </div>
         <aside class="efm-sidebar hm-side" aria-label="Recently played and requested songs">
-          <RecentlyPlayed />
-          <RequestedSongs />
+          <SongsCard />
         </aside>
       </div>
     </section>

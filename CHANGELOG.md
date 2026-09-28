@@ -5,6 +5,21 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.22.1] — 2026-09-28 — Up next all song long, one songs card
+
+### Changed
+- **Up next shows the whole time.** The player's Up next row shows the next song (art, title, artist, REQUESTED badge and an "in m:ss" countdown) from the start of the current one — AzuraCast cues it at song start — instead of only in the last ~40 s. The reveal delay and the "Shows here near the end of this song" placeholder are gone. When there's no song to show, the same fixed-height row says so in one line: "Station break next" when an ad / station ID is next (same break filter as the Web Player), "Choosing the next song…" when nothing is cued yet, and "Back to the playlist after the live set" during a live set. The Web Player already showed Up next straight away; unchanged.
+- **Recently played and Requested songs are one card with two tabs** — *Recently played* (selected by default) and *Requested* with a count badge (a filled badge when something is waiting, a quiet 0 otherwise). The card keeps one constant height (four rows, so on desktop it is exactly as tall as the player beside it and leaves no empty band under the player) on both tabs, so requests arriving or leaving never move anything, and the empty box the old Requested card reserved is gone. The Requested tab lists pending requests (more scroll inside) or, when empty, "No requests right now" with a **Request a song** button that opens the request pop-up. The tabs are bordered buttons with hover / pressed / focus-ring states and full ARIA tabs semantics (←/→, Home/End). Same card, same height, under the player on phones and tablets. `/requests/pending` polling is unchanged.
+
+### Fixed
+- **Long titles no longer push the REQUESTED badge and the countdown out of the Up next row.** The row's grid had no column template, so its implicit column grew to the full title width and the title never truncated; the badge and "in m:ss" were clipped off the row's edge (phones for titles like "Fuck You (I Wanna Love Me and Love You)", desktop for ~80-character titles). The column is now `minmax(0, 1fr)`: the title ellipsises and the badge and countdown always stay visible.
+
+### Removed
+- `RecentlyPlayed.astro` and `RequestedSongs.astro` (merged into `SongsCard.astro`) and their CSS.
+
+### Tests
+- `test/site-build.test.mjs`: no Up next reveal constant or "near the end" copy, the neutral Up next lines and break filter are wired, the songs card is a single sidebar card with a two-tab ARIA tablist (Recently played selected, roving tabindex, panels labelled by their tabs, arrow-key handling), and no standalone Requested card remains; the Up next row's grid column can shrink (`minmax(0, 1fr)`).
+
 ## [0.22.0] — 2026-09-28 — One-page radio-first home
 
 ### Added

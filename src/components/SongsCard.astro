@@ -1,0 +1,93 @@
+---
+// The hero's side card: Recently played and Requested songs as two tabs of
+// ONE card (they used to be two cards, and the Requested one reserved room
+// for three rows that sat empty most of the time).
+//
+// The card body has one constant height — the four Recently played rows — on
+// both tabs, so nothing below it moves when requests come or go or the tab
+// changes. Recently played is selected by default; the Requested tab carries
+// the pending count so people notice it. nowplaying.ts fills both lists
+// (#recent-list from song_history, #req-pending-list from /requests/pending)
+// and the count; the script below only switches tabs.
+import { site } from '../site.config';
+const t = site.home.songs;
+---
+
+<section id="songs-card" class="efm-sidebar-section hm-side-card" aria-label={`${t.recent} and ${t.requested.toLowerCase()} songs`}>
+  <div class="hm-surface hm-side-surface efm-sidebar-card">
+    <div role="tablist" aria-label={t.tabsLabel} class="hm-tabs" id="songs-tabs">
+      <button type="button" role="tab" id="songs-tab-recent" class="hm-tab" aria-selected="true" aria-controls="songs-panel-recent" tabindex="0">
+        {t.recent}
+      </button>
+      <button type="button" role="tab" id="songs-tab-requested" class="hm-tab efm-js-only" aria-selected="false" aria-controls="songs-panel-requested" tabindex="-1">
+        {t.requested}<span class="sr-only">:</span>
+        <span id="req-pending-count" class="hm-tab-count is-zero">0</span>
+      </button>
+    </div>
+
+    <div class="hm-tab-body">
+      <div role="tabpanel" id="songs-panel-recent" class="hm-tab-panel" aria-labelledby="songs-tab-recent" tabindex="0">
+        <ul id="recent-list" class="divide-y divide-cream/5">
+          {[0, 1, 2, 3].map((i) => (
+            <li class="flex items-center gap-3 py-2 border-t border-cream/5 first:border-t-0" aria-hidden={i > 0 ? 'true' : undefined}>
+              <div class="w-10 h-10 rounded-md bg-cream/10 shrink-0"></div>
+              <div class="min-w-0 flex-1">
+                {i === 0 ? (
+                  <div class="truncate text-sm text-cream/40">Loading recent tracks…</div>
+                ) : (
+                  <div class="h-5 flex items-center"><div class="h-2.5 w-2/3 rounded bg-cream/10"></div></div>
+                )}
+                <div class="h-4 flex items-center"><div class="h-2 w-1/3 rounded bg-cream/5"></div></div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div role="tabpanel" id="songs-panel-requested" class="hm-tab-panel" aria-labelledby="songs-tab-requested" tabindex="0" hidden>
+        <div id="req-pending-empty" class="hm-req-empty">
+          <p class="hm-small hm-muted">{t.empty}</p>
+          <button type="button" class="btn btn-outline btn-sm" data-open="request">
+            <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>{t.button}
+          </button>
+        </div>
+        <ul id="req-pending-list" class="divide-y divide-cream/5"></ul>
+      </div>
+    </div>
+
+    <a href="/player/#history" class="btn btn-ghost btn-sm hm-songs-more">{t.history}<span class="hm-chev" aria-hidden="true">›</span></a>
+  </div>
+</section>
+
+<script>
+  // WAI-ARIA tabs with automatic activation: click, or ←/→ (wrapping),
+  // Home/End on a focused tab. Only the selected tab is in the tab order.
+  const list = document.getElementById('songs-tabs');
+  if (list) {
+    const tabs = Array.from(list.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const select = (tab: HTMLButtonElement, focus: boolean) => {
+      for (const t of tabs) {
+        const on = t === tab;
+        t.setAttribute('aria-selected', String(on));
+        t.tabIndex = on ? 0 : -1;
+        const panel = document.getElementById(t.getAttribute('aria-controls') || '');
+        if (panel) panel.hidden = !on;
+      }
+      if (focus) tab.focus();
+    };
+    for (const t of tabs) t.addEventListener('click', () => select(t, false));
+    list.addEventListener('keydown', (e) => {
+      const i = tabs.indexOf(document.activeElement as HTMLButtonElement);
+      if (i < 0) return;
+      const n = tabs.length;
+      const to =
+        e.key === 'ArrowRight' ? (i + 1) % n
+        : e.key === 'ArrowLeft' ? (i - 1 + n) % n
+        : e.key === 'Home' ? 0
+        : e.key === 'End' ? n - 1
+        : -1;
+      if (to < 0) return;
+      e.preventDefault();
+      select(tabs[to], true);
+    });
+  }
+</script>
