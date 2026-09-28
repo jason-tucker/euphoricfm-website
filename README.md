@@ -72,13 +72,21 @@ src/
     PlayerCard.astro          live player: now-playing, progress, play/volume,
                               up-next, Web Audio analyser feeding --efm-* vars
     ListenButton.astro        HTML5 audio + volume (merged into PlayerCard)
-    ActionRow.astro           CTAs: modal openers (efm:open-* events) + the
-                              Events link + "Submit music" (portal link)
+    ModalControls.astro       opens pop-ups from any data-open="…" control,
+                              [data-close] + Escape closing (every full-site page)
     RecentlyPlayed.astro      list skeleton, hydrated by nowplaying.ts
     RequestedSongs.astro      shared pending-requests card, hydrated client-side
-    Stats.astro               station stats section skeleton, hydrated by
-                              scripts/stats.ts
-    About.astro               "What is EuphoricFM?" blurb (aboutText)
+    About.astro               #about: "What is EuphoricFM?" + live station facts
+                              (scripts/station-facts.ts)
+    EventsTeaser.astro        home events teaser + live status (scripts/events.ts)
+    ForArtists.astro          #music: 4 steps + portal links (submit, fix, remove)
+    ListenAnywhere.astro      #ways: player, Web Player, .pls/.m3u, stream URL + Copy
+    Stats.astro               #stats: condensed stats skeleton + "Show full
+                              stats"; scripts/stats.ts is lazy-loaded by
+                              scripts/stats-lazy.ts when #stats nears the viewport
+    StatsDetailModal.astro    track/artist detail pop-up (filled by stats.ts)
+    GetInTouch.astro          #contact: contact, advertise, book an event
+    Faq.astro                 #faq: six <details> (site.home.faq)
     RequestModal.astro        AzuraCast library search + same-origin POST
     ContactModal.astro        Discord webhook — general contact form
     BusinessAdModal.astro     static pricing + perks
@@ -90,7 +98,7 @@ src/
                                site.events.status.current overrides it
     EventInquiryModal.astro   /events booking form — posts to the contact
                                Discord webhook with a distinguished embed
-    Footer.astro              copyright + Effects toggle + v<version> · <sha>
+    Footer.astro              link columns + Effects toggle + v<version> · <sha>
 public/fonts/                 Begaron + Cortado Script TTFs/WOFF2
 public/cef-test.html          plain-HTML no-JS diagnostic page for confirming
                               the in-game CEF iframe can reach the origin
@@ -234,7 +242,7 @@ This site is embedded inside the in-game phone's CEF iframe browser, so:
 ### Discord webhooks
 
 The "Contact us" modal (and the /events inquiry form) POST directly to the configured
-Discord webhooks (read from `window.__EFM_CONFIG__.discord.*` at submit time).
+Discord webhooks (read from `window.__EFM_CONFIG__.contact.webhook` at submit time).
 The payload matches the embed shape AzuraCast's own button uses —
 `username`, `avatar_url`, `thread_name`, and
 `embeds[{ title, description, fields, color, timestamp, footer }]` — so the

@@ -8,6 +8,8 @@
 #   - /player and /player?popout=1 get a 308 to the slash form (like /events)
 #   - the home page and the unknown-path fallback still serve the home page
 #   - /player/ carries the site's security headers (CSP unchanged, framable)
+#   - /images/og.png is served as an image, and the runtime config hands the
+#     contact webhook out under the neutral `contact` key
 # Exits non-zero if any check fails.
 #
 #   sh test/caddy-player.sh
@@ -73,5 +75,16 @@ printf '%s\n' "$H" | grep -i -E '^(content-type|content-security-policy|x-frame-
 printf '%s\n' "$H" | grep -qi '^content-type: text/html' || { echo "FAIL content-type"; FAIL=1; }
 printf '%s\n' "$H" | grep -qi "^content-security-policy: .*media-src https://euphoric.fm;.*frame-ancestors \*" || { echo "FAIL CSP"; FAIL=1; }
 printf '%s\n' "$H" | grep -qi '^x-frame-options:' && { echo "FAIL X-Frame-Options present"; FAIL=1; }
+
+echo
+echo "Share image and runtime config:"
+OG=$(curl -s -D - -o "$BODY" "http://127.0.0.1:$PORT/images/og.png" -H 'Host: info.euphoric.fm' | tr -d '\r')
+printf '%s\n' "$OG" | grep -i -E '^(HTTP|content-type):'
+printf '%s\n' "$OG" | grep -qi '^content-type: image/png' || { echo "FAIL og.png is not served as an image (SPA fallback?)"; FAIL=1; }
+# The contact webhook sits under a neutral key: the info site never says "Discord".
+RC=$(curl -s "http://127.0.0.1:$PORT/efm-runtime-config.js" -H 'Host: info.euphoric.fm')
+echo "$RC"
+echo "$RC" | grep -q '__EFM_CONFIG__.contact={webhook:' || { echo "FAIL runtime config key"; FAIL=1; }
+echo "$RC" | grep -qi discord && { echo "FAIL runtime config mentions discord"; FAIL=1; }
 
 [ "$FAIL" = 0 ] && echo "ALL PASS" || { echo "SOME CHECKS FAILED"; exit 1; }

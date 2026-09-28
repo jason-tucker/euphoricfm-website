@@ -1,5 +1,6 @@
 // Client-side driver for EventStatus.astro's live on-air card + "On the
-// Calendar" list on /events.
+// Calendar" list on /events, and the same evst-* block in the home page's
+// events teaser (EventsTeaser.astro).
 //
 // Source of truth is the dedicated Euphoric Events AzuraCast station
 // (shortcode `event`, config: site.events.station) — a PUBLIC,
@@ -10,7 +11,7 @@
 //
 // Progressive enhancement, same spirit as stats.ts: this script ships on
 // every page via BaseLayout, so it early-bails when #evst-card (only on
-// /events) is absent. All failures are silent (console.warn) and leave
+// /events and the home page) is absent. All failures are silent (console.warn) and leave
 // whatever the page already had on screen — first-load failure leaves the
 // server-rendered off-air empty state exactly as it renders. Manual config
 // override (`site.events.status.current` non-null) stamps
@@ -63,6 +64,8 @@ const isValidEntry = (e: unknown): e is ScheduleEntry => {
   const elCalendarList = document.getElementById('evst-calendar-list');
   if (!elOffair || !elOnair || !elCalendar || !elCalendarList) return;
 
+  // Optional "nothing booked" line (the home page's events teaser has one).
+  const elCalendarEmpty = document.getElementById('evst-calendar-empty');
   const elOnName = document.getElementById('evst-on-name');
   const elOnTimes = document.getElementById('evst-on-times');
 
@@ -188,6 +191,7 @@ const isValidEntry = (e: unknown): e is ScheduleEntry => {
     upcoming.sort((a, b) => a.start_timestamp - b.start_timestamp);
     const shown = upcoming.slice(0, CALENDAR_LIMIT);
 
+    elCalendarEmpty?.classList.toggle('hidden', shown.length > 0);
     if (shown.length === 0) {
       elCalendar!.classList.add('hidden');
       elCalendarList!.innerHTML = ''; // static clear — no dynamic string involved

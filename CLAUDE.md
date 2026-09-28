@@ -63,7 +63,7 @@ hover-only affordances. Use the `.phone` container utility for max-width.
 ### 7. Editable copy stays in `src/site.config.ts`; webhook URLs are runtime env-injected
 About text, business AD info, station name, `discord.avatarUrl`, and other editable strings live in `src/site.config.ts`. Don't sprinkle copy across components.
 
-Webhook URLs (`PUBLIC_DISCORD_CONTACT_WEBHOOK` — the only one left since song submission moved to the music portal) are **never** hardcoded or build-time inlined. Caddy templates them into `/efm-runtime-config.js` at request time from the container's env vars (set in `.env` on the host). The modals read them off `window.__EFM_CONFIG__.discord.contactWebhook`. To rotate a webhook: edit `.env` + `docker compose up -d` — no rebuild needed.
+Webhook URLs (`PUBLIC_DISCORD_CONTACT_WEBHOOK` — the only one left since song submission moved to the music portal) are **never** hardcoded or build-time inlined. Caddy templates them into `/efm-runtime-config.js` at request time from the container's env vars (set in `.env` on the host). The modals read them off `window.__EFM_CONFIG__.contact.webhook` (neutral key — built info pages never contain "discord", by owner decision; test/site-build enforces it). To rotate a webhook: edit `.env` + `docker compose up -d` — no rebuild needed.
 
 ## Architecture
 
@@ -210,7 +210,7 @@ music.euphoric.fm, and `/music` 302-redirects there (see the Caddyfile "Music po
 block). Webhook URLs are
 **runtime env-injected** (see Rule 7): Caddy serves `/efm-runtime-config.js` which templates
 `PUBLIC_DISCORD_CONTACT_WEBHOOK` from the container env into
-`window.__EFM_CONFIG__.discord`. The modals read them at submit time from that object. They are
+`window.__EFM_CONFIG__.contact`. The modals read them at submit time from that object. They are
 never baked into the static build. Match the embed shape that AzuraCast's existing button uses —
 `username`, `avatar_url`, `thread_name`, `embeds[{ title, description, fields,
 color, timestamp, footer }]` — so the team's existing Discord thread routing

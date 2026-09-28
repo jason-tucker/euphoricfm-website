@@ -11,7 +11,7 @@ import { site } from '../site.config';
   <!-- No overflow-hidden here: the bass halo lives on #np-card::before and its
        box-shadow paints OUTSIDE the card box — an ancestor clip would erase it.
        Children that need clipping (#np-up-next, the progress track) clip themselves. -->
-  <div id="np-card" class="card vt-np bg-midnight/40 border-midnight/40 relative">
+  <div id="np-card" class="card bg-midnight/40 border-midnight/40 relative">
 
     <!-- Special-event banner — slides open when a live DJ connects
          (data.live.is_live from AzuraCast; live sets are always special events
@@ -43,7 +43,7 @@ import { site } from '../site.config';
           id="np-art"
           src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E"
           alt=""
-          class="vt-art rounded-lg object-cover bg-cream/10 shadow-xl block"
+          class="rounded-lg object-cover bg-cream/10 shadow-xl block"
           style="width: clamp(5rem, 14vw, 10rem); height: clamp(5rem, 14vw, 10rem);"
         />
         <div class="absolute inset-0 rounded-lg pointer-events-none ring-1 ring-inset ring-cream/10"></div>
@@ -65,13 +65,13 @@ import { site } from '../site.config';
         </div>
         <div id="np-title" class="truncate font-bold text-cream" style="font-size: clamp(1rem, 1.8vw, 1.375rem);">Loading…</div>
         <div id="np-artist" class="truncate text-cream/75" style="font-size: clamp(0.875rem, 1.3vw, 1.0625rem);">—</div>
-        <div id="np-album" class="truncate text-cream/45 mt-0.5" style="font-size: clamp(0.75rem, 1.1vw, 0.9375rem);"></div>
+        <div id="np-album" class="truncate text-cream/45 mt-0.5 min-h-[1.3em]" style="font-size: clamp(0.75rem, 1.1vw, 0.9375rem);"></div>
       </div>
 
       <!-- Transport stack — play button over volume slider, top-right of the
            card. Width clamps so the title block isn't squeezed on a 360px
            in-game phone iframe. -->
-      <div class="shrink-0 flex flex-col items-end" style="gap: clamp(0.5rem, 0.8vw, 0.625rem); width: clamp(3rem, 8vw, 5rem);">
+      <div class="efm-js-only shrink-0 flex flex-col items-end" style="gap: clamp(0.5rem, 0.8vw, 0.625rem); width: clamp(3rem, 8vw, 5rem);">
         <button
           id="efm-play"
           type="button"
@@ -94,6 +94,10 @@ import { site } from '../site.config';
       </div>
     </div>
 
+    <noscript>
+      <p class="mt-3 text-xs text-cream/70">The player needs JavaScript. You can still listen: <a class="underline text-sunburst" href="#ways">open the stream in your music app</a>.</p>
+    </noscript>
+
     <!-- Progress bar + times. Bar shimmers with mid frequencies when playing. -->
     <div style="margin-top: clamp(0.75rem, 1.2vw, 1rem);">
       <div id="np-bar-track" class="w-full rounded-full bg-cream/10 overflow-hidden relative" style="height: clamp(0.375rem, 0.5vw, 0.5rem);">
@@ -105,9 +109,17 @@ import { site } from '../site.config';
       </div>
     </div>
 
-    <!-- Up Next — slides down from the bottom of the card when playing_next is present. -->
-    <div id="np-up-next" class="mt-3 overflow-hidden max-h-0 opacity-0 transition-[max-height,opacity] duration-500 ease-out">
-      <div class="border-t border-cream/10 pt-3 flex items-center gap-3">
+    <!-- Up Next. The row is always there (fixed height, so nothing below it
+         moves): until the next song is known — nowplaying.ts reveals it
+         ~40 s before the current one ends, via .is-open — it says so; then
+         the next track fades in over that note. -->
+    <div id="np-up-next" class="mt-3 border-t border-cream/10 pt-3">
+      <div class="np-un-wait flex items-center gap-3">
+        <div class="text-[10px] uppercase tracking-widest text-cream/45 shrink-0">Up Next</div>
+        <div class="w-9 h-9 rounded-md border border-dashed border-cream/15 shrink-0" aria-hidden="true"></div>
+        <div class="min-w-0 flex-1 truncate text-[11px] lg:text-xs text-cream/45">Shows here near the end of this song</div>
+      </div>
+      <div class="np-un-track flex items-center gap-3">
         <div class="text-[10px] uppercase tracking-widest text-cream/45 shrink-0">Up Next</div>
         <img id="up-next-art" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E" alt="" class="w-9 h-9 rounded-md object-cover bg-cream/10 shrink-0" />
         <div class="min-w-0 flex-1">
@@ -120,15 +132,23 @@ import { site } from '../site.config';
         </div>
       </div>
     </div>
+
+    <!-- Card actions (index.astro passes Request a song / Web Player / Ways
+         to listen in here, so they sit with the player on the first screen). -->
+    <slot />
   </div>
 </section>
 
 <style is:global>
-  /* Up-next reveal — driven by .is-open class on #np-up-next. */
-  #np-up-next.is-open {
-    max-height: 80px;
-    opacity: 1;
-  }
+  /* Up-next reveal — driven by .is-open class on #np-up-next. The row keeps
+     one fixed height and its two layers (the "shows here soon" note and the
+     track) share one grid cell and cross-fade, so the reveal ~40 s before a
+     song ends never pushes the page below it down. */
+  #np-up-next { display: grid; height: 50px; overflow: hidden; }
+  #np-up-next > * { grid-area: 1 / 1; transition: opacity 500ms ease-out, visibility 500ms; }
+  #np-up-next .np-un-track { opacity: 0; visibility: hidden; }
+  #np-up-next.is-open .np-un-track { opacity: 1; visibility: visible; }
+  #np-up-next.is-open .np-un-wait { opacity: 0; visibility: hidden; }
 
   /* Special-event banner reveal — same mechanism, driven by nowplaying.ts. */
   #np-live-banner.is-open {
@@ -136,38 +156,63 @@ import { site } from '../site.config';
     opacity: 1;
   }
 
-  /* Custom range slider — integrated, slim. Cross-browser styling. */
+  /* Custom range slider. The input itself is a 28px-tall hit area (the old
+     4px-tall input with a 12px thumb was very hard to grab); the visible 5px
+     track is painted by the track pseudo-elements. Cross-browser styling. */
   input.efm-range {
     -webkit-appearance: none;
     appearance: none;
-    height: 4px;
+    height: 28px;
+    margin: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+  input.efm-range::-webkit-slider-runnable-track {
+    height: 5px;
     border-radius: 9999px;
     background: linear-gradient(
       to right,
       rgb(var(--efm-sunburst-rgb)) 0%,
       rgb(var(--efm-sunburst-rgb)) var(--vol, 80%),
-      rgb(var(--efm-cream-rgb) / 0.12) var(--vol, 80%),
-      rgb(var(--efm-cream-rgb) / 0.12) 100%
+      rgb(var(--efm-cream-rgb) / 0.16) var(--vol, 80%),
+      rgb(var(--efm-cream-rgb) / 0.16) 100%
     );
-    cursor: pointer;
+  }
+  input.efm-range::-moz-range-track {
+    height: 5px;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      rgb(var(--efm-sunburst-rgb)) 0%,
+      rgb(var(--efm-sunburst-rgb)) var(--vol, 80%),
+      rgb(var(--efm-cream-rgb) / 0.16) var(--vol, 80%),
+      rgb(var(--efm-cream-rgb) / 0.16) 100%
+    );
   }
   input.efm-range::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 12px;
-    height: 12px;
+    width: 18px;
+    height: 18px;
+    margin-top: -6.5px;
     border-radius: 9999px;
-    background: rgb(var(--efm-sunburst-rgb));
-    box-shadow: 0 0 0 2px rgb(var(--efm-ink-rgb) / 0.6);
+    background: rgb(var(--efm-cream-rgb));
+    border: 3px solid rgb(var(--efm-sunburst-rgb));
+    box-shadow: 0 1px 4px rgb(var(--efm-ink-rgb) / 0.6);
     cursor: pointer;
   }
   input.efm-range::-moz-range-thumb {
     width: 12px;
     height: 12px;
     border-radius: 9999px;
-    background: rgb(var(--efm-sunburst-rgb));
-    border: 2px solid rgb(var(--efm-ink-rgb) / 0.6);
+    background: rgb(var(--efm-cream-rgb));
+    border: 3px solid rgb(var(--efm-sunburst-rgb));
     cursor: pointer;
+  }
+  input.efm-range:focus-visible {
+    outline: 2px solid rgb(var(--efm-sunburst-rgb));
+    outline-offset: 2px;
+    border-radius: 6px;
   }
 </style>
 

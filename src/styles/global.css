@@ -148,8 +148,9 @@
     max-width: var(--efmh-max, 72rem);
     margin-left: auto;
     margin-right: auto;
-    padding-left: clamp(0.5rem, 2vw, 2rem);
-    padding-right: clamp(0.5rem, 2vw, 2rem);
+    /* Same side gutter as the shared top bar, so page edges line up with it. */
+    padding-left: var(--efmh-gutter, 16px);
+    padding-right: var(--efmh-gutter, 16px);
   }
   .section {
     padding-top: clamp(0.75rem, 1.5vw, 1.5rem);
@@ -178,9 +179,12 @@
     gap: clamp(0.5rem, 1.5vw, 1.25rem);
     align-items: start;
   }
-  @media (min-width: 720px) {
+  /* Player + side column from 1024px (the side column is a fixed 23rem so
+     the player keeps its width); below that the side cards stack under the
+     player (two across from 640px, see home.css). */
+  @media (min-width: 1024px) {
     .efm-hero {
-      grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr);
+      grid-template-columns: minmax(0, 1fr) 23rem;
     }
   }
 
@@ -240,17 +244,43 @@
   .efm-sidebar-scroll::-webkit-scrollbar-corner {
     background: transparent;
   }
+  /* Every button looks like a button: a visible 1px edge, a hover tint, a
+     pressed state and the global focus ring (owner rule: controls must be
+     obviously clickable). Variants below only change colours. */
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold min-h-[48px] transition-transform active:scale-[0.98];
+    border: 1px solid transparent;
+    cursor: pointer;
+    text-decoration: none;
+    transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
   }
+  .btn:active { transform: scale(0.98); box-shadow: inset 0 2px 6px rgb(var(--efm-ink-rgb) / 0.35); }
+  /* Neutral bordered button (secondary actions). */
+  .btn-ghost {
+    color: rgb(var(--efm-cream-rgb));
+    border-color: rgb(var(--efm-cream-rgb) / 0.25);
+    background-color: rgb(var(--efm-cream-rgb) / 0.08);
+  }
+  .btn-ghost:hover { border-color: rgb(var(--efm-cream-rgb) / 0.5); background-color: rgb(var(--efm-cream-rgb) / 0.14); }
+  /* Gold outline (navigation-style actions). */
+  .btn-outline {
+    color: rgb(var(--efm-sunburst-rgb));
+    border-color: rgb(var(--efm-sunburst-rgb) / 0.6);
+    background-color: rgb(var(--efm-sunburst-rgb) / 0.07);
+  }
+  .btn-outline:hover { border-color: rgb(var(--efm-sunburst-rgb)); background-color: rgb(var(--efm-sunburst-rgb) / 0.15); }
+  .btn-sm { min-height: 44px; padding: 0 0.875rem; border-radius: 0.625rem; }
   .btn-sunburst {
     @apply text-ink bg-gradient-to-br from-sunburst to-gold;
+    border-color: rgb(var(--efm-gold-rgb) / 0.8);
+    box-shadow: inset 0 1px 0 rgb(var(--efm-cream-rgb) / 0.35), 0 4px 14px rgb(var(--efm-sunburst-rgb) / 0.25);
   }
   .btn-midnight {
     @apply text-cream bg-midnight;
   }
   .btn-ruby {
     @apply text-cream bg-ruby;
+    border-color: rgb(var(--efm-ruby-rgb) / 0.9);
   }
   /* Navy→red. sRGB interpolates this span through a muddy grey-brown midpoint;
      OKLCH (where supported) keeps the middle a clean brand violet. CEF + older
@@ -282,17 +312,12 @@
   100% { box-shadow: 0 0 0 0 rgb(var(--efm-sunburst-rgb) / 0); }
 }
 
-/* View Transitions API — name the now-playing card so the browser can
-   animate the modal-open/close crossfade smoothly. */
-@supports (view-transition-name: x) {
-  .vt-np  { view-transition-name: np-card; }
-  .vt-art { view-transition-name: np-art; }
-}
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 220ms;
-  animation-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
-}
+/* JavaScript off (BaseLayout adds html.efm-js before first paint): hide what
+   only a script can make work — a <button data-open> opens a pop-up, and
+   .efm-js-only marks live data and the player's transport. A link with
+   data-open keeps working through its href, so it stays. */
+html:not(.efm-js) button[data-open],
+html:not(.efm-js) .efm-js-only { display: none !important; }
 
 /* Modal overlays fade/scale in. */
 .efm-modal-enter {
@@ -482,21 +507,8 @@ html.efm-fx-off #np-status { animation: none; }
 
 /* --- Site-wide subtle reactions (kept "a lil"). ------------------------- */
 
-/* Home tagline under the shared top bar (the wordmark lives in the bar now;
-   the bar itself is shared/efm-bar.css and never moves with the music). */
-.efm-tagline {
-  margin: 0;
-  padding: clamp(0.75rem, 1.5vw, 1.25rem) 0 clamp(0.5rem, 1vw, 0.75rem);
-  text-align: center;
-  text-transform: uppercase;
-  font-size: clamp(0.625rem, 1vw, 0.75rem);
-  font-weight: 600;
-  letter-spacing: 0.25em;
-  color: rgb(var(--efm-cream-rgb) / 0.55);
-}
-
-/* Action row + recently-played cards lift with bass kicks. Very small. */
-.efm-extras .btn, #recent-list li {
+/* Recently-played rows lift with bass kicks. Very small. */
+#recent-list li {
   transform: translateY(calc(var(--efm-bass) * -1px));
   transition: transform 80ms linear;
 }
@@ -508,6 +520,7 @@ html.efm-fx-off #np-status { animation: none; }
     filter: brightness(1.06);
   }
 }
+html.efm-cef .btn:hover { filter: none; }
 
 /* ---------------------------------------------------------------------------
  * Fluid music-reactive background — three big blurred colour blobs.
@@ -669,6 +682,12 @@ html.efm-cef .efm-bg { display: none; }   /* drop the blur(64px) blob layer enti
    compositor drops → the ENTIRE page renders blank (this is what regressed
    the phone in 0.7.3/0.8.0). If one ever sneaks back in, the phone survives. */
 html.efm-cef body { filter: none !important; }
+/* The pop-up overlays' backdrop-blur paints black in CEF too. */
+html.efm-cef .backdrop-blur-sm {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background-color: rgb(var(--efm-ink-rgb) / 0.92);
+}
 html.efm-cef .card {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -825,56 +844,6 @@ html.efm-cef .card {
  * discipline as the rest of this file. No filter/backdrop-filter (CEF-safe
  * per CLAUDE.md rule 5); the equalizer motif animates transform: scaleY only.
  * ------------------------------------------------------------------------- */
-
-/* Homepage discoverability button — ActionRow's 3rd item. Outline style so
-   it reads as navigation, visually distinct from the four solid-fill action
-   buttons (Request/Submit/Contact/Business AD). */
-/* Home action row: six buttons as 2×3 (phones), 3×2, or one row of six when
-   the hero's left column is wide enough — never an orphan on its own row. */
-.efm-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(0.5rem, 1vw, 0.75rem);
-}
-@media (min-width: 560px) {
-  .efm-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-@media (min-width: 1480px) {
-  .efm-actions { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-}
-/* Where container queries exist, size by the row's own width instead of the
-   viewport: 3 across only when each button fits "Request a song" on one line
-   (~160px), 6 across only when ~170px each — otherwise labels wrap. */
-.efm-actions-wrap { container-type: inline-size; }
-@supports (container-type: inline-size) {
-  .efm-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  @container (min-width: 520px) {
-    .efm-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  }
-  @container (min-width: 1080px) {
-    .efm-actions { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-  }
-}
-
-/* "Web Player" link in the home action row: sunburst outline + a small gold
-   play dot so it reads as "listen here" and is clearly a button. */
-.btn-player {
-  color: rgb(var(--efm-sunburst-rgb));
-  border: 1px solid rgb(var(--efm-sunburst-rgb) / 0.6);
-  background-color: rgb(var(--efm-sunburst-rgb) / 0.08);
-}
-.btn-player:hover { background-color: rgb(var(--efm-sunburst-rgb) / 0.16); border-color: rgb(var(--efm-sunburst-rgb)); }
-.btn-player-dot {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.375rem;
-  height: 1.375rem;
-  border-radius: 9999px;
-  background: linear-gradient(135deg, rgb(var(--efm-sunburst-rgb)), rgb(var(--efm-gold-rgb)));
-  color: rgb(var(--efm-ink-rgb));
-}
-.btn-player-dot svg { width: 0.75rem; height: 0.75rem; margin-left: 1px; }
 
 /* Modal close button — a real bordered 44px button (the old bare "×" was a
    28×20 target that didn't read as clickable). */

@@ -1,18 +1,18 @@
 ---
-// Empty list — populated by nowplaying.ts. In the 2-column hero layout this
-// becomes the top half of the sidebar; height is no longer capped at a hard
-// 520px — `.efm-sidebar`/`.efm-sidebar-section` (global.css) make the
-// sidebar stretch to match player+buttons and split between this card and
-// the Your-Requests card below.
+// Recently played — the top card of the hero's side column. The list is
+// filled by nowplaying.ts (applyRecent renders five rows); five placeholder
+// rows of the same height hold the space until then, so nothing below moves
+// when the history arrives. "Song history" opens the Web Player's full list.
+import { site } from '../site.config';
+const r = site.home.recent;
 ---
 
-<section class="efm-sidebar-section pt-2">
-  <div class="card !py-3 efm-sidebar-card">
-    <h2 class="text-xs font-bold tracking-[0.2em] uppercase text-cream/65 mb-1 lg:mb-2 shrink-0">Recently Played</h2>
-    <!-- Five placeholder rows the same height as the real ones (nowplaying.ts
-         applyRecent renders five), so the list does not push the page down
-         when the history arrives. That late push was the home page's biggest
-         layout shift on phones and moved /#about and /#stats after a jump. -->
+<section class="efm-sidebar-section hm-side-card" aria-labelledby="recent-h">
+  <div class="hm-surface hm-side-surface efm-sidebar-card">
+    <div class="hm-side-h">
+      <h2 id="recent-h" class="hm-h3">{r.title}</h2>
+      <a href="/player/#history" class="btn btn-ghost btn-sm">{r.history}<span class="hm-chev" aria-hidden="true">›</span></a>
+    </div>
     <ul id="recent-list" class="divide-y divide-cream/5 efm-sidebar-scroll">
       {[0, 1, 2, 3, 4].map((i) => (
         <li class="flex items-center gap-3 py-2 border-t border-cream/5 first:border-t-0" aria-hidden={i > 0 ? 'true' : undefined}>

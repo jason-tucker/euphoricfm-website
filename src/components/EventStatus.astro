@@ -82,12 +82,7 @@ const current = s.current;
     var cta = document.getElementById('evst-cta');
     if (!cta) return;
     cta.addEventListener('click', function () {
-      var dispatch = function () { document.dispatchEvent(new CustomEvent('efm:open-event-inquiry')); };
-      if (typeof document.startViewTransition === 'function') {
-        document.startViewTransition(dispatch);
-      } else {
-        dispatch();
-      }
+      document.dispatchEvent(new CustomEvent('efm:open-event-inquiry'));
     });
   })();
 </script>

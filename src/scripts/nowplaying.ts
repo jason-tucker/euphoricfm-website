@@ -52,6 +52,8 @@ import {
   const elPendingSection = $('req-pending-section');
   const elPendingList = $('req-pending-list');
   const elPendingCount = $('req-pending-count');
+  const elPendingEmpty = $('req-pending-empty');
+  const waitingLabel = elPendingCount?.dataset.label || '{count}';
   // REQUESTED badges — toggled from `is_request` on each entry.
   const elNpRequested = $('np-requested');
   const elUpNextRequested = $('up-next-requested');
@@ -152,14 +154,17 @@ import {
 
   const renderPending = (pending: PendingRequest[]) => {
     if (!elPendingSection || !elPendingList) return;
+    // The card always stays on the page (an empty state instead of hiding),
+    // so nothing below it moves when a request comes or goes.
+    elPendingEmpty?.classList.toggle('hidden', pending.length > 0);
+    if (elPendingCount) {
+      elPendingCount.textContent = pending.length ? waitingLabel.replace('{count}', String(pending.length)) : '';
+      elPendingCount.classList.toggle('hidden', !pending.length);
+    }
     if (!pending.length) {
-      elPendingSection.classList.add('hidden');
       elPendingList.innerHTML = '';
-      if (elPendingCount) elPendingCount.textContent = '';
       return;
     }
-    elPendingSection.classList.remove('hidden');
-    if (elPendingCount) elPendingCount.textContent = String(pending.length);
     const nowSec = Date.now() / 1000;
     // Newest first — fresher submissions belong at the top.
     const rows = [...pending].sort((a, b) => b.ts - a.ts).map((p) => {

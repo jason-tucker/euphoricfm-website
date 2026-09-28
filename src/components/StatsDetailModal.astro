@@ -1,0 +1,36 @@
+---
+// The Station Stats track/artist detail pop-up (filled by scripts/stats.ts).
+// Its own component so pages render it in BaseLayout's "overlays" slot,
+// outside <main>: <main> is a z-[1] stacking context, so a pop-up inside it
+// could never cover the sticky top bar (z-index 50) and the bar hid its
+// close button on phones.
+import { site } from '../site.config';
+const s = site.stats;
+---
+
+<!-- Shared track/artist detail overlay. NO backdrop-filter (CEF paints it as
+     a black rectangle — see CLAUDE.md rule 5 / spec's CEF-safe CSS rule);
+     bg-ink/90 compensates with plain opacity instead.
+
+     data-close lives ONLY on the close button, never on the overlay root —
+     ModalControls' document-level `closest('[data-close]')` handler would
+     otherwise treat any click inside the overlay as a close. stats.ts adds
+     its own backdrop (e.target === overlay) and Escape handling; ModalControls'
+     hardcoded Escape id list is not ours to edit. -->
+<div id="stats-detail-overlay" class="hidden fixed inset-0 z-[70] bg-ink/90" aria-hidden="true">
+  <div class="mx-auto max-w-md w-full h-full flex flex-col py-4 px-4 lg:py-10">
+    <div class="card efm-modal-enter !p-4 flex-1 flex flex-col overflow-hidden lg:max-h-[80vh]">
+      <div class="flex items-center gap-1 mb-2">
+        <button
+          type="button"
+          id="stats-detail-back"
+          class="hidden shrink-0 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl border border-cream/20 bg-cream/5 text-cream/80 hover:bg-cream/15 hover:border-cream/45"
+          aria-label={s.detail.back}
+        >&larr;</button>
+        <span id="stats-detail-title" class="flex-1 min-w-0 truncate text-base font-bold text-sunburst"></span>
+        <button type="button" class="efm-close-btn" data-close="stats-detail-overlay" aria-label={s.detail.close}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+      <div id="stats-detail-body" class="flex-1 overflow-y-auto efm-sidebar-scroll"></div>
+    </div>
+  </div>
+</div>

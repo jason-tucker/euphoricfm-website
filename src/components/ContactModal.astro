@@ -2,12 +2,12 @@
 import { site } from '../site.config';
 ---
 
-<div id="contact-overlay" class="hidden fixed inset-0 z-40 bg-ink/80 backdrop-blur-sm" aria-hidden="true">
+<div id="contact-overlay" class="hidden fixed inset-0 z-[70] bg-ink/80 backdrop-blur-sm" aria-hidden="true">
   <div class="mx-auto max-w-md w-full h-full flex flex-col py-4 px-4 lg:py-10">
     <div class="card efm-modal-enter !p-4 flex-1 overflow-y-auto lg:max-h-[80vh]">
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-base font-bold text-ruby">Contact Us</h2>
-        <button type="button" class="text-cream/60 text-xl leading-none px-2" data-close="contact-overlay" aria-label="Close">&times;</button>
+        <button type="button" class="efm-close-btn" data-close="contact-overlay" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <p class="text-xs text-cream/60 mb-3">Send a message to the EuphoricFM team.</p>
 
@@ -37,7 +37,7 @@ import { site } from '../site.config';
     const go = document.getElementById('contact-go');
     if (!overlay || !form || !msg || !go) return;
 
-    const getWebhook = () => (window.__EFM_CONFIG__ && window.__EFM_CONFIG__.discord && window.__EFM_CONFIG__.discord.contactWebhook) || '';
+    const getWebhook = () => (window.__EFM_CONFIG__ && window.__EFM_CONFIG__.contact && window.__EFM_CONFIG__.contact.webhook) || '';
 
     const setMsg = (text, kind) => {
       msg.textContent = text;
@@ -103,7 +103,7 @@ import { site } from '../site.config';
           setTimeout(() => { overlay.classList.add('hidden'); msg.classList.add('hidden'); }, 1200);
         } else if (r.status === 429) {
           const j = await r.json().catch(() => ({}));
-          setMsg(`Rate limited by Discord. Try again in ${j.retry_after ?? 'a moment'}s.`, 'error');
+          setMsg(`Too many messages right now. Try again in ${j.retry_after ?? 'a few'}s.`, 'error');
         } else {
           setMsg(`Failed to send (HTTP ${r.status}).`, 'error');
         }
