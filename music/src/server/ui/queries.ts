@@ -6,11 +6,12 @@
 import { and, asc, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm'
 import { canViewOwned, isReviewer, type Viewer } from '../authz/predicates'
 import type { DB } from '../db/client'
-import { batches, comments, items, jobs, requests, roleBindings, settings, uploads, users } from '../db/schema'
+import { batches, comments, items, jobs, libraryCache, requests, roleBindings, settings, uploads, users } from '../db/schema'
 import { forbidden, notFound } from '../http/errors'
+import { REQUEST_OPEN_STATUSES } from '../requests/common'
 import { BATCH_DECIDABLE_SQL } from '../submissions'
 import { customArtIdOf, itemCoverUrl, itemHasArt, libraryArt } from './art'
-import { escapeLike } from './library'
+import { escapeLike, onLibrarySurface } from './library'
 
 type ItemRow = typeof items.$inferSelect
 
@@ -75,7 +76,14 @@ export async function listOwnBatches(db: DB, v: Viewer, limit = 50) {
 
 export async function listOwnRequests(db: DB, v: Viewer, limit = 50) {
   const rows = await db.query.requests.findMany({ where: eq(requests.ownerUserId, v.userId), orderBy: desc(requests.id), limit })
-  const art = await libraryArt(db, rows.map((r) => r.mediaId))
+  const ids = [...new Set(rows.map((r) => r.mediaId))]
+  const [art, lib] = await Promise.all([
+    libraryArt(db, ids),
+    ids.length ? db.select({ mediaId: libraryCache.mediaId, path: libraryCache.path }).from(libraryCache).where(inArray(libraryCache.mediaId, ids)) : [],
+  ])
+  // Songs whose library page exists (librarySong 404s the rest, e.g. one
+  // archived by another request), so the dashboard only links those.
+  const onLibrary = new Set(lib.filter((l) => onLibrarySurface(l.path)).map((l) => l.mediaId))
   return rows.map((r) => ({
     id: r.id,
     kind: r.kind,
@@ -88,10 +96,40 @@ export async function listOwnRequests(db: DB, v: Viewer, limit = 50) {
     error: r.error,
     awaitingArtist: r.pendingArtistId !== null,
     artUrl: art.get(r.mediaId) ?? null,
+    onLibrary: onLibrary.has(r.mediaId),
     createdAt: r.createdAt.toISOString(),
     ticket: r.ticketId ? { number: r.ticketNumber, webUrl: r.ticketWebUrl, channelUrl: r.ticketChannelUrl, status: r.ticketStatus } : null,
   }))
 }
+
+// ------------------------------------------------------ home counters ---
+
+// The member's OWN counts for the home page and dashboard: songs waiting for
+// a decision (pending in a submitted batch, like the review queue), songs on
+// air, and edit/removal requests still open. Songs only: a batch's
+// new-artist items are not counted.
+export async function memberSummary(db: DB, v: Viewer) {
+  const n = (rows: { n: number }[]) => Number(rows[0]?.n ?? 0)
+  const [inReview, onAir, openRequests] = await Promise.all([
+    db.select({ n: count() }).from(items).where(and(eq(items.ownerUserId, v.userId), eq(items.kind, 'song'), eq(items.status, 'pending'), BATCH_DECIDABLE_SQL)),
+    db.select({ n: count() }).from(items).where(and(eq(items.ownerUserId, v.userId), eq(items.kind, 'song'), eq(items.status, 'live'))),
+    db.select({ n: count() }).from(requests).where(and(eq(requests.ownerUserId, v.userId), inArray(requests.status, [...REQUEST_OPEN_STATUSES]))),
+  ])
+  return { inReview: n(inReview), onAir: n(onAir), openRequests: n(openRequests) }
+}
+export type MemberSummary = Awaited<ReturnType<typeof memberSummary>>
+
+// What is waiting for reviewers: decidable songs (new-artist items travel
+// with a song in the same batch) and pending requests.
+export async function reviewSummary(db: DB, v: Viewer) {
+  if (!isReviewer(v)) throw forbidden()
+  const [songs, reqs] = await Promise.all([
+    db.select({ n: count() }).from(items).where(and(eq(items.kind, 'song'), eq(items.status, 'pending'), BATCH_DECIDABLE_SQL)),
+    db.select({ n: count() }).from(requests).where(eq(requests.status, 'pending')),
+  ])
+  return { songs: Number(songs[0]?.n ?? 0), requests: Number(reqs[0]?.n ?? 0) }
+}
+export type ReviewSummary = Awaited<ReturnType<typeof reviewSummary>>
 
 // -------------------------------------------------------- batch detail ---
 

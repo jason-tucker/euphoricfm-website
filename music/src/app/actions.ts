@@ -6,7 +6,7 @@
 import { signIn, signOut } from '@/server/auth/config'
 
 export async function signInWithDiscord() {
-  await signIn('discord', { redirectTo: '/dashboard' })
+  await signIn('discord', { redirectTo: '/' })
 }
 
 export async function signOutAction() {

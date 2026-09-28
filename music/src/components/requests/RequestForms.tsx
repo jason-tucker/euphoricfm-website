@@ -25,9 +25,19 @@ export function proposedChanges(current: Fields, edits: Fields): Proposed {
   return out
 }
 
-export function RequestForms({ mediaId, current, currentArtUrl = null }: { mediaId: number; current: Fields; currentArtUrl?: string | null }) {
+export function RequestForms({
+  mediaId,
+  current,
+  currentArtUrl = null,
+  initialTab = 'edit',
+}: {
+  mediaId: number
+  current: Fields
+  currentArtUrl?: string | null
+  initialTab?: 'edit' | 'removal'
+}) {
   const router = useRouter()
-  const [tab, setTab] = useState<'edit' | 'removal'>('edit')
+  const [tab, setTab] = useState<'edit' | 'removal'>(initialTab)
   const [edits, setEdits] = useState<Fields>(current)
   const [reason, setReason] = useState('')
   const [confirm, setConfirm] = useState(false)

@@ -1,5 +1,25 @@
 # Changelog — EFM Music Portal (`music/`)
 
+## [0.3.1] — 2026-09-27 — Obvious actions after sign-in
+
+Members asked where to submit a song or ask for a change once signed in. The home page is now the place to start, with the three things members come to do as large cards.
+
+### Added
+- **Home page for signed-in members** (`/`): a "What do you want to do?" panel of three large action cards (one column on phones, three on desktop): *Submit new songs* (`/submit`), *Fix a song’s info or cover* (`/library?intent=edit`) and *Ask to remove a song* (`/library?intent=remove`). Below them a *My music* card with the member's own counts (songs in review, songs on air, open requests) and, for reviewers only, a highlighted *Review queue* card ("N songs and N requests waiting", → `/review`). The four "how it works" steps sit in a collapsed *How it works* disclosure; visitors who are not signed in see the page as before. New read-only queries `memberSummary` (scoped to the viewer's user id; songs only) and `reviewSummary` (reviewers only) in `src/server/ui/queries.ts`.
+- **Library intent** (`/library?intent=edit|remove`): a banner ("Pick the song you want to fix" / "Pick the song you want removed") above the search, the intent kept through search, Clear and paging, and an explicit *Suggest edit* or *Request removal* button on every row (without an intent, both as small secondary buttons). They open the song page with that form selected and scrolled to (`/library/<id>?request=edit|remove#request-form`); the song page's request section now has its own heading.
+- **My music** (`/dashboard`): the same three actions as a button bar at the top with the member's counts, and the *Your edit and removal requests* section always shows: an explanation plus *Fix a song’s info* / *Ask to remove a song* buttons when empty, otherwise each request with its status, date, ticket link and a link to the song.
+
+### Changed
+- Sign-in now lands on the home page (`/`) instead of My music, and the wordmark always links home.
+- Nav: *Library* is now *Edit or remove a song* for members who may file requests (same `/library` link); *My music*, *Submit*, *Review* and *Admin* are unchanged.
+- New shared styles `action-card`, `action-cue` and `disclosure` (visible border and fill, hover tint, pressed scale, chevrons; the global `:focus-visible` ring applies).
+
+### Review fixes
+- The *Review queue* card links to the requests tab (`/review/requests`) when no songs but some requests are waiting, instead of an empty songs tab.
+- The collapsed *How it works* no longer tells a signed-in member to sign in: it shows the three steps after sign-in, numbered from 1.
+- Library rows on phones: the request buttons are icon-only (pencil / bin, still labelled for screen readers, 40 px targets) on the same line as the song, and the length is hidden, so the artist and album are no longer cut short and the list does not double in length. Desktop is unchanged.
+- My music links a request to its song page only while that page exists (`listOwnRequests` returns `onLibrary`); a song archived some other way, or by a finished removal, is shown as plain text instead of a link that would 404.
+
 ## [0.3.0] — 2026-09-27 — WAV uploads
 
 Members can upload WAV files as well as MP3s. The network-less probe converts a WAV to a CBR 320 kbps MP3, which replaces the WAV under the same upload id; everything downstream (prefill, review, finalize with ID3 + APIC, the AzuraCast upload, the library, edit and removal requests) is unchanged and only ever sees that MP3. WAV only (no FLAC, AIFF or M4A).

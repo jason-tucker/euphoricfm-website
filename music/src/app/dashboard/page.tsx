@@ -1,12 +1,13 @@
 import Link from 'next/link'
 import { songName, when } from '@/components/format'
+import { ActionBar, summaryText } from '@/components/HomeActions'
 import { probeErrorText } from '@/components/messages'
 import { Thumb } from '@/components/Thumb'
 import { RequestWithdrawButton } from '@/components/requests/RequestWithdrawButton'
 import { BatchStatusChip, ItemStatusChip, NewArtistBadge, PageTitle, RequestStatusChip, TicketLink } from '@/components/ui'
 import { getDb } from '@/server/db/client'
 import { pageViewer } from '@/server/ui/page'
-import { listOwnBatches, listOwnRequests } from '@/server/ui/queries'
+import { listOwnBatches, listOwnRequests, memberSummary } from '@/server/ui/queries'
 
 export const dynamic = 'force-dynamic'
 export const metadata = { title: 'My music' }
@@ -16,18 +17,25 @@ export const metadata = { title: 'My music' }
 export default async function Dashboard() {
   const viewer = await pageViewer('submit')
   const db = getDb()
-  const [batches, requests] = await Promise.all([listOwnBatches(db, viewer), listOwnRequests(db, viewer)])
+  const [batches, requests, summary] = await Promise.all([listOwnBatches(db, viewer), listOwnRequests(db, viewer), memberSummary(db, viewer)])
+  const canRequest = viewer.perms.has('request')
   return (
     <section>
-      <PageTitle
-        title="My music"
-        sub="Everything you have submitted, and where each song is."
-        actions={
-          <Link href="/submit" className="btn btn-primary">
-            + Submit songs
-          </Link>
-        }
-      />
+      <PageTitle title="My music" sub="Everything you have submitted, and where each song is." />
+      <div className="card mb-6 space-y-3">
+        <ActionBar perms={viewer.perms} />
+        <p className="text-sm text-cream/70" data-testid="dashboard-summary">
+          {summaryText(summary)}
+          {summary.openRequests > 0 ? (
+            <>
+              {' · '}
+              <a href="#requests" className="link">
+                see requests
+              </a>
+            </>
+          ) : null}
+        </p>
+      </div>
 
       {batches.length === 0 ? (
         <div className="card text-center">
@@ -86,18 +94,29 @@ export default async function Dashboard() {
         </ul>
       )}
 
-      <section className="mt-10" id="requests">
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <h2 className="mb-1 text-lg font-bold">Edit and removal requests</h2>
-            <p className="text-sm text-cream/60">Requests you have filed about songs already in the library.</p>
-          </div>
-          <Link href="/library" className="btn btn-secondary btn-sm">
-            Request a change
-          </Link>
+      <section className="mt-10 scroll-mt-4" id="requests" aria-labelledby="requests-h">
+        <div className="mb-3">
+          <h2 id="requests-h" className="mb-1 text-lg font-bold">
+            Your edit and removal requests
+          </h2>
+          <p className="text-sm text-cream/60">Changes you asked for on songs already on the station. Each one has its own ticket in Discord.</p>
         </div>
         {requests.length === 0 ? (
-          <p className="card text-sm text-cream/60">You haven&apos;t filed any requests.</p>
+          <div className="card space-y-3" data-testid="no-requests">
+            <p className="text-sm text-cream/70">
+              You haven&apos;t filed any requests. To fix a song&apos;s title, artist, album or cover, or to ask for a song to come off the station, find it in the library.
+            </p>
+            {canRequest ? (
+              <div className="flex flex-wrap gap-2">
+                <Link href="/library?intent=edit" className="btn btn-secondary btn-sm">
+                  Fix a song&apos;s info
+                </Link>
+                <Link href="/library?intent=remove" className="btn btn-secondary btn-sm">
+                  Ask to remove a song
+                </Link>
+              </div>
+            ) : null}
+          </div>
         ) : (
           <ul className="space-y-2" data-testid="own-requests">
             {requests.map((r) => (
@@ -105,7 +124,16 @@ export default async function Dashboard() {
                 <Thumb src={r.artUrl} alt="" size="sm" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">
-                    {r.kind === 'edit' ? 'Edit' : 'Removal'} request #{r.id}
+                    {!r.onLibrary ? (
+                      <>
+                        {r.kind === 'edit' ? 'Edit' : 'Removal'} request #{r.id}
+                      </>
+                    ) : (
+                      <Link href={`/library/${r.mediaId}`} className="link">
+                        {r.kind === 'edit' ? 'Edit' : 'Removal'} request #{r.id}
+                      </Link>
+                    )}{' '}
+                    <span className="text-xs font-normal text-cream/50">· {when(r.createdAt)}</span>
                   </p>
                   <p className="truncate text-xs text-cream/60">{r.targetPath.replace(/^Music\/Artists\//, '')}</p>
                   {r.proposed ? (

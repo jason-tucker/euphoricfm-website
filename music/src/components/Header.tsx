@@ -11,7 +11,8 @@ export function navFor(perms: ReadonlySet<string>): NavItem[] {
   if (perms.has('submit')) {
     items.push({ href: '/dashboard', label: 'My music' })
     items.push({ href: '/submit', label: 'Submit' })
-    items.push({ href: '/library', label: 'Library' })
+    // The library is where edit and removal requests start.
+    items.push({ href: '/library', label: perms.has('request') ? 'Edit or remove a song' : 'Library' })
   }
   if (perms.has('review')) items.push({ href: '/review', label: 'Review' })
   if (perms.has('admin')) items.push({ href: '/admin', label: 'Admin' })
@@ -25,7 +26,7 @@ export function Header({ viewer }: { viewer: Viewer | null }) {
   return (
     <header className="border-b border-cream/10 bg-ink/60 backdrop-blur">
       <div className="mx-auto flex max-w-frame flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <Link href={viewer ? '/dashboard' : '/'} className="flex items-baseline gap-2 rounded-lg px-1" aria-label="EFM Music Portal home">
+        <Link href="/" className="flex items-baseline gap-2 rounded-lg px-1" aria-label="EFM Music Portal home">
           <span className="font-euphoric text-3xl leading-none text-sunburst">Euphoric</span>
           <span className="font-fm text-3xl leading-none text-ruby">FM</span>
           <span className="ml-1 text-xs font-semibold uppercase tracking-[0.2em] text-cream/60">Music</span>
