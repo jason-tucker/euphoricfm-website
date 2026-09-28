@@ -834,6 +834,19 @@ html.efm-cef .card {
 @media (min-width: 1480px) {
   .efm-actions { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
+/* Where container queries exist, size by the row's own width instead of the
+   viewport: 3 across only when each button fits "Request a song" on one line
+   (~160px), 6 across only when ~170px each — otherwise labels wrap. */
+.efm-actions-wrap { container-type: inline-size; }
+@supports (container-type: inline-size) {
+  .efm-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  @container (min-width: 520px) {
+    .efm-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  @container (min-width: 1080px) {
+    .efm-actions { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  }
+}
 
 /* "Web Player" link in the home action row: sunburst outline + a small gold
    play dot so it reads as "listen here" and is clearly a button. */

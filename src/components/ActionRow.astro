@@ -9,11 +9,12 @@
 // "Submit music" is plain navigation too: it opens the music portal
 // (music.euphoric.fm) in a new tab — the same link everywhere, in-game too.
 // Six buttons → .efm-actions (global.css) lays them out 2×3, 3×2 or 6×1 so
-// no button is ever left alone on a row.
+// no button is ever left alone on a row; the column count follows the row's
+// own width (container query) so labels don't wrap.
 import { site } from '../site.config';
 ---
 
-<section class="pt-2">
+<section class="pt-2 efm-actions-wrap">
   <div class="efm-actions">
     <button type="button" id="open-request" class="btn btn-sunburst">Request a song</button>
     <a href="/player/" id="open-player" class="btn btn-player"><span class="btn-player-dot" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>Web Player</a>

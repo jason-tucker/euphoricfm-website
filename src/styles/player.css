@@ -306,12 +306,15 @@ html.efm-fx-off .efmp.is-live .efmp-track::after { animation: none; width: 100%;
 
 /* ---- Action links ------------------------------------------------------- */
 .efmp-links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--efmp-line); }
-.efmp-links .efmp-btn { padding: 0 10px; width: 100%; }
+.efmp-links .efmp-btn { padding: 6px 10px; width: 100%; gap: 6px; }
+/* Wide system fonts (e.g. DejaVu Sans) can make a label wider than its
+   column: wrap it onto a second line inside the button instead of clipping. */
+.efmp-links .efmp-btn { white-space: normal; text-align: center; line-height: 1.2; overflow-wrap: anywhere; }
 /* In the in-game phone there is no pop-up window or file download. */
 html.efm-cef .efmp-no-cef { display: none; }
 
 .efmp-menu { position: relative; }
-.efmp-menu > summary { list-style: none; }
+.efmp-menu > summary { list-style: none; height: 100%; box-sizing: border-box; }
 .efmp-menu > summary::-webkit-details-marker { display: none; }
 .efmp-menu[open] > summary { border-color: rgb(var(--efm-sunburst-rgb) / 0.6); background: rgb(var(--efm-sunburst-rgb) / 0.12); }
 .efmp-menu-panel {
@@ -411,6 +414,7 @@ html.efm-popout .efm-bg,
 html.efm-popout .efmp-page { display: none; }
 html.efm-popout .efmp-mini {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto 1fr;
   gap: 10px;
   height: 100vh;

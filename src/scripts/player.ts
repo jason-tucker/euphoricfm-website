@@ -217,9 +217,15 @@ const store = {
   for (const a of ctl<HTMLAnchorElement>('popout')) {
     a.addEventListener('click', (e) => {
       const { name, width, height } = pc.popout;
-      const w = window.open(a.href, name, `popup,width=${width},height=${height}`);
+      // Open by name with no URL first: if the pop-out already exists this
+      // just returns it (no reload, so its playback keeps going); a brand-new
+      // window comes back on about:blank and is pointed at the player.
+      const w = window.open('', name, `popup,width=${width},height=${height}`);
       if (!w) return; // blocked → let the link open it as a normal tab/window
       e.preventDefault();
+      let fresh = true;
+      try { fresh = w.location.href === 'about:blank'; } catch { /* cross-origin → navigate */ }
+      if (fresh) w.location.href = a.href;
       // One stream at a time: the pop-out takes over playback.
       if (engine.isPlaying()) engine.stop();
       try { w.focus(); } catch { /* ignore */ }
