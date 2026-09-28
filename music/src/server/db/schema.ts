@@ -491,6 +491,12 @@ export const ingestRuns = pgTable(
 // a crash or a lost response resumes from the recorded state instead of
 // snapshotting a half-done one (requests/jobs.ts archiveMedia/restoreMedia).
 export const archiveStatusEnum = pgEnum('archive_status', ['archiving', 'archived', 'restoring', 'restored', 'failed'])
+// v0.3.6: where an archived song came from. 'portal': a removal request or a
+// manager's archive of a library song (restore puts it back where it was).
+// 'legacy_unreleased': imported from the pre-portal UNRELEASED folder
+// (requests/legacy.ts); restoring one RELEASES it into Music/Artists/<folder>/
+// (the manager picks the artist and the playlists), never back to UNRELEASED.
+export const archiveOriginEnum = pgEnum('archive_origin', ['portal', 'legacy_unreleased'])
 
 export const archive = pgTable(
   'archive',
@@ -502,6 +508,21 @@ export const archive = pgTable(
     archivedPath: text('archived_path').notNull(),
     snapshotId: integer('snapshot_id').references(() => mediaSnapshots.id),
     requestId: integer('request_id').references(() => requests.id),
+    origin: archiveOriginEnum('origin').notNull().default('portal'),
+    // Why it was archived, when a manager said (their archive reason); a
+    // removal request's reason stays on the request.
+    reason: text('reason'),
+    // A member a manager linked to this archived song (v0.3.6): besides the
+    // portal uploader (items → batch owner of the media id), the only member
+    // who may see it on the Archived songs page. Audited (archive.link).
+    linkedUserId: text('linked_user_id').references(() => users.id, { onDelete: 'set null' }),
+    // Release of a legacy row (origin 'legacy_unreleased'), set by the
+    // manager's Release: the artist whose folder it goes to and the playlists
+    // chosen explicitly. restore_path is the exact target the worker picked
+    // (the name, or ' (n)' on a collision), written BEFORE its first write.
+    releaseArtistId: integer('release_artist_id').references(() => artists.id),
+    releasePlaylistIds: integer('release_playlist_ids').array(),
+    restorePath: text('restore_path'),
     status: archiveStatusEnum('status').notNull().default('archived'),
     archivedAt: ts('archived_at').notNull().defaultNow(),
     restoredAt: ts('restored_at'),
@@ -513,6 +534,7 @@ export const archive = pgTable(
   },
   (t) => [
     index('archive_media_idx').on(t.mediaId),
+    index('archive_linked_user_idx').on(t.linkedUserId),
     // At most one open (archiving / archived / restoring) row per media id.
     uniqueIndex('archive_media_open_uq')
       .on(t.mediaId)

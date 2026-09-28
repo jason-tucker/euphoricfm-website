@@ -41,11 +41,9 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
         title="Library"
         sub={canRequest ? 'Songs on EuphoricFM. Find one to suggest an edit or ask for its removal.' : 'Songs on EuphoricFM.'}
         actions={
-          viewer.perms.has('manage') ? (
-            <Link href="/library/archived" className="btn btn-secondary">
-              Archived songs
-            </Link>
-          ) : null
+          <Link href="/library/archived" className="btn btn-secondary">
+            {viewer.perms.has('review') ? 'Archived songs' : 'My archived songs'}
+          </Link>
         }
       />
       {banner ? (

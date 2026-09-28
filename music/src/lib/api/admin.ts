@@ -16,3 +16,12 @@ export function addRoleBinding(roleId: string, permission: 'review' | 'manage', 
 export function removeRoleBinding(id: number) {
   return api(`/api/admin/role-bindings/${id}`, { method: 'DELETE' })
 }
+
+// v0.3.6 "Archive the UNRELEASED folder" (manage). POST {action:'dry_run'}
+// queues the worker's read-only listing; {action:'run', planId} confirms it.
+export function legacyImportDryRun() {
+  return api<{ planId: string; status: string }>('/api/admin/legacy-import', { json: { action: 'dry_run' } })
+}
+export function legacyImportRun(planId: string) {
+  return api<{ planId: string; queued: number }>('/api/admin/legacy-import', { json: { action: 'run', planId } })
+}

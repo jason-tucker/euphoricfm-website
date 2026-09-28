@@ -470,3 +470,102 @@ describe.skipIf(!MOCKS())('AzuraCast wrapper against the P0d-B mock', () => {
     expect(pages.filter((x) => x.query.per_page === '2').length).toBeGreaterThan(1)
   })
 })
+
+// v0.3.6: the UNRELEASED import may name that folder ONLY through the two
+// legacy methods (memberships of the file, and its move to Removed/<id>),
+// and the release may rename ONLY inside one Removed/<id>/ folder.
+describe('v0.3.6 legacy import + release: the only requests that may name UNRELEASED or rename', () => {
+  const L = 'Portal-Test/UNRELEASED-DO NOT ADD TO ROTATION'
+  const R = 'Portal-Test/Removed/5'
+
+  it('the general methods (and any hand-built batch) still refuse the UNRELEASED folder', async () => {
+    const { c, calls } = fakeClient()
+    await refused(c.moveFile(`${L}/x.m4a`, 'Portal-Test/Removed/5'), 'refused_batch_body')
+    await refused(c.moveFile(`${L}/x.m4a`, 'Portal-Test/Music/Artists/A'), 'refused_batch_body')
+    await refused(c.setPlaylists(`${L}/x.m4a`, [], new Set()), 'refused_batch_body')
+    await refused(send(c, 'PUT', '/api/station/1/files/batch', { body: { do: 'move', files: [`${L}/x.m4a`], dirs: [], currentDirectory: L, directory: R } }), 'refused_batch_body')
+    await refused(send(c, 'PUT', '/api/station/1/files/batch', { body: { do: 'playlist', files: [`${L}/x.m4a`], dirs: [], currentDirectory: L, playlists: [] }, allowedPlaylistIds: new Set() }), 'refused_batch_body')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('the legacy methods take only an UNRELEASED .mp3/.m4a, and move it only to Removed/<id>', async () => {
+    const { c, calls } = fakeClient()
+    await refused(c.moveLegacyToArchive(`${L}/x.m4a`, 'Portal-Test/Music/Artists/A'), 'refused_batch_body')
+    await refused(c.moveLegacyToArchive(`${L}/x.m4a`, 'Portal-Test/Removed/5/sub'), 'refused_batch_body')
+    await refused(c.moveLegacyToArchive('Portal-Test/Music/Artists/A/x.mp3', R), 'refused_batch_body')
+    await refused(c.moveLegacyToArchive('Portal-Test/Removed/4/x.mp3', R), 'refused_batch_body')
+    await refused(c.moveLegacyToArchive(`${L}/x.flac`, R), 'refused_batch_body')
+    await refused(c.moveLegacyToArchive(`${L}/a/b/c/d/x.mp3`, R), 'refused_batch_body')
+    await refused(c.moveLegacyToArchive('UNRELEASED-DO NOT ADD TO ROTATION/x.mp3', R), 'refused_batch_body') // outside the test prefix
+    await refused(c.setLegacyPlaylists('Portal-Test/Music/Artists/A/x.mp3', [], new Set()), 'refused_batch_body')
+    await refused(c.setLegacyPlaylists(`${L}/x.mp3`, [2], new Set([3])), 'refused_playlist_id')
+    // the legacy flag is refused on anything but a batch
+    await refused(send(c, 'PUT', '/api/station/1/file/5', { body: { title: 't', artist: 'a', album: '', genre: '' }, legacySource: true }), 'refused_legacy_misuse')
+    await refused(send(c, 'PUT', '/api/station/1/files/rename', { body: { file: `${R}/x.m4a`, newPath: `${R}/x (2).m4a` }, legacySource: true }), 'refused_legacy_misuse')
+    expect(calls).toHaveLength(0)
+    // A legacy playlist REPLACE on a nested m4a: exactly this body leaves.
+    await c.setLegacyPlaylists(`${L}/Music/KOKORO/x.m4a`, [], new Set([2]))
+    expect(calls).toHaveLength(1)
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ do: 'playlist', files: [`${L}/Music/KOKORO/x.m4a`], dirs: [], currentDirectory: `${L}/Music/KOKORO`, playlists: [] })
+  })
+
+  it('rename: only inside one Removed/<id>/ folder, same extension, never a no-op; nothing else', async () => {
+    const { c, calls } = fakeClient()
+    const bad: [string, string][] = [
+      [`${R}/x.m4a`, 'Portal-Test/Music/Artists/A/x.m4a'],
+      [`${R}/x.m4a`, 'Portal-Test/Removed/6/x.m4a'],
+      [`${R}/x.m4a`, `${R}/x.mp3`],
+      [`${R}/x.m4a`, `${R}/x.m4a`],
+      ['Portal-Test/Music/Artists/A/x.m4a', 'Portal-Test/Music/Artists/A/x (2).m4a'],
+      [`${L}/x.m4a`, `${L}/x (2).m4a`],
+      [`${R}/x.m4a`, `${R}/sub/x (2).m4a`],
+      [`${R}/x.m4a`, `${R}/../x (2).m4a`],
+      ['Removed/5/x.m4a', 'Removed/5/x (2).m4a'], // outside the test prefix
+    ]
+    for (const [a, b] of bad) await refused(c.renameInArchive(a, b), 'refused_rename_body')
+    await refused(send(c, 'PUT', '/api/station/1/files/rename', { body: { file: `${R}/x.m4a`, newPath: `${R}/x (2).m4a`, extra: 1 } }), 'refused_rename_body')
+    await refused(send(c, 'PUT', '/api/station/1/files/rename', { body: { file: `${R}/x.m4a` } }), 'refused_rename_body')
+    await refused(send(c, 'POST', '/api/station/1/files/rename', { body: { file: `${R}/x.m4a`, newPath: `${R}/x (2).m4a` } }), 'refused_not_allowlisted')
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe.skipIf(!MOCKS())('v0.3.6 rename + legacy move against the upstream-faithful mock', () => {
+  const env = { ...PREFIX_ENV }
+  const client = () => new AzuraCastClient({ baseUrl: process.env.MOCKS_AZURACAST!, apiKey: process.env.AZURACAST_API_KEY!, profile: resolveProfile(env), canaryStationId: 7, env })
+  const files = async () => (await control('/__mock/az/files')) as { id: number; path: string; playlists: { id: number }[] }[]
+
+  it('renameInArchive: same id, new name; an occupied name (media or unscanned) is refused and nothing is overwritten', async () => {
+    const c = client()
+    const dir = `Portal-Test/Removed/${900000 + (Date.now() % 90000)}`
+    await control('/__mock/az/seed', { files: [{ path: `${dir}/song.m4a`, title: 'S', artist: 'A' }, { path: `${dir}/song (2).m4a`, title: 'Other', artist: 'B' }] })
+    await control('/__mock/az/unscanned', { path: `${dir}/song (3).m4a` })
+    const before = (await files()).find((f) => f.path === `${dir}/song.m4a`)!
+    const over0 = ((await control('/__mock/az/overwrites')) as unknown[]).length
+    const ren0 = ((await control('/__mock/az/renames')) as unknown[]).length
+    await refused(c.renameInArchive(`${dir}/song.m4a`, `${dir}/song (2).m4a`), 'refused_move_collision')
+    await refused(c.renameInArchive(`${dir}/song.m4a`, `${dir}/song (3).m4a`), 'refused_move_collision')
+    await refused(c.renameInArchive(`${dir}/missing.m4a`, `${dir}/missing (2).m4a`), 'move_source_missing')
+    expect(((await control('/__mock/az/renames')) as unknown[]).length).toBe(ren0)
+    await c.renameInArchive(`${dir}/song.m4a`, `${dir}/song (4).m4a`)
+    const after = (await files()).find((f) => f.id === before.id)!
+    expect(after.path).toBe(`${dir}/song (4).m4a`)
+    expect(((await control('/__mock/az/overwrites')) as unknown[]).length).toBe(over0)
+    const call = ((await control('/__mock/az/calls')) as { method: string; path: string; body: unknown }[]).filter((x) => x.path === '/api/station/1/files/rename').at(-1)!
+    expect(call).toMatchObject({ method: 'PUT', body: { file: `${dir}/song.m4a`, newPath: `${dir}/song (4).m4a` } })
+  })
+
+  it('moveLegacyToArchive + setLegacyPlaylists: a same-id move of an m4a; the REPLACE is station-scoped', async () => {
+    const c = client()
+    const n = Date.now()
+    const src = `Portal-Test/UNRELEASED-DO NOT ADD TO ROTATION/Music/W${n}/w${n}.m4a`
+    await control('/__mock/az/seed', { files: [{ path: src, title: 'W', artist: 'A', playlists: [2, 74] }] })
+    const m = (await files()).find((f) => f.path === src)!
+    await c.setLegacyPlaylists(src, [], new Set([2]))
+    expect((await files()).find((f) => f.id === m.id)!.playlists.map((p) => p.id)).toEqual([74]) // station 14's stays
+    const dest = `Portal-Test/Removed/${m.id}`
+    await c.moveLegacyToArchive(src, dest)
+    const moved = (await files()).find((f) => f.id === m.id)!
+    expect(moved.path).toBe(`${dest}/w${n}.m4a`)
+  })
+})

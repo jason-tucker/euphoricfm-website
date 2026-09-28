@@ -38,7 +38,7 @@ export class WindowConfigError extends Error {
   }
 }
 
-function lastScanStart(nowMs: number): number {
+export function lastScanStart(nowMs: number): number {
   return Math.floor((nowMs - SCAN_PHASE_MS) / SCAN_PERIOD_MS) * SCAN_PERIOD_MS + SCAN_PHASE_MS
 }
 

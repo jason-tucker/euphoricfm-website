@@ -57,6 +57,13 @@
       "when": 1790560532283,
       "tag": "0007_v032_transcode_kbps",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790572764841,
+      "tag": "0008_v036_archive_legacy",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,5 @@
 import { HealthPanel } from '@/components/admin/HealthPanel'
+import { LegacyImportPanel } from '@/components/admin/LegacyImportPanel'
 import { RoleBindings } from '@/components/admin/RoleBindings'
 import { SettingsForm } from '@/components/admin/SettingsForm'
 import { bytes, when } from '@/components/format'
@@ -93,6 +94,15 @@ export default async function AdminPage() {
           </div>
         </details>
       </section>
+
+      {viewer.perms.has('manage') ? (
+        <section className="card space-y-3" aria-labelledby="legacy-h">
+          <h2 id="legacy-h" className="text-lg font-bold">
+            Archive the UNRELEASED folder
+          </h2>
+          <LegacyImportPanel />
+        </section>
+      ) : null}
 
       <section className="card space-y-3" aria-labelledby="roles-h">
         <h2 id="roles-h" className="text-lg font-bold">

@@ -32,6 +32,11 @@ export const JOB_KINDS = [
   // v0.2.2: finishes or rolls back an 'archiving' / 'restoring' row whose
   // job is gone (requests/jobs.ts reconcileArchive).
   'reconcile_archive',
+  // v0.3.6 (requests/legacy.ts): the one-off import of the UNRELEASED folder.
+  // legacy_import_plan lists it (read-only: the dry run), one
+  // import_legacy_archive job per file then archives it (mutating).
+  'legacy_import_plan',
+  'import_legacy_archive',
 ] as const
 export type JobKind = (typeof JOB_KINDS)[number]
 

@@ -5,7 +5,7 @@
 import { and, asc, count, desc, eq, ilike, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import { isReviewer, type Viewer } from '../authz/predicates'
 import type { DB } from '../db/client'
-import { archive, artists, libraryCache, requests, users } from '../db/schema'
+import { archive, artists, batches, items, libraryCache, mediaSnapshots, requests, users } from '../db/schema'
 import { forbidden, notFound } from '../http/errors'
 import { libraryArtUrl } from './art'
 import { escapeLike, folderOf, onLibrarySurface, surfaceSql } from './library'
@@ -111,22 +111,125 @@ export async function pendingRequests(db: DB, v: Viewer) {
 }
 export type PendingRequest = Awaited<ReturnType<typeof pendingRequests>>[number]
 
-export async function archivedSongs(db: DB, v: Viewer) {
-  if (!v.perms.has('manage')) throw forbidden()
+// Archived songs (v0.3.6 visibility, for every archive row, old and new):
+// staff (review or manage) see all of them, with their state; a member sees
+// an archived song only if they uploaded it through the portal (an item of
+// a batch they own carries that media id) or a manager linked them to it,
+// read-only: title, artist, when, and whether it is an Unreleased or a
+// Removed song. Nothing else (no paths, no playlists, no files). The reason
+// is staff-only (a manager's archive reason, or the removal request's), with
+// one exception: a member sees the reason of their OWN removal request, the
+// words they wrote themselves. Otherwise a member's row has reason null and
+// the page shows a neutral status line.
+export type ArchivedSong = {
+  id: number
+  label: 'Unreleased' | 'Removed'
+  title: string | null
+  artist: string | null
+  fileName: string
+  archivedAt: string
+  reason: string | null
+  staff?: {
+    status: string
+    origin: string
+    mediaId: number
+    folder: string | null
+    originalPath: string
+    requestId: number | null
+    // The station playlists it had when archived (a hint for a release).
+    playlistIds: number[]
+    linkedUser: { id: string; name: string | null; discordId: string } | null
+    uploader: { id: string; name: string | null } | null
+    releaseArtistId: number | null
+  }
+}
+
+export const ARCHIVED_PAGE_SIZE = 100
+
+export type ArchivedPage = { rows: ArchivedSong[]; total: number; page: number; pages: number }
+
+// Newest first, ARCHIVED_PAGE_SIZE per page (page 1 = newest); `total` is
+// every row this viewer may see, so no row is ever silently cut off.
+export async function archivedSongs(db: DB, v: Viewer, opts: { page?: number } = {}): Promise<ArchivedPage> {
+  const staff = isReviewer(v)
+  if (!staff && !v.perms.has('submit')) throw forbidden()
+  const visible = staff
+    ? sql`TRUE`
+    : sql`(${archive.linkedUserId} = ${v.userId} OR EXISTS (
+        SELECT 1 FROM items i JOIN batches b ON b.id = i.batch_id
+        WHERE i.media_id = ${archive.mediaId} AND b.owner_user_id = ${v.userId}))`
   // 'restoring': a restore that stopped part way; Restore resumes it.
   // 'archiving': an archive that stopped part way; Resolve settles it (the
   // reconciler also does, once it is stale), Restore settles and restores.
-  const rows = await db.query.archive.findMany({ where: inArray(archive.status, ['archiving', 'archived', 'restoring']), orderBy: desc(archive.archivedAt), limit: 200 })
-  return rows.map((a) => ({
-    id: a.id,
-    status: a.status,
-    mediaId: a.mediaId,
-    originalPath: a.originalPath,
-    folder: folderOf(a.originalPath),
-    fileName: a.originalPath.slice(a.originalPath.lastIndexOf('/') + 1),
-    archivedAt: a.archivedAt.toISOString(),
-    requestId: a.requestId,
-  }))
+  // Members see settled rows only.
+  const statuses = staff ? (['archiving', 'archived', 'restoring'] as const) : (['archived'] as const)
+  const where = and(inArray(archive.status, [...statuses]), visible)
+  const [{ n: total } = { n: 0 }] = await db.select({ n: count() }).from(archive).where(where)
+  const pages = Math.max(1, Math.ceil(total / ARCHIVED_PAGE_SIZE))
+  const want = opts.page !== undefined && Number.isSafeInteger(opts.page) && opts.page >= 1 ? opts.page : 1
+  const page = Math.min(want, pages)
+  const rows = await db
+    .select({
+      a: archive,
+      title: mediaSnapshots.title,
+      artist: mediaSnapshots.artist,
+      playlistIds: mediaSnapshots.playlistIds,
+      requestReason: requests.reason,
+      requestOwner: requests.ownerUserId,
+      linkedName: users.name,
+      linkedDiscordId: users.discordId,
+    })
+    .from(archive)
+    .leftJoin(mediaSnapshots, eq(mediaSnapshots.id, archive.snapshotId))
+    .leftJoin(requests, eq(requests.id, archive.requestId))
+    .leftJoin(users, eq(users.id, archive.linkedUserId))
+    .where(where)
+    .orderBy(desc(archive.archivedAt), desc(archive.id))
+    .limit(ARCHIVED_PAGE_SIZE)
+    .offset((page - 1) * ARCHIVED_PAGE_SIZE)
+  // Portal uploaders (staff only): the owner of the batch whose item went
+  // live as this media id.
+  const uploaders = new Map<number, { id: string; name: string | null }>()
+  if (staff && rows.length) {
+    const up = await db
+      .select({ mediaId: items.mediaId, id: users.id, name: users.name })
+      .from(items)
+      .innerJoin(batches, eq(batches.id, items.batchId))
+      .innerJoin(users, eq(users.id, batches.ownerUserId))
+      .where(inArray(items.mediaId, [...new Set(rows.map((r) => r.a.mediaId))]))
+    for (const u of up) if (u.mediaId !== null && !uploaders.has(u.mediaId)) uploaders.set(u.mediaId, { id: u.id, name: u.name })
+  }
+  const list = rows.map(({ a, title, artist, playlistIds, requestReason, requestOwner, linkedName, linkedDiscordId }): ArchivedSong => {
+    const fileName = a.originalPath.slice(a.originalPath.lastIndexOf('/') + 1)
+    const base: ArchivedSong = {
+      id: a.id,
+      label: a.origin === 'legacy_unreleased' ? 'Unreleased' : 'Removed',
+      title: title ?? null,
+      artist: artist ?? null,
+      fileName,
+      archivedAt: a.archivedAt.toISOString(),
+      // archive.reason is always a manager's (manage.ts archiveLibrary); a
+      // request's reason was written by the request's owner.
+      reason: staff ? (a.reason ?? requestReason ?? null) : requestOwner === v.userId ? (requestReason ?? null) : null,
+    }
+    if (!staff) return base
+    return {
+      ...base,
+      staff: {
+        status: a.status,
+        origin: a.origin,
+        mediaId: a.mediaId,
+        folder: a.origin === 'portal' ? folderOf(a.originalPath) : null,
+        originalPath: a.originalPath,
+        requestId: a.requestId,
+        playlistIds: playlistIds ?? [],
+        linkedUser: a.linkedUserId && linkedDiscordId ? { id: a.linkedUserId, name: linkedName ?? null, discordId: linkedDiscordId } : null,
+        uploader: uploaders.get(a.mediaId) ?? null,
+        releaseArtistId: a.releaseArtistId,
+      },
+    }
+  })
+  return { rows: list, total, page, pages }
 }
 
 // Approved edits parked on a new artist (P4: requests.pending_artist_id,

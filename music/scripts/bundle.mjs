@@ -19,5 +19,5 @@ const common = {
   logLevel: 'info',
 }
 
-await build({ ...common, entryPoints: { worker: 'src/worker/cli.ts', migrate: 'src/migrate/cli.ts' }, outdir: 'dist/worker', outExtension: { '.js': '.mjs' } })
+await build({ ...common, entryPoints: { worker: 'src/worker/cli.ts', migrate: 'src/migrate/cli.ts', 'legacy-import': 'src/worker/legacy-cli.ts' }, outdir: 'dist/worker', outExtension: { '.js': '.mjs' } })
 await build({ ...common, entryPoints: { probe: 'src/probe/cli.ts', 'mm-child': 'src/probe/mm-child.ts' }, outdir: 'dist/probe', outExtension: { '.js': '.mjs' } })

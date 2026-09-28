@@ -6,12 +6,14 @@ import {
   assertExistingFolder,
   assertIngestPath,
   assertRestore,
+  assertLegacySource,
   assertSafePath,
   buildIngestPath,
   ingestFileName,
   isLibrarySurface,
   newArtistFolder,
   PathError,
+  releaseFileName,
   resolveIngestPath,
   sanitizeComponent,
 } from '@/server/paths/builder'
@@ -159,5 +161,43 @@ describe('segment hardening (review minor 3)', () => {
     }
     expect(() => assertSafePath('Music/Artists/Mr. T./Mr. T. - Song.mp3')).not.toThrow()
     for (const bad of ['Foo ', ' Foo', '...', '. .']) expect(() => assertExistingFolder(bad), bad).toThrow(PathError)
+  })
+})
+
+describe('v0.3.6 legacy UNRELEASED import: the one extra source, and release names', () => {
+  it('the legacy source is exactly the UNRELEASED folder (≤3 levels below), .mp3 or .m4a, under the root', () => {
+    for (const root of ROOTS) {
+      for (const p of ['kokoro_-_aodhi_-_something.m4a', 'save_me_from_me.mp3', 'Music/KOKORO/kokoro_-_kokoro_-_rage.m4a', 'kokoro_-_ishii石井_-_cute.m4a']) {
+        expect(assertLegacySource(root, `${root}UNRELEASED-DO NOT ADD TO ROTATION/${p}`)).toBeTruthy()
+      }
+      for (const p of [
+        `${root}UNRELEASED-DO NOT ADD TO ROTATION/x.flac`,
+        `${root}UNRELEASED-DO NOT ADD TO ROTATION/x.wav`,
+        `${root}UNRELEASED-DO NOT ADD TO ROTATION/a/b/c/d/x.mp3`,
+        `${root}UNRELEASED-DO NOT ADD TO ROTATION/../Music/Artists/A/x.mp3`,
+        `${root}UNRELEASED-2026/x.mp3`,
+        `${root}UNRELEASED/x.mp3`,
+        `${root}Music/Artists/A/x.mp3`,
+        `${root}Removed/5/x.mp3`,
+        `${root}Events/UNRELEASED-DO NOT ADD TO ROTATION/x.mp3`,
+      ]) {
+        expect(() => assertLegacySource(root, p), p).toThrow(PathError)
+      }
+    }
+    // prefix profile: a production path is never a legacy source, and vice versa
+    expect(() => assertLegacySource('Portal-Test/', 'UNRELEASED-DO NOT ADD TO ROTATION/x.mp3')).toThrow(PathError)
+    expect(() => assertLegacySource('', 'Portal-Test/UNRELEASED-DO NOT ADD TO ROTATION/x.mp3')).toThrow(PathError)
+    // it is still NOT a request / archive / move source for anything else
+    expect(() => assertArtistFileSource('', 'UNRELEASED-DO NOT ADD TO ROTATION/x.m4a')).toThrow(PathError)
+    expect(isLibrarySurface('', 'UNRELEASED-DO NOT ADD TO ROTATION/x.m4a')).toBe(false)
+  })
+
+  it('release keeps the name, else " (n)" before the extension, n ≤ 9', () => {
+    expect(releaseFileName('kokoro_-_sophie_-_home.m4a', 1)).toBe('kokoro_-_sophie_-_home.m4a')
+    expect(releaseFileName('kokoro_-_sophie_-_home.m4a', 2)).toBe('kokoro_-_sophie_-_home (2).m4a')
+    expect(releaseFileName('save_me_from_me.mp3', 9)).toBe('save_me_from_me (9).mp3')
+    expect(releaseFileName('b.a.b.y.m4a', 3)).toBe('b.a.b.y (3).m4a')
+    expect(() => releaseFileName('x.mp3', 10)).toThrow('bad_collision_index')
+    expect(() => releaseFileName('x.mp3', 0)).toThrow('bad_collision_index')
   })
 })

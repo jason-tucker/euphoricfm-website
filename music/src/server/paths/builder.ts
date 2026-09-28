@@ -26,6 +26,16 @@ export const MAX_COMPONENT_BYTES = 150
 
 export const TEST_PREFIX_RE = /^Portal-Test[A-Za-z0-9-]*\/$/
 
+// v0.3.6: the pre-portal folder of unreleased songs on storage 2. Its files
+// are moved into the portal archive ONCE, by the import_legacy_archive job
+// only (worker/requests/legacy.ts), through the wrapper's legacy methods. No
+// other code path may name it: it is not on the library surface and it is
+// not a request, move or restore target.
+export const LEGACY_UNRELEASED_DIR = 'UNRELEASED-DO NOT ADD TO ROTATION'
+// Audio extensions the archive / restore (release) moves carry for these
+// files: the folder holds .m4a and .mp3 (lower case on the live station).
+export const LEGACY_EXTENSIONS = ['.mp3', '.m4a'] as const
+
 export function assertRoot(root: string): void {
   if (root !== '' && !TEST_PREFIX_RE.test(root)) throw new PathError('bad_root', `invalid path root ${JSON.stringify(root)}`)
 }
@@ -46,6 +56,9 @@ export function patterns(root: string) {
     restoreSource: new RegExp(`^${r}Removed/\\d+/[^/]+$`),
     // Portal-visible library surface (search, requests): Music/Artists/**
     librarySurface: new RegExp(`^${r}Music/Artists/.+`),
+    // The legacy import's SOURCE (and nothing else): a .mp3 / .m4a file in
+    // the UNRELEASED folder or up to three folders below it.
+    legacySource: new RegExp(`^${r}${escapeRe(LEGACY_UNRELEASED_DIR)}/(?:[^/]+/){0,3}[^/]+\\.(?:mp3|m4a)$`),
   }
 }
 
@@ -176,6 +189,37 @@ export function assertRestore(root: string, source: string, target: string, reco
   if (target !== recorded.originalPath) throw new PathError('restore_target_mismatch')
   if (!patterns(root).artistFile.test(target)) throw new PathError('restore_target_pattern')
   return { source, target }
+}
+
+// The legacy import's source: an exact file under <root>UNRELEASED-DO NOT
+// ADD TO ROTATION/, .mp3 or .m4a, structurally safe.
+export function assertLegacySource(root: string, path: string): string {
+  assertSafePath(path)
+  if (!patterns(root).legacySource.test(path)) throw new PathError('legacy_source_pattern')
+  return path
+}
+
+export function isLegacySource(root: string, path: string): boolean {
+  try {
+    assertLegacySource(root, path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Release (restore of a legacy row into Music/Artists/<folder>/): the file
+// keeps its name unless that name is taken, then ` (2)` … ` (9)` before the
+// extension (never overwritten). Candidate n (1-based; 1 = the name as is).
+export function releaseFileName(name: string, n: number): string {
+  if (!Number.isInteger(n) || n < 1 || n > 9) throw new PathError('bad_collision_index')
+  if (n === 1) return name
+  const dot = name.lastIndexOf('.')
+  const stem = dot > 0 ? name.slice(0, dot) : name
+  const ext = dot > 0 ? name.slice(dot) : ''
+  const out = `${stem} (${n})${ext}`
+  if (Buffer.byteLength(out, 'utf8') > 255 || out.includes('/')) throw new PathError('bad_file_name')
+  return out
 }
 
 export function dirname(path: string): string {

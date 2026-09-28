@@ -86,6 +86,7 @@ function reset() {
       batchErrorsNext: [],
       overwrites: [],
       artUploads: [],
+      renames: [],
       nowplaying: null, // P4: {now_playing, playing_next} override
       failNextMove: null, // P4: per-record error string for the next do=move
       ignoreNextPut: false, // a metadata PUT that answers success but stores nothing
@@ -463,7 +464,8 @@ async function handleAzuraCast(req, res, url) {
   const p = url.pathname
   const bodyBuf = req.method === 'GET' ? Buffer.alloc(0) : await readBody(req)
   const body = bodyBuf.length ? json(bodyBuf) : undefined
-  const logged = body && typeof body.file === 'string' ? { ...body, file: `<base64 ${body.file.length} chars>` } : body
+  // Uploads carry the file as base64 in `file`; a rename's `file` is a path.
+  const logged = body && typeof body.file === 'string' && !p.endsWith('/files/rename') ? { ...body, file: `<base64 ${body.file.length} chars>` } : body
   state.az.calls.push({ method: req.method, path: p, query: Object.fromEntries(url.searchParams), body: logged, apiKey: req.headers['x-api-key'] === AZ_KEY })
 
   if (req.method === 'GET' && p === '/api/openapi.yml') {
@@ -561,6 +563,35 @@ async function handleAzuraCast(req, res, url) {
     azSeed([{ path, title: 'Portal Test', artist: 'Portal Test', size, mtime: now, uploaded_at: now }])
     state.az.unscanned.delete(path)
     return send(res, 200, azMedia(state.az.files.get(path)))
+  }
+  // PUT /files/rename (upstream Stations\Files\RenameAction, 0.21.0):
+  // {file, newPath}; empty → 500; equal → no-op success; the filesystem
+  // move REPLACES an occupied destination (no check) and fails (500) when
+  // the source is not on disk; handleRename then points the media row (or an
+  // unprocessable entry) at the new path: SAME id, tags untouched.
+  // Answers Status::updated().
+  if (req.method === 'PUT' && rest === '/files/rename') {
+    const from = typeof body?.file === 'string' ? body.file : ''
+    const to = typeof body?.newPath === 'string' ? body.newPath : ''
+    if (!from) return send(res, 500, { code: 500, message: 'File not specified.' })
+    if (!to) return send(res, 500, { code: 500, message: 'New path not specified.' })
+    const updated = { success: true, message: 'Record updated successfully.', formatted_message: 'Record updated successfully.' }
+    if (from === to) return send(res, 200, updated)
+    const f = state.az.files.get(from)
+    const unscannedSize = state.az.unscanned.get(from)
+    if (!f && unscannedSize === undefined) return send(res, 500, { code: 500, message: `Unable to move file from location ${from} to ${to}.` })
+    const victim = state.az.files.get(to)
+    if (victim && victim !== f) state.az.overwrites.push({ dest: to, lostId: victim.id, byId: f?.id ?? null })
+    if (f) {
+      state.az.files.delete(from)
+      f.path = to
+      state.az.files.set(to, f)
+    } else {
+      state.az.unscanned.delete(from)
+      state.az.unscanned.set(to, unscannedSize)
+    }
+    state.az.renames.push({ from, to })
+    return send(res, 200, updated)
   }
   if (req.method === 'PUT' && rest === '/files/batch') {
     // Mirrors upstream BatchAction (checked against the deployed 0.21.0 source
@@ -665,6 +696,7 @@ async function handleControl(req, res, url) {
     return send(res, 200, { ok: true })
   }
   if (p === '/__mock/az/overwrites') return send(res, 200, state.az.overwrites)
+  if (p === '/__mock/az/renames') return send(res, 200, state.az.renames)
   if (p === '/__mock/az/art-uploads') return send(res, 200, state.az.artUploads)
   if (p === '/__mock/az/nowplaying' && req.method === 'POST') {
     state.az.nowplaying = body && Object.keys(body).length ? body : null
