@@ -5,6 +5,16 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.19.0] — 2026-09-27 — Music portal entry: /music redirect and Submit music button
+
+### Added
+- **`info.euphoric.fm/music` → the music portal.** A new Caddy block matches ONLY `path /music /music/*` and always answers with a 302 (`Cache-Control: no-store`) to the fixed host: `/music` → `https://music.euphoric.fm/`, `/music/<rest>` → `https://music.euphoric.fm/<rest>` (query kept). The target is the literal host followed by the prefix-stripped `{uri}` only when that stripped URI starts with `/`; otherwise it is the plain root redirect. The guard is needed because Caddy matches the *decoded* path but strips `/music` from the *raw* one: `/music%2f@evil.com/pwn` matches `/music/*` yet leaves `%2f@evil.com/pwn`, and appending that to the host would send browsers to `evil.com`. It now goes to `https://music.euphoric.fm/`, so the authority can't be extended or replaced. `/music.evil.com`, `/music@evil.com` and `/musicx` never match and fall through to the normal site; `/music//evil.com` stays on music.euphoric.fm. There is no in-game or iframe special-casing: framed and CitizenFX requests get the same redirect (if the portal doesn't load in the in-game phone, that's handled later).
+- **"Submit music" button** in the homepage action row (where "Submit a song" was): a plain link to `https://music.euphoric.fm/` with `target="_blank" rel="noopener"`, the same everywhere, in-game included.
+- `test/caddy-music-redirect.sh` — runs the Caddyfile in `caddy:2.10-alpine` against `dist/` and asserts every positive and negative redirect case (including encoded-slash `/music%2f@evil.com` variants, and framed/CitizenFX requests getting the same 302) and that the runtime config no longer serves the submission webhook.
+
+### Removed
+- **`SubmitSongModal`**, which posted straight to a public Discord webhook. `/efm-runtime-config.js` now serves only `contactWebhook`; `PUBLIC_DISCORD_REQUEST_WEBHOOK` is dropped from `docker-compose.yml`, `.env.example` and the docs. The old URL is still in git history (root commit) — rotate it in Discord after this ships. The contact webhook is still public by design (ContactModal + /events inquiry); moving it behind the `efm-requests` sidecar is tracked separately.
+
 ## [0.18.0] — 2026-09-27 — EFM Music Portal core (music/)
 
 ### Added

@@ -1,16 +1,19 @@
 ---
-// Five-button action row: Request, Submit, Events, Contact, Business AD.
+// Five-button action row: Request, Submit music, Events, Contact, Business AD.
 // Click handlers dispatch CustomEvents that the modal components listen for.
 // Uses View Transitions API for smooth modal open if supported. "Events" is
 // plain navigation (no CustomEvent, no modal) — it links to /events, whose
 // own EventInquiryModal handles the "Plan Your Event" flow independently.
+// "Submit music" is plain navigation too: it opens the music portal
+// (music.euphoric.fm) in a new tab — the same link everywhere, in-game too.
 // The auto-fit grid below already wraps five items at phone widths.
+import { site } from '../site.config';
 ---
 
 <section class="pt-2">
   <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); gap: clamp(0.5rem, 1vw, 0.75rem);">
     <button type="button" id="open-request" class="btn btn-sunburst">Request a song</button>
-    <button type="button" id="open-submit" class="btn btn-midnight">Submit a song</button>
+    <a href={site.music.portalUrl} target="_blank" rel="noopener" id="open-music" class="btn btn-midnight">{site.music.button}</a>
     <a href="/events" id="open-events" class="btn btn-events">Events</a>
     <button type="button" id="open-contact" class="btn btn-ruby">Contact us</button>
     <button type="button" id="open-business" class="btn btn-mixed">Business AD</button>
@@ -32,7 +35,6 @@
     };
 
     document.getElementById('open-request')?.addEventListener('click', () => fire('efm:open-request'));
-    document.getElementById('open-submit')?.addEventListener('click', () => fire('efm:open-submit'));
     document.getElementById('open-contact')?.addEventListener('click', () => fire('efm:open-contact'));
     document.getElementById('open-business')?.addEventListener('click', () => fire('efm:open-business'));
 
@@ -54,7 +56,7 @@
     // Escape key closes any open overlay.
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
-      ['request-overlay', 'submit-overlay', 'contact-overlay', 'business-overlay'].forEach((id) => {
+      ['request-overlay', 'contact-overlay', 'business-overlay'].forEach((id) => {
         const o = document.getElementById(id);
         if (o && !o.classList.contains('hidden')) {
           o.classList.add('hidden');

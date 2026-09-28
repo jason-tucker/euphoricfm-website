@@ -33,7 +33,7 @@ export const site = {
   // Webhook URLs are NEVER hardcoded or build-time inlined. They're served at
   // runtime by Caddy from `/runtime-config.js`, which templates them out of the
   // container's env vars (see Caddyfile + docker-compose.yml). The modals read
-  // them off `window.__EFM_CONFIG__.discord.{requestWebhook,contactWebhook}`.
+  // them off `window.__EFM_CONFIG__.discord.contactWebhook`.
   discord: {
     avatarUrl: 'https://euphoric.fm/static/android-chrome-192x192.png',
   },
@@ -52,6 +52,14 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       'Option to rotate ad out for holiday specials or deals as requested',
     ],
     note: 'Use "Contact us!" to inquire and get started.',
+  },
+
+  // Music submission portal (music.euphoric.fm) — the homepage "Submit
+  // music" button links here, and info.euphoric.fm/music(/…) 302s here (see
+  // the Caddyfile's "Music portal entry" block). No in-game special-casing.
+  music: {
+    portalUrl: 'https://music.euphoric.fm/',
+    button: 'Submit music',
   },
 
   // NewDayRP profile URL pattern — used to validate the optional profile field

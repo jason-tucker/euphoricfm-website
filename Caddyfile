@@ -74,7 +74,7 @@
     #   img-src    : same-origin art (/efm-art), data: placeholder, raw
     #                euphoric.fm art used by the Media Session API.
     #   connect-src: euphoric.fm (now-playing + library fetches) + discord.com
-    #                (webhook POSTs) + self (/requests, /api proxies).
+    #                (contact/event-inquiry webhook POSTs) + self (/requests, /api proxies).
     #   media-src  : the euphoric.fm audio stream.
     # script-src/style-src keep 'unsafe-inline' because the page is inline-script
     # heavy (no nonces); the stored-XSS fix is the server+client escaping, this
@@ -93,7 +93,11 @@
   # so webhook URLs aren't baked into the static bundle. Edit `.env` +
   # `docker compose up -d` to swap a webhook; no rebuild needed.
   #
-  # SECURITY NOTE: these webhook URLs ARE exposed to anyone visiting the
+  # Only the contact webhook is served now: the song-submission form (and its
+  # PUBLIC_DISCORD_REQUEST_WEBHOOK) was replaced by the music portal, so that
+  # URL is no longer handed to visitors.
+  #
+  # SECURITY NOTE: the contact webhook URL IS exposed to anyone visiting the
   # site — that's a deliberate trade-off (client posts directly to Discord
   # so Discord sees real user IPs for its own rate limiting). If the
   # webhooks ever get abused at scale, rotate them in the Discord channel
@@ -102,7 +106,44 @@
   handle @runtimeConfig {
     header Content-Type "application/javascript; charset=utf-8"
     header Cache-Control "no-store"
-    respond `(function(){window.__EFM_CONFIG__=window.__EFM_CONFIG__||{};window.__EFM_CONFIG__.discord={requestWebhook:"{$PUBLIC_DISCORD_REQUEST_WEBHOOK}",contactWebhook:"{$PUBLIC_DISCORD_CONTACT_WEBHOOK}"};})();`
+    respond `(function(){window.__EFM_CONFIG__=window.__EFM_CONFIG__||{};window.__EFM_CONFIG__.discord={contactWebhook:"{$PUBLIC_DISCORD_CONTACT_WEBHOOK}"};})();`
+  }
+
+  # ---- Music portal entry: /music → music.euphoric.fm -------------------
+  # The music submission portal lives at https://music.euphoric.fm (separate
+  # stack). Every request to /music(/…) gets the same fixed-host 302 — no
+  # in-game/iframe special-casing:
+  #   /music         → https://music.euphoric.fm/
+  #   /music/<rest>  → https://music.euphoric.fm/<rest>   (query string kept)
+  #
+  # Open-redirect safety: the matcher is ONLY `path /music /music/*`, so
+  # /music.evil.com, /music@evil.com and /musicx never match and fall through
+  # to the normal site handling below. When it does match, the target is the
+  # literal host followed by the prefix-stripped `{uri}` — but ONLY if that
+  # stripped URI starts with "/". It usually does, but not always: the path
+  # matcher sees the DECODED path (/music%2f@evil.com matches /music/*) while
+  # handle_path strips "/music" from the RAW path, leaving "%2f@evil.com";
+  # `https://music.euphoric.fm%2f@evil.com` would make evil.com the host. Any
+  # stripped URI that doesn't start with "/" gets the plain root redirect, so
+  # the authority is never extended or replaced
+  # (/music//evil.com → https://music.euphoric.fm/evil.com, still that host).
+  @musicPortal path /music /music/*
+  handle @musicPortal {
+    header Cache-Control "no-store"
+
+    handle_path /music/* {
+      @rooted expression `{http.request.uri}.startsWith("/")`
+      handle @rooted {
+        redir https://music.euphoric.fm{uri} 302
+      }
+      handle {
+        redir https://music.euphoric.fm/ 302
+      }
+    }
+
+    handle {
+      redir https://music.euphoric.fm/ 302
+    }
   }
 
   # ---- Shared pending-requests API --------------------------------------
