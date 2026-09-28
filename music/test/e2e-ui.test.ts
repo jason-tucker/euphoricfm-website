@@ -71,6 +71,7 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     expect(home.html).toContain('data-count-in-review="0"')
     expect(home.html).toContain('data-testid="how-it-works"')
     expect(home.html).not.toContain('data-testid="review-card"')
+    expect(home.html).not.toContain('Sign in with Discord') // no sign-in step for a signed-in member
     expect(home.html).toContain('Edit or remove a song') // nav
 
     const dash = await page(member, '/dashboard')
@@ -214,5 +215,13 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     expect(rq.status).toBe(200)
     expect(rq.html).toContain('Smoke Fixed')
     expect(rq.html).toContain('typo')
+
+    // My music links a request to its song page only while that page exists
+    // (a song archived some other way would 404).
+    await sql`INSERT INTO requests (owner_user_id, kind, media_id, target_path, status, deny_reason)
+              VALUES (${u!.id}, 'edit', ${mediaId + 1}, ${`${ROOT}UNRELEASED-DO NOT ADD TO ROTATION/Hidden ${mediaId}.mp3`}, 'denied', 'gone')`
+    const adminDash = await page(admin, '/dashboard')
+    expect(adminDash.html).toContain(`href="/library/${mediaId}"`)
+    expect(adminDash.html).not.toContain(`href="/library/${mediaId + 1}"`)
   })
 })

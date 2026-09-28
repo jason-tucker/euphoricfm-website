@@ -136,9 +136,12 @@ export function MyMusicCard({ summary }: { summary: { inReview: number; onAir: n
 
 export function ReviewQueueCard({ summary }: { summary: { songs: number; requests: number } }) {
   const waiting = summary.songs + summary.requests > 0
+  // Land on the requests tab when only requests are waiting (the songs tab
+  // would be empty); otherwise the songs tab, which links to requests.
+  const href = summary.songs === 0 && summary.requests > 0 ? '/review/requests' : '/review'
   return (
     <Link
-      href="/review"
+      href={href}
       className="row-link border-sunburst/50 bg-sunburst/[0.08] px-4 py-4"
       data-testid="review-card"
       data-count-songs={summary.songs}

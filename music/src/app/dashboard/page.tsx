@@ -124,8 +124,10 @@ export default async function Dashboard() {
                 <Thumb src={r.artUrl} alt="" size="sm" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">
-                    {r.kind === 'removal' && r.status === 'done' ? (
-                      <>Removal request #{r.id}</>
+                    {!r.onLibrary ? (
+                      <>
+                        {r.kind === 'edit' ? 'Edit' : 'Removal'} request #{r.id}
+                      </>
                     ) : (
                       <Link href={`/library/${r.mediaId}`} className="link">
                         {r.kind === 'edit' ? 'Edit' : 'Removal'} request #{r.id}

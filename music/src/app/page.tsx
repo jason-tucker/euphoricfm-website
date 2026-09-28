@@ -20,10 +20,12 @@ export default async function Home() {
   const [mine, queue] = viewer && db ? await Promise.all([memberSummary(db, viewer), isReviewer(viewer) ? reviewSummary(db, viewer) : null]) : [null, null]
   // Logged out: the steps are the page's main content (h2). Logged in: they sit
   // in a collapsed "How it works" under the actions (h3).
+  // A signed-in member skips "Sign in with Discord".
   const Step = viewer ? 'h3' : 'h2'
+  const shown = viewer ? STEPS.slice(1) : STEPS
   const steps = (
     <ol className="grid gap-3 sm:grid-cols-2">
-      {STEPS.map((s, i) => (
+      {shown.map((s, i) => (
         <li key={s.t} className="card">
           <p className="text-xs font-bold text-sunburst">Step {i + 1}</p>
           <Step className="mt-1 font-semibold">{s.t}</Step>

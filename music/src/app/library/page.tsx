@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { duration } from '@/components/format'
-import { parseIntent, requestHref, type RequestIntent } from '@/components/HomeActions'
+import { ActionIcon, parseIntent, requestHref, type RequestIntent } from '@/components/HomeActions'
 import { Thumb } from '@/components/Thumb'
 import { PageTitle } from '@/components/ui'
 import { getDb } from '@/server/db/client'
@@ -87,31 +87,34 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
           {r.songs.map((s) => {
             const name = s.title ?? s.fileName
             return (
-              <li key={s.mediaId} className="flex flex-wrap items-center gap-2 sm:flex-nowrap" data-media-id={s.mediaId}>
-                <Link href={intent ? requestHref(s.mediaId, intent) : `/library/${s.mediaId}`} className="row-link min-w-0 flex-1 basis-60">
+              <li key={s.mediaId} className="flex items-center gap-2" data-media-id={s.mediaId}>
+                <Link href={intent ? requestHref(s.mediaId, intent) : `/library/${s.mediaId}`} className="row-link min-w-0 flex-1">
                   <Thumb src={s.artUrl} alt="" size="sm" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-medium">{name}</span>
                     <span className="block truncate text-xs text-cream/60">{[s.artist, s.album].filter(Boolean).join(' · ')}</span>
                   </span>
-                  <span className="shrink-0 text-xs text-cream/50">{duration(s.lengthS)}</span>
+                  <span className="shrink-0 text-xs text-cream/50 max-sm:hidden">{duration(s.lengthS)}</span>
                 </Link>
                 {!canRequest ? null : intent ? (
                   <Link
                     href={requestHref(s.mediaId, intent)}
-                    className={`btn btn-sm shrink-0 ${intent === 'remove' ? 'btn-danger' : 'btn-primary'}`}
+                    className={`btn btn-sm shrink-0 max-sm:size-10 max-sm:p-0 ${intent === 'remove' ? 'btn-danger' : 'btn-primary'}`}
                     aria-label={`${BANNER[intent].button}: ${name}`}
                     data-request-link={intent}
                   >
-                    {BANNER[intent].button}
+                    <ActionIcon name={intent} className="size-4 shrink-0" />
+                    <span className="max-sm:sr-only">{BANNER[intent].button}</span>
                   </Link>
                 ) : (
-                  <span className="flex shrink-0 gap-2 max-sm:w-full max-sm:justify-end">
-                    <Link href={requestHref(s.mediaId, 'edit')} className="btn btn-secondary btn-sm" aria-label={`Suggest edit: ${name}`} data-request-link="edit">
-                      Suggest edit
+                  <span className="flex shrink-0 gap-2">
+                    <Link href={requestHref(s.mediaId, 'edit')} className="btn btn-secondary btn-sm max-sm:size-10 max-sm:p-0" aria-label={`Suggest edit: ${name}`} data-request-link="edit">
+                      <ActionIcon name="edit" className="size-4 shrink-0" />
+                      <span className="max-sm:sr-only">Suggest edit</span>
                     </Link>
-                    <Link href={requestHref(s.mediaId, 'remove')} className="btn btn-secondary btn-sm" aria-label={`Request removal: ${name}`} data-request-link="remove">
-                      Request removal
+                    <Link href={requestHref(s.mediaId, 'remove')} className="btn btn-secondary btn-sm max-sm:size-10 max-sm:p-0" aria-label={`Request removal: ${name}`} data-request-link="remove">
+                      <ActionIcon name="remove" className="size-4 shrink-0" />
+                      <span className="max-sm:sr-only">Request removal</span>
                     </Link>
                   </span>
                 )}

@@ -85,6 +85,10 @@ describe('home page (/)', async () => {
     expect(how.tagName).toBe('DETAILS')
     expect(how.open).toBe(false)
     expect(within(how).getByText('How it works')).toBeTruthy()
+    // A signed-in member is not told to sign in: three steps, numbered from 1.
+    expect(within(how).queryByText('Sign in with Discord')).toBeNull()
+    expect(within(how).getAllByRole('listitem')).toHaveLength(3)
+    expect(within(how).getByText('Step 1').nextSibling?.textContent).toBe('Upload your MP3s or WAVs')
   })
 
   it('reviewer: highlighted review queue card with both counts', async () => {
@@ -95,6 +99,15 @@ describe('home page (/)', async () => {
     expect(card.textContent).toContain('Review queue')
     expect(card.textContent).toContain('4 songs and 3 requests waiting')
     expect(q.memberSummary).toHaveBeenCalledWith(expect.anything(), manager)
+  })
+
+  it('reviewer: the card goes to the requests tab when only requests are waiting', async () => {
+    state.viewer = manager
+    q.reviewSummary.mockResolvedValueOnce({ songs: 0, requests: 1 })
+    render(await Home())
+    const card = screen.getByTestId('review-card')
+    expect(card.getAttribute('href')).toBe('/review/requests')
+    expect(card.textContent).toContain('0 songs and 1 request waiting')
   })
 })
 
@@ -130,6 +143,7 @@ describe('My music (/dashboard)', async () => {
         error: null,
         awaitingArtist: false,
         artUrl: null,
+        onLibrary: true,
         createdAt: '2026-09-27T00:00:00Z',
         ticket: { number: 77, webUrl: 'https://tickets.example/77', channelUrl: null, status: null },
       },
@@ -139,6 +153,31 @@ describe('My music (/dashboard)', async () => {
     expect(within(list).getByRole('link', { name: 'Edit request #12' }).getAttribute('href')).toBe('/library/501')
     expect(within(list).getByText('Pending review')).toBeTruthy()
     expect(within(list).getByRole('link', { name: /Ticket #77/ }).getAttribute('href')).toBe('https://tickets.example/77')
+  })
+
+  it('a request whose song is no longer in the library is not linked', async () => {
+    q.listOwnRequests.mockResolvedValueOnce([
+      {
+        id: 13,
+        kind: 'edit',
+        status: 'denied',
+        mediaId: 502,
+        targetPath: 'Music/Artists/GRIM/y.mp3',
+        proposed: null,
+        reason: null,
+        denyReason: 'Song was removed',
+        error: null,
+        awaitingArtist: false,
+        artUrl: null,
+        onLibrary: false,
+        createdAt: '2026-09-27T00:00:00Z',
+        ticket: null,
+      },
+    ])
+    render(await Dashboard())
+    const list = screen.getByTestId('own-requests')
+    expect(within(list).getByText(/Edit request #13/)).toBeTruthy()
+    expect(within(list).queryByRole('link', { name: /request #13/ })).toBeNull()
   })
 })
 
