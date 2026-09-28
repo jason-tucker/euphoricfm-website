@@ -69,6 +69,16 @@ check "@ in rest stays on host"       302 "$P/@evil.com"    /music/@evil.com
 check "encoded slashes stay encoded"  302 "$P/%2F%2Fevil.com" /music/%2F%2Fevil.com
 check "backslash stays on host"       302 "$P/%5Cevil.com"  '/music/%5Cevil.com'
 check "CRLF stays percent-encoded"    302 "$P/%0d%0aX-Evil:1" '/music/%0d%0aX-Evil:1'
+# Encoded slash DIRECTLY after /music: the matcher sees the decoded
+# /music/@evil.com, but the raw-path strip leaves "%2f@evil.com" (no leading
+# "/"), which must NOT be appended to the host → plain root redirect.
+check "%2f@ right after /music"       302 "$P/"             '/music%2f@evil.com/pwn'
+check "%2F@ right after /music"       302 "$P/"             '/music%2F@evil.com/'
+check "%2f@ mixed case + port"        302 "$P/"             '/Music%2f@evil.com:443/x'
+check "%2F@ uppercase /MUSIC"         302 "$P/"             '/MUSIC%2F@evil.com/x'
+check "%2Fevil.com after /music"      302 "$P/"             /music%2Fevil.com
+check "%2f alone after /music"        302 "$P/"             /music%2f
+check "NEG %5C after /music"          200 -                 '/music%5C@evil.com'
 check "NEG /music.evil.com"           200 -                 /music.evil.com
 check "NEG /music@evil.com"           200 -                 /music@evil.com
 check "NEG /musicx"                   200 -                 /musicx

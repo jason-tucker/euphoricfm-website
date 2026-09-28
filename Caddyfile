@@ -119,15 +119,26 @@
   # Open-redirect safety: the matcher is ONLY `path /music /music/*`, so
   # /music.evil.com, /music@evil.com and /musicx never match and fall through
   # to the normal site handling below. When it does match, the target is the
-  # literal host followed by `{uri}`, which after handle_path's prefix strip
-  # ALWAYS starts with "/" — the authority can't be extended or replaced
+  # literal host followed by the prefix-stripped `{uri}` — but ONLY if that
+  # stripped URI starts with "/". It usually does, but not always: the path
+  # matcher sees the DECODED path (/music%2f@evil.com matches /music/*) while
+  # handle_path strips "/music" from the RAW path, leaving "%2f@evil.com";
+  # `https://music.euphoric.fm%2f@evil.com` would make evil.com the host. Any
+  # stripped URI that doesn't start with "/" gets the plain root redirect, so
+  # the authority is never extended or replaced
   # (/music//evil.com → https://music.euphoric.fm/evil.com, still that host).
   @musicPortal path /music /music/*
   handle @musicPortal {
     header Cache-Control "no-store"
 
     handle_path /music/* {
-      redir https://music.euphoric.fm{uri} 302
+      @rooted expression `{http.request.uri}.startsWith("/")`
+      handle @rooted {
+        redir https://music.euphoric.fm{uri} 302
+      }
+      handle {
+        redir https://music.euphoric.fm/ 302
+      }
     }
 
     handle {
