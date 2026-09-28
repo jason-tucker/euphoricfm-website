@@ -310,6 +310,20 @@
     -Server
   }
 
+  # Machine-only APIs never go out on the public hostname. /api/internal/*
+  # (INTERNAL_TOKEN routes, e.g. /api/internal/notify) and /api/v1/* (the
+  # Integration API) are called only over the private docker networks at
+  # tickets-web:3000 by the bot and the music portal. This is the .gg twin of
+  # the tickets.euphoric.fm Cloudflare tunnel's rule #5 (404 for
+  # ^/api/(internal|v1)/ before the app), so both hostnames expose the same
+  # surface. path_regexp runs on Caddy's decoded, cleaned path (%XX decoded,
+  # "//" merged, "." and ".." resolved), so /api/%69nternal/notify,
+  # /api/internal%2fnotify and /x/../api/internal/notify are blocked too. The
+  # bare /api/internal and /api/v1 are included; /api/internalx and /api/v10
+  # are not. (?i) also covers /API/..., which the app wouldn't route anyway.
+  @internal_api path_regexp internal_api (?i)^/api/(internal|v1)(/.*)?$
+  respond @internal_api 404
+
   reverse_proxy tickets-web:3000 {
     header_up X-Real-IP {remote_host}
     header_up X-Forwarded-For {remote_host}
