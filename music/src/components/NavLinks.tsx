@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
@@ -15,8 +16,17 @@ export function isActive(path: string, i: NavItem): boolean {
 
 export function NavLinks({ items }: { items: NavItem[] }) {
   const path = usePathname() ?? '/'
+  const ref = useRef<HTMLElement>(null)
+  // Phones: the tabs are a sideways-scrolling strip; bring the current one
+  // into view (horizontally only, so the page itself never jumps).
+  useEffect(() => {
+    const nav = ref.current
+    const cur = nav?.querySelector<HTMLElement>('[aria-current]')
+    if (!nav || !cur || nav.scrollWidth <= nav.clientWidth) return
+    nav.scrollLeft = Math.max(0, cur.offsetLeft - nav.offsetLeft - (nav.clientWidth - cur.offsetWidth) / 2)
+  }, [path])
   return (
-    <nav aria-label="Music portal" className="efms-tabs">
+    <nav ref={ref} aria-label="Music portal" className="efms-tabs">
       {items.map((i) => (
         <Link
           key={i.href}
