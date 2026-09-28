@@ -11,7 +11,7 @@ The portal home (`/`) now explains the whole process before anyone signs in, usi
 - The rights statement is read from the `rights_attestation` setting through `uiSettings()`, the same read the submit page uses, so the home page shows it word for word.
 - The Discord invite comes from the `discord_invite_url` setting when an admin set one, else the constant `SITE_LINKS.discordInvite` (`src/components/site-links.ts`).
 - The FAQ lives in `src/components/home/faq.ts`; each answer notes the code it describes. Request caps come from `request_daily_caps` (`dailyCaps`, now exported) and the ticket auto-close from `auto_close_days`.
-- Accuracy: requests are limited to **one open edit and one open removal request per song** (the duplicate check in `requests/service.ts` is per song and kind); the ticket FAQ says the bot mentions you **and the staff roles**; the sign-in note says the portal also reads your **server roles** (`guilds.members.read`, used for review/manage permissions).
+- Accuracy: requests are limited to **one open edit and one open removal request per song** (the duplicate check in `requests/service.ts` is per song and kind); the ticket FAQ says the bot mentions **only you** (the song categories have `ping_staff_on_open=false` since tickets v0.12.3 / bot v0.8.3); the sign-in note says the portal also reads your **server roles** (`guilds.members.read`, used for review/manage permissions).
 - New shared styles: `eyebrow`, `facts`, `step-num`, `rights-card`/`rights-quote`, `btn-discord`, and `faq` (bordered question rows with a +/− button cue, hover tint and the global focus ring).
 
 ### Changed

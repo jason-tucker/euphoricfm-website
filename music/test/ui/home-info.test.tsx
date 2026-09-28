@@ -153,7 +153,8 @@ describe('home page, signed out', async () => {
     expect(text('file')).toContain(uploadLimitsForUi(DEFAULT_CAPS).note)
     expect(text('edits')).toContain('4 edit and 6 removal requests a day')
     expect(text('edits')).toContain('one open edit and one open removal request per song')
-    expect(text('ticket')).toContain('staff roles')
+    expect(text('ticket')).toContain('mentions only you')
+    expect(text('ticket')).not.toContain('staff roles')
     expect(text('archived')).toContain('Only the station managers')
   })
 

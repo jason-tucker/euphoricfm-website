@@ -23,12 +23,13 @@ export function faqEntries({ limits: l, requestCaps, autoCloseDays }: FaqContext
         'While a song is still pending review you can withdraw it from My music.',
     },
     {
-      // Tickets open with the submitter as opener (bot mentions the opener plus every staff role, euphoric-tickets ticketService.ts); decision and ingest posts
+      // Tickets open with the submitter as opener. The newsong/songedit/songremoval categories have ping_staff_on_open=false
+      // (euphoric-tickets v0.8.3 ticketService.ts; tickets-web v0.12.3), so the bot mentions only the opener; decision and ingest posts
       // (handlers.ts ticketDecision, scheduler/tickets.ts); member comments relayed as the author (handlers.ts ticketComment).
       id: 'ticket',
       q: 'Who gets notified in the Discord ticket?',
       a:
-        'The ticket is opened for you, and when it opens the ticket bot mentions you and the staff roles, so Discord notifies you and the managers. ' +
+        'The ticket is opened for you, and the ticket bot mentions only you, so you get a Discord notification. The managers see it in their review queue without being pinged. ' +
         'The managers’ questions, every decision (with the reason for a decline) and an “Added to the station” message for each song are posted there. ' +
         'Comments you write on your batch in the portal are copied into the ticket under your name.',
     },
