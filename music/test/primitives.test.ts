@@ -244,7 +244,7 @@ describe('service env isolation', () => {
 })
 
 describe('tus header admission', () => {
-  it('Upload-Length 1..100 MB (v0.3.2: a too-big MP3 is converted down), no defer, no concat, no creation body', () => {
+  it('Upload-Length 1..100 MB (v0.3.5: a too-big MP3 is converted down), no defer, no concat, no creation body', () => {
     expect(checkCreateHeaders(H({ 'upload-length': '1000' }))).toEqual({ length: 1000, kind: 'mp3' })
     expect(checkCreateHeaders(H({ 'upload-length': String(35 * 1024 * 1024 + 1) }))).toEqual({ length: 35 * 1024 * 1024 + 1, kind: 'mp3' })
     expect(checkCreateHeaders(H({ 'upload-length': String(100 * 1024 * 1024) }))).toEqual({ length: 100 * 1024 * 1024, kind: 'mp3' })
@@ -288,7 +288,7 @@ describe('tus admission by DECLARED type (v0.3.0 WAV)', () => {
     expect(maxBytesFor('mp3', caps)).toBe(100 * MB)
     expect(checkCreateHeaders(H({ 'upload-length': String(101 * MB), ...md('audio/wav') }), caps)).toEqual({ status: 413, code: 'wav_upload_too_large' })
   })
-  it('v0.3.2: the MP3 input cap is its own key (maxMp3UploadBytes), admin-lowerable, 100 MB ceiling; maxUploadBytes (the 35 MB final cap) never caps an upload', () => {
+  it('v0.3.5: the MP3 input cap is its own key (maxMp3UploadBytes), admin-lowerable, 100 MB ceiling; maxUploadBytes (the 35 MB final cap) never caps an upload', () => {
     expect(DEFAULT_CAPS.maxMp3UploadBytes).toBe(100 * MB)
     expect(DEFAULT_CAPS.maxUploadBytes).toBe(35 * MB)
     expect(maxBytesFor('mp3', { ...DEFAULT_CAPS, maxMp3UploadBytes: 50 * MB })).toBe(50 * MB)

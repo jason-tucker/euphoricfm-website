@@ -6,9 +6,9 @@ export const MB = 1024 * 1024
 export const DEFAULT_CAPS = {
   // The FINAL-file cap (35 MB): the MP3 the portal ships to AzuraCast, cover
   // and tags included (src/lib/fit.ts). Compiled in, not an upload limit
-  // since v0.3.2, and never read from settings.caps (loadCaps).
+  // since v0.3.5, and never read from settings.caps (loadCaps).
   maxUploadBytes: 35 * MB,
-  // v0.3.2: MP3 uploads (an MP3 too big to fit is re-encoded down by the
+  // v0.3.5: MP3 uploads (an MP3 too big to fit is re-encoded down by the
   // probe). Like the WAV cap below: tus creation caps by the DECLARED type,
   // the probe again by the ACTUAL type; admins may lower it (never above
   // 100 MB). A distinct key, so the stale maxUploadBytes (35 MB) stored in

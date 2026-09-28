@@ -117,7 +117,7 @@ export async function addUploadToBatch(db: DB, v: Viewer, batchId: number, uploa
   })
   try {
     // maxWavBytes / maxMp3Bytes: the loaded (possibly admin-lowered) caps,
-    // which the probe applies by the upload's ACTUAL type (v0.3.0, v0.3.2).
+    // which the probe applies by the upload's ACTUAL type (v0.3.0, v0.3.5).
     const loaded = await loadCaps(db)
     const maxWavBytes = Math.min(loaded.maxWavUploadBytes, MAX_WAV_UPLOAD_BYTES)
     const maxMp3Bytes = Math.min(loaded.maxMp3UploadBytes, MAX_MP3_UPLOAD_BYTES)

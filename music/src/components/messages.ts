@@ -113,7 +113,7 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   metadata_unparseable: "The file's tags could not be read.",
   input_size: 'The file is empty or larger than the upload limit.',
   mp3_too_large: `MP3 files can be at most ${mibOf(MAX_MP3_UPLOAD_BYTES)} MB.`,
-  // Fit-to-size re-encode of a too-big MP3 (v0.3.2)
+  // Fit-to-size re-encode of a too-big MP3 (v0.3.5)
   reencode_timeout: 'Converting the MP3 down to fit took too long. Try again later, or upload a smaller MP3.',
   reencode_failed: "The MP3 couldn't be converted down to fit. Export it again, or upload a smaller MP3.",
   reencode_invalid: "The MP3 couldn't be converted to a valid smaller MP3. Export it again, or upload a smaller MP3.",

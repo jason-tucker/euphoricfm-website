@@ -38,7 +38,7 @@ const capsOverride = z
 // editable: finalize, the tus PATCH cap and the probe all enforce the
 // defaults, and a stored value is ignored here AND in the UI (ui/settings.ts
 // reads caps through this function). maxWavUploadBytes (v0.3.0) and
-// maxMp3UploadBytes (v0.3.2) may be LOWERED: the tus admission and the probe
+// maxMp3UploadBytes (v0.3.5) may be LOWERED: the tus admission and the probe
 // request carry the loaded value, and the compiled 250 MB / 100 MB stay the
 // ceiling everywhere. An invalid value falls back to the default for that
 // field.

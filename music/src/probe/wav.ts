@@ -20,7 +20,7 @@
 //   4. music-metadata (heap-capped child) reads LIST/INFO and 'id3 ' tags
 //      and an embedded APIC, which takes the same hardened cover path;
 //   5. ffmpeg -f wav → libmp3lame CBR at nice 19, under prlimit + timeout,
-//      at the highest ladder rate (320 → 256 → 192 kbps, v0.3.2) whose MP3
+//      at the highest ladder rate (320 → 256 → 192 kbps, v0.3.5) whose MP3
 //      fits the final-file cap with its cover and tags (src/lib/fit.ts);
 //      >2 channels are downmixed to stereo, a rate other than 44.1 / 48 kHz
 //      is resampled (to 48 kHz for multiples of 48 kHz, else 44.1 kHz);
@@ -54,11 +54,11 @@ export const MAX_WAV_TRAILING_BYTES = 64 * 1024
 
 // ffmpeg + libmp3lame peak at ~152 MB of address space (measured, 5.1 24-bit
 // downmix and 96 kHz resample); RSS ~42 MB. The same limits apply to the
-// MP3 → MP3 re-encode (v0.3.2, transcode.ts).
+// MP3 → MP3 re-encode (v0.3.5, transcode.ts).
 export const CONVERT_VMEM_KB = 256 * 1024
-// v0.3.2: sized for the largest inputs (a 250 MB WAV, a 100 MB MP3 of up to
+// v0.3.5: sized for the largest inputs (a 250 MB WAV, a 100 MB MP3 of up to
 // 24 min) on the 1-vCPU botvps, where the probe has cpu_shares 256 and runs
-// ffmpeg at nice 19: CHANGELOG [0.3.2] has the measured times.
+// ffmpeg at nice 19: CHANGELOG [0.3.5] has the measured times.
 export const CONVERT_TIMEOUT_S = 600
 export const CONVERT_NICE = 19
 

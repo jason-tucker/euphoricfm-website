@@ -29,7 +29,7 @@ export function when(iso: string | null | undefined): string {
 }
 
 // v0.3.0: an item uploaded as a WAV plays and ships as the probe's MP3;
-// v0.3.2: so does an MP3 the probe re-encoded to fit (src/lib/fit.ts).
+// v0.3.5: so does an MP3 the probe re-encoded to fit (src/lib/fit.ts).
 // "Converted from WAV (256 kbps MP3)" / "Re-encoded to 192 kbps to fit".
 export function convertedLabel(inputFormat: string | null | undefined, transcodeKbps?: number | null): string | null {
   return transcodeLabel(inputFormat, transcodeKbps)

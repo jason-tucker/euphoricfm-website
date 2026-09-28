@@ -33,7 +33,7 @@ export default async function SubmitPage({ searchParams }: { searchParams: Promi
         initialItems={batch?.items ?? []}
         rights={s.rights}
         // The tus route enforces the compiled defaults, so never exceed them.
-        // The MP3 INPUT cap (v0.3.2: maxMp3UploadBytes, 100 MB), not the
+        // The MP3 INPUT cap (v0.3.5: maxMp3UploadBytes, 100 MB), not the
         // 35 MB final-file cap maxUploadBytes: a bigger MP3 is converted down.
         maxMp3UploadBytes={capOf(s.caps.maxMp3UploadBytes, DEFAULT_CAPS.maxMp3UploadBytes)}
         maxWavUploadBytes={capOf(s.caps.maxWavUploadBytes, DEFAULT_CAPS.maxWavUploadBytes)}

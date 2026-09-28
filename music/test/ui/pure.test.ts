@@ -42,7 +42,7 @@ describe('advisory client pre-checks', () => {
   const L = { mp3: 100 * MB, wav: 250 * MB }
   it('blocks empty and over-100 MB MP3s, warns on names that are neither MP3 nor WAV', () => {
     expect(precheck({ name: 'a.mp3', size: 0, type: '' }, L).block).toBeTruthy()
-    expect(precheck({ name: 'a.mp3', size: 36 * MB, type: 'audio/mpeg' }, L)).toEqual({}) // v0.3.2: converted down by the probe
+    expect(precheck({ name: 'a.mp3', size: 36 * MB, type: 'audio/mpeg' }, L)).toEqual({}) // v0.3.5: converted down by the probe
     expect(precheck({ name: 'a.mp3', size: 100 * MB, type: 'audio/mpeg' }, L)).toEqual({})
     expect(precheck({ name: 'a.mp3', size: 101 * MB, type: 'audio/mpeg' }, L).block).toMatch(/limit for MP3 files is 100 MB/)
     expect(precheck({ name: 'a.MP3', size: MB, type: '' }, L)).toEqual({})
@@ -67,7 +67,7 @@ describe('advisory client pre-checks', () => {
     for (const t of ['.mp3', '.wav', 'audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/wave']) expect(ACCEPT.split(',')).toContain(t)
   })
   it('the converted-from-WAV label and the WAV rejection reasons are human text', () => {
-    expect(convertedLabel('wav')).toBe('Converted from WAV (320 kbps MP3)') // probed before v0.3.2: always 320
+    expect(convertedLabel('wav')).toBe('Converted from WAV (320 kbps MP3)') // probed before v0.3.5: always 320
     expect(convertedLabel('wav', 256)).toBe('Converted from WAV (256 kbps MP3)')
     expect(convertedLabel('mp3', 192)).toBe('Re-encoded to 192 kbps to fit')
     expect(convertedLabel('mp3')).toBeNull()

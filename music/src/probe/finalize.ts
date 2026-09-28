@@ -68,7 +68,7 @@ export async function runFinalize(req: FinalizeRequest, dirs: FinalizeDirs): Pro
     if (w !== true) throw new ProbeReject('id3_write_failed')
 
     const outSize = (await stat(stripped)).size
-    // Defence in depth (v0.3.2): the probe's budget math (fit.ts) keeps every
+    // Defence in depth (v0.3.5): the probe's budget math (fit.ts) keeps every
     // accepted song under the final-file cap with its cover and tags; this
     // holds the cap even if that math, the cover cap or node-id3's padding
     // ever drift, before AzuraCast's JSON route would refuse it after approval.

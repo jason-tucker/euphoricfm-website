@@ -1,4 +1,4 @@
-// Upload admission (plan §3.4): Upload-Length 1..100 MB (v0.3.2; an MP3 too
+// Upload admission (plan §3.4): Upload-Length 1..100 MB (v0.3.5; an MP3 too
 // big for the 35 MB final file is re-encoded down by the probe), 1..250 MB
 // for an upload DECLARED as a WAV (v0.3.0), no defer-length, no
 // concatenation, no creation-with-upload body; per user ≤1 GB in flight
@@ -111,7 +111,7 @@ export async function stagedBytes(q: Pick<DB, 'execute'>): Promise<{ uploads: nu
 // Reserve quota and record the upload row (owner from the SESSION only).
 // `kind` is the declared type: its per-file cap is checked again here with
 // the LOADED caps (an admin may have lowered maxWavUploadBytes /
-// maxMp3UploadBytes). A WAV (or an MP3 too big to fit, v0.3.2) is charged at
+// maxMp3UploadBytes). A WAV (or an MP3 too big to fit, v0.3.5) is charged at
 // its full length until the probe's MP3 replaces it (the worker then sets
 // `length` to the MP3's size) or a rejection releases it.
 export async function admitUpload(db: DB, userId: string, id: string, length: number, caps: Caps = DEFAULT_CAPS, kind: DeclaredKind = 'mp3'): Promise<Refusal | null> {

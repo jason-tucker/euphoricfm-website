@@ -54,7 +54,7 @@ const capsSchema = z
     maxArtBytes: z.number().int().min(1).max(DEFAULT_CAPS.maxArtBytes).optional(),
     // v0.3.0 (optional for the same reason): WAV uploads, ≤ 250 MB.
     maxWavUploadBytes: z.number().int().min(1).max(DEFAULT_CAPS.maxWavUploadBytes).optional(),
-    // v0.3.2 (optional for the same reason): MP3 uploads, ≤ 100 MB.
+    // v0.3.5 (optional for the same reason): MP3 uploads, ≤ 100 MB.
     maxMp3UploadBytes: z.number().int().min(1).max(DEFAULT_CAPS.maxMp3UploadBytes).optional(),
   })
   .strict()

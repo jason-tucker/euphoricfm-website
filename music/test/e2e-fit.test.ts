@@ -1,4 +1,4 @@
-// v0.3.2 fit-to-size end to end through the REAL containers: a 16-min 320 kbps
+// v0.3.5 fit-to-size end to end through the REAL containers: a 16-min 320 kbps
 // MP3 (38 MB, over the final-file cap) is admitted under the 100 MB MP3 cap,
 // the network-less probe re-encodes it to CBR 256 kbps (replacing it under the
 // upload id; the staging quota follows), the tags and cover come from the
@@ -45,7 +45,7 @@ function ffprobe(file: string) {
   }
 }
 
-describe.skipIf(!E2E())('fit-to-size through the real containers (v0.3.2)', () => {
+describe.skipIf(!E2E())('fit-to-size through the real containers (v0.3.5)', () => {
   it('the stale production caps row (maxUploadBytes 36700160, no maxMp3UploadBytes) does not hold MP3 uploads at 35 MB', async () => {
     const a = await loginOk({ id: newId() })
     const prev = (await ownerSql()`SELECT value FROM settings WHERE key = 'caps'`)[0]?.value as Record<string, unknown>

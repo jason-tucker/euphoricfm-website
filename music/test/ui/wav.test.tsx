@@ -72,7 +72,7 @@ describe('WAV in the submit flow', () => {
     const phase = (name: string) => document.querySelector(`li[data-entry] p[title="${name}"]`)!.closest('li')!.getAttribute('data-phase')
     expect(phase('huge.wav')).toBe('blocked')
     expect(phase('big.mp3')).toBe('blocked')
-    expect(phase('ok.mp3')).not.toBe('blocked') // v0.3.2: a 60 MB MP3 is uploaded and converted down
+    expect(phase('ok.mp3')).not.toBe('blocked') // v0.3.5: a 60 MB MP3 is uploaded and converted down
 
     // The two acceptable files are uploaded (2 at a time), each declaring its type.
     await vi.waitFor(() => expect(tusUploads.length).toBe(2))

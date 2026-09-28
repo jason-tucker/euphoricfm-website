@@ -47,13 +47,13 @@ function wavFixtures() {
   writeFileSync(join(DIR, 'piped.wav'), piped)
   // > 35 MB: 4 min 10 s of 16-bit 44.1 kHz stereo (~44 MB), with INFO tags
   w('big-44mb.wav', ['-f', 'lavfi', '-i', 'anoisesrc=color=pink:amplitude=0.2:duration=250:sample_rate=44100', ...meta, '-ac', '2', '-c:a', 'pcm_s16le'])
-  // an MP3 over the 100 MB MP3 input cap (v0.3.2): a real MP3 followed by
+  // an MP3 over the 100 MB MP3 input cap (v0.3.5): a real MP3 followed by
   // padding (the magic check passes)
   const mp3 = readFileSync(join(DIR, 'raw35.mp3'))
   writeFileSync(join(DIR, 'big-101mb.mp3'), Buffer.concat([mp3, Buffer.alloc(100 * 1024 * 1024 - mp3.length + 1024)]))
 }
 
-// v0.3.2 fit-to-size inputs. A 60 s clip is encoded once, then long files are
+// v0.3.5 fit-to-size inputs. A 60 s clip is encoded once, then long files are
 // built by stream-copying it (concat demuxer, fast), so each keeps its exact
 // CBR/VBR bitrate and gets a Xing header with the frame count (ffprobe then
 // reads the exact duration).

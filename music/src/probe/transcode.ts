@@ -1,4 +1,4 @@
-// MP3 → MP3 re-encode (v0.3.2). An uploaded MP3 whose audio does not fit the
+// MP3 → MP3 re-encode (v0.3.5). An uploaded MP3 whose audio does not fit the
 // final-file cap (src/lib/fit.ts) is DECODED here and encoded again as a CBR
 // MP3 at the highest ladder rate that fits. This is the first time the probe
 // decodes an untrusted MP3's audio (before, MP3 audio was only demuxed by

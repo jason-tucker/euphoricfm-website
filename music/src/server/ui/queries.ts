@@ -36,7 +36,7 @@ export function uiItem(v: Viewer, it: ItemRow) {
     denyReason: it.denyReason,
     // 'wav' = uploaded as a WAV and converted to an MP3 (v0.3.0);
     // transcodeKbps = the bitrate the probe encoded it at (a WAV, or an MP3
-    // re-encoded to fit, v0.3.2), null = the member's own MP3, untouched.
+    // re-encoded to fit, v0.3.5), null = the member's own MP3, untouched.
     inputFormat: it.inputFormat,
     transcodeKbps: it.transcodeKbps,
     hasCover: Boolean(it.coverFile),

@@ -75,7 +75,7 @@ function fromTickets(e: unknown): never {
 // mount). Only a result that the probe stamped as coming from the in-web
 // inbox with type 'probe' is accepted for an upload item.
 //
-// Staging accounting (v0.3.0): a WAV the probe converted (or, v0.3.2, an MP3
+// Staging accounting (v0.3.0): a WAV the probe converted (or, v0.3.5, an MP3
 // it re-encoded to fit) was replaced by its MP3, so the upload row's `length` (what the per-user and global staging
 // caps sum) becomes the MP3's size; a rejection whose bytes the probe deleted
 // (`released`) marks the upload expired. Both only in the same transaction
@@ -154,7 +154,7 @@ export async function collectProbeResults(ctx: WorkerCtx): Promise<number> {
 // ------------------------------------------------------------- tickets ---
 
 // One card line per pending item (≤ 200 chars). A song the probe encoded (a
-// WAV, or an MP3 re-encoded to fit, v0.3.2) says so, so the managers know
+// WAV, or an MP3 re-encoded to fit, v0.3.5) says so, so the managers know
 // before they listen; the note is kept whole and the name is cut instead.
 export function ticketLine(i: Pick<typeof items.$inferSelect, 'id' | 'kind' | 'newArtistName' | 'artist' | 'title' | 'inputFormat' | 'transcodeKbps'>): string {
   if (i.kind === 'new_artist') return `#${i.id} New artist: ${i.newArtistName ?? '?'}`.slice(0, 200)

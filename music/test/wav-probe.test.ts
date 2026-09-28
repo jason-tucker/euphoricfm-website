@@ -1,7 +1,7 @@
 // v0.3.0 WAV inputs, probe side, run in-process in the test image (same
 // ffmpeg / ffprobe / prlimit / bundled music-metadata child as the probe
 // image). Accepted WAVs are converted to a CBR MP3 (320 kbps when it fits,
-// v0.3.2: else the fit.ts ladder; tests in fit-probe.test.ts) that replaces the
+// v0.3.5: else the fit.ts ladder; tests in fit-probe.test.ts) that replaces the
 // WAV under the upload id; everything else is refused with a reason code,
 // and a refused upload's bytes are deleted (`released`).
 import { createHash, randomUUID } from 'node:crypto'
@@ -442,6 +442,6 @@ describe('WAV helpers', () => {
     expect(() => judgeWavFfprobe({ ...ok, streams: [{ ...ok.streams[0], channels: 1 }] }, info)).toThrow('wav_header_mismatch')
     expect(() => judgeWavFfprobe({ ...ok, format: { ...ok.format, duration: '70' } }, info)).toThrow('wav_header_mismatch')
     expect(() => judgeWavFfprobe({ ...ok, format: { ...ok.format, format_name: 'mp3' } }, info)).toThrow('not_wav')
-    expect(MAX_DURATION_S).toBe(1440) // v0.3.2: 24 min, the same as an MP3 (was 15 min)
+    expect(MAX_DURATION_S).toBe(1440) // v0.3.5: 24 min, the same as an MP3 (was 15 min)
   })
 })

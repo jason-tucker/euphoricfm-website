@@ -73,7 +73,7 @@ describe.skipIf(!DBENV())('WAV staging accounting (v0.3.0)', () => {
     expect(before.uploads - after.uploads).toBe(200 * MB - 9 * MB + 150 * MB)
   })
 
-  it('v0.3.2: an MP3 re-encoded to fit is re-charged at the new size and records its bitrate; an untouched MP3 records none', async () => {
+  it('v0.3.5: an MP3 re-encoded to fit is re-charged at the new size and records its bitrate; an untouched MP3 records none', async () => {
     const out = mkdtempSync(join(tmpdir(), 'fitacct-'))
     const u = await mkUser()
     const b = await mkBatch(u.id, { status: 'draft' })
@@ -96,7 +96,7 @@ describe.skipIf(!DBENV())('WAV staging accounting (v0.3.0)', () => {
     expect(await row(big.upload)).toMatchObject({ length: 31 * MB, status: 'pending', input_format: 'mp3', transcode_kbps: 192, bitrate: 192000 })
     expect(await row(small.upload)).toMatchObject({ length: 8 * MB, status: 'pending', input_format: 'mp3', transcode_kbps: null })
     expect(await row(wav.upload)).toMatchObject({ length: 30 * MB, status: 'pending', input_format: 'wav', transcode_kbps: 256 })
-    // tus admission: a 60 MB MP3 is admitted (v0.3.2), 101 MB is not
+    // tus admission: a 60 MB MP3 is admitted (v0.3.5), 101 MB is not
     expect(await admitUpload(db(), u.id, hex(), 101 * MB, DEFAULT_CAPS, 'mp3')).toEqual({ status: 413, code: 'upload_too_large' })
     const ok = hex()
     expect(await admitUpload(db(), u.id, ok, 60 * MB, DEFAULT_CAPS, 'mp3')).toBeNull()

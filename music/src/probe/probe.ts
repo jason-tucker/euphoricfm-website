@@ -1,6 +1,6 @@
 // 'probe' requests (from in-web only): plan §3.4 steps 1–6, plus (v0.3.0)
 // WAV inputs, which are checked and converted to a CBR MP3 (wav.ts), and
-// (v0.3.2) fit-to-size: an MP3 whose audio does not fit the final-file cap
+// (v0.3.5) fit-to-size: an MP3 whose audio does not fit the final-file cap
 // is re-encoded to a smaller CBR MP3 (transcode.ts). The rules and numbers
 // are in src/lib/fit.ts.
 //
@@ -32,7 +32,7 @@ import { CONVERT_NICE, CONVERT_TIMEOUT_S, CONVERT_VMEM_KB, convertArgs, judgeWav
 export type ProbeDirs = { uploads: string; work: string; mmChild: string }
 
 export const MIN_DURATION_S = 30
-// v0.3.2: the longest song that fits at the ladder's floor (fit.ts, 24 min),
+// v0.3.5: the longest song that fits at the ladder's floor (fit.ts, 24 min),
 // for MP3 and WAV alike (was 20 min for an MP3).
 export { MAX_DURATION_S }
 export const MIN_BITRATE = 128_000
@@ -389,7 +389,7 @@ async function probeWav(job: Job, copy: string, size: number): Promise<SpoolResu
   // 4. LIST/INFO + id3 chunk tags (and APIC) via music-metadata
   const tags = await readTags(copy, job.work, job.dirs)
   // 5. convert (nice 19, prlimit, timeout, own process group) at the
-  //    highest ladder rate whose MP3 fits (v0.3.2; scanWav and
+  //    highest ladder rate whose MP3 fits (v0.3.5; scanWav and
   //    judgeWavFfprobe bounded the duration, so the floor always fits)
   const bitrate = pickBitrate(Math.max(wav.durationS, info.durationS))
   if (bitrate === null) throw new ProbeReject('wav_too_long')

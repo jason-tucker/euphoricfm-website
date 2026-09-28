@@ -66,7 +66,7 @@ export async function uiSettings(db: DB): Promise<UiSettings> {
     getIntList(db, 'assignable_playlist_ids'),
     getIntList(db, 'default_playlist_ids'),
     getSetting(db, 'auto_close_days'),
-    // The same validated view the server enforces (v0.3.2): stored hard
+    // The same validated view the server enforces (v0.3.5): stored hard
     // per-file limits (maxUploadBytes, chunkBytes) are ignored, invalid or
     // raised values fall back to the defaults.
     loadCaps(db),
