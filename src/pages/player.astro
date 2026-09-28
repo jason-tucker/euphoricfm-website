@@ -1,0 +1,227 @@
+---
+// Web Player — info.euphoric.fm/player/ (built to dist/player/index.html, so
+// Caddy's `try_files {path} {path}/` serves it; plain /player 308s here).
+//
+// One page, two templates fed by the same data (scripts/player.ts):
+//   .efmp-page — the full player: art, status, title, progress, transport,
+//                stream picker, Up next, actions, Song history.
+//                ≥1100px: history side panel · 700–1099: art beside details,
+//                history below · <700: stacked phone layout.
+//   .efmp-mini — the compact pop-out strip, shown for ?popout=1 or any
+//                viewport ≤ 420×260 (html.efm-popout, set before first paint).
+// Elements carry data-np="…" so every copy of a value (full + mini) updates
+// together. No Discord anywhere on this page.
+import BaseLayout from '../layouts/BaseLayout.astro';
+import RequestModal from '../components/RequestModal.astro';
+import { site } from '../site.config';
+import { buildM3u, buildPls, dataUri, type StreamOption } from '../lib/player-data';
+import '../styles/player.css';
+
+const p = site.player;
+const blankImg = "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E";
+
+// Build-time fallback for the picker + playlist links until the live mount
+// list arrives from the API (scripts/player.ts replaces both).
+const fallbackStream: StreamOption[] = [
+  { url: site.azuracast.streamUrl, label: 'MP3', name: 'EuphoricFM Radio', isDefault: true },
+];
+const plsHref = dataUri('audio/x-scpls', buildPls(site.name, fallbackStream));
+const m3uHref = dataUri('audio/x-mpegurl', buildM3u(site.name, fallbackStream));
+
+const playerConfig = {
+  streamUrl: site.azuracast.streamUrl,
+  stationName: site.name,
+  popout: p.popout,
+  breakTitle: p.breakTitle,
+  breakArtist: p.breakArtist,
+  excludePlaylists: p.excludePlaylists,
+};
+---
+
+<BaseLayout title={p.title} description={p.description} scripts="none">
+  <!-- Pop-out mode before first paint: ?popout=1 (the Pop out window) or a
+       viewport no bigger than 420×260 switches to the compact strip. -->
+  <script is:inline slot="head">
+    (function () {
+      var el = document.documentElement;
+      var forced = /[?&]popout=1(&|$)/.test(location.search);
+      var mq = null;
+      try { mq = window.matchMedia('(max-width: 420px) and (max-height: 260px)'); } catch (e) {}
+      var apply = function () {
+        var on = forced || !!(mq && mq.matches);
+        if (on) el.classList.add('efm-popout'); else el.classList.remove('efm-popout');
+      };
+      apply();
+      if (mq) {
+        if (mq.addEventListener) mq.addEventListener('change', apply);
+        else if (mq.addListener) mq.addListener(apply);
+      }
+    })();
+  </script>
+
+  <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+    <symbol id="efmp-i-play" viewBox="0 0 24 24"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.2-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></symbol>
+    <symbol id="efmp-i-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
+    <symbol id="efmp-i-vol" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></symbol>
+    <symbol id="efmp-i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="m16 9 6 6"/><path d="m22 9-6 6"/></symbol>
+    <symbol id="efmp-i-popout" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+    <symbol id="efmp-i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="efmp-i-chevd" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="efmp-i-download" viewBox="0 0 24 24"><path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/></symbol>
+    <symbol id="efmp-i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="efmp-i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></symbol>
+  </svg>
+
+  <div class="efmp" id="efmp" data-player-config={JSON.stringify(playerConfig)}>
+    <audio id="efmp-audio" preload="none" crossorigin="anonymous"></audio>
+
+    <!-- ============ Full player ============ -->
+    <div class="efmp-page">
+      <header class="efmp-bar">
+        <div class="efmp-bar-in">
+          <a class="efmp-logo" href="/" aria-label="EuphoricFM home">
+            <span class="efmp-wm-e">Euphoric</span><span class="efmp-wm-f">FM</span>
+          </a>
+          <span class="efmp-bar-title">Web Player</span>
+          <span class="efmp-spacer"></span>
+          <a class="efmp-btn efmp-btn-sm" href="/">Full site <svg class="efmp-i efmp-i-sm" aria-hidden="true"><use href="#efmp-i-chev" /></svg></a>
+        </div>
+      </header>
+
+      <div class="efmp-main">
+        <section class="card efmp-card" aria-label="EuphoricFM live player">
+          <div class="efmp-grid">
+            <div class="efmp-art-wrap">
+              <img class="efmp-art" data-np="art" src={blankImg} alt="" width="340" height="340" />
+            </div>
+            <div class="efmp-details">
+              <div class="efmp-station">
+                <b data-np="station-name">{site.name}</b>
+                <span data-np="station-desc"></span>
+              </div>
+              <div class="efmp-status">
+                <span class="efmp-pill is-auto" data-np="status"><i></i><span data-np="status-text">{site.liveEvents.idlePill}</span></span>
+                <span class="efmp-listeners"><span class="efmp-dot"></span><span><span data-np="listeners">0</span> listening</span></span>
+                <span class="efmp-chip-req" data-np="requested" hidden>REQUESTED</span>
+              </div>
+              <p class="efmp-live-line" data-np="live-line" hidden></p>
+              <h1 class="efmp-title" data-np="title">Loading…</h1>
+              <p class="efmp-artist" data-np="artist">&nbsp;</p>
+              <p class="efmp-album" data-np="album"></p>
+
+              <div class="efmp-progress">
+                <div class="efmp-track"><i data-np="bar"></i></div>
+                <div class="efmp-times"><span data-np="elapsed">0:00</span><span data-np="duration">0:00</span></div>
+              </div>
+
+              <div class="efmp-ctrl">
+                <div class="efmp-vol">
+                  <button type="button" class="efmp-icon-btn" data-efmp="mute" aria-label="Mute" aria-pressed="false">
+                    <svg class="efmp-i" aria-hidden="true"><use href="#efmp-i-vol" /></svg>
+                  </button>
+                  <input class="efmp-range efmp-range--inline" data-efmp="volume" type="range" min="0" max="100" value="80" aria-label="Volume" />
+                </div>
+                <button type="button" class="efmp-play" data-efmp="play" aria-label="Play">
+                  <svg class="efmp-i efmp-i-fill" aria-hidden="true"><use href="#efmp-i-play" /></svg>
+                </button>
+                <label class="efmp-select">
+                  <select id="efmp-quality" aria-label="Stream quality">
+                    <option value={site.azuracast.streamUrl}>MP3</option>
+                  </select>
+                  <svg class="efmp-i efmp-i-sm" aria-hidden="true"><use href="#efmp-i-chevd" /></svg>
+                </label>
+              </div>
+              <div class="efmp-vol-row">
+                <span>Vol</span>
+                <input class="efmp-range" data-efmp="volume" type="range" min="0" max="100" value="80" aria-label="Volume" />
+              </div>
+
+              <div class="efmp-upnext" data-np="next" hidden>
+                <img class="efmp-upnext-art" data-np="next-art" src={blankImg} alt="" width="44" height="44" />
+                <span class="efmp-upnext-txt">
+                  <span class="efmp-label">Up next <span class="efmp-chip-req" data-np="next-requested" hidden>REQUESTED</span></span>
+                  <b data-np="next-title"></b>
+                  <span class="efmp-upnext-sub" data-np="next-sub"></span>
+                </span>
+                <span class="efmp-upnext-when" data-np="next-when"></span>
+              </div>
+            </div>
+          </div>
+
+          <nav class="efmp-links" aria-label="Player actions">
+            <a class="efmp-btn efmp-hist-btn" href="#history" data-efmp="history-link"><svg class="efmp-i" aria-hidden="true"><use href="#efmp-i-history" /></svg>Song history</a>
+            <button type="button" class="efmp-btn efmp-btn-primary" data-efmp="request"><svg class="efmp-i" aria-hidden="true"><use href="#efmp-i-search" /></svg>Request a song</button>
+            <details class="efmp-menu efmp-no-cef" data-efmp="playlist">
+              <summary class="efmp-btn"><svg class="efmp-i" aria-hidden="true"><use href="#efmp-i-download" /></svg>Playlist</summary>
+              <div class="efmp-menu-panel" role="group" aria-label="Download a playlist file">
+                <a class="efmp-menu-item" data-efmp="pls" href={plsHref} download="euphoricfm.pls">
+                  <b>.pls</b><span>VLC, Winamp, foobar2000</span>
+                </a>
+                <a class="efmp-menu-item" data-efmp="m3u" href={m3uHref} download="euphoricfm.m3u">
+                  <b>.m3u</b><span>iTunes, VLC, most apps</span>
+                </a>
+              </div>
+            </details>
+            <a class="efmp-btn efmp-no-cef" href="/player/?popout=1" target={p.popout.name} data-efmp="popout"><svg class="efmp-i" aria-hidden="true"><use href="#efmp-i-popout" /></svg>Pop out</a>
+          </nav>
+        </section>
+
+        <aside class="card efmp-hist" id="history" aria-labelledby="efmp-hist-h">
+          <div class="efmp-hist-head">
+            <h2 id="efmp-hist-h">{p.historyTitle}</h2>
+            <span data-np="history-count">last 15</span>
+          </div>
+          <ul class="efmp-hist-list" id="efmp-history">
+            <li class="efmp-hist-empty">Loading…</li>
+          </ul>
+          <button type="button" class="efmp-btn efmp-btn-sm efmp-hist-more" data-efmp="history-more" aria-controls="efmp-history" aria-expanded="false" hidden>
+            <span data-efmp="history-more-label">Show all 15</span>
+            <svg class="efmp-i efmp-i-sm" aria-hidden="true"><use href="#efmp-i-chevd" /></svg>
+          </button>
+        </aside>
+      </div>
+    </div>
+
+    <!-- ============ Pop-out strip ============ -->
+    <div class="efmp-mini" aria-label="EuphoricFM mini player">
+      <div class="efmp-mini-top">
+        <img data-np="art" src={blankImg} alt="" width="76" height="76" />
+        <div class="efmp-mini-meta">
+          <div class="efmp-mini-st">
+            <span class="efmp-pill is-auto" data-np="status"><i></i><span data-np="status-text">{site.liveEvents.idlePill}</span></span>
+            <span><span data-np="listeners">0</span> listening</span>
+          </div>
+          <b data-np="title">Loading…</b>
+          <span class="efmp-mini-artist" data-np="artist">&nbsp;</span>
+        </div>
+      </div>
+      <div class="efmp-mini-prog">
+        <span data-np="elapsed">0:00</span>
+        <div class="efmp-track"><i data-np="bar"></i></div>
+        <span data-np="duration">0:00</span>
+      </div>
+      <div class="efmp-mini-ctrl">
+        <button type="button" class="efmp-play efmp-play-sm" data-efmp="play" aria-label="Play">
+          <svg class="efmp-i efmp-i-fill" aria-hidden="true"><use href="#efmp-i-play" /></svg>
+        </button>
+        <div class="efmp-mini-next">
+          <small>Up next</small>
+          <span data-np="next-line">—</span>
+        </div>
+        <button type="button" class="efmp-icon-btn" data-efmp="mute" aria-label="Mute" aria-pressed="false">
+          <svg class="efmp-i" aria-hidden="true"><use href="#efmp-i-vol" /></svg>
+        </button>
+        <a class="efmp-icon-btn" href="/player/" target="_blank" rel="noopener" aria-label="Open the full player">
+          <svg class="efmp-i" aria-hidden="true"><use href="#efmp-i-popout" /></svg>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <RequestModal />
+
+  <script>
+    import '../scripts/effects.ts';
+    import '../scripts/player.ts';
+  </script>
+</BaseLayout>

@@ -45,6 +45,11 @@ jobs:
           PUBLIC_GIT_SHA: ${{ github.sha }}
           PUBLIC_BUILD_TIME: ${{ github.event.head_commit.timestamp || github.run_started_at }}
 
+      # dist/ checks (Web Player page built, no Discord on it, home links it)
+      # + the player helper unit tests.
+      - name: Site build checks
+        run: pnpm test:site
+
       - name: Set up Docker Buildx
         if: github.event_name != 'pull_request'
         uses: docker/setup-buildx-action@v4

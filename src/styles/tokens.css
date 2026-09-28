@@ -33,6 +33,7 @@
      button + toggle gradients). #ffd23e is the same warm family as sunburst,
      one step brighter — a smooth amber ramp instead of an orange→neon jump. */
   --efm-gold-rgb: 255 210 62;     /* #ffd23e  warm highlight gold            */
+  --efm-ok-rgb: 52 211 153;       /* #34d399  "listening" / healthy dot      */
 
   /* --- Semantic roles (full colours, for bespoke CSS) ------------------- */
   --efm-surface: rgb(var(--efm-ink-rgb));

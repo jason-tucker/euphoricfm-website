@@ -69,14 +69,27 @@ Webhook URLs (`PUBLIC_DISCORD_CONTACT_WEBHOOK` — the only one left since song 
 
 ```
 src/
-  layouts/BaseLayout.astro     window.__EFM_CONFIG__ injected here; imports nowplaying.ts + effects.ts
+  layouts/BaseLayout.astro     window.__EFM_CONFIG__ injected here; `scripts="site"` (default)
+                               ships nowplaying/effects/stats/events + the webhook runtime config,
+                               `scripts="none"` ships neither (the Web Player loads its own entry)
   pages/index.astro            composes the page top-to-bottom
   pages/events.astro           composes the Euphoric FM Events page (Header → EventsHero →
                                EventsHowItWorks → EventsServices → EventStatus → Footer,
                                EventInquiryModal outside .phone)
+  pages/player.astro           the Web Player (/player/, dist/player/index.html): own slim top bar
+                               (logo · Web Player · Full site), full layout + pop-out strip
+                               (?popout=1 or ≤420×260 → html.efm-popout), reuses RequestModal.
+                               No Discord anywhere on it. Styles: styles/player.css (.efmp-*)
   site.config.ts               single source of truth for editable strings (NOT webhook URLs);
                                includes the `events` block — all /events copy lives here
-  scripts/nowplaying.ts        client-side polling + RAF progress bar
+  scripts/np-core.ts           shared now-playing poller (subscribeNowPlaying), art proxy rewrite,
+                               Media Session helpers — used by nowplaying.ts and player.ts
+  scripts/stream-audio.ts      shared live-stream engine (play/stop, ?t= cache-bust, Web Audio
+                               analyser → --efm-* vars, effects gating, window.__efmAudio bridge)
+                               — used by PlayerCard.astro and player.ts
+  scripts/nowplaying.ts        home now-playing card + recently played + RAF progress bar
+  scripts/player.ts            Web Player page driver (data-np bindings, quality picker from
+                               station.mounts, .pls/.m3u, pop-out, history, volume/mute)
   scripts/effects.ts           music-reactive visual effects (spring physics, album-art theming,
                                OKLCH colour extractor, effects master toggle)
   scripts/stats.ts              station stats section: fetch/render, hand-rolled SVG charts,
@@ -85,6 +98,8 @@ src/
                                PUBLIC schedule API and hydrates EventStatus (ON AIR card +
                                "On the Calendar" upcoming list); config override wins
   lib/azuracast.ts             TS types + URL helpers
+  lib/player-data.ts           pure helpers (formatting, ad/break filter, mounts → stream options,
+                               .pls/.m3u builders) — imported by node:test straight from source
   lib/version.ts               version + sha for footer
   lib/stats.ts                  TS types for the /stats/* payloads (kept in sync with server/stats.mjs)
   styles/tokens.css            centralised CSS colour tokens (brand palette + semantic roles)
@@ -149,6 +164,8 @@ displays `v<package.json version> · <short SHA>` so you always know which build
 | `pnpm build` | `astro build` — production static build |
 | `pnpm preview` | `astro preview` — preview the production build locally |
 | `pnpm test` | `node --test server/*.test.mjs` — server sidecar test suite (node:test, zero deps) |
+| `pnpm test:site` | `node --test test/*.test.mjs` — dist/ checks (needs `pnpm build`) + player helper tests |
+| `sh test/caddy-player.sh` | Caddy serves /player/ as the player (not the SPA fallback), /player → 308 (needs `pnpm build` + docker) |
 
 There is **no `typecheck` script** in `package.json`. Type-checking runs as `pnpm exec astro check`. CI runs it with `continue-on-error: true` — type errors warn but do not fail the build.
 
