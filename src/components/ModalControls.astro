@@ -1,0 +1,62 @@
+---
+// Shared open/close wiring for the site's pop-up windows (Release 4; this was
+// ActionRow's script before the old six-button row was removed). Rendered by
+// BaseLayout on every full-site page.
+//
+//   data-open="request|contact|business|event-inquiry" on any button or link
+//     opens that pop-up when it exists on this page (fires efm:open-<name>,
+//     which the modal components listen for). A link keeps its href as the
+//     fallback, so on a page without that pop-up it simply navigates
+//     (e.g. the footer's "Contact us" → /#contact).
+//   data-close="<overlay id>" closes that overlay; Escape closes any open one.
+//
+// The event inquiry and stats detail overlays run their own close handling
+// (EventInquiryModal.astro, stats.ts), so they are left out here.
+---
+
+<script is:inline>
+  (function () {
+    var OVERLAYS = {
+      request: 'request-overlay',
+      contact: 'contact-overlay',
+      business: 'business-overlay',
+      'event-inquiry': 'event-overlay',
+    };
+    var SELF_CLOSING = { 'event-overlay': 1 };
+    var withTransition = function (fn) {
+      if (typeof document.startViewTransition === 'function') document.startViewTransition(fn);
+      else fn();
+    };
+    var close = function (o) {
+      o.classList.add('hidden');
+      o.setAttribute('aria-hidden', 'true');
+    };
+
+    document.addEventListener('click', function (e) {
+      var t = e.target;
+      if (!t || !t.closest) return;
+      var opener = t.closest('[data-open]');
+      if (opener) {
+        var name = opener.getAttribute('data-open');
+        if (!name || !OVERLAYS[name] || !document.getElementById(OVERLAYS[name])) return;
+        e.preventDefault();
+        withTransition(function () { document.dispatchEvent(new CustomEvent('efm:open-' + name)); });
+        return;
+      }
+      var closer = t.closest('[data-close]');
+      if (!closer) return;
+      var id = closer.getAttribute('data-close');
+      if (!id || SELF_CLOSING[id]) return;
+      var overlay = document.getElementById(id);
+      if (overlay) withTransition(function () { close(overlay); });
+    });
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
+      ['request-overlay', 'contact-overlay', 'business-overlay'].forEach(function (id) {
+        var o = document.getElementById(id);
+        if (o && !o.classList.contains('hidden')) close(o);
+      });
+    });
+  })();
+</script>

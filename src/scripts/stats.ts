@@ -1,17 +1,23 @@
 // Client-side driver for the Station Stats section (src/components/Stats.astro).
 //
-// Progressive enhancement: the section starts `hidden`; this module fetches
-// `/stats/summary` (same-origin, reverse-proxied by Caddy to the efm-requests
-// sidecar — see server/stats.mjs) 800ms after load and only unhides the
-// section on success with any recorded songs (totals.songs/plays > 0). No sidecar (e.g. `pnpm dev`) or
-// an empty store (fresh boot, no data yet) both leave the section hidden —
-// that's the intended graceful-degradation behaviour, not a bug.
+// Loaded lazily by stats-lazy.ts once #stats nears the viewport (Release 4).
+// The section renders its skeleton at full size from the start (no layout
+// shift); this module reads `/stats/summary` through the shared loader in
+// stats-summary.ts (same-origin, reverse-proxied by Caddy to the efm-requests
+// sidecar — see server/stats.mjs) and fills it. No sidecar (e.g. `pnpm dev`)
+// or an empty store shows the #stats-unavailable note instead.
+//
+// Condensed by default: KPIs, the Listeners chart and the top 5 tracks and
+// artists. "Show full stats" (#stats-full, toggled by stats-lazy.ts, which
+// fires `efm:stats-full`) reveals the Listens and Rhythm charts and the
+// longer top lists with their Show more buttons.
 //
 // All SVG nodes are built with document.createElementNS — createElement
 // renders nothing for SVG tags, the classic silent failure. All dynamic
 // strings reach the DOM via textContent only, never innerHTML.
 
 import { site } from '../site.config';
+import { loadSummary } from './stats-summary';
 import type {
   StatsSummary,
   StatsDay,
@@ -243,7 +249,13 @@ interface PlotPoint {
 
   // ---- DOM refs -------------------------------------------------------------
 
-  const elSection = $('stats-section');
+  const elSection = $('stats');
+  const elFull = $('stats-full');
+  const elUnavailable = $('stats-unavailable');
+  // Top-list length: 5 in the condensed view, 10 (then Show more) once the
+  // full stats are open.
+  const fullOpen = (): boolean => !!elFull && !elFull.classList.contains('hidden');
+  const baseShown = (): number => (fullOpen() ? 10 : 5);
   const elCoverage = $('stats-coverage');
   const elRangeTabs = $('stats-range-tabs');
 
@@ -801,8 +813,8 @@ interface PlotPoint {
     showPlays(range);
     // Show-more reset on range change (spec) — a fresh window shouldn't
     // inherit how far a previous range's list had been expanded.
-    tracksShown = 10;
-    artistsShown = 10;
+    tracksShown = baseShown();
+    artistsShown = baseShown();
     renderTopTracks();
     renderTopArtists();
   };
@@ -1428,7 +1440,7 @@ interface PlotPoint {
       const li = document.createElement('li');
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'w-full min-h-[48px] text-left flex items-center gap-3 py-2';
+      btn.className = 'efm-row';
       btn.addEventListener('click', () => openTrackDetail(t.id));
 
       const rank = document.createElement('span');
@@ -1440,7 +1452,7 @@ interface PlotPoint {
       img.alt = '';
       img.loading = 'lazy';
       img.decoding = 'async';
-      img.className = 'w-10 h-10 rounded-md object-cover bg-cream/10 shrink-0';
+      img.className = 'w-9 h-9 rounded-md object-cover bg-cream/10 shrink-0';
 
       const mid = document.createElement('div');
       mid.className = 'min-w-0 flex-1';
@@ -1465,7 +1477,7 @@ interface PlotPoint {
       elTopTracksList.appendChild(li);
     });
     if (elTopTracksMore) {
-      elTopTracksMore.classList.toggle('hidden', tracksShown >= Math.min(topListCap(range), source.length));
+      elTopTracksMore.classList.toggle('hidden', !fullOpen() || tracksShown >= Math.min(topListCap(range), source.length));
     }
   };
 
@@ -1483,7 +1495,7 @@ interface PlotPoint {
       const li = document.createElement('li');
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'w-full min-h-[48px] text-left flex items-center gap-3 py-2';
+      btn.className = 'efm-row';
       btn.addEventListener('click', () => openArtistDetail(a.name));
 
       const rank = document.createElement('span');
@@ -1512,7 +1524,7 @@ interface PlotPoint {
       elTopArtistsList.appendChild(li);
     });
     if (elTopArtistsMore) {
-      elTopArtistsMore.classList.toggle('hidden', artistsShown >= Math.min(topListCap(range), source.length));
+      elTopArtistsMore.classList.toggle('hidden', !fullOpen() || artistsShown >= Math.min(topListCap(range), source.length));
     }
   };
 
@@ -1849,8 +1861,8 @@ interface PlotPoint {
   });
 
   // data-close lives ONLY on this button (never the overlay root) so
-  // ActionRow's document-level `closest('[data-close]')` handler can't treat
-  // a click anywhere inside the overlay as a close. ActionRow's delegated
+  // ModalControls' document-level `closest('[data-close]')` handler can't treat
+  // a click anywhere inside the overlay as a close. ModalControls' delegated
   // handler also fires and toggles the same classes — harmless, idempotent —
   // but our own listener is what resets previousView/rerenderDetail.
   elDetailClose?.addEventListener('click', () => closeOverlay());
@@ -1859,7 +1871,7 @@ interface PlotPoint {
   elOverlay?.addEventListener('click', (e) => {
     if (e.target === elOverlay) closeOverlay();
   });
-  // Own Escape listener — ActionRow's keydown handler only knows its own
+  // Own Escape listener — ModalControls' keydown handler only knows its own
   // hardcoded overlay id list, which is not ours to edit.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
@@ -1886,19 +1898,32 @@ interface PlotPoint {
 
   // ---- boot -------------------------------------------------------------------------
 
+  // "Show full stats" opened or closed: lists grow/shrink, and the charts
+  // that were drawn while hidden (0px wide) are redrawn at their real size.
+  document.addEventListener('efm:stats-full', () => {
+    if (!summary) return;
+    tracksShown = baseShown();
+    artistsShown = baseShown();
+    renderTopTracks();
+    renderTopArtists();
+    rerenderPlays?.();
+    rerenderRhythm?.();
+  });
+
   const boot = async () => {
-    if (!elSection) return; // page doesn't render #stats-section (e.g. /events) — skip the fetch entirely
+    if (!elSection) return; // page doesn't render #stats (e.g. /events) — skip the fetch entirely
     try {
-      const r = await fetch('/stats/summary');
-      if (!r.ok) return;
-      const data = (await r.json()) as StatsSummary;
-      // Hide only when nothing at all was recorded — a store with songs but
-      // zero listens (e.g. fresh after the schema-2 rebuild) still renders.
-      if (!data.ok || !data.totals || (data.totals.plays === 0 && !data.totals.songs)) return;
+      // null when the sidecar is unreachable or nothing at all was recorded —
+      // a store with songs but zero listens (e.g. fresh after the schema-2
+      // rebuild) still renders.
+      const data = await loadSummary();
+      if (!data) {
+        elUnavailable?.classList.remove('hidden');
+        return;
+      }
       summary = data;
       TZ = data.meta.timezone || TZ;
       tzShort = shortTzName(TZ);
-      elSection?.classList.remove('hidden');
       renderCoverage(data);
 
       eligibleRanges = computeEligibleRanges(data);
@@ -1909,17 +1934,17 @@ interface PlotPoint {
       renderRangeTabs(elPlaysTabs);
 
       renderKpis(data, activeRange);
-      tracksShown = 10;
-      artistsShown = 10;
+      tracksShown = baseShown();
+      artistsShown = baseShown();
       renderTopTracks();
       renderTopArtists();
       void showListeners(activeRange);
       showPlays(activeRange);
       showRhythm(activeRhythmBasis);
     } catch (err) {
-      console.warn('[efm] /stats/summary fetch failed', err);
+      console.warn('[efm] stats render failed', err);
     }
   };
 
-  setTimeout(boot, 800);
+  void boot();
 })();

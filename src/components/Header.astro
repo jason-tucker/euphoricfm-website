@@ -5,9 +5,9 @@
 // test/shared-drift.test.mjs fails if the two copies drift apart.
 //
 // Menus are <details>/<summary> so they work with JavaScript off (the in-game
-// CEF browser); the script below only adds outside-click / Escape closing,
-// opens the contact modal for "Contact" on the home page, and moves
-// aria-current between the home page's sections.
+// CEF browser); the script below only adds outside-click / Escape closing and
+// moves aria-current between the home page's sections. "Contact" is a plain
+// link to the home page's Get in touch section (/#contact) since Release 4.
 import nav from '../../shared/nav.json';
 import '../../shared/efm-bar.css';
 
@@ -70,7 +70,7 @@ const sheetStation = [...items, nav.webPlayer];
             </li>
           ) : (
             <li>
-              <a class="efmh-link" href={href(i)} aria-current={cur(i.id)} data-efmh-id={i.id} data-efmh-contact={i.id === 'contact' ? '' : undefined}>
+              <a class="efmh-link" href={href(i)} aria-current={cur(i.id)} data-efmh-id={i.id}>
                 {i.label}
               </a>
             </li>
@@ -97,7 +97,7 @@ const sheetStation = [...items, nav.webPlayer];
             <ul class="efmh-grid">
               {sheetStation.map((i) => (
                 <li>
-                  <a class="efmh-mi" href={href(i)} aria-current={cur(i.id)} data-efmh-id={i.id} data-efmh-contact={i.id === 'contact' ? '' : undefined}>
+                  <a class="efmh-mi" href={href(i)} aria-current={cur(i.id)} data-efmh-id={i.id}>
                     <svg viewBox="0 0 24 24" aria-hidden="true">{icons[i.id]!.map((d) => <path d={d} />)}</svg>
                     <span class="efmh-mi-txt"><span class="efmh-mi-t">{i.label}</span></span>
                   </a>
@@ -151,23 +151,6 @@ const sheetStation = [...items, nav.webPlayer];
     closeAll();
     open[0]!.querySelector('summary')?.focus();
   });
-
-  // "Contact" opens the existing contact modal on pages that have it (home);
-  // elsewhere it is a plain link to /#contact, which opens the modal on arrival.
-  const contactModal = () => document.getElementById('contact-overlay');
-  const openContact = () => document.dispatchEvent(new CustomEvent('efm:open-contact'));
-  document.querySelectorAll('.efmh [data-efmh-contact]').forEach((a) =>
-    a.addEventListener('click', (e) => {
-      if (!contactModal()) return;
-      e.preventDefault();
-      closeAll();
-      openContact();
-    }),
-  );
-  if (location.hash === '#contact' && contactModal()) {
-    if (document.readyState === 'complete') openContact();
-    else window.addEventListener('load', openContact, { once: true });
-  }
 
   // Home page: aria-current follows the section the visitor jumped to.
   const markHash = () => {

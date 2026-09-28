@@ -106,7 +106,7 @@
   handle @runtimeConfig {
     header Content-Type "application/javascript; charset=utf-8"
     header Cache-Control "no-store"
-    respond `(function(){window.__EFM_CONFIG__=window.__EFM_CONFIG__||{};window.__EFM_CONFIG__.discord={contactWebhook:"{$PUBLIC_DISCORD_CONTACT_WEBHOOK}"};})();`
+    respond `(function(){window.__EFM_CONFIG__=window.__EFM_CONFIG__||{};window.__EFM_CONFIG__.contact={webhook:"{$PUBLIC_DISCORD_CONTACT_WEBHOOK}"};})();`
   }
 
   # ---- Music portal entry: /music → music.euphoric.fm -------------------

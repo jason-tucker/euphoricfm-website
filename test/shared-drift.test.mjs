@@ -118,7 +118,11 @@ test('menus are <details>/<summary> (work with JavaScript off) and the home page
   assert.match(h, /<details class="efmh-dd" data-efmh-menu>\s*<summary class="efmh-link"/);
   assert.match(h, /<details class="efmh-burger" data-efmh-menu>\s*<summary/);
   const home = dist('index.html');
-  for (const id of ['listen', 'about', 'stats', 'contact']) assert.match(home, new RegExp(`id="${id}"`), `#${id}`);
+  // Every in-page anchor the bar links to (/#…) is a real, unique element id
+  // on the home page (\sid= so data-efmh-id doesn't count).
+  const anchors = nav.items.filter((i) => i.site === 'info' && i.path?.startsWith('/#')).map((i) => i.path.slice(2));
+  assert.deepEqual(anchors, ['listen', 'about', 'stats', 'contact']);
+  for (const id of anchors) assert.equal(home.match(new RegExp(`\\sid="${id}"`, 'g'))?.length, 1, `#${id} exists once`);
   // The pop-out stays chrome-free.
   assert.match(readRoot('src/styles/player.css'), /html\.efm-popout \.efmh/);
 });

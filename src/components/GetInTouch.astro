@@ -1,0 +1,34 @@
+---
+// #contact — Contact us (ContactModal), Advertise your business
+// (BusinessAdModal with its in-universe ad copy and price, unchanged) and Book
+// an event (EventInquiryModal; /events/ when that pop-up isn't on the page).
+import { site } from '../site.config';
+const c = site.home.contact;
+const [price, per] = site.businessAd.price.split(/\s*\/\s*/);
+---
+
+<section id="contact" class="hm-section" aria-labelledby="contact-h">
+  <p class="hm-eyebrow">{c.eyebrow}</p>
+  <h2 id="contact-h" class="hm-h2">{c.heading}</h2>
+  <div class="hm-contact-grid mt-5">
+    <div class="hm-surface hm-cc">
+      <span class="hm-wic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="m4 7 8 6 8-6"/></svg></span>
+      <h3 class="hm-h3">{c.contact.title}</h3>
+      <p class="hm-grow">{c.contact.body}</p>
+      <button type="button" class="btn btn-ruby" data-open="contact">{c.contact.button}</button>
+    </div>
+    <div id="advertise" class="hm-surface hm-cc">
+      <span class="hm-wic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg></span>
+      <h3 class="hm-h3">{c.advertise.title}</h3>
+      <p>{c.advertise.body}</p>
+      <p class="hm-price hm-grow">{price}{per && <span class="hm-small hm-faint"> / {per}</span>}</p>
+      <button type="button" class="btn btn-ghost" data-open="business">{c.advertise.button}<span class="hm-chev" aria-hidden="true">›</span></button>
+    </div>
+    <div class="hm-surface hm-cc">
+      <span class="hm-wic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M16 3v4M8 3v4M4 10h16"/></svg></span>
+      <h3 class="hm-h3">{c.event.title}</h3>
+      <p class="hm-grow">{c.event.body}</p>
+      <a class="btn btn-outline" href="/events/" data-open="event-inquiry">{c.event.button}<span class="hm-chev" aria-hidden="true">›</span></a>
+    </div>
+  </div>
+</section>

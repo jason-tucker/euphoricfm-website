@@ -1,0 +1,60 @@
+---
+// Home events teaser → /events/. "Plan your event" opens the event inquiry
+// pop-up (EventInquiryModal, also rendered on the home page) and falls back to
+// /events/ as a plain link. The right-hand status card carries the same
+// evst-* ids as /events' EventStatus, so scripts/events.ts hydrates it from
+// the Euphoric Events station's public schedule unchanged (ON AIR card with a
+// Listen live link, or off air + the upcoming calendar).
+import { site } from '../site.config';
+const e = site.home.events;
+const st = site.events.status;
+const cal = site.events.calendar;
+const current = st.current;
+---
+
+<section id="events" class="hm-section" aria-labelledby="events-h">
+  <div class="hm-surface hm-ev-card">
+    <div>
+      <p class="hm-eyebrow">{e.eyebrow}</p>
+      <h2 id="events-h" class="hm-h2">{e.heading}</h2>
+      <p class="hm-lede">{e.body}</p>
+      <p class="hm-goodfor"><b>{e.goodFor}</b> {site.events.goodFor.items.join(' · ')}</p>
+      <div class="hm-btnrow mt-5">
+        <a class="btn btn-sunburst" href="/events/" data-open="event-inquiry">
+          <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M16 3v4M8 3v4M4 10h16"/></svg>{e.plan}
+        </a>
+        <a class="btn btn-ghost" href="/events/">{e.more}<span class="hm-chev" aria-hidden="true">›</span></a>
+      </div>
+    </div>
+
+    <div class="hm-ev-status" id="evst-card" data-override={current ? '1' : undefined}>
+      {current ? (
+        <>
+          <div class="hm-ev-status-h"><h3 class="hm-h3">{e.statusTitle}</h3><span class="hm-pill hm-pill-live">{st.onAir.pill}</span></div>
+          <p class="mt-2 font-bold">{current.name}</p>
+          <p class="hm-small hm-muted">{current.venue} · {current.startsAt} – {current.endsAt}</p>
+          {current.listenUrl && <a class="btn btn-sunburst btn-sm mt-3" href={current.listenUrl}>{cal.listen}</a>}
+        </>
+      ) : (
+        <>
+          <div id="evst-offair">
+            <div class="hm-ev-status-h"><h3 class="hm-h3">{e.statusTitle}</h3><span class="hm-pill">{st.offAir.pill}</span></div>
+            <p class="mt-2">{st.offAir.heading}</p>
+            <p class="hm-small hm-muted">{e.offAirBody}</p>
+          </div>
+          <div id="evst-onair" class="hidden">
+            <div class="hm-ev-status-h"><h3 class="hm-h3">{e.statusTitle}</h3><span class="hm-pill hm-pill-live">{st.onAir.pill}</span></div>
+            <p id="evst-on-name" class="mt-2 font-bold"></p>
+            <p id="evst-on-times" class="hm-small hm-muted"></p>
+            <a id="evst-on-listen" class="btn btn-sunburst btn-sm mt-3" href={site.events.station.publicPlayerUrl}>{cal.listen}</a>
+          </div>
+          <div class="hm-cal">
+            <b class="hm-small">{e.calendarTitle}</b>
+            <p id="evst-calendar-empty" class="hm-small hm-muted">{e.calendarEmpty} <a class="hm-link" href="/events/" data-open="event-inquiry">{e.calendarBook}</a>.</p>
+            <div id="evst-calendar" class="hidden"><ul id="evst-calendar-list"></ul></div>
+          </div>
+        </>
+      )}
+    </div>
+  </div>
+</section>

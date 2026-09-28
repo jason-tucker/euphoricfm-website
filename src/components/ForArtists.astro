@@ -1,0 +1,36 @@
+---
+// #music — "Get your music on EuphoricFM": how the Music Portal works in four
+// steps, the Submit music button, and links for artists already on the
+// station (the portal library, opened with its edit/remove intent). No file
+// size numbers here: the portal shows its live limits.
+import { site } from '../site.config';
+const m = site.home.music;
+const portal = site.music.portalUrl;
+---
+
+<section id="music" class="hm-section" aria-labelledby="music-h">
+  <div class="hm-sec-head">
+    <div>
+      <p class="hm-eyebrow">{m.eyebrow}</p>
+      <h2 id="music-h" class="hm-h2">{m.heading}</h2>
+      <p class="hm-lede">{m.lede}</p>
+    </div>
+    <div class="hm-btnrow">
+      <a class="btn btn-sunburst" href={portal}>
+        <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 20h16"/></svg>{m.submit}
+      </a>
+    </div>
+  </div>
+  <ol class="hm-steps">
+    {m.steps.map((step, i) => (
+      <li>
+        <span class="hm-step-n" aria-hidden="true">{i + 1}</span>
+        <h3>{step.title}</h3>
+        <p>{step.body}</p>
+      </li>
+    ))}
+  </ol>
+  <p class="hm-small hm-muted mt-4">
+    {m.already} <a class="hm-link" href={portal + m.fixPath}>{m.fix}</a> {m.or} <a class="hm-link" href={portal + m.removePath}>{m.remove}</a>.
+  </p>
+</section>

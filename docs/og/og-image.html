@@ -1,0 +1,48 @@
+<!doctype html>
+<!--
+  Source of public/images/og.png (the 1200x630 share-preview image, og:image
+  in BaseLayout.astro). Brand colours from src/styles/tokens.css, wordmark
+  fonts from public/fonts. To re-render after a change, screenshot this file
+  at exactly 1200x630 from the repo root, e.g. with headless Chromium:
+
+    chromium --headless --hide-scrollbars --window-size=1200,630 \
+      --screenshot=public/images/og.png "file://$PWD/docs/og/og-image.html"
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: 'Begaron'; src: url('../../public/fonts/Begaron-Regular.woff2') format('woff2'); }
+  @font-face { font-family: 'Cortado Script'; src: url('../../public/fonts/CortadoScript-Regular.ttf') format('truetype'); }
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: #0a0a0a; }
+  body {
+    position: relative; font-family: system-ui, 'Segoe UI', Roboto, sans-serif; color: #fff;
+    background:
+      radial-gradient(60% 80% at 12% 18%, rgba(41,52,98,.95), transparent 70%),
+      radial-gradient(55% 75% at 92% 30%, rgba(214,28,78,.55), transparent 70%),
+      radial-gradient(50% 60% at 55% 115%, rgba(254,177,57,.35), transparent 70%),
+      #0a0a0a;
+  }
+  .wrap { position: absolute; inset: 0; padding: 88px 96px; display: flex; flex-direction: column; justify-content: center; }
+  .eyebrow { font-size: 26px; font-weight: 700; letter-spacing: .28em; text-transform: uppercase; color: #feb139; }
+  .mark { margin-top: 22px; display: flex; align-items: baseline; line-height: 1; }
+  .euph { font-family: 'Begaron'; text-transform: uppercase; font-size: 116px; color: #feb139; }
+  .fm { font-family: 'Cortado Script'; font-size: 148px; color: #d61c4e; margin-left: 6px; }
+  .tag { margin-top: 34px; font-size: 58px; font-weight: 800; letter-spacing: -.01em; }
+  .tag span { color: #ffd23e; }
+  .url { position: absolute; left: 96px; bottom: 64px; font-size: 26px; font-weight: 600; color: rgba(255,255,255,.72); }
+  .live { position: absolute; right: 96px; bottom: 58px; display: flex; align-items: center; gap: 14px;
+    padding: 12px 24px; border-radius: 999px; background: #d61c4e; font-size: 24px; font-weight: 800; letter-spacing: .2em; }
+  .live i { width: 14px; height: 14px; border-radius: 50%; background: #fff; display: block; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="eyebrow">Live from San Andreas · 24/7</div>
+    <div class="mark"><span class="euph">Euphoric</span><span class="fm">FM</span></div>
+    <div class="tag">San Andreas pop, <span>all day.</span></div>
+  </div>
+  <div class="url">info.euphoric.fm</div>
+  <div class="live"><i></i>On air</div>
+</body>
+</html>

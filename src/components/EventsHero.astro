@@ -1,8 +1,8 @@
 ---
-// /events page hero — eyebrow + heading + body + two CTAs. No ActionRow on
-// this page (see EventInquiryModal.astro), so "Plan Your Event" dispatches
+// /events page hero — eyebrow + heading + body + two CTAs. ModalControls runs on
+// this page too, but "Plan Your Event" keeps dispatching
 // efm:open-event-inquiry itself, wrapped the same View Transition way
-// ActionRow.astro's fire() helper does on the homepage.
+// ModalControls.astro does for data-open controls.
 import { site } from '../site.config';
 const h = site.events.hero;
 ---

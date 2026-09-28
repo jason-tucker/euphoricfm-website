@@ -1,0 +1,144 @@
+---
+// #ways — "Listen anywhere": this page's player, the Web Player (open or pop
+// out), playlist files for music apps, and the direct stream URL with a Copy
+// button. The .pls/.m3u links are built at build time from the configured
+// stream and rebuilt from the station's real mount list on the first
+// now-playing poll (same helpers as the Web Player: lib/player-data.ts).
+import { site } from '../site.config';
+import { buildM3u, buildPls, dataUri, type StreamOption } from '../lib/player-data';
+const w = site.home.ways;
+const fallback: StreamOption[] = [{ url: site.azuracast.streamUrl, label: 'MP3', name: 'EuphoricFM Radio', isDefault: true }];
+const pls = dataUri('audio/x-scpls', buildPls(site.name, fallback));
+const m3u = dataUri('audio/x-mpegurl', buildM3u(site.name, fallback));
+const stream = site.azuracast.streamUrl;
+const pop = site.player.popout;
+const dl = '<svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/></svg>';
+---
+
+<section id="ways" class="hm-section" aria-labelledby="ways-h">
+  <p class="hm-eyebrow">{w.eyebrow}</p>
+  <h2 id="ways-h" class="hm-h2">{w.heading}</h2>
+  <div class="hm-ways mt-5">
+    <div class="hm-surface hm-way">
+      <span class="hm-wic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 12h.01"/><path d="M8.5 8.5a5 5 0 0 0 0 7"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M5.6 5.6a9 9 0 0 0 0 12.8"/><path d="M18.4 5.6a9 9 0 0 1 0 12.8"/></svg></span>
+      <h3 class="hm-h3">{w.here.title}</h3>
+      <p>{w.here.body}</p>
+      <div class="hm-btnrow"><a class="btn btn-ghost btn-sm" href="#listen" data-ways-play>
+        <svg class="hm-ic hm-ic-fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>{w.here.button}
+      </a></div>
+    </div>
+    <div class="hm-surface hm-way">
+      <span class="hm-wic" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="12" height="14" rx="2"/><path d="M11 3h8a2 2 0 0 1 2 2v8"/><path d="m21 3-8 8"/></svg></span>
+      <h3 class="hm-h3">{w.player.title}</h3>
+      <p>{w.player.body}</p>
+      <div class="hm-btnrow">
+        <a class="btn btn-ghost btn-sm" href="/player/">{w.player.open}</a>
+        <a class="btn btn-ghost btn-sm" href="/player/?popout=1" target={pop.name} data-ways-popout>
+          <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="12" height="14" rx="2"/><path d="M11 3h8a2 2 0 0 1 2 2v8"/><path d="m21 3-8 8"/></svg>{w.player.popout}
+        </a>
+      </div>
+    </div>
+    <div class="hm-surface hm-way">
+      <span class="hm-wic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 14v-2a9 9 0 0 1 18 0v2"/><path d="M21 19a2 2 0 0 1-2 2h-1v-7h3z"/><path d="M3 19a2 2 0 0 0 2 2h1v-7H3z"/></svg></span>
+      <h3 class="hm-h3">{w.app.title}</h3>
+      <p>{w.app.body}</p>
+      <div class="hm-btnrow">
+        <a class="btn btn-ghost btn-sm" href={pls} download="euphoricfm.pls" data-ways-pls><Fragment set:html={dl} />.pls</a>
+        <a class="btn btn-ghost btn-sm" href={m3u} download="euphoricfm.m3u" data-ways-m3u><Fragment set:html={dl} />.m3u</a>
+      </div>
+    </div>
+    <div class="hm-surface hm-way">
+      <span class="hm-wic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></span>
+      <h3 class="hm-h3">{w.direct.title}</h3>
+      <p>{w.direct.body}</p>
+      <div class="hm-copybox">
+        <code id="ways-stream-url">{stream}</code>
+        <button type="button" class="btn btn-ghost btn-sm" data-ways-copy data-copied={w.direct.copied} data-failed={w.direct.copyFailed} aria-live="polite">
+          <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg><span data-ways-copy-label>{w.direct.copy}</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  import { site } from '../site.config';
+  import { buildM3u, buildPls, dataUri, streamOptions } from '../lib/player-data';
+  import { subscribeNowPlaying } from '../scripts/np-core';
+
+  const root = document.getElementById('ways');
+  if (root) {
+    // "Play live": back to the player at the top, and start it if it's stopped.
+    root.querySelector('[data-ways-play]')?.addEventListener('click', () => {
+      const btn = document.getElementById('efm-play');
+      if (btn && btn.getAttribute('aria-label') === 'Play') btn.click();
+    });
+
+    // "Pop out": the same small named window the Web Player opens. If the
+    // browser blocks pop-ups (the in-game phone does), the link opens the
+    // player normally. One stream at a time, so this page stops playing.
+    const popLink = root.querySelector<HTMLAnchorElement>('[data-ways-popout]');
+    popLink?.addEventListener('click', (e) => {
+      const { name, width, height } = site.player.popout;
+      const w = window.open('', name, `popup,width=${width},height=${height}`);
+      if (!w) return;
+      e.preventDefault();
+      let fresh = true;
+      try { fresh = w.location.href === 'about:blank'; } catch { /* cross-origin → navigate */ }
+      if (fresh) w.location.href = popLink.href;
+      window.__efmAudio?.pause();
+      try { w.focus(); } catch { /* ignore */ }
+    });
+
+    // Copy the direct stream URL. The in-game browser may not have the async
+    // clipboard API, so fall back to selecting the text + execCommand, and
+    // finally to leaving it selected with a "press Ctrl+C" hint.
+    const copyBtn = root.querySelector<HTMLButtonElement>('[data-ways-copy]');
+    const copyLabel = root.querySelector<HTMLElement>('[data-ways-copy-label]');
+    const code = document.getElementById('ways-stream-url');
+    const selectCode = () => {
+      if (!code) return;
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    };
+    let resetTimer: number | undefined;
+    const flash = (text: string) => {
+      if (!copyLabel || !copyBtn) return;
+      copyLabel.textContent = text;
+      window.clearTimeout(resetTimer);
+      resetTimer = window.setTimeout(() => { copyLabel.textContent = site.home.ways.direct.copy; }, 2000);
+    };
+    copyBtn?.addEventListener('click', async () => {
+      const text = code?.textContent?.trim() || site.azuracast.streamUrl;
+      try {
+        await navigator.clipboard.writeText(text);
+        flash(copyBtn.dataset.copied || '');
+        return;
+      } catch { /* fall through */ }
+      selectCode();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch { ok = false; }
+      flash((ok ? copyBtn.dataset.copied : copyBtn.dataset.failed) || '');
+    });
+
+    // Playlist files from the station's real mounts (first poll only needs
+    // to land once; later polls are a cheap no-op when nothing changed).
+    const pls = root.querySelector<HTMLAnchorElement>('[data-ways-pls]');
+    const m3u = root.querySelector<HTMLAnchorElement>('[data-ways-m3u]');
+    let key = '';
+    subscribeNowPlaying((data) => {
+      const opts = streamOptions(data.station?.mounts, new URL(site.azuracast.streamUrl).origin);
+      if (!opts.length) return;
+      const next = opts.map((o) => `${o.url}|${o.label}|${o.name}`).join('\n');
+      if (next === key) return;
+      key = next;
+      if (pls) pls.href = dataUri('audio/x-scpls', buildPls(site.name, opts));
+      if (m3u) m3u.href = dataUri('audio/x-mpegurl', buildM3u(site.name, opts));
+      const def = opts.find((o) => o.isDefault) ?? opts[0];
+      if (code && def) code.textContent = def.url;
+    });
+  }
+</script>

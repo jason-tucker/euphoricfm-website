@@ -1,51 +1,87 @@
 ---
+// The one-page home (Release 4), radio first. Section order and ids match the
+// shared top bar (shared/nav.json): #listen · #about · Events teaser ·
+// #music · #ways · #stats · #contact · #faq, then the footer. Pop-ups sit
+// in BaseLayout's "overlays" slot (outside <main>, above the top bar); ModalControls (BaseLayout) opens them from any
+// data-open="…" control.
 import BaseLayout from '../layouts/BaseLayout.astro';
 import Header from '../components/Header.astro';
 import PlayerCard from '../components/PlayerCard.astro';
-import ActionRow from '../components/ActionRow.astro';
 import RecentlyPlayed from '../components/RecentlyPlayed.astro';
 import RequestedSongs from '../components/RequestedSongs.astro';
 import About from '../components/About.astro';
+import EventsTeaser from '../components/EventsTeaser.astro';
+import ForArtists from '../components/ForArtists.astro';
+import ListenAnywhere from '../components/ListenAnywhere.astro';
 import Stats from '../components/Stats.astro';
+import GetInTouch from '../components/GetInTouch.astro';
+import Faq from '../components/Faq.astro';
 import RequestModal from '../components/RequestModal.astro';
 import ContactModal from '../components/ContactModal.astro';
 import BusinessAdModal from '../components/BusinessAdModal.astro';
+import EventInquiryModal from '../components/EventInquiryModal.astro';
+import StatsDetailModal from '../components/StatsDetailModal.astro';
 import Footer from '../components/Footer.astro';
 import { site } from '../site.config';
+import '../styles/home.css';
+
+const h = site.home.hero;
+// Tagline "San Andreas pop, all day." with the last two words in gold.
+const words = site.tagline.split(' ');
+const taglineHead = words.slice(0, -2).join(' ');
+const taglineTail = words.slice(-2).join(' ');
 ---
 
 <BaseLayout>
   <Header slot="header" current="listen" />
   <div class="phone">
-    <h1 class="efm-tagline"><span class="sr-only">{site.name}: </span>{site.tagline}</h1>
-
-    <!-- Fully fluid hero. .efm-hero in global.css collapses to one column
-         on narrow viewports (in-game phone) and grows to player + sidebar
-         the moment there's enough room — no breakpoint jump, gap and padding
-         interpolate via clamp(). -->
-    <div class="efm-hero" id="listen">
-      <div>
-        <PlayerCard />
-        <div class="efm-extras">
-          <ActionRow />
+    <!-- 1. Listen: the player first, Recently played + Requested songs beside
+         it on desktop (below it on phones). -->
+    <section id="listen" class="hm-hero" aria-labelledby="listen-h">
+      <div class="hm-hero-head">
+        <div>
+          <p class="hm-eyebrow">{h.eyebrow}</p>
+          <h1 id="listen-h" class="hm-h1"><span class="sr-only">{site.name}: </span>{taglineHead} <span class="hm-accent">{taglineTail}</span></h1>
         </div>
+        <p class="hm-hero-sub">{h.sub}</p>
       </div>
-      <aside class="efm-extras efm-sidebar">
-        <RecentlyPlayed />
-        <RequestedSongs />
-      </aside>
-    </div>
 
-    <div class="efm-extras" id="about">
-      <About />
-    </div>
-    <div class="efm-extras" id="stats">
-      <Stats />
-    </div>
-    <Footer />
+      <div class="efm-hero">
+        <div>
+          <PlayerCard>
+            <div class="hm-p-actions">
+              <button type="button" id="open-request" class="btn btn-sunburst hm-wide" data-open="request">
+                <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>{h.request}
+              </button>
+              <a href="/player/" id="open-player" class="btn btn-ghost">
+                <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="12" height="14" rx="2"/><path d="M11 3h8a2 2 0 0 1 2 2v8"/><path d="m21 3-8 8"/></svg>{h.webPlayer}
+              </a>
+              <a href="#ways" class="btn btn-ghost">
+                <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 14v-2a9 9 0 0 1 18 0v2"/><path d="M21 19a2 2 0 0 1-2 2h-1v-7h3z"/><path d="M3 19a2 2 0 0 0 2 2h1v-7H3z"/></svg>{h.ways}
+              </a>
+            </div>
+          </PlayerCard>
+        </div>
+        <aside class="efm-sidebar hm-side" aria-label="Recently played and requested songs">
+          <RecentlyPlayed />
+          <RequestedSongs />
+        </aside>
+      </div>
+    </section>
+
+    <About />
+    <EventsTeaser />
+    <ForArtists />
+    <ListenAnywhere />
+    <Stats />
+    <GetInTouch />
+    <Faq />
   </div>
+  <Footer />
 
-  <RequestModal />
-  <ContactModal />
-  <BusinessAdModal />
+  <RequestModal slot="overlays" />
+  <ContactModal slot="overlays" />
+  <BusinessAdModal slot="overlays" />
+  <EventInquiryModal slot="overlays" />
+  <StatsDetailModal slot="overlays" />
 </BaseLayout>

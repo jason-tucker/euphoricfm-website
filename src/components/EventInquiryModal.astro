@@ -9,25 +9,20 @@
 // black rectangle (see CLAUDE.md rule 5); this is the same fix the stats
 // detail overlay already uses.
 //
-// Submits to the EXISTING contact webhook (window.__EFM_CONFIG__.discord.
-// contactWebhook) — no new env var, see CLAUDE.md rule 7. The username/embed
+// Submits to the EXISTING contact webhook (window.__EFM_CONFIG__.contact.
+// webhook) — no new env var, see CLAUDE.md rule 7. The username/embed
 // title/color make it instantly distinguishable from regular contact-form
 // submissions in Discord.
 import { site } from '../site.config';
 const s = site.events.inquiry;
 ---
 
-<div id="event-overlay" class="hidden fixed inset-0 z-40 bg-ink/90" aria-hidden="true">
+<div id="event-overlay" class="hidden fixed inset-0 z-[70] bg-ink/90" aria-hidden="true">
   <div class="mx-auto max-w-md w-full h-full flex flex-col py-4 px-4 lg:py-10">
     <div class="card efm-modal-enter !p-4 flex-1 overflow-y-auto lg:max-h-[80vh]">
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-base font-bold text-sunburst">{s.title}</h2>
-        <button
-          type="button"
-          class="shrink-0 min-h-[48px] min-w-[48px] flex items-center justify-center text-cream/60 text-xl leading-none"
-          data-close="event-overlay"
-          aria-label="Close"
-        >&times;</button>
+        <button type="button" class="efm-close-btn" data-close="event-overlay" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <p class="text-xs text-cream/60 mb-3">{s.intro}</p>
 
@@ -91,7 +86,7 @@ const s = site.events.inquiry;
     const go = document.getElementById('event-go');
     if (!overlay || !form || !msg || !go) return;
 
-    const getWebhook = () => (window.__EFM_CONFIG__ && window.__EFM_CONFIG__.discord && window.__EFM_CONFIG__.discord.contactWebhook) || '';
+    const getWebhook = () => (window.__EFM_CONFIG__ && window.__EFM_CONFIG__.contact && window.__EFM_CONFIG__.contact.webhook) || '';
 
     const setMsg = (text, kind) => {
       msg.textContent = text;
@@ -235,7 +230,7 @@ const s = site.events.inquiry;
           setTimeout(() => { fireClose(); }, 1200);
         } else if (r.status === 429) {
           const j = await r.json().catch(() => ({}));
-          setMsg(`Rate limited by Discord. Try again in ${j.retry_after ?? 'a moment'}s.`, 'error');
+          setMsg(`Too many messages right now. Try again in ${j.retry_after ?? 'a few'}s.`, 'error');
         } else {
           setMsg(`Failed to send (HTTP ${r.status}).`, 'error');
         }

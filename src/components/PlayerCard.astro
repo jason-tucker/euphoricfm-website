@@ -65,7 +65,7 @@ import { site } from '../site.config';
         </div>
         <div id="np-title" class="truncate font-bold text-cream" style="font-size: clamp(1rem, 1.8vw, 1.375rem);">Loading…</div>
         <div id="np-artist" class="truncate text-cream/75" style="font-size: clamp(0.875rem, 1.3vw, 1.0625rem);">—</div>
-        <div id="np-album" class="truncate text-cream/45 mt-0.5" style="font-size: clamp(0.75rem, 1.1vw, 0.9375rem);"></div>
+        <div id="np-album" class="truncate text-cream/45 mt-0.5 min-h-[1.3em]" style="font-size: clamp(0.75rem, 1.1vw, 0.9375rem);"></div>
       </div>
 
       <!-- Transport stack — play button over volume slider, top-right of the
@@ -105,8 +105,8 @@ import { site } from '../site.config';
       </div>
     </div>
 
-    <!-- Up Next — slides down from the bottom of the card when playing_next is present. -->
-    <div id="np-up-next" class="mt-3 overflow-hidden max-h-0 opacity-0 transition-[max-height,opacity] duration-500 ease-out">
+    <!-- Up Next — fades in at the bottom of the card when playing_next is present. -->
+    <div id="np-up-next" class="mt-3 overflow-hidden opacity-0 transition-opacity duration-500 ease-out">
       <div class="border-t border-cream/10 pt-3 flex items-center gap-3">
         <div class="text-[10px] uppercase tracking-widest text-cream/45 shrink-0">Up Next</div>
         <img id="up-next-art" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E" alt="" class="w-9 h-9 rounded-md object-cover bg-cream/10 shrink-0" />
@@ -120,14 +120,21 @@ import { site } from '../site.config';
         </div>
       </div>
     </div>
+
+    <!-- Card actions (index.astro passes Request a song / Web Player / Ways
+         to listen in here, so they sit with the player on the first screen). -->
+    <slot />
   </div>
 </section>
 
 <style is:global>
-  /* Up-next reveal — driven by .is-open class on #np-up-next. */
+  /* Up-next reveal — driven by .is-open class on #np-up-next. Its row is
+     always reserved (fade only, no height change), so the reveal ~40 s before
+     a song ends never pushes the page below it down. */
+  #np-up-next { height: 50px; visibility: hidden; }
   #np-up-next.is-open {
-    max-height: 80px;
     opacity: 1;
+    visibility: visible;
   }
 
   /* Special-event banner reveal — same mechanism, driven by nowplaying.ts. */
@@ -136,38 +143,63 @@ import { site } from '../site.config';
     opacity: 1;
   }
 
-  /* Custom range slider — integrated, slim. Cross-browser styling. */
+  /* Custom range slider. The input itself is a 28px-tall hit area (the old
+     4px-tall input with a 12px thumb was very hard to grab); the visible 5px
+     track is painted by the track pseudo-elements. Cross-browser styling. */
   input.efm-range {
     -webkit-appearance: none;
     appearance: none;
-    height: 4px;
+    height: 28px;
+    margin: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+  input.efm-range::-webkit-slider-runnable-track {
+    height: 5px;
     border-radius: 9999px;
     background: linear-gradient(
       to right,
       rgb(var(--efm-sunburst-rgb)) 0%,
       rgb(var(--efm-sunburst-rgb)) var(--vol, 80%),
-      rgb(var(--efm-cream-rgb) / 0.12) var(--vol, 80%),
-      rgb(var(--efm-cream-rgb) / 0.12) 100%
+      rgb(var(--efm-cream-rgb) / 0.16) var(--vol, 80%),
+      rgb(var(--efm-cream-rgb) / 0.16) 100%
     );
-    cursor: pointer;
+  }
+  input.efm-range::-moz-range-track {
+    height: 5px;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      rgb(var(--efm-sunburst-rgb)) 0%,
+      rgb(var(--efm-sunburst-rgb)) var(--vol, 80%),
+      rgb(var(--efm-cream-rgb) / 0.16) var(--vol, 80%),
+      rgb(var(--efm-cream-rgb) / 0.16) 100%
+    );
   }
   input.efm-range::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 12px;
-    height: 12px;
+    width: 18px;
+    height: 18px;
+    margin-top: -6.5px;
     border-radius: 9999px;
-    background: rgb(var(--efm-sunburst-rgb));
-    box-shadow: 0 0 0 2px rgb(var(--efm-ink-rgb) / 0.6);
+    background: rgb(var(--efm-cream-rgb));
+    border: 3px solid rgb(var(--efm-sunburst-rgb));
+    box-shadow: 0 1px 4px rgb(var(--efm-ink-rgb) / 0.6);
     cursor: pointer;
   }
   input.efm-range::-moz-range-thumb {
     width: 12px;
     height: 12px;
     border-radius: 9999px;
-    background: rgb(var(--efm-sunburst-rgb));
-    border: 2px solid rgb(var(--efm-ink-rgb) / 0.6);
+    background: rgb(var(--efm-cream-rgb));
+    border: 3px solid rgb(var(--efm-sunburst-rgb));
     cursor: pointer;
+  }
+  input.efm-range:focus-visible {
+    outline: 2px solid rgb(var(--efm-sunburst-rgb));
+    outline-offset: 2px;
+    border-radius: 6px;
   }
 </style>
 
