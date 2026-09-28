@@ -29,10 +29,36 @@ export interface AzuraNowPlayingEntry {
   remaining?: number;
 }
 
+// One Icecast mount of a station (`station.mounts[]`). The Web Player's
+// stream-quality picker lists these.
+export interface AzuraMount {
+  id: number;
+  name: string;
+  url: string;
+  bitrate: number | null;
+  format: string | null;
+  path: string;
+  is_default: boolean;
+}
+
+export interface AzuraStation {
+  id: number;
+  name: string;
+  shortcode: string;
+  description: string;
+  listen_url?: string;
+  mounts?: AzuraMount[];
+}
+
 export interface AzuraNowPlayingResponse {
-  station: { id: number; name: string; shortcode: string; description: string };
+  station: AzuraStation;
   listeners: { current: number; unique: number; total: number };
-  live: { is_live: boolean; streamer_name: string; broadcast_start: number | null };
+  live: {
+    is_live: boolean;
+    streamer_name: string;
+    broadcast_start: number | null;
+    art?: string | null; // streamer art URL while a DJ with art is live
+  };
   now_playing: AzuraNowPlayingEntry;
   playing_next: AzuraNowPlayingEntry | null;
   song_history: AzuraNowPlayingEntry[];

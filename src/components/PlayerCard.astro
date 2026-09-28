@@ -3,9 +3,10 @@ import { site } from '../site.config';
 ---
 
 <!-- Unified player: now-playing + transport controls + visualizer + up-next.
-     The inline script owns the audio element + Web Audio analyser, and
-     writes --efm-bass / --efm-mid / --efm-high / --efm-energy CSS variables
-     on :root every frame so anything on the page can react to the music. -->
+     The script below wires the transport to stream-audio.ts, which owns the
+     audio element + Web Audio analyser and writes --efm-bass / --efm-mid /
+     --efm-high / --efm-energy CSS variables on :root every frame so anything
+     on the page can react to the music. -->
 <section class="pt-2">
   <!-- No overflow-hidden here: the bass halo lives on #np-card::before and its
        box-shadow paints OUTSIDE the card box — an ancestor clip would erase it.
@@ -170,157 +171,40 @@ import { site } from '../site.config';
   }
 </style>
 
-<script is:inline define:vars={{ streamUrl: site.azuracast.streamUrl }}>
-  (function () {
-    const audio = document.getElementById('efm-audio');
-    const btn = document.getElementById('efm-play');
-    const icon = document.getElementById('efm-play-icon');
-    const vol = document.getElementById('efm-volume');
-    const card = document.getElementById('np-card');
-    if (!audio || !btn || !icon || !vol) return;
+<script>
+  // Transport for the home player. The audio engine (play/stop, cache-busted
+  // live src, Web Audio analyser writing the --efm-* reaction vars, effects
+  // gating, Media Session bridge) lives in stream-audio.ts and is shared with
+  // the Web Player at /player/.
+  import { site } from '../site.config';
+  import { createStreamEngine } from '../scripts/stream-audio';
 
-    const root = document.documentElement;
+  const audio = document.getElementById('efm-audio') as HTMLAudioElement | null;
+  const btn = document.getElementById('efm-play');
+  const icon = document.getElementById('efm-play-icon');
+  const vol = document.getElementById('efm-volume') as HTMLInputElement | null;
+  const card = document.getElementById('np-card');
 
+  if (audio && btn && icon && vol) {
     const playIcon = '<path d="M8 5v14l11-7z"/>';
     const pauseIcon = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
     audio.volume = Number(vol.value) / 100;
     vol.style.setProperty('--vol', vol.value + '%');
 
-    let audioCtx = null;
-    let analyser = null;
-    let dataArr = null;
-    let rafId = 0;
-    let sourceNode = null;
-    let playing = false;
-
-    const setupAnalyser = async () => {
-      try {
-        if (audioCtx) {
-          if (audioCtx.state === 'suspended') await audioCtx.resume();
-          return true;
-        }
-        const AC = window.AudioContext || window.webkitAudioContext;
-        if (!AC) return false;
-        audioCtx = new AC();
-        if (audioCtx.state === 'suspended') await audioCtx.resume();
-
-        sourceNode = audioCtx.createMediaElementSource(audio);
-        analyser = audioCtx.createAnalyser();
-        // 256 bins gives us enough resolution for bass/mid/high splits while
-        // keeping the per-frame copy cheap.
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.55;
-        analyser.minDecibels = -85;
-        analyser.maxDecibels = -10;
-        dataArr = new Uint8Array(analyser.frequencyBinCount);
-        sourceNode.connect(analyser);
-        analyser.connect(audioCtx.destination);
-        return true;
-      } catch (err) {
-        console.warn('[efm] Web Audio unavailable; reactions disabled', err);
-        return false;
-      }
-    };
-
-    // Per-frame tick — reads the FFT and writes four CSS variables on :root
-    // so anything on the page can react. Bands split roughly:
-    //   bass:  0 –  8% of bins  (kick + bass)
-    //   mid:   8 – 35%          (vocals, snare, instruments)
-    //   high: 35 – 100%         (cymbals, brightness)
-    //   energy: average of all  (overall loudness)
-    const tickReact = () => {
-      if (analyser && dataArr) {
-        analyser.getByteFrequencyData(dataArr);
-        const n = dataArr.length;
-        const bassEnd = Math.max(2, Math.floor(n * 0.08));
-        const midEnd  = Math.max(bassEnd + 2, Math.floor(n * 0.35));
-        let bs = 0, md = 0, hi = 0, all = 0;
-        for (let i = 0; i < n; i++) {
-          const v = dataArr[i];
-          all += v;
-          if (i < bassEnd) bs += v;
-          else if (i < midEnd) md += v;
-          else hi += v;
-        }
-        const bass = (bs / bassEnd) / 255;
-        const mid  = (md / (midEnd - bassEnd)) / 255;
-        const high = (hi / (n - midEnd)) / 255;
-        const energy = (all / n) / 255;
-        root.style.setProperty('--efm-bass',   bass.toFixed(3));
-        root.style.setProperty('--efm-mid',    mid.toFixed(3));
-        root.style.setProperty('--efm-high',   high.toFixed(3));
-        root.style.setProperty('--efm-energy', energy.toFixed(3));
-      }
-      rafId = requestAnimationFrame(tickReact);
-    };
-
-    const startReact = async () => {
-      // Effects toggle (effects.ts) can disable all visual reactivity while the
-      // music keeps playing. window.__efmFx is the live flag.
-      if (window.__efmFx && !window.__efmFx.on) return;
-      const ok = await setupAnalyser();
-      if (!ok) return;
-      cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(tickReact);
-    };
-    const stopReact = () => {
-      cancelAnimationFrame(rafId);
-      // Reset all reactivity vars so the page settles back to its idle look.
-      root.style.removeProperty('--efm-bass');
-      root.style.removeProperty('--efm-mid');
-      root.style.removeProperty('--efm-high');
-      root.style.removeProperty('--efm-energy');
-      if (card) card.classList.remove('is-playing');
-    };
-
-    audio.crossOrigin = 'anonymous';
-
-    const setPlayingUI = (isPlaying) => {
-      playing = isPlaying;
-      icon.innerHTML = isPlaying ? pauseIcon : playIcon;
-      btn.setAttribute('aria-label', isPlaying ? 'Pause' : 'Play');
-      if (card) card.classList.toggle('is-playing', isPlaying);
-    };
-
-    btn.addEventListener('click', async () => {
-      try {
-        if (audio.paused) {
-          audio.src = streamUrl + (streamUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
-          await audio.play();
-          setPlayingUI(true);
-          await startReact();
-        } else {
-          audio.pause();
-          audio.removeAttribute('src');
-          audio.load();
-          setPlayingUI(false);
-          stopReact();
-        }
-      } catch (err) {
-        console.warn('[efm] audio play failed', err);
-      }
+    const engine = createStreamEngine({
+      audio,
+      card,
+      getStreamUrl: () => site.azuracast.streamUrl,
+      onChange: (playing) => {
+        icon.innerHTML = playing ? pauseIcon : playIcon;
+        btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+      },
     });
 
+    btn.addEventListener('click', () => { void engine.toggle(); });
     vol.addEventListener('input', () => {
       audio.volume = Number(vol.value) / 100;
       vol.style.setProperty('--vol', vol.value + '%');
     });
-    audio.addEventListener('ended', () => { setPlayingUI(false); stopReact(); });
-    audio.addEventListener('error', () => { setPlayingUI(false); stopReact(); });
-
-    // Effects toggle flipped (effects.ts): stop writing FFT vars when off, and
-    // resume if it's turned back on mid-playback. Music itself is unaffected.
-    document.addEventListener('efm:fx-change', (e) => {
-      const on = e.detail && e.detail.on;
-      if (!on) stopReact();
-      else if (playing) startReact();
-    });
-
-    // Bridge for Media Session API in nowplaying.ts.
-    window.__efmAudio = {
-      play: () => btn.click(),
-      pause: () => { if (!audio.paused) btn.click(); },
-      el: audio,
-    };
-  })();
+  }
 </script>

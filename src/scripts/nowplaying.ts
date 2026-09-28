@@ -1,7 +1,8 @@
 // Client-side driver for the now-playing card + recently-played list.
 //
 // Reads `window.__EFM_CONFIG__` (populated by BaseLayout.astro from site.config)
-// and polls the AzuraCast `/api/nowplaying/<station>` endpoint on an interval.
+// and subscribes to np-core.ts, which polls the AzuraCast
+// `/api/nowplaying/<station>` endpoint on an interval (shared with /player/).
 // Between polls, a requestAnimationFrame loop interpolates the progress bar
 // using the server-provided `played_at` + `duration` so the UI feels real-time
 // even though we're polling every 5 seconds.
@@ -13,37 +14,17 @@ import type {
   AzuraNowPlayingResponse,
   AzuraNowPlayingEntry,
 } from '../lib/azuracast';
-
-interface EfmConfig {
-  apiBase: string;
-  stationId: string;
-  pollMs: number;
-  mode: 'poll' | 'sse';
-  // Editable live-event copy (site.config.ts → BaseLayout clientConfig).
-  liveEvents: {
-    pill: string;
-    idlePill: string;
-    label: string;
-    fallbackName: string;
-    elapsedPrefix: string;
-  };
-}
-
-interface EfmAudioBridge {
-  play: () => void;
-  pause: () => void;
-  el: HTMLAudioElement;
-}
-
-declare global {
-  interface Window {
-    __EFM_CONFIG__: EfmConfig;
-    __efmAudio?: EfmAudioBridge;
-  }
-}
+import { fmtTime, fmtElapsed, fmtAgo, escapeHtml as escape } from '../lib/player-data';
+import {
+  getConfig,
+  subscribeNowPlaying,
+  toSameOriginArt,
+  setMediaMetadata,
+  bindMediaSessionActions,
+} from './np-core';
 
 (() => {
-  const cfg = window.__EFM_CONFIG__;
+  const cfg = getConfig();
   if (!cfg) {
     console.warn('[efm] no __EFM_CONFIG__ on window — nowplaying script disabled');
     return;
@@ -103,36 +84,6 @@ declare global {
   // on the current track. 40s sits in the sweet spot the user asked for (30–45s).
   const UP_NEXT_REVEAL_SEC = 40;
   let upNextReady = false; // becomes true once we have a valid playing_next song
-
-  const fmtTime = (sec: number) => {
-    if (!isFinite(sec) || sec < 0) sec = 0;
-    const m = Math.floor(sec / 60);
-    const s = Math.floor(sec % 60);
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
-
-  // Broadcast elapsed — like fmtTime but grows an hours segment past 1h,
-  // since live sets routinely run longer than any single track.
-  const fmtElapsed = (sec: number) => {
-    if (!isFinite(sec) || sec < 0) sec = 0;
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const ss = Math.floor(sec % 60).toString().padStart(2, '0');
-    return h > 0 ? `${h}:${m.toString().padStart(2, '0')}:${ss}` : `${m}:${ss}`;
-  };
-
-  // Rewrite euphoric.fm album-art URLs to our own origin (/efm-art/...) so the
-  // effects module can read the image onto a <canvas> for colour extraction
-  // without tainting it — Caddy reverse-proxies /efm-art/* back to euphoric.fm.
-  // data: URIs and anything already same-origin pass through untouched.
-  const toSameOriginArt = (raw: string): string => {
-    try {
-      const u = new URL(raw, location.href);
-      return u.origin === 'https://euphoric.fm' ? '/efm-art' + u.pathname + u.search : raw;
-    } catch {
-      return raw;
-    }
-  };
 
   const applyNowPlaying = (np: AzuraNowPlayingEntry) => {
     const song = np.song;
@@ -197,14 +148,6 @@ declare global {
       console.warn('[efm] /requests/pending fetch failed', err);
       return pendingCache;
     }
-  };
-
-  const fmtAgo = (sec: number) => {
-    if (sec < 60) return 'just now';
-    const m = Math.floor(sec / 60);
-    if (m < 60) return `${m}m ago`;
-    const h = Math.floor(m / 60);
-    return `${h}h ago`;
   };
 
   const renderPending = (pending: PendingRequest[]) => {
@@ -275,11 +218,6 @@ declare global {
     elRecent.innerHTML = rows.join('');
   };
 
-  const escape = (s: string) =>
-    s.replace(/[&<>"']/g, (c) =>
-      c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
-    );
-
   // Status pill — three states: OFFLINE, AUTO DJ (autopilot), ON AIR (live
   // DJ). Only the #np-status-text child is retexted; assigning textContent on
   // the pill itself is what used to wipe the #np-live-dot span every poll.
@@ -344,40 +282,33 @@ declare global {
     if ((changed || renamed) && lastNp) updateMediaSession(lastNp);
   };
 
-  const refresh = async () => {
-    try {
-      const r = await fetch(`${cfg.apiBase}/nowplaying/${cfg.stationId}`, {
-        cache: 'no-store',
-      });
-      if (!r.ok) return;
-      const data = (await r.json()) as AzuraNowPlayingResponse;
-      const np = data.now_playing;
-      listeners = data.listeners?.current ?? 0;
-      if (elListeners) elListeners.textContent = String(listeners);
-      if (np) lastNp = np;
-      // applyLive first — setOnline and updateMediaSession read `isLive`.
-      const online = data.is_online !== false;
-      applyLive(data.live, online);
-      setOnline(online);
+  // Runs on every now-playing poll (np-core owns the fetch, the interval and
+  // the hidden-tab pause).
+  const onNowPlaying = (data: AzuraNowPlayingResponse) => {
+    const np = data.now_playing;
+    listeners = data.listeners?.current ?? 0;
+    if (elListeners) elListeners.textContent = String(listeners);
+    if (np) lastNp = np;
+    // applyLive first — setOnline and updateMediaSession read `isLive`.
+    const online = data.is_online !== false;
+    applyLive(data.live, online);
+    setOnline(online);
 
-      if (np && np.sh_id !== lastShId) {
-        applyNowPlaying(np);
-        if (lastShId !== 0 && elCard) {
-          elCard.classList.remove('np-flash');
-          void elCard.offsetWidth;
-          elCard.classList.add('np-flash');
-        }
-        lastShId = np.sh_id;
-        updateMediaSession(np);
+    if (np && np.sh_id !== lastShId) {
+      applyNowPlaying(np);
+      if (lastShId !== 0 && elCard) {
+        elCard.classList.remove('np-flash');
+        void elCard.offsetWidth;
+        elCard.classList.add('np-flash');
       }
-      applyRecent(data.song_history || []);
-      applyUpNext(data.playing_next || null);
-      // Don't await — pending-list latency shouldn't gate the now-playing
-      // paint. The fetch races the next poll harmlessly if it's slow.
-      refreshPending();
-    } catch (err) {
-      console.warn('[efm] refresh failed', err);
+      lastShId = np.sh_id;
+      updateMediaSession(np);
     }
+    applyRecent(data.song_history || []);
+    applyUpNext(data.playing_next || null);
+    // Don't await — pending-list latency shouldn't gate the now-playing
+    // paint. The fetch races the next poll harmlessly if it's slow.
+    refreshPending();
   };
 
   // RAF loop: paint the progress bar between polls using the server-anchored
@@ -422,67 +353,23 @@ declare global {
     requestAnimationFrame(tick);
   };
 
-  let pollHandle: number | null = null;
-  const startPolling = () => {
-    if (pollHandle != null) return;
-    pollHandle = window.setInterval(refresh, cfg.pollMs);
-  };
-  const stopPolling = () => {
-    if (pollHandle != null) {
-      clearInterval(pollHandle);
-      pollHandle = null;
-    }
-  };
-
-  // Pause polling when the iframe/page is hidden; snap back when visible.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      refresh();
-      startPolling();
-    } else {
-      stopPolling();
-    }
-  });
-
   // ---- Media Session API ------------------------------------------------
   // When the stream is playing, this exposes title/artist/album/artwork to
   // the OS so it appears on lock screens, in the system tray on desktop, and
   // bound to hardware media keys + bluetooth headphone controls.
   const updateMediaSession = (np: AzuraNowPlayingEntry) => {
-    if (!('mediaSession' in navigator)) return;
-    const song = np.song;
-    try {
-      const art = song.art || '';
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: song.title || song.text || 'EuphoricFM',
-        // During a live event the DJ gets the credit — applyLive re-invokes
-        // this on is_live flips and mid-event renames, so it restores too.
-        artist: isLive ? `${liveCopy.elapsedPrefix}: ${liveStreamer}` : song.artist || 'EuphoricFM',
-        album: song.album || 'EuphoricFM',
-        artwork: art
-          ? [
-              { src: art, sizes: '96x96',   type: 'image/jpeg' },
-              { src: art, sizes: '192x192', type: 'image/jpeg' },
-              { src: art, sizes: '512x512', type: 'image/jpeg' },
-            ]
-          : [],
-      });
-    } catch (err) {
-      console.warn('[efm] mediaSession metadata failed', err);
-    }
+    // During a live event the DJ gets the credit — applyLive re-invokes this
+    // on is_live flips and mid-event renames, so it restores too.
+    setMediaMetadata(
+      np.song,
+      isLive ? `${liveCopy.elapsedPrefix}: ${liveStreamer}` : np.song.artist || 'EuphoricFM',
+    );
   };
 
-  if ('mediaSession' in navigator) {
-    const bridge = () => window.__efmAudio;
-    navigator.mediaSession.setActionHandler('play', () => bridge()?.play());
-    navigator.mediaSession.setActionHandler('pause', () => bridge()?.pause());
-    navigator.mediaSession.setActionHandler('stop', () => bridge()?.pause());
-    // Seek doesn't apply to a live stream; skip prev/next intentionally too.
-  }
+  bindMediaSessionActions();
 
   // Boot.
   refreshPending();
-  refresh();
-  startPolling();
+  subscribeNowPlaying(onNowPlaying);
   requestAnimationFrame(tick);
 })();

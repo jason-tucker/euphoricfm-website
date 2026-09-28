@@ -821,6 +821,73 @@ html.efm-cef .card {
 /* Homepage discoverability button — ActionRow's 3rd item. Outline style so
    it reads as navigation, visually distinct from the four solid-fill action
    buttons (Request/Submit/Contact/Business AD). */
+/* Home action row: six buttons as 2×3 (phones), 3×2, or one row of six when
+   the hero's left column is wide enough — never an orphan on its own row. */
+.efm-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(0.5rem, 1vw, 0.75rem);
+}
+@media (min-width: 560px) {
+  .efm-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (min-width: 1480px) {
+  .efm-actions { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+/* Where container queries exist, size by the row's own width instead of the
+   viewport: 3 across only when each button fits "Request a song" on one line
+   (~160px), 6 across only when ~170px each — otherwise labels wrap. */
+.efm-actions-wrap { container-type: inline-size; }
+@supports (container-type: inline-size) {
+  .efm-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  @container (min-width: 520px) {
+    .efm-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  @container (min-width: 1080px) {
+    .efm-actions { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  }
+}
+
+/* "Web Player" link in the home action row: sunburst outline + a small gold
+   play dot so it reads as "listen here" and is clearly a button. */
+.btn-player {
+  color: rgb(var(--efm-sunburst-rgb));
+  border: 1px solid rgb(var(--efm-sunburst-rgb) / 0.6);
+  background-color: rgb(var(--efm-sunburst-rgb) / 0.08);
+}
+.btn-player:hover { background-color: rgb(var(--efm-sunburst-rgb) / 0.16); border-color: rgb(var(--efm-sunburst-rgb)); }
+.btn-player-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, rgb(var(--efm-sunburst-rgb)), rgb(var(--efm-gold-rgb)));
+  color: rgb(var(--efm-ink-rgb));
+}
+.btn-player-dot svg { width: 0.75rem; height: 0.75rem; margin-left: 1px; }
+
+/* Modal close button — a real bordered 44px button (the old bare "×" was a
+   28×20 target that didn't read as clickable). */
+.efm-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 0.75rem;
+  border: 1px solid rgb(var(--efm-cream-rgb) / 0.22);
+  background: rgb(var(--efm-cream-rgb) / 0.06);
+  color: rgb(var(--efm-cream-rgb) / 0.85);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.efm-close-btn:hover { background: rgb(var(--efm-cream-rgb) / 0.14); border-color: rgb(var(--efm-cream-rgb) / 0.45); color: rgb(var(--efm-cream-rgb)); }
+.efm-close-btn:active { transform: scale(0.96); }
+.efm-close-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+
 .btn-events {
   color: rgb(var(--efm-sunburst-rgb));
   border: 1px solid rgb(var(--efm-sunburst-rgb) / 0.45);

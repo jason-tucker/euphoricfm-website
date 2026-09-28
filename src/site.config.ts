@@ -11,6 +11,24 @@ export const site = {
     streamUrl: 'https://euphoric.fm/listen/euphoricfm/radio.mp3',
   },
 
+  // Web Player page (/player/, src/pages/player.astro + scripts/player.ts).
+  player: {
+    title: 'Web Player',
+    description:
+      'Listen to EuphoricFM live in your browser — now playing, up next, song history and requests.',
+    // Pop-out window (opened from the "Pop out" button). Sized for the compact
+    // strip layout; the page also switches to it for any viewport ≤ 420×260.
+    popout: { name: 'efm-player', width: 360, height: 200 },
+    historyTitle: 'Song history',
+    // Shown instead of an ad / station-imaging row (blank tags, or one of the
+    // excluded playlists below).
+    breakTitle: 'Station break',
+    breakArtist: 'EuphoricFM',
+    // Mirrors DEFAULT_EXCLUDE_PLAYLISTS in server/stats.mjs (ads + imaging);
+    // test/site-build.test.mjs fails if the two lists drift apart.
+    excludePlaylists: ['2Ads', '3EFM/Free Ads', '5Local Ads', 'Go Vote', '4EuphoricFM'],
+  },
+
   realtime: {
     mode: 'poll' as 'poll' | 'sse',
     pollMs: 5000,
