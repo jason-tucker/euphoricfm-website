@@ -21,7 +21,7 @@ import { fx, fxBuf } from './helpers/fixtures'
 
 const MM = resolve('dist/probe/mm-child.mjs')
 let root: string
-let dirs: { uploads: string; work: string; final: string; mmChild: string; spool: string; artIn: string; art: string }
+let dirs: { uploads: string; work: string; final: string; mmChild: string; spool: string; artIn: string; art: string; fetch: string }
 
 function stage(name: string): { upload: string; size: number } {
   const upload = randomUUID().replace(/-/g, '')
@@ -36,7 +36,7 @@ async function probe(name: string) {
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'probe-'))
-  dirs = { uploads: join(root, 'uploads'), work: join(root, 'work'), final: join(root, 'final'), mmChild: MM, spool: join(root, 'spool'), artIn: join(root, 'art-in'), art: join(root, 'art') }
+  dirs = { uploads: join(root, 'uploads'), work: join(root, 'work'), final: join(root, 'final'), mmChild: MM, spool: join(root, 'spool'), artIn: join(root, 'art-in'), art: join(root, 'art'), fetch: join(root, 'fetch') }
   for (const d of [dirs.uploads, dirs.work, dirs.final, dirs.artIn, dirs.art, ...['in-web', 'in-worker', 'out', 'claimed'].map((x) => join(dirs.spool, x))]) mkdirSync(d, { recursive: true })
   expect(existsSync(MM)).toBe(true)
 })
