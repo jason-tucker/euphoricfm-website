@@ -11,8 +11,9 @@ export function navFor(perms: ReadonlySet<string>): NavItem[] {
   if (perms.has('submit')) {
     items.push({ href: '/dashboard', label: 'My music' })
     items.push({ href: '/submit', label: 'Submit' })
-    // The library is where edit and removal requests start.
-    items.push({ href: '/library', label: perms.has('request') ? 'Edit or remove a song' : 'Library' })
+    // The library is where edit and removal requests start (v0.3.4: always
+    // labelled "Library"; the home page's action cards name the requests).
+    items.push({ href: '/library', label: 'Library' })
   }
   if (perms.has('review')) items.push({ href: '/review', label: 'Review' })
   if (perms.has('admin')) items.push({ href: '/admin', label: 'Admin' })

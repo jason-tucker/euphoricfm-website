@@ -151,6 +151,64 @@
     @apply rotate-90;
   }
 
+  /* Home page information sections (v0.3.4). */
+  .eyebrow {
+    @apply text-xs font-bold uppercase tracking-[0.2em] text-sunburst;
+  }
+  .hero-card {
+    @apply border-sunburst/25 bg-gradient-to-br from-midnight/50 via-white/[0.03] to-ruby/15;
+  }
+  .facts {
+    @apply mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm;
+  }
+  .facts dt {
+    @apply text-cream/55;
+  }
+  .facts dd {
+    @apply text-cream/90;
+  }
+  .step-num {
+    @apply inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-sunburst text-sm font-bold text-ink;
+  }
+  .step-num-sm {
+    @apply size-6 text-xs;
+  }
+  .rights-card {
+    @apply border-sunburst/40 bg-sunburst/[0.06];
+  }
+  .rights-quote {
+    @apply border-l-4 border-sunburst/70 pl-4 text-sm leading-relaxed text-cream/90;
+  }
+  .btn-discord {
+    @apply border-[#5865F2]/80 bg-[#5865F2] text-white hover:bg-[#4752c4];
+  }
+
+  /* FAQ: each question is a bordered, clickable row with a +/− cue. */
+  .faq {
+    @apply rounded-xl border border-cream/15 bg-cream/[0.03] transition-colors hover:border-sunburst/40;
+  }
+  .faq[open] {
+    @apply border-sunburst/40 bg-sunburst/[0.05];
+  }
+  .faq > summary {
+    @apply flex min-h-[48px] cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-4 py-3 text-sm font-semibold text-cream
+      hover:text-sunburst;
+  }
+  .faq > summary::-webkit-details-marker {
+    display: none;
+  }
+  .faq > summary::after {
+    content: '+';
+    @apply inline-flex size-7 shrink-0 items-center justify-center rounded-lg border border-cream/25 bg-cream/[0.06] text-base leading-none text-cream/80;
+  }
+  .faq > summary:hover::after {
+    @apply border-sunburst/60 text-sunburst;
+  }
+  .faq[open] > summary::after {
+    content: '\2212';
+    @apply border-sunburst/60 text-sunburst;
+  }
+
   .input {
     @apply w-full rounded-xl border border-cream/20 bg-cream/[0.06] px-3 py-2 text-sm text-cream placeholder:text-cream/40
       hover:border-cream/35 focus:border-sunburst/70 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50;

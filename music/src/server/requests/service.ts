@@ -48,7 +48,7 @@ const fileSchema = z.discriminatedUnion('kind', [
 
 const capsSchema = z.object({ edit: z.number().int().min(0).max(1000), removal: z.number().int().min(0).max(1000) }).strict()
 
-async function dailyCaps(db: DB) {
+export async function dailyCaps(db: DB) {
   const r = capsSchema.safeParse(await getSetting(db, 'request_daily_caps'))
   return r.success ? r.data : DEFAULT_REQUEST_CAPS
 }

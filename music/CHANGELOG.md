@@ -1,5 +1,23 @@
 # Changelog — EFM Music Portal (`music/`)
 
+## [0.3.4] — 2026-09-27 — Portal home: how it works, rules and FAQ
+
+The portal home (`/`) now explains the whole process before anyone signs in, using the approved “Radio-first” home content. The shared site header is a later release and is unchanged here.
+
+### Added
+- **Signed-out home**: hero (*Get your music on EuphoricFM*, *Sign in with Discord*, *How it works*, a *Join the Discord* link), *At a glance*, *Who can submit* / *What you’ll need*, the four steps (Sign in → Upload → Managers review, with a ticket in Discord → On air) with a song-status legend built from the real My music statuses (`ITEM_STATUS`: Pending review › Approved › Ingesting › Verifying › Live, or Denied), *Files, sizes and rights* (MP3, WAV and cover art cards, a *We can’t take* list and the rights statement), *Edits and removals* with *Sign in to suggest an edit* / *Sign in to request removal* (they sign in and land on `/library?intent=edit|remove`), an eight-question FAQ (`<details>`, closed by default), *Listen live* (https://info.euphoric.fm/) and *Join our Discord*.
+- **Signed-in home**: a one-line *Welcome back* greeting, the three action cards and the My music / Review queue cards first (unchanged), then compact *Before you upload*, *After you submit* and *Changing a song on air* cards, the status legend, the FAQ and the links.
+- **`uploadLimitsForUi(caps)`** (`src/server/ui/limits.ts`): the single source of every size, length and format figure on the home page (the MP3 size cap is always the compiled default, because `loadCaps` ignores a saved `maxUploadBytes` and tus + the probe enforce the default; the WAV cap as loaded and clamped to the compiled default; the probe’s duration and bitrate rules; the WAV conversion bitrate; tag limits; cover-art bytes, edge **and 12-megapixel** limits; batch size). No JSX hard-codes a number; repoint this helper when the limits change.
+- The rights statement is read from the `rights_attestation` setting through `uiSettings()`, the same read the submit page uses, so the home page shows it word for word.
+- The Discord invite comes from the `discord_invite_url` setting when an admin set one, else the constant `SITE_LINKS.discordInvite` (`src/components/site-links.ts`).
+- The FAQ lives in `src/components/home/faq.ts`; each answer notes the code it describes. Request caps come from `request_daily_caps` (`dailyCaps`, now exported) and the ticket auto-close from `auto_close_days`.
+- Accuracy: requests are limited to **one open edit and one open removal request per song** (the duplicate check in `requests/service.ts` is per song and kind); the ticket FAQ says the bot mentions **only you** (the song categories have `ping_staff_on_open=false` since tickets v0.12.3 / bot v0.8.3); the sign-in note says the portal also reads your **server roles** (`guilds.members.read`, used for review/manage permissions).
+- New shared styles: `eyebrow`, `facts`, `step-num`, `rights-card`/`rights-quote`, `btn-discord`, and `faq` (bordered question rows with a +/− button cue, hover tint and the global focus ring).
+
+### Changed
+- Nav: *Edit or remove a song* is now **Library** (same `/library` link) for every member; *My music*, *Submit*, *Review* and *Admin* are unchanged.
+- The signed-in home’s collapsed *How it works* is replaced by the compact *After you submit* card.
+
 ## [0.3.1] — 2026-09-27 — Obvious actions after sign-in
 
 Members asked where to submit a song or ask for a change once signed in. The home page is now the place to start, with the three things members come to do as large cards.
