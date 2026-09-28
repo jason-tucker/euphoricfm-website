@@ -131,7 +131,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
 
     listeners: {
       title: 'Listeners',
-      ariaLabel: 'Listener count over time',
+      ariaLabel: 'Peak listeners over time',
       tableTime: 'Time',
       tableAvg: 'Avg',
       tableMax: 'Peak',

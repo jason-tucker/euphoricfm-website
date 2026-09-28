@@ -41,7 +41,7 @@ interface PlotPoint {
   label: string; // full-precision label — tooltip + table first column
   tick?: string; // short axis tick text; points without one get none
   tickAnchor?: 'start' | 'middle' | 'end';
-  extra?: (number | null)[]; // extra table-only columns (e.g. peak alongside avg)
+  extra?: (number | null)[]; // extra table-only columns (e.g. avg alongside peak)
 }
 
 (() => {
@@ -937,12 +937,14 @@ interface PlotPoint {
         label = listenerLabel(series.range, t);
         tick = tickIdxs.has(i) ? listenerTick(series.range, t) : undefined;
       }
+      // The line plots each bucket's PEAK (full listener count at its
+      // busiest moment), not the average; avg stays as a table column.
       return {
-        value: pt.avg,
+        value: pt.max,
         label,
         tick,
         tickAnchor: i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle',
-        extra: [pt.max],
+        extra: [pt.avg],
       };
     });
   };
@@ -1006,7 +1008,7 @@ interface PlotPoint {
     // width's points, never rebuilt on resize.
     buildTable(
       elListenersTable,
-      [s.listeners.tableTime, s.listeners.tableAvg, s.listeners.tableMax],
+      [s.listeners.tableTime, s.listeners.tableMax, s.listeners.tableAvg],
       pointsFromListeners(series, plotWOf(elListenersChart)),
       fullNumber,
       fullNumber,
