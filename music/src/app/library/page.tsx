@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { duration } from '@/components/format'
+import { parseIntent, requestHref, type RequestIntent } from '@/components/HomeActions'
 import { Thumb } from '@/components/Thumb'
 import { PageTitle } from '@/components/ui'
 import { getDb } from '@/server/db/client'
@@ -9,19 +10,36 @@ import { pageViewer } from '@/server/ui/page'
 export const dynamic = 'force-dynamic'
 export const metadata = { title: 'Library' }
 
+const BANNER: Record<RequestIntent, { title: string; text: string; button: string }> = {
+  edit: {
+    title: 'Pick the song you want to fix',
+    text: 'Search for it below, then press “Suggest edit”. You can propose a new title, artist, album, genre or cover art.',
+    button: 'Suggest edit',
+  },
+  remove: {
+    title: 'Pick the song you want removed',
+    text: 'Search for it below, then press “Request removal” and tell the managers why it should come off the station.',
+    button: 'Request removal',
+  },
+}
+
 export default async function LibraryPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const viewer = await pageViewer('submit')
   const sp = await searchParams
   const q = typeof sp.q === 'string' ? sp.q.trim().slice(0, 100) : ''
   const page = typeof sp.page === 'string' && /^\d{1,4}$/.test(sp.page) ? Number(sp.page) : 1
+  // Members without the request permission browse only (no request buttons).
+  const canRequest = viewer.perms.has('request')
+  const intent = canRequest ? parseIntent(sp.intent) : null
   const r = await browseLibrary(getDb(), viewer, { q: q || undefined, page })
   const pages = Math.max(1, Math.ceil(r.total / PAGE_SIZE))
-  const href = (p: number) => `/library?${new URLSearchParams({ ...(q ? { q } : {}), page: String(p) })}`
+  const href = (p: number) => `/library?${new URLSearchParams({ ...(intent ? { intent } : {}), ...(q ? { q } : {}), page: String(p) })}`
+  const banner = intent ? BANNER[intent] : null
   return (
     <section>
       <PageTitle
         title="Library"
-        sub="Songs on EuphoricFM. Open one to suggest an edit or ask for its removal."
+        sub={canRequest ? 'Songs on EuphoricFM. Find one to suggest an edit or ask for its removal.' : 'Songs on EuphoricFM.'}
         actions={
           viewer.perms.has('manage') ? (
             <Link href="/library/archived" className="btn btn-secondary">
@@ -30,7 +48,19 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
           ) : null
         }
       />
+      {banner ? (
+        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-sunburst/50 bg-sunburst/10 p-4" data-testid="intent-banner" data-intent={intent}>
+          <div className="min-w-0 flex-1">
+            <h2 className="font-bold text-sunburst">{banner.title}</h2>
+            <p className="mt-1 text-sm text-cream/80">{banner.text}</p>
+          </div>
+          <Link href={q ? `/library?${new URLSearchParams({ q })}` : '/library'} className="link shrink-0 text-sm">
+            Just browse
+          </Link>
+        </div>
+      ) : null}
       <form method="get" className="card mb-5 flex flex-wrap items-end gap-3" role="search">
+        {intent ? <input type="hidden" name="intent" value={intent} /> : null}
         <div className="min-w-[12rem] flex-1">
           <label className="label" htmlFor="lib-q">
             Search title, artist or album
@@ -41,7 +71,7 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
           Search
         </button>
         {q ? (
-          <Link href="/library" className="btn btn-secondary">
+          <Link href={intent ? `/library?intent=${intent}` : '/library'} className="btn btn-secondary">
             Clear
           </Link>
         ) : null}
@@ -54,20 +84,40 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
         <p className="card text-center text-cream/70">No songs found.</p>
       ) : (
         <ul className="space-y-2">
-          {r.songs.map((s) => (
-            <li key={s.mediaId}>
-              <Link href={`/library/${s.mediaId}`} className="row-link">
-                <Thumb src={s.artUrl} alt="" size="sm" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">{s.title ?? s.fileName}</span>
-                  <span className="block truncate text-xs text-cream/60">
-                    {[s.artist, s.album].filter(Boolean).join(' · ')}
+          {r.songs.map((s) => {
+            const name = s.title ?? s.fileName
+            return (
+              <li key={s.mediaId} className="flex flex-wrap items-center gap-2 sm:flex-nowrap" data-media-id={s.mediaId}>
+                <Link href={intent ? requestHref(s.mediaId, intent) : `/library/${s.mediaId}`} className="row-link min-w-0 flex-1 basis-60">
+                  <Thumb src={s.artUrl} alt="" size="sm" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{name}</span>
+                    <span className="block truncate text-xs text-cream/60">{[s.artist, s.album].filter(Boolean).join(' · ')}</span>
                   </span>
-                </span>
-                <span className="shrink-0 text-xs text-cream/50">{duration(s.lengthS)}</span>
-              </Link>
-            </li>
-          ))}
+                  <span className="shrink-0 text-xs text-cream/50">{duration(s.lengthS)}</span>
+                </Link>
+                {!canRequest ? null : intent ? (
+                  <Link
+                    href={requestHref(s.mediaId, intent)}
+                    className={`btn btn-sm shrink-0 ${intent === 'remove' ? 'btn-danger' : 'btn-primary'}`}
+                    aria-label={`${BANNER[intent].button}: ${name}`}
+                    data-request-link={intent}
+                  >
+                    {BANNER[intent].button}
+                  </Link>
+                ) : (
+                  <span className="flex shrink-0 gap-2 max-sm:w-full max-sm:justify-end">
+                    <Link href={requestHref(s.mediaId, 'edit')} className="btn btn-secondary btn-sm" aria-label={`Suggest edit: ${name}`} data-request-link="edit">
+                      Suggest edit
+                    </Link>
+                    <Link href={requestHref(s.mediaId, 'remove')} className="btn btn-secondary btn-sm" aria-label={`Request removal: ${name}`} data-request-link="remove">
+                      Request removal
+                    </Link>
+                  </span>
+                )}
+              </li>
+            )
+          })}
         </ul>
       )}
       {pages > 1 ? (

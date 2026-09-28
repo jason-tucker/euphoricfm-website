@@ -8,6 +8,7 @@ import { canViewOwned, isReviewer, type Viewer } from '../authz/predicates'
 import type { DB } from '../db/client'
 import { batches, comments, items, jobs, requests, roleBindings, settings, uploads, users } from '../db/schema'
 import { forbidden, notFound } from '../http/errors'
+import { REQUEST_OPEN_STATUSES } from '../requests/common'
 import { BATCH_DECIDABLE_SQL } from '../submissions'
 import { customArtIdOf, itemCoverUrl, itemHasArt, libraryArt } from './art'
 import { escapeLike } from './library'
@@ -92,6 +93,35 @@ export async function listOwnRequests(db: DB, v: Viewer, limit = 50) {
     ticket: r.ticketId ? { number: r.ticketNumber, webUrl: r.ticketWebUrl, channelUrl: r.ticketChannelUrl, status: r.ticketStatus } : null,
   }))
 }
+
+// ------------------------------------------------------ home counters ---
+
+// The member's OWN counts for the home page and dashboard: songs waiting for
+// a decision (pending in a submitted batch, like the review queue), songs on
+// air, and edit/removal requests still open. Songs only: a batch's
+// new-artist items are not counted.
+export async function memberSummary(db: DB, v: Viewer) {
+  const n = (rows: { n: number }[]) => Number(rows[0]?.n ?? 0)
+  const [inReview, onAir, openRequests] = await Promise.all([
+    db.select({ n: count() }).from(items).where(and(eq(items.ownerUserId, v.userId), eq(items.kind, 'song'), eq(items.status, 'pending'), BATCH_DECIDABLE_SQL)),
+    db.select({ n: count() }).from(items).where(and(eq(items.ownerUserId, v.userId), eq(items.kind, 'song'), eq(items.status, 'live'))),
+    db.select({ n: count() }).from(requests).where(and(eq(requests.ownerUserId, v.userId), inArray(requests.status, [...REQUEST_OPEN_STATUSES]))),
+  ])
+  return { inReview: n(inReview), onAir: n(onAir), openRequests: n(openRequests) }
+}
+export type MemberSummary = Awaited<ReturnType<typeof memberSummary>>
+
+// What is waiting for reviewers: decidable songs (new-artist items travel
+// with a song in the same batch) and pending requests.
+export async function reviewSummary(db: DB, v: Viewer) {
+  if (!isReviewer(v)) throw forbidden()
+  const [songs, reqs] = await Promise.all([
+    db.select({ n: count() }).from(items).where(and(eq(items.kind, 'song'), eq(items.status, 'pending'), BATCH_DECIDABLE_SQL)),
+    db.select({ n: count() }).from(requests).where(eq(requests.status, 'pending')),
+  ])
+  return { songs: Number(songs[0]?.n ?? 0), requests: Number(reqs[0]?.n ?? 0) }
+}
+export type ReviewSummary = Awaited<ReturnType<typeof reviewSummary>>
 
 // -------------------------------------------------------- batch detail ---
 

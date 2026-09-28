@@ -112,6 +112,45 @@
     @apply text-sunburst;
   }
 
+  /* Large action cards (home page): the whole card is one link, with a
+     visible border + fill, hover tint, pressed scale and a button-like cue. */
+  .action-card {
+    @apply flex w-full cursor-pointer flex-col gap-2 rounded-2xl border border-cream/20 bg-cream/[0.05] p-5 text-left
+      transition-[transform,background-color,border-color] duration-150 hover:border-sunburst/60 hover:bg-sunburst/[0.08]
+      active:scale-[0.99];
+  }
+  .action-card-primary {
+    @apply border-gold/50 bg-sunburst/[0.10] hover:border-gold hover:bg-sunburst/[0.16];
+  }
+  .action-icon {
+    @apply inline-flex size-11 items-center justify-center rounded-xl border border-cream/15 bg-ink/40;
+  }
+  .action-cue {
+    @apply mt-auto inline-flex items-center gap-1 self-start rounded-lg border border-cream/25 bg-cream/[0.08] px-3 py-1.5 text-sm font-semibold text-cream;
+  }
+  .action-card:hover .action-cue {
+    @apply border-sunburst/60 text-sunburst;
+  }
+  .action-card-primary .action-cue,
+  .action-card-primary:hover .action-cue {
+    @apply border-gold/60 bg-gradient-to-br from-sunburst to-gold text-ink;
+  }
+
+  /* Disclosure (<details>) whose summary looks like a clickable row. */
+  .disclosure > summary {
+    @apply flex cursor-pointer list-none items-center justify-between gap-2 rounded-xl py-1 font-semibold text-cream/85 hover:text-sunburst;
+  }
+  .disclosure > summary::-webkit-details-marker {
+    display: none;
+  }
+  .disclosure > summary::after {
+    content: '\203A';
+    @apply text-xl leading-none text-cream/40 transition-transform;
+  }
+  .disclosure[open] > summary::after {
+    @apply rotate-90;
+  }
+
   .input {
     @apply w-full rounded-xl border border-cream/20 bg-cream/[0.06] px-3 py-2 text-sm text-cream placeholder:text-cream/40
       hover:border-cream/35 focus:border-sunburst/70 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50;

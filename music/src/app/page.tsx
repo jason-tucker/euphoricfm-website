@@ -1,6 +1,9 @@
-import Link from 'next/link'
 import { signInWithDiscord } from '@/app/actions'
+import { ActionCards, MyMusicCard, ReviewQueueCard } from '@/components/HomeActions'
+import { isReviewer } from '@/server/authz/predicates'
+import { getDb } from '@/server/db/client'
 import { headerViewer } from '@/server/ui/page'
+import { memberSummary, reviewSummary } from '@/server/ui/queries'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,6 +16,22 @@ const STEPS = [
 
 export default async function Home() {
   const viewer = await headerViewer()
+  const db = viewer ? getDb() : null
+  const [mine, queue] = viewer && db ? await Promise.all([memberSummary(db, viewer), isReviewer(viewer) ? reviewSummary(db, viewer) : null]) : [null, null]
+  // Logged out: the steps are the page's main content (h2). Logged in: they sit
+  // in a collapsed "How it works" under the actions (h3).
+  const Step = viewer ? 'h3' : 'h2'
+  const steps = (
+    <ol className="grid gap-3 sm:grid-cols-2">
+      {STEPS.map((s, i) => (
+        <li key={s.t} className="card">
+          <p className="text-xs font-bold text-sunburst">Step {i + 1}</p>
+          <Step className="mt-1 font-semibold">{s.t}</Step>
+          <p className="mt-1 text-sm text-cream/70">{s.d}</p>
+        </li>
+      ))}
+    </ol>
+  )
   return (
     <section className="space-y-8">
       <div className="card space-y-4 sm:p-8">
@@ -24,16 +43,7 @@ export default async function Home() {
         <p className="max-w-2xl text-cream/80">
           Submit your songs for airplay, follow each one through review, and talk to the managers, all in one place.
         </p>
-        {viewer ? (
-          <div className="flex flex-wrap gap-3">
-            <Link href="/dashboard" className="btn btn-primary">
-              Go to my music
-            </Link>
-            <Link href="/submit" className="btn btn-secondary">
-              Submit songs
-            </Link>
-          </div>
-        ) : (
+        {viewer ? null : (
           <form action={signInWithDiscord}>
             <button type="submit" className="btn btn-primary px-6 text-base">
               <DiscordMark /> Sign in with Discord
@@ -43,15 +53,26 @@ export default async function Home() {
         )}
       </div>
 
-      <ol className="grid gap-3 sm:grid-cols-2">
-        {STEPS.map((s, i) => (
-          <li key={s.t} className="card">
-            <p className="text-xs font-bold text-sunburst">Step {i + 1}</p>
-            <h2 className="mt-1 font-semibold">{s.t}</h2>
-            <p className="mt-1 text-sm text-cream/70">{s.d}</p>
-          </li>
-        ))}
-      </ol>
+      {viewer ? (
+        <>
+          <section aria-labelledby="todo-h" className="space-y-4">
+            <h2 id="todo-h" className="text-xl font-bold sm:text-2xl">
+              What do you want to do?
+            </h2>
+            <ActionCards perms={viewer.perms} />
+            <div className={`grid gap-3 ${queue ? 'md:grid-cols-2' : ''}`}>
+              {mine ? <MyMusicCard summary={mine} /> : null}
+              {queue ? <ReviewQueueCard summary={queue} /> : null}
+            </div>
+          </section>
+          <details className="card disclosure" data-testid="how-it-works">
+            <summary>How it works</summary>
+            <div className="mt-4">{steps}</div>
+          </details>
+        </>
+      ) : (
+        steps
+      )}
 
       <p className="text-xs text-cream/50">
         Only upload music you own or have permission to share. Every submission asks you to confirm this.

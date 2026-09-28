@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { duration, playlistLabel, when } from '@/components/format'
+import { parseIntent } from '@/components/HomeActions'
 import { ManagerTools } from '@/components/requests/ManagerTools'
 import { RequestForms } from '@/components/requests/RequestForms'
 import { Thumb } from '@/components/Thumb'
@@ -13,10 +14,18 @@ import { uiSettings } from '@/server/ui/settings'
 export const dynamic = 'force-dynamic'
 export const metadata = { title: 'Song' }
 
-export default async function SongPage({ params }: { params: Promise<{ mediaId: string }> }) {
+export default async function SongPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ mediaId: string }>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
   const viewer = await pageViewer('submit')
   const db = getDb()
   const { mediaId: raw } = await params
+  // ?request=edit|remove (from the library's "Suggest edit" / "Request removal") opens that form.
+  const intent = parseIntent((await searchParams).request)
   const mediaId = await orNotFound(async () => parseId(raw))
   const [r, s] = await Promise.all([orNotFound(() => librarySong(db, viewer, mediaId)), uiSettings(db)])
   const song = r.song
@@ -28,7 +37,7 @@ export default async function SongPage({ params }: { params: Promise<{ mediaId: 
   return (
     <section className="space-y-6">
       <p>
-        <Link href="/library" className="link text-sm">
+        <Link href={intent ? `/library?intent=${intent}` : '/library'} className="link text-sm">
           ‹ Library
         </Link>
       </p>
@@ -76,11 +85,14 @@ export default async function SongPage({ params }: { params: Promise<{ mediaId: 
       ) : null}
 
       {viewer.perms.has('request') ? (
-        openMine ? (
-          <Notice tone="info">You already have an open request (#{openMine.id}) for this song. Withdraw it from My music to file a different one.</Notice>
-        ) : (
-          <RequestForms mediaId={song.mediaId} current={current} currentArtUrl={song.artUrl} />
-        )
+        <div id="request-form" className="scroll-mt-4 space-y-3">
+          <h2 className="text-lg font-bold">{intent === 'remove' ? 'Ask to remove this song' : intent === 'edit' ? 'Fix this song’s info or cover' : 'Request a change'}</h2>
+          {openMine ? (
+            <Notice tone="info">You already have an open request (#{openMine.id}) for this song. Withdraw it from My music to file a different one.</Notice>
+          ) : (
+            <RequestForms mediaId={song.mediaId} current={current} currentArtUrl={song.artUrl} initialTab={intent === 'remove' ? 'removal' : 'edit'} />
+          )}
+        </div>
       ) : null}
       {r.openRequests > 0 && viewer.perms.has('review') ? <Notice tone="warn">This song has {r.openRequests} open request(s). See Review → Requests.</Notice> : null}
 
