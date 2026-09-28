@@ -2,6 +2,14 @@
 
 Service-local history. The repo-level `CHANGELOG.md` entry and the `package.json` version bump are added when this directory is merged into the portal.
 
+## [0.2.0] — 2026-09-28 — Integrated into the portal (music v0.4.0)
+
+### Changed
+- **The duration cap is the portal's 24 min** (1440 s; was 20 min): `too_long` is now over 1440 s. The probe re-checks the decoded stream against the same cap.
+
+### Added
+- **Release markers**: the worker writes `in/<uuid>.release` once the probe has converted (or refused) a job's audio, and fetch deletes that job's staging directory at once (only a finished job: a result in `out/` and no claim; the marker is never followed or read; the 24 h sweep stays as the backstop). 5 new tests (73 in all).
+
 ## [0.1.0] — 2026-09-27 — SoundCloud import service (plan P5)
 
 ### Added

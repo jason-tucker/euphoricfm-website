@@ -15,7 +15,8 @@ It takes one request at a time from a spool directory. For each request it valid
 | `/spool/fetch/in/<uuid>.json` | music-worker | fetch | `{"uuid", "url", "requestedBy"}`, with an optional `"v": 1`. **Any other key is rejected.** |
 | `/spool/fetch/claimed/<uuid>.json` | fetch | fetch | The job in progress. fetch creates this directory itself. |
 | `/spool/fetch/out/<uuid>.json` | fetch | music-worker (ro) | The result, written once and never overwritten. |
-| `/staging/fetch/<uuid>/` | fetch | music-probe | `audio.<ext>` and an optional `artwork.raw`. Both files are mode 0440. |
+| `/staging/fetch/<uuid>/` | fetch | music-probe (ro) | `audio.<ext>` and an optional `artwork.raw`. Both files are mode 0440. |
+| `/spool/fetch/in/<uuid>.release` | music-worker | fetch | Portal v0.4.0: "the probe is done with this job". fetch deletes `/staging/fetch/<uuid>/` at once. |
 
 **Request rules:**
 - `uuid` must be a lowercase v4 UUID and must equal the file name.
@@ -29,6 +30,7 @@ It takes one request at a time from a spool directory. For each request it valid
 - The job directory must be **new**. If it already exists, fetch returns `bad_request` and leaves the directory alone.
 - On any error, fetch removes the job directory it created.
 - On startup, a leftover claim becomes an `interrupted` result, and its partial directory is removed.
+- **Release markers** (portal v0.4.0): before each job and when idle, fetch handles `in/<uuid>.release`. It unlinks the marker (never following a link; the content is never read) and deletes `/staging/fetch/<uuid>/` only if that job has a result in `out/` and is not claimed. The marker only names a finished job, and `<uuid>` is a v4 UUID, so it cannot reach outside the staging directory. The 24 h sweep stays as the backstop.
 
 **An `ok` result:**
 
@@ -74,7 +76,7 @@ The first eight codes are the contract from plan §3.6 and the P5 brief. The las
 | `not_a_track` | A set, playlist, likes, reposts, user page, secret-token URL or site section. Also returned when the info JSON is a playlist or comes from a different extractor, or when yt-dlp reports "Unsupported URL" or "No suitable extractor". |
 | `redirect_host` | A shortlink hop left `on.soundcloud.com`, `soundcloud.com` or `m.soundcloud.com`, or was not https. Every hop is checked **before** it is requested. |
 | `too_large` | The media is over 60 MiB. This fires on yt-dlp's own `--max-filesize` check, on the job-directory size poll, on `RLIMIT_FSIZE` (EFBIG or SIGXFSZ), or on the final size check. |
-| `too_long` | The info JSON duration is over 1200 s. The download is stopped as soon as the info JSON appears. |
+| `too_long` | The info JSON duration is over 1440 s (24 min, the portal's cap since v0.4.0; was 1200 s). The download is stopped as soon as the info JSON appears. |
 | `timeout` | yt-dlp ran past 10 minutes, or shortlink resolution ran past 30 s. |
 | `extractor_failed` | yt-dlp failed, the info JSON is missing, unparseable or has no duration, there is no audio, or there are unexpected files in the job directory. |
 | `artwork_host` | The info JSON's artwork URL is not `https://<label>.sndcdn.com/…`, where the host may have several labels but no port or userinfo. |
@@ -123,9 +125,11 @@ python -I -B -m yt_dlp --ignore-config --no-cache-dir --use-extractors soundclou
 
 ## Integration
 
+**Done in portal v0.4.0** (`music/compose.yml`, `music/src/worker/soundcloud.ts`, `music/src/probe/fetched.ts`; see `music/README.md` → "SoundCloud links"). The notes below are the original integration contract; where the portal differs, it says so.
+
 ### 1. Compose service block
 
-Add this to `music/compose.yml`. It reuses the file's `x-hardening` anchor.
+Add this to `music/compose.yml`. It reuses the file's `x-hardening` anchor. (The portal adds `cpu_shares: 256` and `memswap_limit`; `mem_limit: 160m` was confirmed by measurement, see `music/CHANGELOG.md` 0.4.0.)
 
 ```yaml
   music-fetch:
@@ -165,12 +169,12 @@ And add this under the top-level `networks:` key:
 Notes:
 - **Volumes.** `music/scripts/init-dirs.sh` already creates `staging/fetch`, `spool/fetch/in` and `spool/fetch/out`, owned by 1000:1000. fetch runs as uid 1000 and creates `spool/fetch/claimed` itself.
 - **Worker mounts.** The `music-worker` mounts already match: `/spool/fetch/in` rw and `/spool/fetch/out` ro. The worker never mounts `/staging/fetch`.
-- **Probe mounts.** `music-probe` sees `/staging/fetch/<uuid>/…` through its existing `/staging` rw mount.
-- **Staging retention.** fetch sweeps `/staging/fetch/<uuid>/` directories whose mtime is more than 24 h old, checked every 10 minutes. Set this with `--staging-ttl-hours N`, where 0 disables it. The worker and probe need not delete them, but the probe may once it has transcoded to `/staging/uploads/sc-<uuid>.mp3`.
-- **Memory.** Only idle use was measured. Peak memory during a real download was not measured; check it during P5 verification with `docker stats` or the cgroup `memory.peak`, and raise `mem_limit` if needed. yt-dlp is the peak consumer.
+- **Probe mounts.** `music-probe` mounts `/staging/fetch` **read-only** (portal v0.4.0); it never deletes a download, the worker's release marker does.
+- **Staging retention.** The worker's release marker deletes a job's directory as soon as the probe is done with it. As a backstop, fetch sweeps `/staging/fetch/<uuid>/` directories whose mtime is more than 24 h old, checked every 10 minutes. Set this with `--staging-ttl-hours N`, where 0 disables it.
+- **Memory.** Measured for portal v0.4.0 (a 10-min 160 kbps AAC as 61 fMP4 HLS fragments from a loopback origin): the service holds 22 MiB RSS, the pinned yt-dlp's native HLS download peaks at 47 MiB RSS, and the cgroup at 88 MiB under a 128 MiB limit (page cache, reclaimed). A real SoundCloud download was not measured (tests never contact SoundCloud): check `memory.peak` after the first real fetches.
 - **Command-line flags.** The service takes flags only, never environment variables: `--spool-dir`, `--staging-dir`, `--home-dir`, `--ytdlp PATH`, `--timeout S`, `--staging-ttl-hours H` and `--once`. The defaults are the production paths, so the compose file needs no `command:`.
 
-### 2. CI and the image
+### 2. CI and the image (done: `build-music` builds `fetch/` as target `runtime`, runs this suite in `music/test/run.sh`, and pushes `fetch-<sha7>`)
 
 Build this directory as its own context:
 
@@ -178,7 +182,7 @@ Build this directory as its own context:
 docker build -t ghcr.io/jason-tucker/euphoricfm-website-music:fetch-<sha> music/fetch
 ```
 
-- This replaces the `fetch` stub target in `music/Dockerfile`: delete that stub, or leave it unused.
+- This replaced the `fetch` stub target in `music/Dockerfile` (deleted in v0.4.0).
 - Add a CI step that runs the test stage under the runtime constraints:
 
 ```
@@ -191,10 +195,10 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop A
 
 ### 3. Requirements on music-probe (the `probe_fetch` / `cover` types)
 
-1. **Re-validate the path.** Accept only `files.audio` matching `^/staging/fetch/<the job's uuid>/audio\.(mp3|m4a|mp4|opus|ogg|oga|wav|flac)$`, opened with `O_NOFOLLOW`. Then re-hash the file and require it to equal `rawSha256` before parsing anything. The same applies to `artwork.raw` and `artworkSha256`.
+1. **Re-validate the path.** Accept only `files.audio` matching `^/staging/fetch/<the job's uuid>/audio\.(mp3|m4a|mp4|opus|ogg|oga|wav|flac)$`, opened with `O_NOFOLLOW`. (The portal accepts only `mp3|m4a|mp4|opus|ogg|oga`, and only AAC in MP4, Opus in Ogg and MP3: WAV, FLAC and Vorbis are refused.) Then re-hash the file and require it to equal `rawSha256` before parsing anything. The same applies to `artwork.raw` and `artworkSha256`.
 2. **Force the demuxer** from the detected container: `-f <ffmpegFormat>`, where `ffmpegFormat` is one of `mp3`, `mp4`, `ogg`, `wav` or `flac`. Map it through the probe's own allowlist; never pass the field through unchecked. Plan §3.6 lists mp3/mp4/ogg. `wav` and `flac` can occur only through SoundCloud's "original download" format, and the probe decides whether to accept or reject them.
 3. **Allow only the file protocol:** use `-protocol_whitelist file`, never `file,pipe`, for fetch output. The magic check identifies the container but does not guarantee the parser is safe. HLS playlists and MPEG-TS are already rejected here, and the forced `-f` and the whitelist make sure a playlist can never cause egress.
-4. **Re-check the real duration** (30 s to 20 min) from the decoded stream. fetch trusts only the info JSON's duration.
+4. **Re-check the real duration** (30 s to 24 min) from the decoded stream. fetch trusts only the info JSON's duration.
 5. **Artwork:** sniff the type (JPEG, PNG or WebP), force that decoder, and re-encode to JPEG of at most 1000 px, the same as uploads.
 6. Verified on the smoke output with the portal's probe image: `ffprobe -hide_banner -protocol_whitelist file -f mp4 -threads 1 …` reads the fMP4 AAC with the correct duration.
 
@@ -203,6 +207,7 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop A
 - Read `out/<uuid>.json` with `O_NOFOLLOW` and the 64 KiB cap, and parse it with a strict schema. `status` must be `ok` or `error`, and `errorCode` must be one of the 12 codes above.
 - Treat `meta.*` as untrusted display text.
 - Submit `probe_fetch` to `/spool/probe/in-worker` only.
+- Write `in/<uuid>.release` once the probe result is collected (portal v0.4.0).
 
 ## Host step (not applied): DOCKER-USER egress rules for fetch-egress
 
@@ -284,7 +289,7 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop A
 |---|---|
 | `test_urls.py` | Every accept and reject case. Includes `soundcloud.com.evil.com`, `evil.com/soundcloud.com`, `@` tricks, ports, IDN, punycode and fullwidth lookalikes, IP literals, encodings, query-parameter trickery, sets, likes, reposts and secret tokens. |
 | `test_shortlink.py` | A **local redirect server**: chains, a relative `Location`, exactly 5 redirects allowed and a 6th never requested, and foreign, userinfo, port, http, metadata, IDN and api hosts refused before they are requested. Also covers 404, 200, 500, a timeout, and the connect-time public-IP guard (the production opener refuses `localhost`). |
-| `test_spool_e2e.py` | The spool protocol end to end with `stub_ytdlp.py`, which emits fixture files. Covers every container type, timeout, too_large (directory cap, RLIMIT and yt-dlp's message), too_long (stopped early), playlists and foreign extractors, magic-byte rejects (HTML, HLS, MPEG-TS, mismatch, symlink, hard link), the artwork allowlist (no request made) and artwork skips, request-document validation, no clobbering, recovery, SIGTERM abort, grandchild kill, and the staging sweep. The stub also asserts the **exact pinned flags**. |
+| `test_spool_e2e.py` | The spool protocol end to end with `stub_ytdlp.py`, which emits fixture files. Covers every container type, timeout, too_large (directory cap, RLIMIT and yt-dlp's message), too_long (stopped early), playlists and foreign extractors, magic-byte rejects (HTML, HLS, MPEG-TS, mismatch, symlink, hard link), the artwork allowlist (no request made) and artwork skips, request-document validation, no clobbering, recovery, SIGTERM abort, grandchild kill, the staging sweep, and release markers (portal v0.4.0). The stub also asserts the **exact pinned flags**. |
 | `test_runner.py` | The pinned argv, the directory-cap kill, the timeout kill, the RLIMIT_FSIZE backstop, the bounded output tail, and stdin being closed. |
 | `test_artwork.py` | The host allowlist and the capped, redirect-free download. |
 | `test_magic.py` | Allowed and rejected containers. |

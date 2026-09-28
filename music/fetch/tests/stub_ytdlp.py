@@ -124,8 +124,8 @@ def main():
         time.sleep(30)  # must be killed early, on the info JSON alone
         write(os.path.join(job, 'audio.mp3'), mp3_bytes())
         return 0
-    if slug == 'exactly20':
-        info['duration'] = 1200
+    if slug == 'exactly24':
+        info['duration'] = 1440
         write_info(job, info)
         write(os.path.join(job, 'audio.mp3'), mp3_bytes())
         return 0

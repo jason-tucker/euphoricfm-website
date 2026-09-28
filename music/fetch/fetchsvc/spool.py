@@ -95,6 +95,35 @@ def list_request_ids(in_dir: str) -> list[str]:
     return [u for _, u in found]
 
 
+RELEASE_SUFFIX = '.release'
+
+
+def list_release_ids(in_dir: str) -> list[str]:
+    """Job ids named by `<uuid>.release` markers in in/ (portal v0.4.0)."""
+    found = []
+    try:
+        with os.scandir(in_dir) as it:
+            for e in it:
+                name = e.name
+                if name.endswith(RELEASE_SUFFIX) and UUID_RE.match(name[: -len(RELEASE_SUFFIX)]):
+                    found.append(name[: -len(RELEASE_SUFFIX)])
+    except FileNotFoundError:
+        return []
+    return sorted(found)
+
+
+def remove_release_marker(in_dir: str, uuid: str) -> bool:
+    """Unlink the marker (never its target: unlink removes a symlink itself).
+    True only if a marker was removed by this call."""
+    if not UUID_RE.match(uuid):
+        return False
+    try:
+        os.unlink(os.path.join(in_dir, f'{uuid}{RELEASE_SUFFIX}'))
+    except OSError:
+        return False
+    return True
+
+
 def claim(in_dir: str, claimed_dir: str, uuid: str) -> str | None:
     if not UUID_RE.match(uuid):
         return None

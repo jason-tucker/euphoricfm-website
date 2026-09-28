@@ -91,8 +91,8 @@ class HappyPathTests(E2EBase):
         self.assertIsNone(res['meta']['artworkSourceHost'])
         self.assertEqual(self.env.art.calls, [])
 
-    def test_exactly_20_minutes_is_allowed(self):
-        _, res = self.env.run(SC + 'exactly20')
+    def test_exactly_24_minutes_is_allowed(self):
+        _, res = self.env.run(SC + 'exactly24')
         self.assertEqual(res['status'], 'ok')
 
     def test_shortlink_resolved_before_ytdlp(self):
@@ -345,6 +345,72 @@ class SweepTests(E2EBase):
         self.assertIn('not-a-uuid', left)
         self.assertEqual(len(left), 3)  # the symlink is left alone (and its target untouched)
         self.assertTrue(os.path.isdir(decoy_dir))
+
+
+class ReleaseTests(E2EBase):
+    """Portal v0.4.0: `in/<uuid>.release` deletes a finished job's staging dir."""
+
+    def marker(self, uid):
+        path = os.path.join(self.env.spool, 'in', f'{uid}.release')
+        with open(path, 'w') as f:
+            f.write('')
+        return path
+
+    def test_release_removes_finished_job_dir_and_marker(self):
+        uid, res = self.env.run(SC + 'ok-m4a')
+        self.assertEqual(res['status'], 'ok')
+        self.assertTrue(os.path.isdir(self.env.job_dir(uid)))
+        m = self.marker(uid)
+        self.assertEqual(self.env.svc.process_releases(), 1)
+        self.assertFalse(os.path.lexists(self.env.job_dir(uid)))
+        self.assertFalse(os.path.lexists(m))
+        self.assertEqual(self.env.result(uid)['status'], 'ok')  # the result stays
+        # a repeated release is a no-op
+        self.marker(uid)
+        self.assertEqual(self.env.svc.process_releases(), 0)
+
+    def test_release_without_result_leaves_dir(self):
+        import uuid as u
+        uid = str(u.uuid4())
+        os.mkdir(self.env.job_dir(uid))
+        m = self.marker(uid)
+        self.assertEqual(self.env.svc.process_releases(), 0)
+        self.assertTrue(os.path.isdir(self.env.job_dir(uid)))
+        self.assertFalse(os.path.lexists(m))
+
+    def test_release_of_claimed_job_waits(self):
+        uid, _ = self.env.run(SC + 'ok-mp3')
+        claimed = os.path.join(self.env.spool, 'claimed', f'{uid}.json')
+        with open(claimed, 'w') as f:
+            f.write('{}')
+        self.marker(uid)
+        self.assertEqual(self.env.svc.process_releases(), 0)
+        self.assertTrue(os.path.isdir(self.env.job_dir(uid)))
+
+    def test_symlinked_marker_and_job_dir_never_followed(self):
+        uid, _ = self.env.run(SC + 'ok-mp3')
+        # the marker is a symlink to the decoy: only the link goes
+        os.symlink(self.env.decoy, os.path.join(self.env.spool, 'in', f'{uid}.release'))
+        # the job dir is replaced by a symlink to a decoy dir: only the link goes
+        import shutil
+        shutil.rmtree(self.env.job_dir(uid))
+        decoy_dir = os.path.join(self.env.root, 'decoy-dir')
+        os.mkdir(decoy_dir)
+        with open(os.path.join(decoy_dir, 'keep'), 'w') as f:
+            f.write('keep')
+        os.symlink(decoy_dir, self.env.job_dir(uid))
+        self.env.svc.process_releases()
+        self.assertFalse(os.path.lexists(self.env.job_dir(uid)))
+        self.assertTrue(os.path.isfile(os.path.join(decoy_dir, 'keep')))
+        self.assertTrue(os.path.isfile(self.env.decoy))
+
+    def test_bad_marker_names_ignored_and_not_requests(self):
+        for name in ('not-a-uuid.release', 'ABCDEF00-0000-4000-8000-000000000000.release'):
+            with open(os.path.join(self.env.spool, 'in', name), 'w') as f:
+                f.write('')
+        self.assertEqual(self.env.svc.process_releases(), 0)
+        self.env.svc.run_until_empty()  # markers are never taken for requests
+        self.assertEqual(os.listdir(os.path.join(self.env.spool, 'out')), [])
 
 
 if __name__ == '__main__':

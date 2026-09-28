@@ -35,12 +35,15 @@ from .errors import FetchError
 from .magic import EXT_CONTAINERS, detect_fd
 from .net import GuardedHttpsOpener, Opener
 from .runner import INFO_JSON_NAME, MAX_AUDIO_BYTES, build_argv, run_ytdlp
-from .spool import (MAX_REQUEST_BYTES, UUID_RE, BadRequest, claim, list_request_ids, parse_request,
-                    read_small_nofollow, write_result_noclobber)
+from .spool import (MAX_REQUEST_BYTES, UUID_RE, BadRequest, claim, list_release_ids, list_request_ids,
+                    parse_request, read_small_nofollow, remove_release_marker, write_result_noclobber)
 from .urls import resolve_input
 
 MAX_INFO_BYTES = 8 * 1024 * 1024
-MAX_DURATION_S = 20 * 60
+# The portal's duration cap (music/src/lib/fit.ts MAX_DURATION_S: the longest
+# song whose 192 kbps MP3 still fits the 35 MiB final file). The probe
+# re-checks the decoded stream against the same cap.
+MAX_DURATION_S = 24 * 60
 AUDIO_RE = re.compile(r'\Aaudio\.(mp3|m4a|mp4|opus|ogg|oga|wav|flac)\Z')
 ARTWORK_NAME = 'artwork.raw'
 SWEEP_EVERY_S = 600
@@ -205,6 +208,7 @@ class Service:
     def run_forever(self) -> None:
         _log('ready')
         while not self.stop.is_set():
+            self.process_releases()
             ids = list_request_ids(self.in_dir)
             if ids:
                 self.process_one(ids[0])
@@ -215,6 +219,7 @@ class Service:
 
     def run_until_empty(self) -> None:
         while not self.stop.is_set():
+            self.process_releases()
             ids = list_request_ids(self.in_dir)
             if not ids:
                 return
@@ -410,6 +415,30 @@ class Service:
         return doc
 
     # -- housekeeping --
+    def process_releases(self) -> int:
+        """Portal v0.4.0: the worker writes `in/<uuid>.release` once the probe has
+        converted (or refused) a job's audio, and fetch deletes that job's
+        staging directory right away instead of waiting for the 24 h sweep.
+
+        Only a finished job is released: one that has a result in out/ and is
+        not claimed right now. The marker only NAMES the job (its content is
+        never read), so the worst a forged marker can do is delete a finished
+        job's raw media early. The name is a v4 UUID, so the path cannot
+        leave the staging directory; `_remove_job_dir` never follows a link."""
+        n = 0
+        for uuid in list_release_ids(self.in_dir):
+            if not remove_release_marker(self.in_dir, uuid):
+                continue
+            if os.path.lexists(os.path.join(self.claimed_dir, f'{uuid}.json')):
+                continue  # in progress: the sweep removes it later
+            if not os.path.lexists(os.path.join(self.out_dir, f'{uuid}.json')):
+                continue  # never fetched (or not yet): nothing of ours to release
+            if os.path.lexists(self._job_dir(uuid)):
+                self._remove_job_dir(uuid)
+                _log(f'{uuid} released')
+                n += 1
+        return n
+
     def maybe_sweep(self) -> None:
         ttl = self.cfg.staging_ttl_s
         now = time.time()
