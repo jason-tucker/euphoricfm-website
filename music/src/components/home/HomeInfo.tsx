@@ -139,7 +139,7 @@ export function WhoAndNeeds() {
           Who can submit
         </h2>
         <p className="mt-2 text-sm text-cream/75">
-          Members of the EuphoricFM Discord who have finished membership screening. Signing in only lets us see your Discord name and whether you are in our server. It can’t read your messages.
+          Members of the EuphoricFM Discord who have finished membership screening. Signing in only lets us see your Discord name, whether you are in our server and your roles there. It can’t read your messages.
         </p>
         <p className="mt-2 text-sm text-cream/75">Still pending? Finish screening in Discord, then sign in again.</p>
       </section>
@@ -364,7 +364,7 @@ export function EditsAndRemovals({ requestCaps, signedIn }: { requestCaps: { edi
         </section>
       </div>
       <p className="mt-2 text-xs text-cream/60" data-testid="request-caps">
-        One open request per song · up to {requestCaps.edit} edit and {requestCaps.removal} removal requests a day · follow them under My music.
+        One open edit and one open removal request per song · up to {requestCaps.edit} edit and {requestCaps.removal} removal requests a day · follow them under My music.
       </p>
     </section>
   )
@@ -476,7 +476,7 @@ export function ChangingASong({ requestCaps }: { requestCaps: { edit: number; re
       <p className="mt-2 text-sm text-cream/75">Use Fix a song’s info or Ask to remove a song above. Managers check every request.</p>
       <Facts
         rows={[
-          ['Open', 'one request per song'],
+          ['Open', 'one edit and one removal request per song'],
           ['Daily', `${requestCaps.edit} edits and ${requestCaps.removal} removals`],
           ['Track', 'under My music'],
         ]}

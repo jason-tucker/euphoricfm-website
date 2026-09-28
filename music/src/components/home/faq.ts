@@ -23,12 +23,12 @@ export function faqEntries({ limits: l, requestCaps, autoCloseDays }: FaqContext
         'While a song is still pending review you can withdraw it from My music.',
     },
     {
-      // Tickets open with the submitter as opener (bot mentions the opener); decision and ingest posts
+      // Tickets open with the submitter as opener (bot mentions the opener plus every staff role, euphoric-tickets ticketService.ts); decision and ingest posts
       // (handlers.ts ticketDecision, scheduler/tickets.ts); member comments relayed as the author (handlers.ts ticketComment).
       id: 'ticket',
       q: 'Who gets notified in the Discord ticket?',
       a:
-        'The ticket is opened for you, and the ticket bot mentions you when it opens, so Discord notifies you. ' +
+        'The ticket is opened for you, and when it opens the ticket bot mentions you and the staff roles, so Discord notifies you and the managers. ' +
         'The managers’ questions, every decision (with the reason for a decline) and an “Added to the station” message for each song are posted there. ' +
         'Comments you write on your batch in the portal are copied into the ticket under your name.',
     },
@@ -64,13 +64,13 @@ export function faqEntries({ limits: l, requestCaps, autoCloseDays }: FaqContext
         `Once every song in a batch is decided, its ticket closes after ${autoCloseDays} days without activity.`,
     },
     {
-      // requests/service.ts: one open request per song, daily caps, one ticket each.
+      // requests/service.ts fileRequest: one open request per song AND kind (edit / removal), daily caps, one ticket each.
       id: 'edits',
       q: 'How do I fix a song’s info or get a song removed?',
       a:
         'Find the song in the Library and choose Suggest edit (title, artist, album, genre or cover art) or Request removal (with a short reason). ' +
         'Each request opens its own Discord ticket, and a manager checks it before anything changes on the station. ' +
-        `You can have one open request per song, and file up to ${requestCaps.edit} edit and ${requestCaps.removal} removal requests a day. Follow them under My music.`,
+        `You can have one open edit and one open removal request per song, and file up to ${requestCaps.edit} edit and ${requestCaps.removal} removal requests a day. Follow them under My music.`,
     },
     {
       // Approved removals archive the file (worker/requests/jobs.ts archiveMedia); /library/archived needs `manage`.

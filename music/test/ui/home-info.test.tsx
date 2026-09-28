@@ -9,6 +9,7 @@ import { ITEM_STATUS } from '@/components/messages'
 import { SubmitPanel } from '@/components/submit/SubmitPanel'
 import { MAX_DURATION_S, MIN_BITRATE, MIN_DURATION_S } from '@/probe/probe'
 import { MAX_WAV_DURATION_S, OUT_BITRATE } from '@/probe/wav'
+import { MAX_EDGE, MAX_PIXELS } from '@/probe/cover'
 import { DEFAULT_CAPS, MB, type Caps } from '@/server/settings-defaults'
 import { uploadLimitsForUi } from '@/server/ui/limits'
 
@@ -63,10 +64,15 @@ describe('uploadLimitsForUi (the one source of upload figures)', () => {
     expect(l.text.wavSize).toBe(`up to ${DEFAULT_CAPS.maxWavUploadBytes / MB} MB`)
     expect(l.text.mp3Length).toBe(`${MIN_DURATION_S} seconds to ${MAX_DURATION_S / 60} minutes`)
     expect(l.note).toContain(`${OUT_BITRATE / 1000} kbps MP3`)
+    // Cover art: the pixel cap the probe enforces (dimsAcceptable) is shown, not just the edge.
+    expect(l.text.artSize).toContain(`${MAX_PIXELS / 1_000_000} megapixels`)
+    expect(l.text.artSize).toContain(`${MAX_EDGE} px on a side`)
   })
 
-  it('an admin-lowered cap is shown; a raised or broken cap never exceeds the compiled default', () => {
-    expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxUploadBytes: 20 * MB } as unknown as Caps).text.mp3Size).toBe('up to 20 MB')
+  it('a lowered WAV cap is shown; the MP3 cap is the enforced compiled default; nothing exceeds the defaults', () => {
+    // loadCaps skips a saved maxUploadBytes (tus + probe enforce the default), so the page must too.
+    expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxUploadBytes: 20 * MB } as unknown as Caps).mp3MaxBytes).toBe(DEFAULT_CAPS.maxUploadBytes)
+    expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxWavUploadBytes: 100 * MB } as unknown as Caps).text.wavSize).toBe('up to 100 MB')
     expect(uploadLimitsForUi({ ...DEFAULT_CAPS, maxWavUploadBytes: 999 * MB } as unknown as Caps).wavMaxBytes).toBe(DEFAULT_CAPS.maxWavUploadBytes)
     expect(uploadLimitsForUi({ maxUploadBytes: 'x' } as unknown as Caps).mp3MaxBytes).toBe(DEFAULT_CAPS.maxUploadBytes)
     expect(uploadLimitsForUi(null).maxItemsPerBatch).toBe(DEFAULT_CAPS.maxItemsPerBatch)
@@ -91,16 +97,19 @@ describe('home page, signed out', async () => {
     expect(screen.queryByTestId('action-cards')).toBeNull()
   })
 
-  it('files and limits are the helper’s text (follows a lowered cap)', async () => {
-    state.caps = { maxUploadBytes: 20 * MB, maxItemsPerBatch: 12 }
+  it('files and limits are the helper’s text (follows a lowered WAV cap, not an unenforced MP3 one)', async () => {
+    state.caps = { maxUploadBytes: 20 * MB, maxWavUploadBytes: 100 * MB, maxItemsPerBatch: 12 }
     render(await Home())
-    const l = uploadLimitsForUi({ ...DEFAULT_CAPS, maxUploadBytes: 20 * MB, maxItemsPerBatch: 12 } as unknown as Caps)
+    const l = uploadLimitsForUi({ ...DEFAULT_CAPS, ...state.caps } as unknown as Caps)
     const mp3 = screen.getByTestId('limits-mp3').textContent
     for (const t of [l.text.mp3Size, l.text.mp3Quality, l.text.mp3Length, l.text.mp3Tags]) expect(mp3).toContain(t)
-    expect(mp3).toContain('up to 20 MB')
+    expect(mp3).toContain(`up to ${DEFAULT_CAPS.maxUploadBytes / MB} MB`)
+    expect(mp3).not.toContain('up to 20 MB')
     const wav = screen.getByTestId('limits-wav').textContent
     for (const t of [l.text.wavSize, l.text.wavFormat, l.text.wavLength, l.text.wavConvert]) expect(wav).toContain(t)
+    expect(wav).toContain('up to 100 MB')
     expect(screen.getByTestId('limits-art').textContent).toContain(l.text.batch)
+    expect(screen.getByTestId('limits-art').textContent).toContain(l.text.artSize)
     expect(screen.getByTestId('limits-note').textContent).toBe(l.note)
     const cant = screen.getByTestId('cant-take').textContent
     expect(cant).toContain(l.text.tooLong)
@@ -124,6 +133,8 @@ describe('home page, signed out', async () => {
     expect(screen.getByRole('button', { name: 'Sign in to suggest an edit' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Sign in to request removal' })).toBeTruthy()
     expect(screen.getByTestId('request-caps').textContent).toContain('up to 4 edit and 6 removal requests a day')
+    // requests/service.ts dedupes per song AND kind: an edit and a removal can both be open.
+    expect(screen.getByTestId('request-caps').textContent).toContain('One open edit and one open removal request per song')
   })
 
   it('FAQ: eight keyboard-reachable <details>, closed by default, with settings-driven answers', async () => {
@@ -141,6 +152,8 @@ describe('home page, signed out', async () => {
     expect(text('how-long')).toContain('after 9 days without activity')
     expect(text('file')).toContain(uploadLimitsForUi(DEFAULT_CAPS).note)
     expect(text('edits')).toContain('4 edit and 6 removal requests a day')
+    expect(text('edits')).toContain('one open edit and one open removal request per song')
+    expect(text('ticket')).toContain('staff roles')
     expect(text('archived')).toContain('Only the station managers')
   })
 
@@ -176,6 +189,7 @@ describe('home page, signed in', async () => {
     expect(screen.getByTestId('limits-short').textContent).toContain(l.text.mp3Short)
     expect(screen.getByTestId('limits-short').textContent).toContain(l.text.wavShort)
     expect(screen.getByTestId('changing-a-song').textContent).toContain('4 edits and 6 removals')
+    expect(screen.getByTestId('changing-a-song').textContent).toContain('one edit and one removal request per song')
     expect(screen.getByTestId('faq').querySelectorAll('details')).toHaveLength(8)
     // No sign-in prompts for a member.
     expect(screen.queryByRole('button', { name: /sign in/i })).toBeNull()

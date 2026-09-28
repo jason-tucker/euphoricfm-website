@@ -6,19 +6,22 @@
 // When a limit changes, repoint it HERE; no JSX hard-codes a number.
 
 import { MAX_DURATION_S, MIN_BITRATE, MIN_DURATION_S } from '../../probe/probe'
-import { MAX_EDGE } from '../../probe/cover'
+import { MAX_EDGE, MAX_PIXELS } from '../../probe/cover'
 import { MAX_TAG_BYTES } from '../../probe/id3scan'
 import { MAX_WAV_DURATION_S, MIN_WAV_DURATION_S, OUT_BITRATE } from '../../probe/wav'
 import { MAX_ART_BYTES } from '../spool/protocol'
 import { DEFAULT_CAPS, MB, type Caps } from '../settings-defaults'
 
-// Same rule as the submit page: a saved cap may be lowered, never raised past
-// the compiled default (the tus route enforces the compiled default).
+// A saved WAV cap may be lowered, never raised past the compiled default (the
+// same rule as loadCaps). The MP3 size cap is NOT admin-editable: loadCaps
+// skips a saved maxUploadBytes and tus + the probe enforce the compiled
+// default, so the page shows the compiled default whatever is saved.
 const capOf = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.min(v, max) : max)
 const count = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : fallback)
 
 const mb = (n: number) => `${Math.round(n / MB)} MB`
 const minutes = (s: number) => Math.round(s / 60)
+const megapixels = (px: number) => Math.round(px / 1_000_000)
 const lengthRange = (minS: number, maxS: number) => `${minS} seconds to ${minutes(maxS)} minutes`
 const lengthShort = (minS: number, maxS: number) => `${minS} s–${minutes(maxS)} min`
 
@@ -60,7 +63,7 @@ export type UiUploadLimits = {
 
 export function uploadLimitsForUi(caps: Partial<Caps> | null | undefined): UiUploadLimits {
   const c = caps ?? {}
-  const mp3MaxBytes = capOf(c.maxUploadBytes, DEFAULT_CAPS.maxUploadBytes)
+  const mp3MaxBytes = DEFAULT_CAPS.maxUploadBytes
   const wavMaxBytes = capOf(c.maxWavUploadBytes, DEFAULT_CAPS.maxWavUploadBytes)
   const maxItemsPerBatch = count(c.maxItemsPerBatch, DEFAULT_CAPS.maxItemsPerBatch)
   const concurrentUploads = count(c.maxConcurrentUploadsPerUser, DEFAULT_CAPS.maxConcurrentUploadsPerUser)
@@ -91,7 +94,7 @@ export function uploadLimitsForUi(caps: Partial<Caps> | null | undefined): UiUpl
       wavConvert: `convert it to a ${wavOutKbps} kbps MP3`,
       wavShort: `${mb(wavMaxBytes)} · PCM · ${lengthShort(MIN_WAV_DURATION_S, MAX_WAV_DURATION_S)}`,
       artFormats,
-      artSize: `up to ${mb(MAX_ART_BYTES)}, ${MAX_EDGE} px on a side`,
+      artSize: `up to ${mb(MAX_ART_BYTES)} and ${megapixels(MAX_PIXELS)} megapixels, at most ${MAX_EDGE} px on a side`,
       artShort: `${artFormats} · ${mb(MAX_ART_BYTES)}`,
       batch: `up to ${maxItemsPerBatch} songs, ${concurrentUploads} uploads at once`,
       batchShort: `up to ${maxItemsPerBatch} songs`,
