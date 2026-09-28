@@ -33,12 +33,18 @@ export function mp3TargetRate(sampleRate: number): number {
   return sampleRate === 44100 || sampleRate === 48000 ? sampleRate : 44100
 }
 
-export function mp3TranscodeArgs(input: string, output: string, src: { sampleRate: number; channels: number }, bitrate: number): string[] {
+export function mp3TranscodeArgs(
+  input: string,
+  output: string,
+  src: { sampleRate: number; channels: number },
+  bitrate: number,
+  whitelist: 'file,pipe' | 'file' = 'file,pipe',
+): string[] {
   if (!Number.isInteger(bitrate) || bitrate < 8000 || bitrate > 320_000 || bitrate % 1000 !== 0) throw new Error('mp3TranscodeArgs: bad bitrate')
   const rate = mp3TargetRate(src.sampleRate)
   return [
     '-hide_banner', '-nostdin', '-loglevel', 'error',
-    '-protocol_whitelist', 'file,pipe',
+    '-protocol_whitelist', whitelist,
     '-threads', '1',
     '-filter_threads', '1',
     '-vn', '-sn', '-dn',

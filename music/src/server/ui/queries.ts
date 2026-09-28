@@ -39,6 +39,10 @@ export function uiItem(v: Viewer, it: ItemRow) {
     // re-encoded to fit, v0.3.5), null = the member's own MP3, untouched.
     inputFormat: it.inputFormat,
     transcodeKbps: it.transcodeKbps,
+    // v0.4.0: SoundCloud links (see submissions.itemView).
+    fetchStage: it.fetchStage,
+    fetchLicense: it.fetchLicense,
+    sourceUrl: it.sourceUrl,
     hasCover: Boolean(it.coverFile),
     hasArt: itemHasArt(it),
     hasCustomArt: customArtIdOf(it) !== null,

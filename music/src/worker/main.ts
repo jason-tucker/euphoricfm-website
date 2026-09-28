@@ -8,10 +8,11 @@
 // paused, claimJob() skips mutating kinds and the AzuraCast write gate
 // refuses every write (server/pause.ts).
 
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { AzuraCastClient, AzuraCastError } from '../server/azuracast/client'
 import { resolveProfile, type Profile } from '../server/azuracast/guard'
 import { closeDb, getDb, type DB } from '../server/db/client'
+import { items } from '../server/db/schema'
 import { loadWorkerEnv, type WorkerEnv } from '../server/env'
 import { enqueue } from '../server/jobs'
 import { assertQueuesNotPaused, MUTATING_JOB_KINDS, PAUSED_SQL, QueuesPausedError } from '../server/pause'
@@ -31,6 +32,7 @@ import {
   type WorkerCtx,
 } from './handlers'
 import { failRequest, isRequestsCtx, REQUEST_JOB_KINDS, runRequestJob, sweepParkedRequests } from './requests/jobs'
+import { collectFetchResults, rejectFetchItem, type FetchCtx } from './soundcloud'
 
 export type StartupDeps = { env?: Record<string, string | undefined>; fetchImpl?: typeof fetch }
 
@@ -184,6 +186,11 @@ async function failOwner(ctx: WorkerCtx, job: JobRow, wait: string): Promise<voi
     if (isRequestsCtx(ctx) && typeof p.requestId === 'number') await failRequest(ctx, p.requestId, 'wait_expired', detail)
     return
   }
+  if (job.kind === 'soundcloud_fetch' && typeof p.itemId === 'number') {
+    const it = await ctx.db.query.items.findFirst({ where: eq(items.id, p.itemId) })
+    if (it && it.source === 'soundcloud') await rejectFetchItem(ctx, it, 'sc_queue_timeout')
+    return
+  }
   if ((job.kind === 'ingest' || job.kind === 'ingest_verify') && isP3Ctx(ctx) && typeof p.itemId === 'number') {
     await failIngest(ctx, p.itemId, 'wait_expired', detail)
   }
@@ -194,7 +201,7 @@ export async function main() {
   console.log(`[worker] profile=${profile.profile} station=${profile.stationId} prefix=${profile.testPrefix || '(none)'} self-check ok`)
   const db = getDb(env.DATABASE_URL, 3)
   azuracast.setWriteGate(() => assertQueuesNotPaused(db))
-  const ctx: P3Ctx = {
+  const ctx: FetchCtx = {
     db,
     azuracast,
     tickets: new TicketsClient({ baseUrl: env.TICKETS_API_BASE, key: env.TICKETS_WRITE_KEY, portalOrigin: env.PORTAL_ORIGIN }),
@@ -207,6 +214,8 @@ export async function main() {
     now: Date.now,
     kumaDiskPushUrl: env.KUMA_DISK_PUSH_URL,
     contractFixture: env.PORTAL_CONTRACT_FIXTURE,
+    fetchInDir: env.SPOOL_FETCH_IN_DIR,
+    fetchOutDir: env.SPOOL_FETCH_OUT_DIR,
   }
   // Fails closed on its own (pauses the mutating queues); the catch only
   // covers a DB failure while recording that.
@@ -224,6 +233,7 @@ export async function main() {
   while (!stopping) {
     try {
       await collectProbeResults(ctx)
+      await collectFetchResults(ctx)
       await scheduler.tick(ctx)
       await sweepParkedRequests(ctx)
       if (Date.now() - lastDaily > 24 * 3600_000) {

@@ -30,6 +30,7 @@ const capsOverride = z
     maxArtBytes: z.number().int().positive(),
     maxWavUploadBytes: z.number().int().positive().max(DEFAULT_CAPS.maxWavUploadBytes),
     maxMp3UploadBytes: z.number().int().positive().max(DEFAULT_CAPS.maxMp3UploadBytes),
+    fetchesPerUserPerDay: z.number().int().positive().max(DEFAULT_CAPS.fetchesPerUserPerDay),
   })
   .partial()
 
@@ -53,4 +54,10 @@ export async function loadCaps(db: DB): Promise<Caps> {
     }
   }
   return out as unknown as Caps
+}
+
+// v0.4.0: the SoundCloud kill switch. Only a stored `false` turns it off; a
+// missing or malformed value means the default (on).
+export async function soundcloudEnabled(db: DB): Promise<boolean> {
+  return (await getSetting(db, 'soundcloud_fetch_enabled')) !== false
 }

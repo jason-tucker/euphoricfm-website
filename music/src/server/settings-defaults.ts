@@ -33,6 +33,8 @@ export const DEFAULT_CAPS = {
   artUploadsPerUserPerDay: 30,
   artBytesPerUserPerDay: 50 * MB,
   maxArtBytes: 512 * MB,
+  // v0.4.0: SoundCloud links per member in any rolling 24 h (lowerable).
+  fetchesPerUserPerDay: 20 as number,
 } as const
 
 export const DEFAULT_SETTINGS: Record<string, unknown> = {
@@ -67,6 +69,10 @@ export const DEFAULT_SETTINGS: Record<string, unknown> = {
       'I understand managers can decline it, and that it can be removed from rotation later.',
   },
   discord_invite_url: null,
+  // v0.4.0 kill switch for "Add from a SoundCloud link" (admin settings). Off:
+  // the web refuses new links (503 sc_disabled) and the worker refuses to
+  // send queued ones to music-fetch (the item is rejected sc_disabled).
+  soundcloud_fetch_enabled: true,
 }
 
 export type Caps = typeof DEFAULT_CAPS
