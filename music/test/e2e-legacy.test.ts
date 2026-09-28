@@ -113,6 +113,10 @@ describe.skipIf(!E2E())('v0.3.3 UNRELEASED import and Archived songs through the
     expect(staff.text).toContain('Unreleased')
     expect(staff.text).toContain('Release…')
     expect(staff.text).toContain('Link a member…')
+    // A manager who is not an admin reaches the import here (not on /admin).
+    expect((await html(manager, '/admin')).text).not.toContain('Archive the UNRELEASED folder')
+    expect(staff.text).toContain('Archive the UNRELEASED folder')
+    expect(before.text).not.toContain('Archive the UNRELEASED folder')
     // members: no manager routes
     expect((await req(member, `/api/archive/${archiveId}/link`, { method: 'PUT', json: { userId: 'x' } })).status).toBe(403)
     expect((await req(member, `/api/archive/${archiveId}/release`, { json: { artist: folder, playlistIds: [] } })).status).toBe(403)

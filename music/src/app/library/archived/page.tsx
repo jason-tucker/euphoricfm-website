@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { LegacyImportPanel } from '@/components/admin/LegacyImportPanel'
 import { playlistLabel, when } from '@/components/format'
 import { LinkMemberControl } from '@/components/requests/LinkMemberControl'
 import { ReleaseButton } from '@/components/requests/ReleaseButton'
@@ -17,13 +18,19 @@ export const metadata = { title: 'Archived songs' }
 
 // Staff (review or manage) see every archived song; a member sees the ones
 // they uploaded through the portal or a manager linked them to, read-only
-// (v0.3.3). Restore, Release, Resolve and member links are manager-only.
-export default async function ArchivedPage() {
+// (v0.3.3). Restore, Release, Resolve and member links are manager-only,
+// and so is "Archive the UNRELEASED folder" (here as well as on /admin, so
+// a manager who is not an admin reaches it too). Newest first, paged.
+export default async function ArchivedPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const viewer = await pageViewer('submit')
+  const sp = await searchParams
+  const want = typeof sp.page === 'string' && /^\d{1,4}$/.test(sp.page) ? Number(sp.page) : 1
   const db = getDb()
   const staff = isReviewer(viewer)
   const manage = viewer.perms.has('manage')
-  const [rows, s] = await Promise.all([archivedSongs(db, viewer), manage ? uiSettings(db) : null])
+  const [r, s] = await Promise.all([archivedSongs(db, viewer, { page: want }), manage ? uiSettings(db) : null])
+  const rows = r.rows
+  const href = (p: number) => `/library/archived?${new URLSearchParams({ page: String(p) })}`
   const assignable = s ? s.assignablePlaylistIds.map((id) => ({ id, label: playlistLabel(s.playlistNames, id) })) : []
   return (
     <section>
@@ -40,6 +47,11 @@ export default async function ArchivedPage() {
             : 'Your songs that are archived: songs you uploaded here, or that a manager linked to you. Ask a manager if one should come back.'
         }
       />
+      {r.pages > 1 ? (
+        <p className="mb-3 text-sm text-cream/60" data-testid="archived-count">
+          {r.total} archived songs, newest first · page {r.page} of {r.pages}
+        </p>
+      ) : null}
       {rows.length === 0 ? (
         <p className="card text-center text-cream/70">{staff ? 'Nothing is archived.' : 'None of your songs are archived.'}</p>
       ) : (
@@ -95,6 +107,31 @@ export default async function ArchivedPage() {
           })}
         </ul>
       )}
+      {r.pages > 1 ? (
+        <nav aria-label="Pages" className="mt-5 flex flex-wrap items-center justify-center gap-2">
+          {r.page > 1 ? (
+            <Link href={href(r.page - 1)} className="btn btn-secondary btn-sm">
+              ‹ Newer
+            </Link>
+          ) : null}
+          <span className="text-sm text-cream/60">
+            Page {r.page} of {r.pages}
+          </span>
+          {r.page < r.pages ? (
+            <Link href={href(r.page + 1)} className="btn btn-secondary btn-sm">
+              Older ›
+            </Link>
+          ) : null}
+        </nav>
+      ) : null}
+      {manage ? (
+        <section className="card mt-6 space-y-3" aria-labelledby="legacy-h">
+          <h2 id="legacy-h" className="text-lg font-bold">
+            Archive the UNRELEASED folder
+          </h2>
+          <LegacyImportPanel />
+        </section>
+      ) : null}
     </section>
   )
 }

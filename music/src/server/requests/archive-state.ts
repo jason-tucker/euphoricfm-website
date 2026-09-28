@@ -29,7 +29,7 @@ export async function archiveOpInProgress(db: DB, mediaId: number): Promise<Arch
 // media (direct, or through any removal request of it; it resumes the row),
 // a legacy import of the media (it resumes the row too), a restore of the
 // row, and, when asked, a reconcile of it.
-export async function liveArchiveJob(db: DB, row: Pick<ArchiveRow, 'id' | 'mediaId'>, opts: { includeReconcile?: boolean } = {}): Promise<boolean> {
+export async function liveArchiveJob(db: Pick<DB, 'execute'>, row: Pick<ArchiveRow, 'id' | 'mediaId'>, opts: { includeReconcile?: boolean } = {}): Promise<boolean> {
   const rows = await db.execute(sql`
     SELECT 1 FROM jobs
     WHERE status IN ('queued', 'running') AND (

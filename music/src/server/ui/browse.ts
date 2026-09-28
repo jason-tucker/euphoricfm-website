@@ -140,7 +140,13 @@ export type ArchivedSong = {
   }
 }
 
-export async function archivedSongs(db: DB, v: Viewer): Promise<ArchivedSong[]> {
+export const ARCHIVED_PAGE_SIZE = 100
+
+export type ArchivedPage = { rows: ArchivedSong[]; total: number; page: number; pages: number }
+
+// Newest first, ARCHIVED_PAGE_SIZE per page (page 1 = newest); `total` is
+// every row this viewer may see, so no row is ever silently cut off.
+export async function archivedSongs(db: DB, v: Viewer, opts: { page?: number } = {}): Promise<ArchivedPage> {
   const staff = isReviewer(v)
   if (!staff && !v.perms.has('submit')) throw forbidden()
   const visible = staff
@@ -153,6 +159,11 @@ export async function archivedSongs(db: DB, v: Viewer): Promise<ArchivedSong[]> 
   // reconciler also does, once it is stale), Restore settles and restores.
   // Members see settled rows only.
   const statuses = staff ? (['archiving', 'archived', 'restoring'] as const) : (['archived'] as const)
+  const where = and(inArray(archive.status, [...statuses]), visible)
+  const [{ n: total } = { n: 0 }] = await db.select({ n: count() }).from(archive).where(where)
+  const pages = Math.max(1, Math.ceil(total / ARCHIVED_PAGE_SIZE))
+  const want = opts.page !== undefined && Number.isSafeInteger(opts.page) && opts.page >= 1 ? opts.page : 1
+  const page = Math.min(want, pages)
   const rows = await db
     .select({
       a: archive,
@@ -167,9 +178,10 @@ export async function archivedSongs(db: DB, v: Viewer): Promise<ArchivedSong[]> 
     .leftJoin(mediaSnapshots, eq(mediaSnapshots.id, archive.snapshotId))
     .leftJoin(requests, eq(requests.id, archive.requestId))
     .leftJoin(users, eq(users.id, archive.linkedUserId))
-    .where(and(inArray(archive.status, [...statuses]), visible))
+    .where(where)
     .orderBy(desc(archive.archivedAt), desc(archive.id))
-    .limit(200)
+    .limit(ARCHIVED_PAGE_SIZE)
+    .offset((page - 1) * ARCHIVED_PAGE_SIZE)
   // Portal uploaders (staff only): the owner of the batch whose item went
   // live as this media id.
   const uploaders = new Map<number, { id: string; name: string | null }>()
@@ -182,7 +194,7 @@ export async function archivedSongs(db: DB, v: Viewer): Promise<ArchivedSong[]> 
       .where(inArray(items.mediaId, [...new Set(rows.map((r) => r.a.mediaId))]))
     for (const u of up) if (u.mediaId !== null && !uploaders.has(u.mediaId)) uploaders.set(u.mediaId, { id: u.id, name: u.name })
   }
-  return rows.map(({ a, title, artist, playlistIds, requestReason, linkedName, linkedDiscordId }) => {
+  const list = rows.map(({ a, title, artist, playlistIds, requestReason, linkedName, linkedDiscordId }): ArchivedSong => {
     const fileName = a.originalPath.slice(a.originalPath.lastIndexOf('/') + 1)
     const base: ArchivedSong = {
       id: a.id,
@@ -210,6 +222,7 @@ export async function archivedSongs(db: DB, v: Viewer): Promise<ArchivedSong[]> 
       },
     }
   })
+  return { rows: list, total, page, pages }
 }
 
 // Approved edits parked on a new artist (P4: requests.pending_artist_id,

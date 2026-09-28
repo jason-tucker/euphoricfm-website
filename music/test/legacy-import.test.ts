@@ -14,7 +14,7 @@ import type { Viewer } from '@/server/authz/predicates'
 import { closeDb, getDb } from '@/server/db/client'
 import { enqueueImportJobs, PLAN_KEY, summarize } from '@/server/requests/legacy-import'
 import { legacyImport, linkArchive, linkCandidates, releaseSong, restoreSong, unlinkArchive } from '@/server/requests/manage'
-import { archivedSongs } from '@/server/ui/browse'
+import { ARCHIVED_PAGE_SIZE, archivedSongs } from '@/server/ui/browse'
 import { TicketsClient } from '@/server/tickets/client'
 import { RetryLater } from '@/worker/handlers'
 import { archiveMedia, importLegacyArchive, reconcileArchive, restoreMedia, reverify, runRequestJob, type RequestsCtx } from '@/worker/requests/jobs'
@@ -477,6 +477,74 @@ describe.skipIf(!(DBENV() && MOCKS()))('v0.3.3 UNRELEASED import, release and vi
     expect((await fileById(m.id))!.path).toBe(`${art(`Brand New ${RUN}`)}/new_artist-${RUN}.m4a`)
   })
 
+  it('a second Release while the first is still queued is refused (409 archive_job_pending): the chosen artist and playlists stay, no second job, audit or artist; two presses at once: exactly one wins', async () => {
+    const folder = `Twice ${RUN}`
+    const artistId = await artist(folder, folder)
+    const m = await seed(`${L}/twice-${RUN}.m4a`, { artist: folder, title: 'Twice' })
+    await imp(m)
+    const id = (await archiveRow(m.id))!.id as number
+    const live = async () => ownerSql()`SELECT id FROM jobs WHERE kind = 'restore' AND status IN ('queued', 'running') AND payload->>'archiveId' = ${String(id)}`
+    const releases = async () => ownerSql()`SELECT detail FROM audit_log WHERE action = 'library.release' AND target_id = ${String(id)} ORDER BY id`
+    const created = async (f: string) => (await ownerSql()`SELECT count(*)::int AS n FROM artists WHERE folder = ${f}`)[0]!.n as number
+    // Queues paused: the live worker never claims these restore jobs.
+    await ownerSql()`INSERT INTO settings (key, value) VALUES ('queues_paused', '{"reason":"test_web_enqueue"}'::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+    try {
+      await releaseSong(ctx.db, manager(), id, { artist: folder, playlistIds: [2] })
+      await expect(releaseSong(ctx.db, manager(), id, { artist: `Other Twice ${RUN}`, newArtist: true, playlistIds: [3] })).rejects.toMatchObject({ status: 409, code: 'archive_job_pending' })
+      await expect(releaseSong(ctx.db, manager(), id, { artist: folder, playlistIds: [3] })).rejects.toMatchObject({ status: 409, code: 'archive_job_pending' })
+      expect(await live()).toHaveLength(1)
+      expect((await releases()).map((r) => r.detail)).toEqual([expect.objectContaining({ artistId, playlistIds: [2] })])
+      expect(await created(`Other Twice ${RUN}`)).toBe(0)
+      expect(await archiveRow(m.id)).toMatchObject({ status: 'archived', release_artist_id: artistId, release_playlist_ids: [2] })
+
+      // The first job is gone (as if it failed back to 'archived'): two
+      // presses at the same moment, one of them a new artist. The row lock
+      // lets exactly one through; the other is refused before any write.
+      await ownerSql()`UPDATE jobs SET status = 'done' WHERE kind = 'restore' AND status = 'queued' AND payload->>'archiveId' = ${String(id)}`
+      const nf = `Racing New ${RUN}`
+      const both = await Promise.allSettled([
+        releaseSong(ctx.db, manager(), id, { artist: folder, playlistIds: [3] }),
+        releaseSong(ctx.db, manager(), id, { artist: nf, newArtist: true, playlistIds: [] }),
+      ])
+      const won = both.findIndex((r) => r.status === 'fulfilled')
+      expect(both.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+      expect((both[1 - won] as PromiseRejectedResult).reason).toMatchObject({ status: 409, code: 'archive_job_pending' })
+      expect(await live()).toHaveLength(1)
+      expect(await releases()).toHaveLength(2)
+      expect(await created(nf)).toBe(won === 1 ? 1 : 0)
+      expect((await archiveRow(m.id))!.release_playlist_ids).toEqual(won === 0 ? [3] : [])
+    } finally {
+      await ownerSql()`UPDATE jobs SET status = 'done' WHERE kind = 'restore' AND status = 'queued' AND payload->>'archiveId' = ${String(id)}`
+      await ownerSql()`UPDATE settings SET value = 'null'::jsonb WHERE key = 'queues_paused'`
+    }
+  })
+
+  it('Archived songs is paged (newest first): every visible row is counted and reachable; an out-of-range page shows the last one', async () => {
+    const who = await user('4')
+    const base = 1_900_000_000 + Math.floor(Math.random() * 1_000_000)
+    const n = ARCHIVED_PAGE_SIZE + 30
+    const t0 = Date.UTC(2020, 0, 1)
+    try {
+      for (let i = 0; i < n; i++) {
+        await ownerSql()`INSERT INTO archive (media_id, original_path, archived_path, origin, status, archived_at, linked_user_id)
+          VALUES (${base + i}, ${`${L}/page-${RUN}-${i}.mp3`}, ${`${PREFIX}Removed/${base + i}/page-${RUN}-${i}.mp3`}, 'legacy_unreleased', 'archived', ${new Date(t0 + i * 60_000)}, ${who.id})`
+      }
+      const v = viewer(who.id, ['submit', 'request'])
+      const p1 = await archivedSongs(ctx.db, v)
+      expect(p1).toMatchObject({ total: n, page: 1, pages: 2 })
+      expect(p1.rows).toHaveLength(ARCHIVED_PAGE_SIZE)
+      expect(p1.rows[0]!.fileName).toBe(`page-${RUN}-${n - 1}.mp3`) // newest first
+      const p2 = await archivedSongs(ctx.db, v, { page: 2 })
+      expect(p2.rows).toHaveLength(30)
+      expect(new Set([...p1.rows, ...p2.rows].map((r) => r.id)).size).toBe(n) // none lost, none twice
+      expect(await archivedSongs(ctx.db, v, { page: 99 })).toMatchObject({ page: 2, pages: 2 })
+      // Staff count them too (the page says how many there are).
+      expect((await archivedSongs(ctx.db, manager())).total).toBeGreaterThanOrEqual(n)
+    } finally {
+      await ownerSql()`DELETE FROM archive WHERE media_id >= ${base} AND media_id < ${base + n}`
+    }
+  })
+
   it('visibility: staff see every archived song; a member sees what they uploaded or were linked to, read-only; link/unlink are manager-only and audited', async () => {
     const up = await user('8')
     const linked = await user('9')
@@ -497,7 +565,7 @@ describe.skipIf(!(DBENV() && MOCKS()))('v0.3.3 UNRELEASED import, release and vi
     await imp(u2)
     const r1 = (await archiveRow(u1.id))!
     const r2 = (await archiveRow(u2.id))!
-    const mine = (rows: Awaited<ReturnType<typeof archivedSongs>>) => rows.filter((r) => [ownRow.id, r1.id, r2.id].includes(r.id))
+    const mine = (p: Awaited<ReturnType<typeof archivedSongs>>) => p.rows.filter((r) => [ownRow.id, r1.id, r2.id].includes(r.id))
 
     // Members may not link; managers link one signed-in user, audited.
     await expect(linkArchive(ctx.db, viewer(reviewer.id, ['submit', 'review']), r1.id as number, { userId: linked.id })).rejects.toMatchObject({ status: 403 })

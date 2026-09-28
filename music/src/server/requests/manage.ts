@@ -192,12 +192,22 @@ export async function releaseSong(db: DB, v: Viewer, archiveId: number, input: u
     })
   }
   if (a.status !== 'archived') throw conflict('not_archived')
+  // A release already queued for this row (a second press before the worker
+  // picked the first up) would overwrite the chosen artist and playlists,
+  // queue a second job and audit a release that never happens.
+  if (await liveArchiveJob(db, a)) throw conflict('archive_job_pending')
   const chosen = [...new Set(p.data.playlistIds)].sort((x, y) => x - y)
   const assignable = new Set(await getIntList(db, 'assignable_playlist_ids'))
   if (chosen.some((id) => !assignable.has(id))) throw badRequest('playlist_not_assignable')
   const name = mainArtist(p.data.artist)
   if (!name) throw badRequest('invalid_release', { issues: ['artist required'] })
   return db.transaction(async (tx) => {
+    // Two presses at once: the row lock serializes them, and the second
+    // sees the first's queued job (committed before it gets the lock) and
+    // is refused before it creates an artist or touches the row.
+    const [locked] = await tx.select({ status: archive.status }).from(archive).where(eq(archive.id, a.id)).for('update')
+    if (!locked || locked.status !== 'archived') throw conflict('state_changed')
+    if (await liveArchiveJob(tx, a)) throw conflict('archive_job_pending')
     let artistRow = await resolveArtist(tx, name)
     let created = false
     if (artistRow && artistRow.status === 'pending') throw conflict('artist_pending')
