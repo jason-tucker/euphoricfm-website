@@ -9,6 +9,7 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as tus from 'tus-js-client'
 import { MAX_DURATION_MIN, mibOf, MIN_LADDER_BITRATE } from '@/lib/fit'
+import { parseSoundCloudUrl } from '@/lib/soundcloud'
 import type { UiItem } from '@/server/ui/queries'
 import { api, ApiError, messageFor } from '../api'
 import { errorText, uploadErrorText } from '../messages'
@@ -22,14 +23,18 @@ import { ACCEPT, changedFields, declaredType, type Entry, type Fields, fieldsOf,
 const CONCURRENCY = 2
 const POLL_MS = [1000, 1500, 2000, 3000, 4000, 5000]
 
-type ItemApi = Pick<UiItem, 'id' | 'batchId' | 'status' | 'title' | 'artist' | 'album' | 'genre' | 'durationS' | 'bitrate' | 'probeError' | 'hasCover' | 'inputFormat' | 'transcodeKbps'> & {
+type ItemApi = Pick<
+  UiItem,
+  'id' | 'batchId' | 'status' | 'title' | 'artist' | 'album' | 'genre' | 'durationS' | 'bitrate' | 'probeError' | 'hasCover' | 'inputFormat' | 'transcodeKbps' | 'source' | 'fetchStage' | 'fetchLicense' | 'sourceUrl'
+> & {
   prefill?: unknown
 }
 
 function entryFromItem(it: UiItem): Entry {
   return {
     key: `item-${it.id}`,
-    fileName: it.title ? `${it.artist ?? ''}${it.artist ? ' – ' : ''}${it.title}` : `Upload #${it.id}`,
+    source: it.source === 'soundcloud' ? 'soundcloud' : 'upload',
+    fileName: it.title ? `${it.artist ?? ''}${it.artist ? ' – ' : ''}${it.title}` : it.source === 'soundcloud' && it.sourceUrl ? it.sourceUrl : `Upload #${it.id}`,
     size: 0,
     phase: it.status === 'probing' ? 'probing' : it.status === 'rejected' ? 'rejected' : 'ready',
     progress: 1,
@@ -82,6 +87,9 @@ export function SubmitFlow({
   const [notes, setNotes] = useState('')
   const [dragging, setDragging] = useState(false)
   const [topError, setTopError] = useState<string | null>(null)
+  const [scUrl, setScUrl] = useState('')
+  const [scError, setScError] = useState<string | null>(null)
+  const [scBusy, setScBusy] = useState(false)
 
   const batchRef = useRef<Promise<number> | null>(initialBatchId ? Promise.resolve(initialBatchId) : null)
   const files = useRef(new Map<string, File>())
@@ -131,7 +139,11 @@ export function SubmitFlow({
           update(key, { phase: 'error', error: messageFor(e) })
           return
         }
-        if (it.status === 'probing') continue
+        if (it.status === 'probing') {
+          // A SoundCloud link reports where it is (fetch_stage) while it waits.
+          if (it.source === 'soundcloud') update(key, (x) => ({ item: { ...(x.item ?? {}), ...it } as UiItem }))
+          continue
+        }
         const item = { ...(entriesRef.current.find((x) => x.key === key)?.item ?? {}), ...it } as UiItem
         if (it.status === 'rejected') update(key, { phase: 'rejected', item })
         else if (it.status === 'withdrawn') drop(key)
@@ -250,6 +262,31 @@ export function SubmitFlow({
       added.push({ key, fileName: f.name, size: f.size, phase: c.block ? 'blocked' : 'queued', progress: 0, warning: c.warn, error: c.block, edits: fieldsOf(undefined) })
     }
     setEntries((es) => [...es, ...added])
+  }
+
+  // v0.4.0: a SoundCloud link. The shape is checked here first (the same
+  // rules as the server's), then the server records it and the worker fetches
+  // it; the card then follows it like an uploaded file.
+  const addLink = async () => {
+    setScError(null)
+    const p = parseSoundCloudUrl(scUrl)
+    if (!p.ok) {
+      setScError(errorText(p.code))
+      return
+    }
+    setScBusy(true)
+    try {
+      const bid = await ensureBatch()
+      const r = await api<{ id: number; url: string }>(`/api/batches/${bid}/soundcloud`, { json: { url: p.url } })
+      const key = `sc-${r.id}`
+      setEntries((es) => [...es, { key, source: 'soundcloud', fileName: r.url, size: 0, phase: 'probing', progress: 1, itemId: r.id, edits: fieldsOf(undefined) }])
+      setScUrl('')
+      void poll(key, r.id)
+    } catch (err) {
+      setScError(messageFor(err))
+    } finally {
+      setScBusy(false)
+    }
   }
 
   const remove = async (e: Entry) => {
@@ -386,15 +423,49 @@ export function SubmitFlow({
         />
         <p className="text-xs text-cream/50">If your connection drops or you reload the page, add the same files again and they continue where they stopped.</p>
 
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-cream/15 p-3 opacity-70">
-          <label htmlFor="sc-link" className="text-sm font-medium">
-            SoundCloud link
+        <form
+          noValidate
+          className="space-y-2 rounded-xl border border-cream/15 p-3"
+          data-testid="sc-form"
+          onSubmit={(ev) => {
+            ev.preventDefault()
+            if (!scBusy) void addLink()
+          }}
+        >
+          <label htmlFor="sc-link" className="block font-semibold">
+            Add from a SoundCloud link
           </label>
-          <input id="sc-link" className="input max-w-sm flex-1" placeholder="https://soundcloud.com/…" disabled aria-describedby="sc-soon" />
-          <span id="sc-soon" className="chip chip-muted">
-            Coming soon
-          </span>
-        </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              id="sc-link"
+              className="input min-w-0 flex-1"
+              type="text"
+              inputMode="url"
+              autoComplete="off"
+              spellCheck={false}
+              maxLength={512}
+              placeholder="https://soundcloud.com/artist/track-name"
+              value={scUrl}
+              aria-describedby="sc-help"
+              aria-invalid={scError ? 'true' : undefined}
+              onChange={(ev) => {
+                setScUrl(ev.target.value)
+                if (scError) setScError(null)
+              }}
+            />
+            <button type="submit" className="btn btn-primary" disabled={scBusy} data-testid="sc-add">
+              <span aria-hidden="true">＋</span> {scBusy ? 'Adding…' : 'Add from SoundCloud'}
+            </button>
+          </div>
+          <p id="sc-help" className="text-xs text-cream/55">
+            One public track per link (no playlists or sets). We download it for you, convert it to an MP3 and fill in the title, artist and genre from SoundCloud; you can edit them. 30 s to {MAX_DURATION_MIN} min.
+          </p>
+          {scError ? (
+            <p className="text-sm text-rose-200" role="alert">
+              {scError}
+            </p>
+          ) : null}
+        </form>
       </section>
 
       {topError ? <Notice tone="error">{topError}</Notice> : null}

@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from 'react'
 import { AUDIO_PAYLOAD_BYTES } from '@/lib/fit'
+import { parseSoundCloudUrl, soundcloudLabel } from '@/lib/soundcloud'
 import { ItemArtControl } from '../ItemArtControl'
 import { AudioPreview } from '../AudioPreview'
 import { Autocomplete } from '../Autocomplete'
@@ -71,10 +72,16 @@ export function FileCard({
   const changed = changedFields(e)
   const prefillYear = e.item?.prefill && typeof e.item.prefill.year === 'string' ? e.item.prefill.year : null
   const converted = convertedLabel(e.item?.inputFormat, e.item?.transcodeKbps)
-  const isWav = fileKind({ name: e.fileName, type: '' }) === 'wav'
+  // v0.4.0: added from a SoundCloud link
+  const sc = e.source === 'soundcloud' || e.item?.source === 'soundcloud'
+  const scStage = e.item?.fetchStage ?? 'queued'
+  // Only a link the SoundCloud rules accept is ever rendered as one.
+  const scLink = sc ? parseSoundCloudUrl(e.item?.sourceUrl ?? e.fileName) : null
+  const scUrl = scLink?.ok ? scLink.url : null
+  const isWav = !sc && fileKind({ name: e.fileName, type: '' }) === 'wav'
   // An MP3 over the audio budget is re-encoded by the probe (a hint only:
   // the probe decides, from the bytes).
-  const big = !isWav && e.size > AUDIO_PAYLOAD_BYTES
+  const big = !sc && !isWav && e.size > AUDIO_PAYLOAD_BYTES
 
   return (
     <li className="card space-y-3" data-entry={e.key} data-phase={e.phase}>
@@ -88,11 +95,23 @@ export function FileCard({
               .filter(Boolean)
               .join(' · ')}
           </p>
-          {converted ? (
-            <p className="mt-1">
-              <span className="chip chip-neutral" data-testid="converted-note">
-                {converted}
-              </span>
+          {sc || converted ? (
+            <p className="mt-1 flex flex-wrap items-center gap-2">
+              {sc ? (
+                <span className="chip chip-neutral" data-testid="soundcloud-note">
+                  {e.item?.fetchLicense || e.phase === 'ready' ? soundcloudLabel(e.item?.fetchLicense) : 'From SoundCloud'}
+                </span>
+              ) : null}
+              {converted ? (
+                <span className="chip chip-neutral" data-testid="converted-note">
+                  {converted}
+                </span>
+              ) : null}
+              {sc && scUrl ? (
+                <a className="link text-xs" href={scUrl} target="_blank" rel="noopener noreferrer nofollow">
+                  Open on SoundCloud ↗
+                </a>
+              ) : null}
             </p>
           ) : null}
         </div>
@@ -140,7 +159,13 @@ export function FileCard({
       {e.phase === 'attaching' || e.phase === 'probing' ? (
         <p className="text-sm text-sky-300" role="status">
           <span className="mr-2 inline-block size-3 animate-pulse rounded-full bg-sky-300" aria-hidden="true" />
-          {isWav
+          {sc
+            ? scStage === 'converting'
+              ? 'Fetched from SoundCloud. Converting it to an MP3…'
+              : scStage === 'fetching'
+                ? 'Fetching the track from SoundCloud… This can take a minute or two.'
+                : 'Waiting for its turn to be fetched from SoundCloud…'
+            : isWav
             ? 'Checking the WAV and converting it to an MP3… Large files can take a few minutes.'
             : big
               ? 'Checking the file and converting it down so it fits… This can take a few minutes.'
@@ -148,7 +173,7 @@ export function FileCard({
         </p>
       ) : null}
 
-      {e.phase === 'rejected' ? <Notice tone="error">{probeErrorText(e.item?.probeError)} This file will not be submitted.</Notice> : null}
+      {e.phase === 'rejected' ? <Notice tone="error">{probeErrorText(e.item?.probeError)} {sc ? 'This song' : 'This file'} will not be submitted.</Notice> : null}
 
       {ready && e.itemId ? (
         <>
@@ -182,7 +207,9 @@ export function FileCard({
                   {k in changed ? (
                     <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-cream/55">
                       <span className="chip chip-neutral">edited</span>
-                      <span className="truncate">File tag: {base[k] || '(empty)'}</span>
+                      <span className="truncate">
+                        {sc ? 'From SoundCloud' : 'File tag'}: {base[k] || '(empty)'}
+                      </span>
                       <button type="button" className="link" onClick={() => onEdit({ ...e.edits, [k]: base[k] })}>
                         Reset
                       </button>

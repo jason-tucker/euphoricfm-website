@@ -22,6 +22,8 @@ export type SettingsInput = {
   caps: { maxItemsPerBatch: number; ingestPerHour: number; ingestSpacingS: number } & Record<string, number>
   rights: { version: string; text: string }
   inviteUrl: string | null
+  // v0.4.0 kill switch (optional: older callers)
+  soundcloudEnabled?: boolean
 }
 
 const ids = (s: string) =>
@@ -52,6 +54,8 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
   const [spacing, setSpacing] = useState(String(initial.caps.ingestSpacingS))
   const [rightsText, setRightsText] = useState(initial.rights.text)
   const [invite, setInvite] = useState(initial.inviteUrl ?? '')
+  const [scOn, setScOn] = useState(initial.soundcloudEnabled ?? true)
+  const [scPerDay, setScPerDay] = useState(String(initial.caps.fetchesPerUserPerDay ?? 20))
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
 
@@ -67,7 +71,7 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
     if (fo.some((n) => !Number.isInteger(n) || n <= 0)) return setMsg({ tone: 'error', text: 'Events playlist ids must be a list of playlist ids.' })
     if (fo.some((n) => a.includes(n))) return setMsg({ tone: 'error', text: 'An Events playlist cannot also be assignable.' })
     if (!nm) return setMsg({ tone: 'error', text: 'Playlist names must be one per line, like: 2 = 1General Rotation' })
-    if (![autoClose, maxItems, perHour, spacing].every(posInt)) return setMsg({ tone: 'error', text: 'Numbers must be whole numbers greater than zero.' })
+    if (![autoClose, maxItems, perHour, spacing, scPerDay].every(posInt)) return setMsg({ tone: 'error', text: 'Numbers must be whole numbers greater than zero.' })
     if (!rightsText.trim()) return setMsg({ tone: 'error', text: 'The rights statement cannot be empty.' })
     if (invite.trim() && !/^https:\/\/(discord\.gg|discord\.com)\//.test(invite.trim())) return setMsg({ tone: 'error', text: 'The invite link must start with https://discord.gg/ or https://discord.com/.' })
 
@@ -78,13 +82,20 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
     if (!same(fo, initial.foreignPlaylistIds)) changes.push({ key: 'foreign_playlist_ids', value: fo })
     if (!same(nm, initial.playlistNames)) changes.push({ key: 'playlist_names', value: nm })
     if (Number(autoClose) !== initial.autoCloseDays) changes.push({ key: 'auto_close_days', value: Number(autoClose) })
-    const caps = { ...initial.caps, maxItemsPerBatch: Number(maxItems), ingestPerHour: Number(perHour), ingestSpacingS: Number(spacing) }
+    const caps = {
+      ...initial.caps,
+      maxItemsPerBatch: Number(maxItems),
+      ingestPerHour: Number(perHour),
+      ingestSpacingS: Number(spacing),
+      fetchesPerUserPerDay: Number(scPerDay),
+    }
     if (!same(caps, initial.caps)) changes.push({ key: 'caps', value: caps })
     if (rightsText.trim() !== initial.rights.text) {
       // A new text is a new version: submissions record which one was attested.
       changes.push({ key: 'rights_attestation', value: { version: new Date().toISOString().slice(0, 10) + '.' + Date.now().toString(36), text: rightsText.trim() } })
     }
     if ((invite.trim() || null) !== initial.inviteUrl) changes.push({ key: 'discord_invite_url', value: invite.trim() || null })
+    if (scOn !== (initial.soundcloudEnabled ?? true)) changes.push({ key: 'soundcloud_fetch_enabled', value: scOn })
     if (changes.length === 0) return setMsg({ tone: 'ok', text: 'Nothing changed.' })
 
     setBusy(true)
@@ -142,6 +153,16 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
         <Text id="maxitems" label="Max songs per batch" value={maxItems} onChange={setMaxItems} inputMode="numeric" />
         <Text id="perhour" label="Ingests per hour" value={perHour} onChange={setPerHour} inputMode="numeric" />
         <Text id="spacing" label="Seconds between ingests" value={spacing} onChange={setSpacing} inputMode="numeric" />
+        <div className="sm:col-span-2 flex flex-wrap items-start gap-3 rounded-xl border border-cream/15 p-3">
+          <input id="sc-enabled" type="checkbox" className="checkbox mt-1" checked={scOn} onChange={(e) => setScOn(e.target.checked)} />
+          <div>
+            <label className="font-medium" htmlFor="sc-enabled">
+              Allow “Add from a SoundCloud link”
+            </label>
+            <p className="text-xs text-cream/50">Kill switch: when off, new links are refused and queued links are not fetched. Songs already fetched are not affected.</p>
+          </div>
+        </div>
+        <Text id="sc-per-day" label="SoundCloud links per member per day" value={scPerDay} onChange={setScPerDay} inputMode="numeric" help="At most 20." />
         <div className="sm:col-span-2">
           <label className="label" htmlFor="rights">
             Rights statement (current version {initial.rights.version}; editing creates a new version)

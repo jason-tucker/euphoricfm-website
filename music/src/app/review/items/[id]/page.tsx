@@ -4,6 +4,7 @@ import { ItemArtControl } from '@/components/ItemArtControl'
 import { Thumb } from '@/components/Thumb'
 import { CommentThread, type UiComment } from '@/components/CommentThread'
 import { convertedLabel, duration, playlistLabel, songName, when } from '@/components/format'
+import { CANONICAL_URL_RE, soundcloudLabel } from '@/lib/soundcloud'
 import { ReviewItemActions } from '@/components/review/ReviewItemActions'
 import { ItemStatusChip, NewArtistBadge, Notice, PageTitle, TicketLink } from '@/components/ui'
 import { getDb } from '@/server/db/client'
@@ -56,7 +57,12 @@ export default async function ReviewItemPage({ params }: { params: Promise<{ id:
       <div className="card flex flex-wrap items-center gap-3">
         <ItemStatusChip status={it.status} />
         {it.kind === 'new_artist' ? <NewArtistBadge /> : null}
-        {it.source === 'soundcloud' ? <span className="chip chip-pending">SoundCloud import</span> : null}
+        {it.source === 'soundcloud' ? <span className="chip chip-pending">{soundcloudLabel(it.fetchLicense)}</span> : null}
+        {it.source === 'soundcloud' && it.sourceUrl && CANONICAL_URL_RE.test(it.sourceUrl) ? (
+          <a className="link text-sm" href={it.sourceUrl} target="_blank" rel="noopener noreferrer nofollow" data-testid="source-url">
+            {it.sourceUrl} ↗
+          </a>
+        ) : null}
         {it.isOwn ? <span className="chip chip-pending">your submission</span> : null}
         <TicketLink ticket={r.batch.ticket} />
       </div>
@@ -73,7 +79,7 @@ export default async function ReviewItemPage({ params }: { params: Promise<{ id:
             {[duration(it.durationS), it.bitrate ? `${Math.round(it.bitrate / 1000)} kbps` : null, convertedLabel(it.inputFormat, it.transcodeKbps)].filter(Boolean).join(' · ')}
           </p>
           <details className="text-xs text-cream/60">
-            <summary className="cursor-pointer hover:text-cream">Original file tags</summary>
+            <summary className="cursor-pointer hover:text-cream">{it.source === 'soundcloud' ? 'From SoundCloud' : 'Original file tags'}</summary>
             <dl className="mt-2 grid grid-cols-[6rem_1fr] gap-1">
               {['title', 'artist', 'album', 'genre', 'year'].map((k) => (
                 <div key={k} className="contents">
