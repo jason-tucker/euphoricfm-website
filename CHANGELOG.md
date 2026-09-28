@@ -5,6 +5,24 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.21.0] — 2026-09-28 — Shared top bar on both sites
+
+### Added
+- **One top bar for info.euphoric.fm and music.euphoric.fm** (Release 3 of the approved redesign), identical on both sites and for every role: EuphoricFM logo (→ info home) · Listen · About · Events · Stats · **Music ▾** · Contact, plus a gold **Web Player** button (→ `/player/`). Sticky, solid dark (no blur: the in-game browser paints blur black), 64px (56px on phones).
+  - **Music ▾** opens a panel with a gold **Submit music** button (→ `music.euphoric.fm/submit`), **My music** (→ `/dashboard`) and **Library** (→ `/library`) on the portal. Staff items (Review, Admin) never appear in the top bar; nothing in it mentions Discord.
+  - **Phones (<768px):** logo · gold Web Player · **Menu**, which opens a full-width sheet with every item (EuphoricFM: Listen, About, Events, Stats, Contact, Web Player; Music portal: Submit music, My music, Library). Below 380px the Menu button keeps only its icon.
+  - **Works without JavaScript** (the in-game CEF browser): Music ▾ and Menu are `<details>/<summary>`. A small script only adds closing on outside click, Escape (focus returns to the button) and after following a link.
+  - Current page marked with `aria-current`: Listen on the home page, Events on `/events/`, Web Player on `/player/`; jumping to a home section (`/#about` …) moves the mark there.
+  - **Contact** opens the existing contact modal on the home page; elsewhere it links to `/#contact`, and the home page opens the modal when it is loaded with `#contact` (so Contact works the same from `/events/`, `/player/` and the portal).
+  - Home page anchors: `#listen` (player + recently played), `#about`, `#stats`, `#contact` (the action row). In-page jumps land below the sticky bar (`scroll-padding-top`).
+- **Shared files** in `shared/`: `nav.json` (every item, label, target and icon) and `efm-bar.css` (the bar's styles; `efmh-` / `efms-` prefixed plain CSS on the shared colour tokens). The Astro header imports them directly; the portal (Docker context `music/`) keeps byte-for-byte copies in `music/src/shared/`, refreshed with `pnpm sync:shared` (`node shared/sync.mjs`).
+- **Drift test** `test/shared-drift.test.mjs` (in `pnpm test:site`, run by CI): fails if a portal copy differs from `shared/`, if the portal's colour tokens differ from `src/styles/tokens.css`, if the bar CSS uses blur/filter or a non-shared token, if `nav.json` loses an approved item or gains Discord/staff/Schedule items, or if any built page (`/`, `/events/`, `/player/`) renders a bar that is not exactly `nav.json` (every link's text and absolute target, in order). The portal's `test/ui/site-bar.test.tsx` checks its rendered bar against the same expected list.
+
+### Changed
+- The old centred wordmark header on `/`, `/events/` and `/player/` is replaced by the shared bar (the home page keeps its tagline as a small line under the bar; `/events/` keeps a visually hidden page heading). The Web Player's own slim bar (logo · Web Player · Full site) is gone: the full player uses the shared bar with Web Player marked, and the pop-out strip stays chrome-free.
+- Page content (`.phone`) is capped at the bar's width (72rem) so it lines up under the bar on wide screens instead of running edge to edge.
+- `BaseLayout` has a `header` slot, rendered outside `<main>`.
+
 ## [0.20.0] — 2026-09-28 — Web Player at /player/
 
 ### Added

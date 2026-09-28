@@ -115,6 +115,8 @@ const clientConfig = {
     <script is:inline define:vars={{ clientConfig }}>
       window.__EFM_CONFIG__ = Object.assign(window.__EFM_CONFIG__ || {}, clientConfig);
     </script>
+    <!-- The shared top bar (Header.astro) sits outside <main>, above the blobs. -->
+    <slot name="header" />
     <!-- relative + z-index keeps all content painting above the .efm-bg blobs. -->
     <main id="main" class="relative z-[1]"><slot /></main>
 

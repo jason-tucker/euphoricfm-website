@@ -2,7 +2,7 @@
  * Web Player (/player/) — src/pages/player.astro + src/scripts/player.ts.
  *
  * Plain CSS, every class prefixed .efmp- so nothing collides with the home
- * page or the future shared header. Colours come from tokens.css only.
+ * page or the shared top bar (shared/efm-bar.css, .efmh-*). Colours come from tokens.css only.
  *
  * Layout by available space (mobile-first):
  *   <700      stacked phone layout, history = 3 rows + "Show all"
@@ -113,35 +113,10 @@
 
 /* One focus ring for every control on the page. */
 .efmp-btn:focus-visible, .efmp-icon-btn:focus-visible, .efmp-play:focus-visible,
-.efmp-logo:focus-visible, .efmp-menu-item:focus-visible, .efmp-select select:focus-visible,
+.efmp-menu-item:focus-visible, .efmp-select select:focus-visible,
 .efmp-range:focus-visible {
   outline: 2px solid var(--efmp-focus);
   outline-offset: 2px;
-}
-
-/* ---- Top bar ------------------------------------------------------------ */
-.efmp-bar { border-bottom: 1px solid var(--efmp-line); background: rgb(12 12 16 / 0.92); }
-.efmp-bar-in { max-width: 1200px; margin: 0 auto; padding: 0 16px; height: 60px; display: flex; align-items: center; gap: 10px; }
-.efmp-logo {
-  display: inline-flex;
-  align-items: baseline;
-  padding: 6px 8px;
-  margin-left: -8px;
-  border-radius: 10px;
-  border: 1px solid transparent;
-  text-decoration: none;
-  white-space: nowrap;
-}
-.efmp-logo:hover { background: rgb(var(--efm-cream-rgb) / 0.06); border-color: var(--efmp-line); }
-.efmp-wm-e { font-family: 'Begaron', system-ui, sans-serif; color: rgb(var(--efm-sunburst-rgb)); font-size: 23px; letter-spacing: 0.02em; text-transform: uppercase; }
-.efmp-wm-f { font-family: 'Cortado Script', cursive; color: rgb(var(--efm-ruby-rgb)); font-size: 28px; line-height: 0; margin-left: 0.08em; }
-.efmp-bar-title { font-size: 12px; font-weight: 800; letter-spacing: 0.2em; text-transform: uppercase; color: var(--efmp-faint); padding-left: 12px; border-left: 1px solid var(--efmp-line); }
-.efmp-spacer { flex: 1; }
-/* Narrow phones: the logo + "Full site" button fill the bar on their own. */
-@media (max-width: 519px) {
-  .efmp-bar-title { display: none; }
-  .efmp-wm-e { font-size: 21px; }
-  .efmp-wm-f { font-size: 25px; }
 }
 
 /* ---- Page grid ---------------------------------------------------------- */
@@ -411,6 +386,7 @@ html.efm-popout body {
                     linear-gradient(160deg, rgb(var(--efm-midnight-rgb) / 0.9), rgb(var(--efm-ink-rgb)));
 }
 html.efm-popout .efm-bg,
+html.efm-popout .efmh,
 html.efm-popout .efmp-page { display: none; }
 html.efm-popout .efmp-mini {
   display: grid;

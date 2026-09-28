@@ -11,17 +11,19 @@ import RequestModal from '../components/RequestModal.astro';
 import ContactModal from '../components/ContactModal.astro';
 import BusinessAdModal from '../components/BusinessAdModal.astro';
 import Footer from '../components/Footer.astro';
+import { site } from '../site.config';
 ---
 
 <BaseLayout>
+  <Header slot="header" current="listen" />
   <div class="phone">
-    <Header />
+    <h1 class="efm-tagline"><span class="sr-only">{site.name}: </span>{site.tagline}</h1>
 
     <!-- Fully fluid hero. .efm-hero in global.css collapses to one column
          on narrow viewports (in-game phone) and grows to player + sidebar
          the moment there's enough room — no breakpoint jump, gap and padding
          interpolate via clamp(). -->
-    <div class="efm-hero">
+    <div class="efm-hero" id="listen">
       <div>
         <PlayerCard />
         <div class="efm-extras">
@@ -34,10 +36,10 @@ import Footer from '../components/Footer.astro';
       </aside>
     </div>
 
-    <div class="efm-extras">
+    <div class="efm-extras" id="about">
       <About />
     </div>
-    <div class="efm-extras">
+    <div class="efm-extras" id="stats">
       <Stats />
     </div>
     <Footer />

@@ -67,7 +67,8 @@ src/
   styles/global.css           Tailwind v4 CSS-first @theme config + @font-face
                               + component layer (colours resolve to tokens.css)
   components/
-    Header.astro              wordmark (Begaron + Cortado Script)
+    Header.astro              the shared top bar (shared/nav.json + shared/efm-bar.css;
+                              the portal renders the same data in SiteBar.tsx)
     PlayerCard.astro          live player: now-playing, progress, play/volume,
                               up-next, Web Audio analyser feeding --efm-* vars
     ListenButton.astro        HTML5 audio + volume (merged into PlayerCard)
