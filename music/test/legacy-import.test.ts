@@ -587,7 +587,8 @@ describe.skipIf(!(DBENV() && MOCKS()))('v0.3.3 UNRELEASED import, release and vi
     expect(staffView.find((r) => r.id === ownRow.id)).toMatchObject({ label: 'Removed', reason: 'Left the label', staff: { uploader: { id: up.id } } })
 
     const upView = mine(await archivedSongs(ctx.db, viewer(up.id, ['submit', 'request'])))
-    expect(upView).toEqual([{ id: ownRow.id, label: 'Removed', title: `Own ${RUN}`, artist: `Own ${RUN}`, fileName: 'own.mp3', archivedAt: expect.any(String), reason: 'Left the label' }])
+    // The manager's archive reason is staff-only (V-1): the uploader gets none.
+    expect(upView).toEqual([{ id: ownRow.id, label: 'Removed', title: `Own ${RUN}`, artist: `Own ${RUN}`, fileName: 'own.mp3', archivedAt: expect.any(String), reason: null }])
     const linkedView = mine(await archivedSongs(ctx.db, viewer(linked.id, ['submit', 'request'])))
     expect(linkedView.map((r) => [r.id, r.label])).toEqual([[r1.id, 'Unreleased']])
     expect(linkedView[0]!.staff).toBeUndefined() // read-only: no paths, playlists, ids
@@ -598,5 +599,30 @@ describe.skipIf(!(DBENV() && MOCKS()))('v0.3.3 UNRELEASED import, release and vi
     expect(mine(await archivedSongs(ctx.db, viewer(linked.id, ['submit', 'request'])))).toEqual([])
     const ul = (await ownerSql()`SELECT detail FROM audit_log WHERE action = 'archive.unlink' AND target_id = ${String(r1.id)}`)[0]!
     expect(ul.detail).toMatchObject({ previousUserId: linked.id })
+  })
+
+  it('reasons (V-1): a member never sees a reason someone else wrote, only their own removal request\'s; staff see every reason', async () => {
+    const me = await user('4')
+    const someone = await user('3')
+    const reviewer = await user('2')
+    const base = 800_000_000 + Math.floor(Math.random() * 1_000_000) * 10
+    // A: a manager's archive, with the manager's reason, linked to `me`.
+    // B: archived by `me`'s own removal request (its reason is theirs).
+    // C: archived by someone else's removal request, linked to `me`.
+    const [rb] = await ownerSql()`INSERT INTO requests (owner_user_id, kind, media_id, target_path, status, reason) VALUES (${me.id}, 'removal', ${base + 1}, ${`${PREFIX}Music/Artists/V1/b.mp3`}, 'done', 'My own words') RETURNING id`
+    const [rc] = await ownerSql()`INSERT INTO requests (owner_user_id, kind, media_id, target_path, status, reason) VALUES (${someone.id}, 'removal', ${base + 2}, ${`${PREFIX}Music/Artists/V1/c.mp3`}, 'done', 'Someone else wrote this') RETURNING id`
+    const [a, b, c] = await ownerSql()`INSERT INTO archive (media_id, original_path, archived_path, request_id, reason, linked_user_id, status, origin) VALUES
+      (${base}, ${`${PREFIX}Music/Artists/V1/a.mp3`}, ${`${PREFIX}Removed/${base}/a.mp3`}, NULL, 'Manager note', ${me.id}, 'archived', 'portal'),
+      (${base + 1}, ${`${PREFIX}Music/Artists/V1/b.mp3`}, ${`${PREFIX}Removed/${base + 1}/b.mp3`}, ${rb!.id}, NULL, ${me.id}, 'archived', 'portal'),
+      (${base + 2}, ${`${PREFIX}Music/Artists/V1/c.mp3`}, ${`${PREFIX}Removed/${base + 2}/c.mp3`}, ${rc!.id}, NULL, ${me.id}, 'archived', 'portal')
+      RETURNING id`
+    try {
+      const pick = (p: Awaited<ReturnType<typeof archivedSongs>>) => Object.fromEntries(p.rows.filter((r) => [a!.id, b!.id, c!.id].includes(r.id)).map((r) => [r.id, r.reason]))
+      expect(pick(await archivedSongs(ctx.db, viewer(me.id, ['submit', 'request'])))).toEqual({ [a!.id]: null, [b!.id]: 'My own words', [c!.id]: null })
+      expect(pick(await archivedSongs(ctx.db, viewer(reviewer.id, ['submit', 'review'])))).toEqual({ [a!.id]: 'Manager note', [b!.id]: 'My own words', [c!.id]: 'Someone else wrote this' })
+      expect(pick(await archivedSongs(ctx.db, manager()))).toEqual({ [a!.id]: 'Manager note', [b!.id]: 'My own words', [c!.id]: 'Someone else wrote this' })
+    } finally {
+      await ownerSql()`DELETE FROM archive WHERE media_id >= ${base} AND media_id <= ${base + 2}`
+    }
   })
 })

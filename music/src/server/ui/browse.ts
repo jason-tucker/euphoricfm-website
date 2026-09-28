@@ -115,8 +115,12 @@ export type PendingRequest = Awaited<ReturnType<typeof pendingRequests>>[number]
 // staff (review or manage) see all of them, with their state; a member sees
 // an archived song only if they uploaded it through the portal (an item of
 // a batch they own carries that media id) or a manager linked them to it,
-// read-only: title, artist, when, why, and whether it is an Unreleased or a
-// Removed song. Nothing else (no paths, no playlists, no files).
+// read-only: title, artist, when, and whether it is an Unreleased or a
+// Removed song. Nothing else (no paths, no playlists, no files). The reason
+// is staff-only (a manager's archive reason, or the removal request's), with
+// one exception: a member sees the reason of their OWN removal request, the
+// words they wrote themselves. Otherwise a member's row has reason null and
+// the page shows a neutral status line.
 export type ArchivedSong = {
   id: number
   label: 'Unreleased' | 'Removed'
@@ -171,6 +175,7 @@ export async function archivedSongs(db: DB, v: Viewer, opts: { page?: number } =
       artist: mediaSnapshots.artist,
       playlistIds: mediaSnapshots.playlistIds,
       requestReason: requests.reason,
+      requestOwner: requests.ownerUserId,
       linkedName: users.name,
       linkedDiscordId: users.discordId,
     })
@@ -194,7 +199,7 @@ export async function archivedSongs(db: DB, v: Viewer, opts: { page?: number } =
       .where(inArray(items.mediaId, [...new Set(rows.map((r) => r.a.mediaId))]))
     for (const u of up) if (u.mediaId !== null && !uploaders.has(u.mediaId)) uploaders.set(u.mediaId, { id: u.id, name: u.name })
   }
-  const list = rows.map(({ a, title, artist, playlistIds, requestReason, linkedName, linkedDiscordId }): ArchivedSong => {
+  const list = rows.map(({ a, title, artist, playlistIds, requestReason, requestOwner, linkedName, linkedDiscordId }): ArchivedSong => {
     const fileName = a.originalPath.slice(a.originalPath.lastIndexOf('/') + 1)
     const base: ArchivedSong = {
       id: a.id,
@@ -203,7 +208,9 @@ export async function archivedSongs(db: DB, v: Viewer, opts: { page?: number } =
       artist: artist ?? null,
       fileName,
       archivedAt: a.archivedAt.toISOString(),
-      reason: a.reason ?? requestReason ?? null,
+      // archive.reason is always a manager's (manage.ts archiveLibrary); a
+      // request's reason was written by the request's owner.
+      reason: staff ? (a.reason ?? requestReason ?? null) : requestOwner === v.userId ? (requestReason ?? null) : null,
     }
     if (!staff) return base
     return {

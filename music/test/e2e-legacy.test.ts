@@ -130,6 +130,19 @@ describe.skipIf(!E2E())('v0.3.3 UNRELEASED import and Archived songs through the
     expect(after.text).not.toContain('Release…')
     expect(after.text).not.toContain(`Removed/${a.id}`) // no paths for members
     expect(after.text).not.toContain('Link a member')
+    // V-1: a removal reason someone else wrote is staff-only; the member's
+    // row says "Removed from the station" instead.
+    const mid = 900_000_000 + Math.floor(Math.random() * 1_000_000)
+    await ownerSql()`INSERT INTO archive (media_id, original_path, archived_path, reason, linked_user_id, status, origin) VALUES (${mid}, ${`${PREFIX}Music/Artists/${folder}/v1-${RUN}.mp3`}, ${`${PREFIX}Removed/${mid}/v1-${RUN}.mp3`}, ${`Manager-only note ${RUN}`}, ${u!.id}, 'archived', 'portal')`
+    try {
+      const mv = await html(member, '/library/archived')
+      expect(mv.text).toContain(`v1-${RUN}.mp3`)
+      expect(mv.text).toContain('Removed from the station')
+      expect(mv.text).not.toContain(`Manager-only note ${RUN}`)
+      expect((await html(manager, '/library/archived')).text).toContain(`Manager-only note ${RUN}`)
+    } finally {
+      await ownerSql()`DELETE FROM archive WHERE media_id = ${mid}`
+    }
     const au = await ownerSql()`SELECT actor_discord_id, detail FROM audit_log WHERE action = 'archive.link' AND target_id = ${String(archiveId)}`
     expect(au[0]!.detail).toMatchObject({ userId: u!.id, previousUserId: null })
     expect((await req(manager, `/api/archive/${archiveId}/link`, { method: 'DELETE' })).status).toBe(200)

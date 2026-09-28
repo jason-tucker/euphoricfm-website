@@ -68,7 +68,7 @@ export default async function ArchivedPage({ searchParams }: { searchParams: Pro
                   </p>
                   <p className="truncate text-xs text-cream/60">
                     Archived {when(a.archivedAt)}
-                    {a.reason ? ` · ${a.reason}` : a.label === 'Unreleased' ? ' · from the UNRELEASED folder' : ''}
+                    {a.reason ? ` · ${a.reason}` : a.label === 'Unreleased' ? ' · from the UNRELEASED folder' : staff ? '' : ' · Removed from the station'}
                   </p>
                   {st ? (
                     <p className="truncate text-xs text-cream/50">
