@@ -1,5 +1,18 @@
 # Changelog — EFM Music Portal (`music/`)
 
+## [0.3.7] — 2026-09-28 — Shared EuphoricFM top bar and portal tabs
+
+### Added
+- **The shared EuphoricFM top bar** (`SiteBar.tsx`), the same as on info.euphoric.fm and the same for every role: logo (→ info home) · Listen · About · Events · Stats · **Music ▾** · Contact · gold **Web Player**. Info items link to `https://info.euphoric.fm/…`; the Music ▾ panel (gold Submit music, My music, Library) stays on the portal. Music is marked as the current section (the open page is marked inside the panel). Phones get logo · Web Player · Menu with a full-width sheet. Menus are `<details>/<summary>`, so they work without JavaScript; the client part only closes them on outside click, Escape or after a link. Built from `src/shared/nav.json` + `src/shared/efm-bar.css`, byte-for-byte copies of the repo's `shared/` files (checked by the site's drift test).
+- **Portal second row** under the top bar: bordered tabs **Home · My music · Submit · Library**, plus **Review** (reviewers/managers) and **Admin** (admins), with the account menu on the right (initial, name, role, Sign out) or **Sign in** when signed out. The row scrolls away with the page; on phones the tabs are one sideways-scrolling strip. A batch page highlights My music.
+- `test/ui/site-bar.test.tsx`: the rendered bar equals `nav.json` exactly (same expected list as the site's drift test) and is identical for signed-out, member and admin viewers; menus are details/summary; outside click and Escape close them; second-row tabs per role; tab highlighting.
+
+### Changed
+- The old header (wordmark + "Music", nav, account menu) is replaced by the two rows above. The account menu now opens right-aligned under its button, so it no longer runs off-screen, and the header has no blur.
+- Page width is 72rem (was 64rem), the same as the top bar, with 24px side padding from 768px, so content lines up under the bar.
+- `tokens.css` gains `--efm-ok-rgb` so it matches the site's tokens exactly (enforced by the site's drift test).
+- Removed the unused `.menu-panel` / `.menu-item` styles.
+
 ## [0.3.6] — 2026-09-28 — Unreleased songs in the archive
 
 The pre-portal folder `UNRELEASED-DO NOT ADD TO ROTATION/` on station 1 (50 media rows: 45 `.m4a`, 5 `.mp3`; one of them, media 5112, in *1General Rotation*) moves into the portal archive and shows under **Archived songs** as *Unreleased*. Archived songs are now visible to the members they belong to.
