@@ -72,6 +72,7 @@ function fitFixtures() {
     // (-loglevel fatal: the concat demuxer warns at every clip boundary)
     ff(['-loglevel', 'fatal', '-f', 'concat', '-safe', '0', '-i', list, '-t', String(seconds), '-c', 'copy', ...plain, join(DIR, name)])
   }
+  loop('clip-320k-44k.mp3', 10 * 60, 'fit-10m-320k.mp3') // 24 MB: fits (trailing-data case)
   loop('clip-320k-44k.mp3', 14 * 60, 'fit-14m-320k.mp3') // 33.6 MB: fits, stays untouched
   loop('clip-320k-44k.mp3', 16 * 60, 'fit-16m-320k.mp3') // 38.4 MB → 256 kbps
   loop('clip-320k-48k.mp3', 1090, 'fit-1090s-320k-48k.mp3') // 43.6 MB, 48 kHz, just past 1080 s → 192 kbps at 48 kHz

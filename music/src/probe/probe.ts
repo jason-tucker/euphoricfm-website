@@ -97,6 +97,52 @@ export function judgeFfprobe(json: unknown, maxDurationS: number = MAX_DURATION_
   }
 }
 
+// The frames the mp3 demuxer actually reads, counted over the WHOLE file
+// (demux only, nothing decoded): the duration a decode would really produce.
+// ffprobe's -show_format duration comes from the upload's own Xing / Info
+// header when it has one, and a forged frame count there makes a long file
+// look short; a file without one gets an estimate that trailing data inflates.
+export function countFramesArgs(file: string): string[] {
+  return [
+    '-hide_banner',
+    '-v', 'error',
+    '-protocol_whitelist', 'file,pipe',
+    '-f', 'mp3',
+    '-threads', '1',
+    '-count_packets',
+    '-select_streams', 'a:0',
+    '-show_entries', 'stream=nb_read_packets,sample_rate',
+    '-print_format', 'json',
+    `file:${file}`,
+  ]
+}
+
+const countOut = z.object({
+  streams: z.array(z.object({ nb_read_packets: z.string().regex(/^\d{1,9}$/), sample_rate: z.string().regex(/^\d{1,6}$/) }).passthrough()).length(1),
+})
+
+// Counted duration in seconds: frames × samples per frame (1152 for MPEG-1
+// Layer III, 576 for MPEG-2 / 2.5) / rate. The rate must be the one ffprobe
+// reported for the stream. ~1.3 s for 62 MB on the test host.
+export const COUNT_TIMEOUT_S = 60
+export async function countedDurationS(file: string, work: string, sampleRate: number): Promise<number> {
+  const fp = await runLimited('ffprobe', countFramesArgs(file), { timeoutS: COUNT_TIMEOUT_S, vmemKb: 524288, cwd: work, nice: CONVERT_NICE })
+  if (fp.timedOut) throw new ProbeReject('ffprobe_timeout')
+  if (fp.code !== 0) throw new ProbeReject('not_mp3')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fp.stdout.toString('utf8'))
+  } catch {
+    throw new ProbeReject('ffprobe_unparseable')
+  }
+  const r = countOut.safeParse(parsed)
+  if (!r.success) throw new ProbeReject('ffprobe_unparseable')
+  const s = r.data.streams[0]!
+  if (Number(s.sample_rate) !== sampleRate) throw new ProbeReject('not_mp3')
+  const frames = Number(s.nb_read_packets)
+  return (frames * (sampleRate >= 32000 ? 1152 : 576)) / sampleRate
+}
+
 // ffprobe, forced mp3 demuxer, file/pipe protocols only, 1 thread, timeout
 // 20 s, address-space limit; stdin is empty.
 async function ffprobeMp3(file: string, work: string, maxDurationS: number = MAX_DURATION_S): Promise<Mp3Info> {
@@ -206,10 +252,17 @@ async function probeMp3(job: Job, copy: string, sha256: string, size: number): P
       inputFormat: 'mp3',
     }
   }
-  // 6. too big: re-encode (transcode.ts) at the highest ladder rate that fits
-  const bitrate = pickBitrate(info.durationS)
-  if (bitrate === null) throw new ProbeReject('too_long')
+  // 6. too big: re-encode (transcode.ts) at the highest ladder rate that fits.
+  //    The duration that picks the rate (and bounds the decode) is COUNTED
+  //    from the frames the demuxer reads, not taken from the upload's own
+  //    header: a forged Xing frame count would otherwise pass a 40-min file
+  //    as 10 min into a decode that only the -t cap stops, and trailing data
+  //    would inflate the estimate of a file without one.
   if (info.sampleRate === null || !MP3_RATES.has(info.sampleRate) || info.channels === null || info.channels > 2) throw new ProbeReject('not_mp3')
+  const durationS = await countedDurationS(copy, job.work, info.sampleRate)
+  if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
+  const bitrate = pickBitrate(durationS)
+  if (bitrate === null) throw new ProbeReject('too_long')
   const out = join(job.work, 'out.mp3')
   const c = await runLimited('ffmpeg', mp3TranscodeArgs(copy, out, { sampleRate: info.sampleRate, channels: info.channels }, bitrate), {
     timeoutS: CONVERT_TIMEOUT_S,
@@ -220,10 +273,10 @@ async function probeMp3(job: Job, copy: string, sha256: string, size: number): P
   if (c.timedOut) throw new ProbeReject('reencode_timeout')
   if (c.code !== 0) throw new ProbeReject('reencode_failed')
   // 7. the MP3 must pass as an upload would, at the chosen rate, and as long
-  //    as the original (ffprobe's duration of a VBR file without a Xing
-  //    header is an estimate, hence the tolerance)
-  const tolerance = Math.max(2, info.durationS * 0.02)
-  const enc = await checkEncoded(job, out, bitrate, info.durationS, tolerance, { tooLarge: 'reencoded_too_large', invalid: 'reencode_invalid' })
+  //    as the original's counted frames (the encoder's delay / padding
+  //    frames and a resample shift it a little, hence the tolerance)
+  const tolerance = Math.max(2, durationS * 0.02)
+  const enc = await checkEncoded(job, out, bitrate, durationS, tolerance, { tooLarge: 'reencoded_too_large', invalid: 'reencode_invalid' })
   // 8. the MP3 replaces the original under the same upload id
   const outSha = await publishEncoded(job, out)
   // 9. cover (from the original's tags), last

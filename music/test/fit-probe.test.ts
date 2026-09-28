@@ -30,7 +30,7 @@ import {
 } from '@/lib/fit'
 import { runLimited } from '@/probe/exec'
 import { runFinalize } from '@/probe/finalize'
-import { runProbe } from '@/probe/probe'
+import { countedDurationS, countFramesArgs, runProbe } from '@/probe/probe'
 import { mp3TargetRate, mp3TranscodeArgs } from '@/probe/transcode'
 import { CONVERT_NICE, CONVERT_TIMEOUT_S, CONVERT_VMEM_KB } from '@/probe/wav'
 import { probeRequest, spoolResult } from '@/server/spool/protocol'
@@ -71,6 +71,23 @@ function isCbr(file: string): boolean {
   const max = sizes.reduce((a, b) => Math.max(a, b), 0)
   const min = sizes.reduce((a, b) => Math.min(a, b), Infinity)
   return sizes.length > 100 && max - min <= 1
+}
+
+// A copy of `data` whose Xing / Info header claims `seconds` (44.1 kHz,
+// 1152 samples per frame); the byte count stays true, so ffmpeg trusts it.
+function forgeXingFrames(data: Buffer, seconds: number): Buffer {
+  const b = Buffer.from(data)
+  const at = [b.indexOf('Xing', 0, 'latin1'), b.indexOf('Info', 0, 'latin1')].filter((i) => i >= 0 && i < 64)[0]
+  if (at === undefined) throw new Error('no Xing / Info header')
+  expect(b.readUInt32BE(at + 4) & 0x03).toBe(0x03) // frames and bytes fields present
+  b.write('Xing', at, 'latin1')
+  b.writeUInt32BE(Math.round((seconds * 44100) / 1152), at + 8)
+  return b
+}
+function stageTmp(data: Buffer): string {
+  const f = join(mkdtempSync(join(root, 'tmp-')), 'x.mp3')
+  writeFileSync(f, data)
+  return f
 }
 
 const basicTags = (title: string) => [frameV3('TIT2', textV3(title)), frameV3('TPE1', textV3('Fit Artist')), frameV3('TALB', textV3('Fit Album')), frameV3('TCON', textV3('Trance'))]
@@ -247,6 +264,52 @@ describe('MP3 inputs', () => {
     expect(existsSync(path)).toBe(false)
   }, 120_000)
 
+  // Review finding S2: the rate (and so how long the decode runs) came from
+  // ffprobe's duration, which an upload's own Xing header sets. Now it is
+  // counted from the frames the demuxer reads (countedDurationS).
+  it('a forged Xing frame count (26 min claiming 10 min) → too_long from the counted frames, before anything decodes', async () => {
+    const data = forgeXingFrames(fxBuf('fit-26m-320k.mp3'), 600)
+    expect(Number(ffprobeJson(stageTmp(data)).format.duration)).toBeCloseTo(600, 0) // the lie works on ffprobe's header read
+    const { r, path } = await probe(data)
+    // (before: pickBitrate(600) = 320k, a decode run to the -t cap, then reencoded_too_large)
+    expect(r).toMatchObject({ ok: false, error: 'too_long', released: true })
+    expect(existsSync(path)).toBe(false)
+  }, 120_000)
+
+  it('a forged Xing frame count (16 min claiming 10 min) → the rate its real length allows (256k), not 320k', async () => {
+    const data = forgeXingFrames(fxBuf('fit-16m-320k.mp3'), 600)
+    const { r, path } = await probe(data)
+    if (!r.ok || r.type !== 'probe' || !('sha256' in r)) throw new Error(JSON.stringify(r))
+    expect(r).toMatchObject({ inputFormat: 'mp3', transcodeKbps: 256, bitrate: 256000 })
+    expect(r.durationS).toBeGreaterThanOrEqual(959)
+    expect(r.durationS).toBeLessThanOrEqual(961)
+    expect(ffprobeJson(path).streams[0]).toMatchObject({ bit_rate: '256000' })
+  }, 600_000)
+
+  it('countedDurationS counts the frames: exact for a CBR file, unmoved by a forged header', async () => {
+    const work = mkdtempSync(join(root, 'cnt-'))
+    expect(await countedDurationS(fx('fit-16m-320k.mp3'), work, 44100)).toBeCloseTo(960, 0)
+    expect(await countedDurationS(stageTmp(forgeXingFrames(fxBuf('fit-16m-320k.mp3'), 600)), work, 44100)).toBeCloseTo(960, 0)
+    await expect(countedDurationS(fx('fit-16m-320k.mp3'), work, 48000)).rejects.toMatchObject({ code: 'not_mp3' })
+    expect(countFramesArgs('/w/in.mp3').join(' ')).toBe(
+      '-hide_banner -v error -protocol_whitelist file,pipe -f mp3 -threads 1 -count_packets -select_streams a:0 -show_entries stream=nb_read_packets,sample_rate -print_format json file:/w/in.mp3',
+    )
+  }, 120_000)
+
+  // Review finding m1: trailing data after the last frame inflated ffprobe's
+  // duration, so the re-encode's output was refused as reencode_invalid.
+  it('10 min of 320 kbps + 14 MiB of trailing zero bytes (38.7 MB) → re-encoded at 320k, as long as its real audio', async () => {
+    const data = Buffer.concat([fxBuf('fit-10m-320k.mp3'), Buffer.alloc(14 * MIB)])
+    expect(data.length).toBeGreaterThan(MAX_UPLOAD_BYTES)
+    const { r, path } = await probe(data)
+    if (!r.ok || r.type !== 'probe' || !('sha256' in r)) throw new Error(JSON.stringify(r))
+    expect(r).toMatchObject({ inputFormat: 'mp3', transcodeKbps: 320, bitrate: 320000 })
+    expect(r.durationS).toBeGreaterThanOrEqual(599)
+    expect(r.durationS).toBeLessThanOrEqual(601)
+    expect(r.size).toBeLessThan(25 * 1000 * 1000)
+    expect(Number(ffprobeJson(path).format.duration)).toBeCloseTo(600, 0)
+  }, 600_000)
+
   it('the admin-lowered MP3 cap from the request applies to an actual MP3', async () => {
     const data = fxBuf('tagged-png.mp3')
     expect((await probe(data, { maxMp3Bytes: data.length - 1 })).r).toMatchObject({ ok: false, error: 'mp3_too_large', released: true })
@@ -258,7 +321,7 @@ describe('MP3 inputs', () => {
     expect(a).toContain('-nostdin')
     expect(a).toContain('-protocol_whitelist file,pipe -threads 1 -filter_threads 1 -vn -sn -dn -c:a mp3float -f mp3 -i file:/w/in.mp3')
     expect(a).toContain('-map 0:a:0 -map_metadata -1 -map_chapters -1 -vn -sn -dn')
-    expect(a).toContain(`-ar 44100 -t ${MAX_DURATION_S + 5} -c:a libmp3lame -b:a 256k -threads 1 -id3v2_version 0 -write_id3v1 0 -f mp3 file:/w/out.mp3`)
+    expect(a).toContain(`-ar 44100 -t ${MAX_DURATION_S + 5} -fs ${AUDIO_BUDGET_BYTES + 1} -c:a libmp3lame -b:a 256k -threads 1 -id3v2_version 0 -write_id3v1 0 -f mp3 file:/w/out.mp3`)
     expect(mp3TranscodeArgs('/w/in.mp3', '/w/out.mp3', { sampleRate: 48000, channels: 1 }, 192_000).join(' ')).not.toMatch(/-ar |-ac /)
     expect([44100, 48000, 32000, 24000, 22050, 16000, 12000, 11025, 8000].map(mp3TargetRate)).toEqual([44100, 48000, 44100, 44100, 44100, 44100, 44100, 44100, 44100])
     expect(() => mp3TranscodeArgs('/w/in.mp3', '/w/out.mp3', { sampleRate: 44100, channels: 2 }, 330_000)).toThrow()
@@ -278,6 +341,34 @@ describe('MP3 inputs', () => {
     expect(j.streams).toHaveLength(1)
     expect(j.streams[0]).toMatchObject({ codec_name: 'mp3', sample_rate: '44100', channels: 2, bit_rate: '320000' })
     expect(Number(j.format.duration)).toBeCloseTo(60, 0)
+  }, 120_000)
+})
+
+// Review finding S1: finalize holds the final-file cap itself.
+describe('finalize never publishes a file over MAX_UPLOAD_BYTES', () => {
+  it('890 s of 320 kbps (35.6 MB, within finalize\'s input cap) + a 1.5 MiB cover → final_too_large, nothing published', async () => {
+    const upload = randomUUID().replace(/-/g, '')
+    execFileSync('ffmpeg', ['-v', 'error', '-f', 'mp3', '-i', fx('fit-16m-320k.mp3'), '-t', '890', '-c', 'copy', '-id3v2_version', '0', '-write_id3v1', '0', '-f', 'mp3', join(dirs.uploads, upload)])
+    const audio = readFileSync(join(dirs.uploads, upload))
+    expect(audio.length).toBeLessThanOrEqual(MAX_UPLOAD_BYTES)
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(1.5 * MIB - 6, 0x55), Buffer.from([0xff, 0xd9])])
+    expect(audio.length + jpeg.length).toBeGreaterThan(MAX_UPLOAD_BYTES)
+    const coverFile = `cover-${randomUUID()}.jpg`
+    writeFileSync(join(dirs.uploads, coverFile), jpeg)
+    const id = randomUUID()
+    const fin = await runFinalize(
+      { v: 1, id, type: 'finalize', upload, approvedSha256: sha(audio), tags: { title: 'Big', artist: 'A', album: 'B', genre: 'Trance' }, cover: { file: coverFile, sha256: sha(jpeg) } },
+      { uploads: dirs.uploads, work: dirs.work, final: finalDir() },
+    )
+    expect(fin).toMatchObject({ ok: false, error: 'final_too_large' })
+    expect(existsSync(join(finalDir(), `${id}.mp3`))).toBe(false)
+    // the same audio without the cover fits, and is published
+    const ok = await runFinalize(
+      { v: 1, id: randomUUID(), type: 'finalize', upload, approvedSha256: sha(audio), tags: { title: 'Big', artist: 'A', album: 'B', genre: 'Trance' }, cover: null },
+      { uploads: dirs.uploads, work: dirs.work, final: finalDir() },
+    )
+    if (!ok.ok || ok.type !== 'finalize') throw new Error(JSON.stringify(ok))
+    expect(ok.size).toBeLessThanOrEqual(MAX_UPLOAD_BYTES)
   }, 120_000)
 })
 
