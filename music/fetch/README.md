@@ -102,7 +102,7 @@ The first eight codes are the contract from plan §3.6 and the P5 brief. The las
 ## The yt-dlp invocation
 
 ```
-python -I -B -m yt_dlp --ignore-config --no-cache-dir --use-extractors soundcloud --no-playlist \
+python -I -B -m yt_dlp --ignore-config --no-plugin-dirs --no-cache-dir --use-extractors soundcloud --no-playlist \
   --max-filesize 60M --restrict-filenames --no-exec --no-write-comments --no-mtime \
   -o '/staging/fetch/<uuid>/audio.%(ext)s' --write-info-json -- <canonical url>
 ```

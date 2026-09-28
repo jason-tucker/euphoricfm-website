@@ -1,6 +1,6 @@
 """The pinned yt-dlp invocation (plan §3.6) and its supervision.
 
-    yt-dlp --ignore-config --no-cache-dir --use-extractors soundcloud --no-playlist
+    yt-dlp --ignore-config --no-plugin-dirs --no-cache-dir --use-extractors soundcloud --no-playlist
            --max-filesize 60M --restrict-filenames --no-exec --no-write-comments
            --no-mtime -o '/staging/fetch/<uuid>/audio.%(ext)s' --write-info-json -- <url>
 
@@ -29,6 +29,7 @@ from typing import Callable
 
 PINNED_FLAGS = (
     '--ignore-config',
+    '--no-plugin-dirs',       # never load yt-dlp plugins from any default plugin dir
     '--no-cache-dir',
     '--use-extractors', 'soundcloud',
     '--no-playlist',

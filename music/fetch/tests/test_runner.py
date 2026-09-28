@@ -29,11 +29,11 @@ class RunnerTests(unittest.TestCase):
     def test_argv_is_exactly_the_pinned_invocation(self):
         self.assertEqual(
             build_argv(['yt-dlp'], '/staging/fetch/0f03984e-f585-4993-82b7-b29c24ddc907', 'https://soundcloud.com/a/b'),
-            ['yt-dlp', '--ignore-config', '--no-cache-dir', '--use-extractors', 'soundcloud', '--no-playlist',
+            ['yt-dlp', '--ignore-config', '--no-plugin-dirs', '--no-cache-dir', '--use-extractors', 'soundcloud', '--no-playlist',
              '--max-filesize', '60M', '--restrict-filenames', '--no-exec', '--no-write-comments', '--no-mtime',
              '-o', '/staging/fetch/0f03984e-f585-4993-82b7-b29c24ddc907/audio.%(ext)s', '--write-info-json',
              '--', 'https://soundcloud.com/a/b'])
-        self.assertEqual(len(PINNED_FLAGS), 11)
+        self.assertEqual(len(PINNED_FLAGS), 12)
         with self.assertRaises(ValueError):
             build_argv(['yt-dlp'], '/staging/%(title)s', 'https://soundcloud.com/a/b')
         with self.assertRaises(ValueError):

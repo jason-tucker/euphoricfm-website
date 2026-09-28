@@ -15,7 +15,7 @@ import sys
 import time
 
 PINNED = [
-    '--ignore-config', '--no-cache-dir', '--use-extractors', 'soundcloud', '--no-playlist',
+    '--ignore-config', '--no-plugin-dirs', '--no-cache-dir', '--use-extractors', 'soundcloud', '--no-playlist',
     '--max-filesize', '60M', '--restrict-filenames', '--no-exec', '--no-write-comments', '--no-mtime',
 ]
 
