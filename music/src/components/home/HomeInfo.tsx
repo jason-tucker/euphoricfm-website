@@ -108,7 +108,6 @@ export function Hero({ inviteUrl }: { inviteUrl: string }) {
 
 export function AtAGlance({ limits }: { limits: UiUploadLimits }) {
   const items = [
-    'Free for members of our Discord',
     `${limits.text.formats}, ${limits.text.batchShort} at a time`,
     'A manager listens to every song',
     'Your own Discord ticket for each batch',
@@ -224,7 +223,6 @@ export function CantTake({ limits }: { limits: UiUploadLimits }) {
     `Files or songs outside the limits: ${limits.text.tooLong}`,
     `MP3s under ${limits.minKbps} kbps.`,
     'Music you don’t own or don’t have permission to share.',
-    'Hateful content, or anything that targets people.',
   ]
   return (
     <section aria-labelledby="cant-h" className="card" data-testid="cant-take">
