@@ -152,6 +152,10 @@ test('home: Up next shows for the whole song — no reveal delay, no "near the e
   assert.match(row, /data-exclude="[^"]*2Ads/, 'break filter playlists handed to the script');
   assert.match(html, /id="up-next-note"[^>]*>[^<]+</, 'note row is never empty');
   assert.match(html, /id="up-next-when"/, 'countdown slot');
+  // The row's single grid column must be allowed to shrink (minmax(0, 1fr)),
+  // or a long title grows the implicit auto column and clips the REQUESTED
+  // badge and the countdown off the row's overflow:hidden edge.
+  assert.match(src('src/components/PlayerCard.astro'), /#np-up-next\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
   // The Web Player never had a reveal delay; keep it that way.
   assert.doesNotMatch(src('src/scripts/player.ts'), /REVEAL/);
 });

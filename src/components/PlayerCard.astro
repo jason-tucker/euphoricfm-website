@@ -156,7 +156,11 @@ const un = site.home.upNext;
      next song is known) shows the track layer; otherwise the note layer. The
      two share one grid cell in a fixed-height row and cross-fade, so nothing
      below the row moves when it switches. */
-  #np-up-next { display: grid; height: 50px; overflow: hidden; }
+  /* minmax(0, 1fr): without an explicit column the implicit auto column grows
+     to the track layer's min-content (the full title), so a long title never
+     truncates and pushes the REQUESTED badge and the "in m:ss" countdown past
+     the clipped edge. */
+  #np-up-next { display: grid; grid-template-columns: minmax(0, 1fr); height: 50px; overflow: hidden; }
   #np-up-next > * { grid-area: 1 / 1; transition: opacity 500ms ease-out, visibility 500ms; }
   #np-up-next .np-un-track { opacity: 0; visibility: hidden; }
   #np-up-next.is-open .np-un-track { opacity: 1; visibility: visible; }

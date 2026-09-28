@@ -3,7 +3,7 @@
 // ONE card (they used to be two cards, and the Requested one reserved room
 // for three rows that sat empty most of the time).
 //
-// The card body has one constant height — the five Recently played rows — on
+// The card body has one constant height — the four Recently played rows — on
 // both tabs, so nothing below it moves when requests come or go or the tab
 // changes. Recently played is selected by default; the Requested tab carries
 // the pending count so people notice it. nowplaying.ts fills both lists
@@ -28,7 +28,7 @@ const t = site.home.songs;
     <div class="hm-tab-body">
       <div role="tabpanel" id="songs-panel-recent" class="hm-tab-panel" aria-labelledby="songs-tab-recent" tabindex="0">
         <ul id="recent-list" class="divide-y divide-cream/5">
-          {[0, 1, 2, 3, 4].map((i) => (
+          {[0, 1, 2, 3].map((i) => (
             <li class="flex items-center gap-3 py-2 border-t border-cream/5 first:border-t-0" aria-hidden={i > 0 ? 'true' : undefined}>
               <div class="w-10 h-10 rounded-md bg-cream/10 shrink-0"></div>
               <div class="min-w-0 flex-1">

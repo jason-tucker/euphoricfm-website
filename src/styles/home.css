@@ -166,9 +166,11 @@ html:not(.efm-js) .hm-tabs { grid-template-columns: minmax(0, 1fr); }
   font-size: 0.75rem; font-weight: 800; font-variant-numeric: tabular-nums;
 }
 .hm-tab-count.is-zero { background: rgb(var(--efm-cream-rgb) / 0.1); color: rgb(var(--efm-cream-rgb) / 0.5); }
-/* Constant body height on both tabs = five Recently played rows (5 × 56px +
-   four 1px dividers); more requests scroll inside it. */
-.hm-tab-body { position: relative; height: 17.75rem; }
+/* Constant body height on both tabs = four Recently played rows (4 × 56px +
+   three 1px dividers); more requests scroll inside it. Four rows make the
+   whole card as tall as the player beside it on desktop, so no empty band
+   is left under the player. */
+.hm-tab-body { position: relative; height: 14.1875rem; }
 .hm-tab-panel {
   position: absolute; inset: 0; overflow-y: auto; border-radius: 0.5rem;
   scrollbar-width: thin;
