@@ -1,9 +1,10 @@
-# EFM Music Portal — one Dockerfile, four runtime targets (plan §3):
+# EFM Music Portal — one Dockerfile, three runtime targets (plan §3):
 #   web     Next.js standalone (music-web)
 #   worker  job runner + migrator (music-worker, music-migrate, music-init)
 #   probe   ffprobe/ffmpeg/rsvg-convert + music-metadata/node-id3 (music-probe)
-#   fetch   STUB until P5 (not wired into compose)
 # plus `test` (vitest + ffmpeg) used by test/run.sh and CI.
+# music-fetch (v0.4.0) has its own Dockerfile and context: fetch/ (Python
+# stdlib + a hash-locked yt-dlp on a digest-pinned base; fetch/README.md).
 #
 # Compilation happens here (CI runner), never on the 2 GB VPS.
 
@@ -60,12 +61,6 @@ ENV NODE_ENV=production NODE_OPTIONS=--max-old-space-size=64
 COPY --from=build /build/dist/probe/ ./
 USER node
 CMD ["node", "/app/probe.mjs"]
-
-# -------------------------------------------------------------- fetch ----
-# P5 (SoundCloud via yt-dlp) — intentionally a stub; not in compose yet.
-FROM ${NODE_IMAGE} AS fetch
-USER node
-CMD ["node", "-e", "console.error('music-fetch is not implemented until P5'); process.exit(1)"]
 
 # --------------------------------------------------------------- test ----
 FROM deps AS test

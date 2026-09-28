@@ -125,8 +125,9 @@ jobs:
   # EFM Music Portal (music/, compose project efm-music). Own package and
   # lockfile, so it never touches the site build above. Gate: pnpm audit
   # --prod, typecheck, then the full Docker harness (music/test/run.sh:
-  # vitest + mount + start-up-guard checks against mocks; no real
-  # credentials). On main, the exact images the harness tested are retagged
+  # music-fetch's own unit suite, vitest + mount + start-up-guard checks
+  # against mocks; no real credentials, and nothing contacts SoundCloud:
+  # music-fetch runs with network_mode none and a fake yt-dlp). On main, the exact images the harness tested are retagged
   # and pushed as ghcr.io/<owner>/euphoricfm-website-music:<target>-<sha7>
   # (+ <target>-latest). Watchtower is off for these; deploys set MUSIC_TAG.
   build-music:
@@ -174,7 +175,8 @@ jobs:
           REPO: ghcr.io/${{ github.repository_owner }}/euphoricfm-website-music
         run: |
           sha7="$(printf '%s' "$GITHUB_SHA" | cut -c1-7)"
-          for t in web worker probe; do
+          # fetch (v0.4.0): music-fetch, built from music/fetch by the harness
+          for t in web worker probe fetch; do
             docker tag "ghcr.io/jason-tucker/euphoricfm-website-music:$t-local-test" "$REPO:$t-$sha7"
             docker tag "ghcr.io/jason-tucker/euphoricfm-website-music:$t-local-test" "$REPO:$t-latest"
             docker push "$REPO:$t-$sha7"

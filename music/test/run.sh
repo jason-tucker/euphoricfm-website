@@ -1,8 +1,11 @@
 #!/bin/sh
-# Full P2 test harness, entirely in Docker (no node on the host):
-#   builds web/worker/probe/test images, brings up postgres + mocks + the real
-#   containers with their real mounts, runs vitest (unit + DB + e2e), then the
-#   mount / worker-guard shell checks, then records idle `docker stats`.
+# Full test harness, entirely in Docker (no node on the host):
+#   builds web/worker/probe/fetch/test images, brings up postgres + mocks + the
+#   real containers with their real mounts, runs music-fetch's own unit suite
+#   (network none), vitest (unit + DB + e2e), then the mount / start-up-guard
+#   shell checks, then records idle `docker stats`.
+#   Nothing here reaches SoundCloud or any production system: music-fetch runs
+#   with network_mode none and a fake yt-dlp (test/fetch-fake).
 # Usage: test/run.sh            (from music/ or anywhere)
 # Env:   DOCKER_COMPOSE="docker compose" (override the compose command)
 #        KEEP=1 to leave the stack up afterwards.
@@ -33,15 +36,33 @@ trap cleanup EXIT
 
 $DC --profile tests down -v --remove-orphans >/dev/null 2>&1 || true
 mkdir -p test/.out/data
-docker run --rm -v "$PWD/test/.out:/o" alpine:3 sh -c 'rm -rf /o/data && mkdir -p /o/data' >/dev/null
+docker run --rm -v "$PWD/test/.out:/o" alpine:3 sh -c 'rm -rf /o/data && mkdir -p /o/data/fetch-fixtures' >/dev/null
+
+# The PRODUCTION compose definitions, resolved (anchors merged), for the
+# static checks in test/compose-fetch.test.ts. compose refuses missing
+# env_files, so this renders a copy next to empty ones (nothing is started).
+cfg=test/.out/prodcfg
+rm -rf "$cfg" && mkdir -p "$cfg/env"
+for f in db migrate web worker; do : > "$cfg/env/$f.env"; done
+cp compose.yml "$cfg/compose.yml"
+MUSIC_TAG=static-check ${DOCKER_COMPOSE:-docker compose} -f "$cfg/compose.yml" config --format json > test/.out/data/compose.prod.json
 
 echo "== build"
 $DC --profile tests build
 
 echo "== up"
-$DC up -d --wait music-web music-worker music-probe mocks || { $DC logs --no-color --tail 80; exit 1; }
+$DC up -d --wait music-web music-worker music-probe music-fetch mocks || { $DC logs --no-color --tail 80; exit 1; }
 
 status=0
+echo "== music-fetch unit tests (its own suite: runtime constraints, network none)"
+if docker build -q --target test -t "$P/fetch-test:local" fetch >/dev/null \
+  && docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop ALL \
+       --security-opt no-new-privileges:true --network none "$P/fetch-test:local" > test/.out/fetch-unit.log 2>&1; then
+  tail -3 test/.out/fetch-unit.log
+else
+  cat test/.out/fetch-unit.log; status=1
+fi
+
 echo "== vitest"
 $DC --profile tests run --rm tests pnpm exec vitest run --reporter=default > test/.out/vitest.log 2>&1 || status=1
 cat test/.out/vitest.log
@@ -62,7 +83,18 @@ check "worker cannot write /spool/probe/out" music-worker 'touch /spool/probe/ou
 check "worker cannot see /staging/uploads"  music-worker 'test -e /staging/uploads' fail
 check "worker can write in-worker"          music-worker 'touch /spool/probe/in-worker/.mc && rm /spool/probe/in-worker/.mc' ok
 check "probe has no network"                music-probe 'wget -q -T 3 -O /dev/null http://mocks:4104/egress' fail
-check "probe cannot see /staging/fetch"     music-probe 'test -e /staging/fetch' fail
+check "probe can read /staging/fetch"       music-probe 'test -d /staging/fetch && ls /staging/fetch' ok
+check "probe cannot write /staging/fetch"   music-probe 'touch /staging/fetch/x' fail
+check "worker cannot see /staging/fetch"    music-worker 'test -e /staging/fetch' fail
+check "worker can write /spool/fetch/in"    music-worker 'touch /spool/fetch/in/.mc && rm /spool/fetch/in/.mc' ok
+check "worker cannot write /spool/fetch/out" music-worker 'touch /spool/fetch/out/x' fail
+check "worker cannot see fetch's claimed"   music-worker 'test -e /spool/fetch/claimed' fail
+check "web cannot see /spool/fetch"         music-web   'test -e /spool/fetch' fail
+check "web cannot see /staging/fetch"       music-web   'test -e /staging/fetch' fail
+check "fetch has no network (test stack)"   music-fetch 'wget -q -T 3 -O /dev/null http://mocks:4104/egress' fail
+check "fetch sees no probe spool, uploads, final or art" music-fetch 'test -e /spool/probe || test -e /staging/uploads || test -e /staging/final || test -e /staging/art' fail
+check "fetch rootfs is read-only"           music-fetch 'touch /usr/local/x' fail
+check "fetch can write its staging + spool" music-fetch 'touch /staging/fetch/.mc /spool/fetch/out/.mc && rm /staging/fetch/.mc /spool/fetch/out/.mc' ok
 check "web rootfs is read-only"             music-web   'touch /app/x' fail
 check "web can write art-in"                music-web   'touch /staging/art-in/.mc && rm /staging/art-in/.mc' ok
 check "web cannot write /staging/art"       music-web   'touch /staging/art/x' fail
@@ -83,15 +115,17 @@ guard "missing MUSIC_PROFILE refuses"      "MUSIC_PROFILE must be" -e MUSIC_PROF
 guard "STATION_ID=7 refuses"               "requires STATION_ID=1" -e STATION_ID=7
 guard "test profile without prefix refuses" "requires PORTAL_TEST_PREFIX" -e MUSIC_PROFILE=test -e PORTAL_TEST_PREFIX=
 guard "web secret in worker env refuses"   "another service" -e AUTH_SECRET=x
+out=$($DC run --rm --no-deps -T -e AUTH_SECRET=x --entrypoint python music-fetch -I -B -m fetchsvc --once 2>&1) && rc=0 || rc=$?
+if [ $rc -eq 78 ] && echo "$out" | grep -q "unexpected environment variables: AUTH_SECRET" && ! echo "$out" | grep -q "=x"; then echo "  PASS fetch refuses an unexpected env var (exit 78, name only)"; else echo "  FAIL fetch env guard (rc=$rc)"; echo "$out" | tail -3; gc=1; fi
 [ $gc -eq 0 ] || status=1
 
 echo "== idle memory (docker stats)"
 sleep 20
 docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}' \
-  "$P-music-web-1" "$P-music-worker-1" "$P-music-probe-1" "$P-music-db-1" | tee test/.out/stats.txt
+  "$P-music-web-1" "$P-music-worker-1" "$P-music-probe-1" "$P-music-fetch-1" "$P-music-db-1" | tee test/.out/stats.txt
 
 if [ $status -ne 0 ]; then
   echo "== logs (failure)"
-  $DC logs --no-color --tail 60 music-web music-worker music-probe || true
+  $DC logs --no-color --tail 60 music-web music-worker music-probe music-fetch || true
 fi
 exit $status

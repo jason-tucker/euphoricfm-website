@@ -88,6 +88,20 @@ services:
   music-probe:
     build: { context: ., target: probe }
 
+  # v0.4.0: the REAL music-fetch image (its own build context), started with a
+  # test launcher that swaps only its network seams (test/fetch-fake/*: a fake
+  # yt-dlp that plays fixture files, fixture artwork and shortlinks). And NO
+  # network at all: a test stack can never reach SoundCloud or anything else.
+  # Mounts, hardening and limits come from compose.yml unchanged.
+  music-fetch:
+    build: { context: ./fetch, target: runtime }
+    networks: !reset []
+    network_mode: none
+    entrypoint: ["python", "-I", "-B", "/fake/launch.py", "10"]
+    volumes:
+      - ./test/fetch-fake:/fake:ro
+      - ${MUSIC_DATA_DIR:-./data}/fetch-fixtures:/fixtures:ro
+
   mocks:
     image: ${MUSIC_TEST_PROJECT:-efm-music-test}/test:local
     build: { context: ., target: test }
@@ -115,6 +129,9 @@ services:
       TEST_DATA_DIR: /data
       TICKETS_WRITE_KEY: test-tickets-write-key
       AZURACAST_API_KEY: test-azuracast-key-0000
+      # v0.4.0: where the tests write the fake yt-dlp's fixtures
+      # (/data/fetch-fixtures, mounted read-only into music-fetch as /fixtures)
+      FETCH_FIXTURES_DIR: /data/fetch-fixtures
     volumes:
       - ${MUSIC_DATA_DIR:-./data}:/data
     networks:
@@ -128,6 +145,10 @@ networks:
   # (172.31.252.0/24, pinned in compose.yml for botvps's egress guard):
   # Docker picks a free one, so parallel projects never overlap.
   worker-egress: !override
+    driver: bridge
+  # Same for fetch-egress (172.31.251.0/24 and the fixed bridge name
+  # br-efm-fetch are botvps's); the test music-fetch has no network anyway.
+  fetch-egress: !override
     driver: bridge
   efm-public-net: !override
     name: ${MUSIC_TEST_PROJECT:-efm-music-test}-public

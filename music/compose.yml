@@ -16,13 +16,17 @@
 #   worker-egress    worker only, FIXED subnet 172.31.252.0/24 (bridge, not
 #                    internal): egress to euphoric.fm (AzuraCast), Kuma,
 #                    Discord alerts
+#   fetch-egress     music-fetch ONLY (v0.4.0), FIXED subnet 172.31.251.0/24,
+#                    bridge br-efm-fetch: egress to SoundCloud. No other
+#                    service is on it, and music-fetch is on nothing else
+#                    (no music-int, no database, no other container).
 #   probe            network_mode none
 #
 # DOCKER-USER egress rules are NOT applied by this repo: on botvps the
 # persistent systemd unit efm-music-egress.service drops RFC1918 /
 # 169.254.0.0/16 / 100.64.0.0/10 from 172.31.252.0/24 (worker-egress) and
-# 172.31.251.0/24 (P5 fetch-egress). That is why the subnet is pinned here:
-# change it only together with that unit (README.md).
+# 172.31.251.0/24 (fetch-egress). That is why the subnets are pinned here:
+# change them only together with that unit (README.md).
 #
 # Secrets: one env_file per service, mode 600, owned by botuser; templates in
 # ./env/*.env.example. The probe gets no env_file at all.
@@ -226,7 +230,42 @@ services:
       - ${MUSIC_DATA_DIR:-./data}/staging/work:/staging/work:rw
       - ${MUSIC_DATA_DIR:-./data}/staging/art:/staging/art:rw
       - ${MUSIC_DATA_DIR:-./data}/staging/art-in:/staging/art-in:ro
+      # v0.4.0: music-fetch's downloads, READ-ONLY (probe_fetch converts them)
+      - ${MUSIC_DATA_DIR:-./data}/staging/fetch:/staging/fetch:ro
       - ${MUSIC_DATA_DIR:-./data}/spool/probe:/spool/probe:rw
+    depends_on:
+      music-init:
+        condition: service_completed_successfully
+
+  # v0.4.0 (plan P5): SoundCloud via a pinned, hash-locked yt-dlp
+  # (fetch/README.md). The only container with internet egress to arbitrary
+  # hosts, so it holds NOTHING: no env_file, no environment (it refuses to
+  # start, exit 78, on any unexpected variable name), no secrets, no
+  # database, no inbound port. It sees only its spool and its staging dir;
+  # it never decodes media (the network-less probe does). One job at a time.
+  music-fetch:
+    <<: *hardening
+    image: ghcr.io/jason-tucker/euphoricfm-website-music:fetch-${MUSIC_TAG:?set MUSIC_TAG in .env}
+    tmpfs:
+      - /tmp:size=16m,uid=1000,gid=1000,mode=0700
+    # Measured (v0.4.0, CHANGELOG): the service idles at ~15 MiB and holds
+    # 22 MiB RSS through a job; the pinned yt-dlp's native HLS download of a
+    # 10-min 160 kbps AAC (61 fMP4 fragments) peaks at 47 MiB RSS, and the
+    # whole cgroup at 88 MiB under a 128 MiB limit (the rest is page cache,
+    # reclaimed, no OOM). 160 MiB leaves ~2x the anonymous peak.
+    mem_limit: 160m
+    memswap_limit: 160m # no swap on top of the limit (2 GB botvps)
+    pids_limit: 64
+    # yt-dlp's HLS download is network-bound; keep it behind the bots too.
+    cpu_shares: 256
+    # PINNED MOUNTS (plan §3): its spool (in: the worker's requests and release
+    # markers; claimed: its own; out: its results, read-only for the worker)
+    # and its staging dir (read-only for the probe). Nothing else.
+    volumes:
+      - ${MUSIC_DATA_DIR:-./data}/spool/fetch:/spool/fetch:rw
+      - ${MUSIC_DATA_DIR:-./data}/staging/fetch:/staging/fetch:rw
+    networks:
+      - fetch-egress
     depends_on:
       music-init:
         condition: service_completed_successfully
@@ -240,6 +279,18 @@ networks:
     ipam:
       config:
         - subnet: 172.31.252.0/24
+  # v0.4.0: music-fetch's egress. efm-music-egress.service on botvps already
+  # DROPs RFC1918 / 169.254.0.0/16 / 100.64.0.0/10 from this subnet
+  # (DOCKER-USER); the fixed bridge name lets an INPUT rule
+  # (`-i br-efm-fetch -j DROP`) keep it off the host's own ports (README).
+  fetch-egress:
+    driver: bridge
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.name: br-efm-fetch
+    ipam:
+      config:
+        - subnet: 172.31.251.0/24
   efm-public-net:
     external: true
   efm-music-hooks:
