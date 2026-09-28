@@ -16,8 +16,9 @@ import { site } from '../site.config';
 ---
 
 <BaseLayout title={site.events.title} description={site.events.description}>
+  <Header slot="header" current="events" />
   <div class="phone">
-    <Header />
+    <h1 class="sr-only">{site.name} {site.events.title}</h1>
 
     <EventsHero />
     <EventsHowItWorks />

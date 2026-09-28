@@ -3,6 +3,8 @@ import { headers } from 'next/headers'
 import { Header } from '@/components/Header'
 import { headerViewer } from '@/server/ui/page'
 import './globals.css'
+// The shared EuphoricFM top bar styles (copy of the repo's shared/efm-bar.css).
+import '@/shared/efm-bar.css'
 
 export const metadata: Metadata = {
   title: { default: 'EFM Music Portal', template: '%s · EFM Music Portal' },
@@ -25,10 +27,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           Skip to content
         </a>
         <Header viewer={viewer} />
-        <main id="main" className="mx-auto max-w-frame px-4 py-6 sm:py-8">
+        <main id="main" className="mx-auto max-w-frame px-4 py-6 sm:py-8 md:px-6">
           {children}
         </main>
-        <footer className="mx-auto max-w-frame px-4 pb-8 text-xs text-cream/40">
+        <footer className="mx-auto max-w-frame px-4 pb-8 text-xs text-cream/40 md:px-6">
           EuphoricFM · Music Portal v{process.env.NEXT_PUBLIC_APP_VERSION}
         </footer>
       </body>

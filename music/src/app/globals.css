@@ -16,8 +16,9 @@
   --font-fm: "Cortado Script", cursive;
 }
 
+/* Same width as the shared top bar (--efmh-max in shared/efm-bar.css). */
 @utility max-w-frame {
-  max-width: 64rem;
+  max-width: 72rem;
 }
 
 /* Self-hosted wordmark fonts (copied from the site's public/fonts). */
@@ -263,12 +264,6 @@
     background: rgb(0 0 0 / 0.7);
   }
 
-  .menu-panel {
-    @apply absolute right-0 z-20 mt-2 w-56 rounded-xl border border-cream/15 bg-[#121218] p-2 shadow-xl;
-  }
-  .menu-item {
-    @apply block w-full cursor-pointer rounded-lg px-3 py-2 text-left text-sm text-cream/90 hover:bg-cream/10;
-  }
   .nav-link {
     @apply rounded-lg border border-transparent px-3 py-2 text-sm font-medium text-cream/80 hover:border-cream/20 hover:bg-cream/[0.07] hover:text-cream;
   }

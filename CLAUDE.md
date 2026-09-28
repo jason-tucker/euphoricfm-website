@@ -76,10 +76,15 @@ src/
   pages/events.astro           composes the Euphoric FM Events page (Header → EventsHero →
                                EventsHowItWorks → EventsServices → EventStatus → Footer,
                                EventInquiryModal outside .phone)
-  pages/player.astro           the Web Player (/player/, dist/player/index.html): own slim top bar
-                               (logo · Web Player · Full site), full layout + pop-out strip
+  pages/player.astro           the Web Player (/player/, dist/player/index.html): the shared top bar
+                               (Web Player marked current), full layout + pop-out strip (no bar)
                                (?popout=1 or ≤420×260 → html.efm-popout), reuses RequestModal.
                                No Discord anywhere on it. Styles: styles/player.css (.efmp-*)
+  components/Header.astro      the shared EuphoricFM top bar (Release 3): logo · Listen · About ·
+                               Events · Stats · Music ▾ · Contact · gold Web Player, phone Menu
+                               sheet; <details>/<summary> menus (work with JS off). Rendered from
+                               shared/nav.json with shared/efm-bar.css, same data + CSS as the
+                               portal's music/src/components/SiteBar.tsx
   site.config.ts               single source of truth for editable strings (NOT webhook URLs);
                                includes the `events` block — all /events copy lives here
   scripts/np-core.ts           shared now-playing poller (subscribeNowPlaying), art proxy rewrite,
@@ -112,6 +117,11 @@ src/
                                EventStatus renders off-air/on-air/calendar blocks hydrated by
                                scripts/events.ts from the events station's schedule — a
                                non-null site.events.status.current still overrides it
+shared/                        files BOTH sites use: nav.json (top-bar items) + efm-bar.css (its
+                               styles). The portal builds from music/ only, so it keeps byte-for-
+                               byte copies in music/src/shared/ — after editing run
+                               `node shared/sync.mjs`; test/shared-drift.test.mjs (pnpm test:site,
+                               CI) fails on any drift, incl. tokens.css vs music/src/app/tokens.css
 public/
   fonts/                       Begaron (Euphoric) + Cortado Script (FM)
   favicon.svg
@@ -164,7 +174,8 @@ displays `v<package.json version> · <short SHA>` so you always know which build
 | `pnpm build` | `astro build` — production static build |
 | `pnpm preview` | `astro preview` — preview the production build locally |
 | `pnpm test` | `node --test server/*.test.mjs` — server sidecar test suite (node:test, zero deps) |
-| `pnpm test:site` | `node --test test/*.test.mjs` — dist/ checks (needs `pnpm build`) + player helper tests |
+| `pnpm test:site` | `node --test test/*.test.mjs` — dist/ checks (needs `pnpm build`), shared top-bar drift checks, player helper tests |
+| `pnpm sync:shared` | copy `shared/nav.json` + `shared/efm-bar.css` into `music/src/shared/` (the portal's copies) |
 | `sh test/caddy-player.sh` | Caddy serves /player/ as the player (not the SPA fallback), /player → 308 (needs `pnpm build` + docker) |
 
 There is **no `typecheck` script** in `package.json`. Type-checking runs as `pnpm exec astro check`. CI runs it with `continue-on-error: true` — type errors warn but do not fail the build.

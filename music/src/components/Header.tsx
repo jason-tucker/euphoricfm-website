@@ -1,67 +1,89 @@
-// Site header: wordmark, permission-aware nav, user menu with sign-out.
-// Server component; the nav highlight is the only client part.
+// Portal header (Release 3): the shared EuphoricFM top bar (SiteBar, identical
+// on info.euphoric.fm and for every role), then the portal's own second row:
+// bordered tabs (Home · My music · Submit · Library · Review · Admin, by
+// permission) and the account menu / sign-in. The second row scrolls away;
+// on phones its tabs are one sideways-scrolling strip.
+// Server component; the tab highlight and the menu closing are the client parts.
 
-import Link from 'next/link'
 import { signInWithDiscord, signOutAction } from '@/app/actions'
 import type { Viewer } from '@/server/authz/predicates'
 import { NavLinks, type NavItem } from './NavLinks'
+import { SiteBar } from './SiteBar'
 
 export function navFor(perms: ReadonlySet<string>): NavItem[] {
-  const items: NavItem[] = []
+  const items: NavItem[] = [{ href: '/', label: 'Home' }]
   if (perms.has('submit')) {
-    items.push({ href: '/dashboard', label: 'My music' })
+    // A batch page belongs to My music.
+    items.push({ href: '/dashboard', label: 'My music', also: ['/batches'] })
     items.push({ href: '/submit', label: 'Submit' })
     // The library is where edit and removal requests start (v0.3.4: always
     // labelled "Library"; the home page's action cards name the requests).
     items.push({ href: '/library', label: 'Library' })
   }
-  if (perms.has('review')) items.push({ href: '/review', label: 'Review' })
-  if (perms.has('admin')) items.push({ href: '/admin', label: 'Admin' })
+  if (perms.has('review')) items.push({ href: '/review', label: 'Review', staff: true })
+  if (perms.has('admin')) items.push({ href: '/admin', label: 'Admin', staff: true })
   return items
 }
 
 const ROLE_LABEL = (perms: ReadonlySet<string>) =>
   perms.has('admin') ? 'Admin' : perms.has('manage') ? 'Manager' : perms.has('review') ? 'Reviewer' : 'Member'
 
-export function Header({ viewer }: { viewer: Viewer | null }) {
+function Caret() {
   return (
-    <header className="border-b border-cream/10 bg-ink/60 backdrop-blur">
-      <div className="mx-auto flex max-w-frame flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <Link href="/" className="flex items-baseline gap-2 rounded-lg px-1" aria-label="EFM Music Portal home">
-          <span className="font-euphoric text-3xl leading-none text-sunburst">Euphoric</span>
-          <span className="font-fm text-3xl leading-none text-ruby">FM</span>
-          <span className="ml-1 text-xs font-semibold uppercase tracking-[0.2em] text-cream/60">Music</span>
-        </Link>
-        {viewer ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <NavLinks items={navFor(viewer.perms)} />
-            <details className="relative">
-              <summary className="btn btn-secondary btn-sm list-none" aria-label="Account menu">
-                <span className="max-w-[10rem] truncate">{viewer.name ?? 'Account'}</span>
-                <span aria-hidden="true">▾</span>
+    <svg className="efmh-caret" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  )
+}
+
+export function PortalRow({ viewer }: { viewer: Viewer | null }) {
+  const name = viewer?.name ?? 'Account'
+  return (
+    <div className="efms">
+      <div className="efms-in">
+        <span className="efms-label">Music portal</span>
+        <NavLinks items={navFor(viewer?.perms ?? new Set())} />
+        <div className="efms-end">
+          {viewer ? (
+            <details className="efms-acct" data-efmh-menu="">
+              <summary className="efms-btn" aria-label="Account menu">
+                <span className="efms-avatar" aria-hidden="true">
+                  {name.trim().charAt(0).toUpperCase() || '?'}
+                </span>
+                <span className="efms-name">{name}</span>
+                <Caret />
               </summary>
-              <div className="menu-panel">
-                <p className="px-3 py-2 text-xs text-cream/60">
-                  Signed in as <span className="text-cream">{viewer.name ?? viewer.discordId}</span>
+              <div className="efms-panel">
+                <p className="efms-who">
+                  Signed in as <b>{viewer.name ?? viewer.discordId}</b>
                   <br />
                   {ROLE_LABEL(viewer.perms)}
                 </p>
                 <form action={signOutAction}>
-                  <button type="submit" className="menu-item">
+                  <button type="submit" className="efms-btn efms-signout">
                     Sign out
                   </button>
                 </form>
               </div>
             </details>
-          </div>
-        ) : (
-          <form action={signInWithDiscord}>
-            <button type="submit" className="btn btn-secondary btn-sm">
-              Sign in
-            </button>
-          </form>
-        )}
+          ) : (
+            <form action={signInWithDiscord}>
+              <button type="submit" className="efms-btn">
+                Sign in
+              </button>
+            </form>
+          )}
+        </div>
       </div>
-    </header>
+    </div>
+  )
+}
+
+export function Header({ viewer }: { viewer: Viewer | null }) {
+  return (
+    <>
+      <SiteBar />
+      <PortalRow viewer={viewer} />
+    </>
   )
 }

@@ -248,15 +248,17 @@ describe('song page (?request=)', async () => {
 })
 
 describe('nav and helpers', () => {
-  it('members see My music, Submit and "Library"; staff keep Review/Admin', () => {
+  it('second row: Home, then My music, Submit and "Library" for members; staff add Review/Admin', () => {
     expect(navFor(new Set(['submit', 'request']))).toEqual([
-      { href: '/dashboard', label: 'My music' },
+      { href: '/', label: 'Home' },
+      { href: '/dashboard', label: 'My music', also: ['/batches'] },
       { href: '/submit', label: 'Submit' },
       { href: '/library', label: 'Library' },
     ])
-    expect(navFor(new Set(['submit'])).map((i) => i.label)).toEqual(['My music', 'Submit', 'Library'])
+    expect(navFor(new Set()).map((i) => i.label)).toEqual(['Home'])
+    expect(navFor(new Set(['submit'])).map((i) => i.label)).toEqual(['Home', 'My music', 'Submit', 'Library'])
     const staff = navFor(new Set(['submit', 'request', 'review', 'admin'])).map((i) => i.label)
-    expect(staff).toEqual(['My music', 'Submit', 'Library', 'Review', 'Admin'])
+    expect(staff).toEqual(['Home', 'My music', 'Submit', 'Library', 'Review', 'Admin'])
     expect(staff).not.toContain('Edit or remove a song')
   })
   it('parseIntent / requestHref', () => {

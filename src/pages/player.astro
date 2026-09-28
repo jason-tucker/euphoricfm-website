@@ -3,7 +3,7 @@
 // Caddy's `try_files {path} {path}/` serves it; plain /player 308s here).
 //
 // One page, two templates fed by the same data (scripts/player.ts):
-//   .efmp-page — the full player: art, status, title, progress, transport,
+//   .efmp-page — the full player (under the shared top bar): art, status, title, progress, transport,
 //                stream picker, Up next, actions, Song history.
 //                ≥1100px: history side panel · 700–1099: art beside details,
 //                history below · <700: stacked phone layout.
@@ -13,6 +13,7 @@
 // together. No Discord anywhere on this page.
 import BaseLayout from '../layouts/BaseLayout.astro';
 import RequestModal from '../components/RequestModal.astro';
+import Header from '../components/Header.astro';
 import { site } from '../site.config';
 import { buildM3u, buildPls, dataUri, type StreamOption } from '../lib/player-data';
 import '../styles/player.css';
@@ -39,6 +40,8 @@ const playerConfig = {
 ---
 
 <BaseLayout title={p.title} description={p.description} scripts="none">
+  <!-- The shared top bar (hidden in the pop-out, which stays chrome-free). -->
+  <Header slot="header" current="player" />
   <!-- Pop-out mode before first paint: ?popout=1 (the Pop out window) or a
        viewport no bigger than 420×260 switches to the compact strip. -->
   <script is:inline slot="head">
@@ -77,16 +80,6 @@ const playerConfig = {
 
     <!-- ============ Full player ============ -->
     <div class="efmp-page">
-      <header class="efmp-bar">
-        <div class="efmp-bar-in">
-          <a class="efmp-logo" href="/" aria-label="EuphoricFM home">
-            <span class="efmp-wm-e">Euphoric</span><span class="efmp-wm-f">FM</span>
-          </a>
-          <span class="efmp-bar-title">Web Player</span>
-          <span class="efmp-spacer"></span>
-          <a class="efmp-btn efmp-btn-sm" href="/">Full site <svg class="efmp-i efmp-i-sm" aria-hidden="true"><use href="#efmp-i-chev" /></svg></a>
-        </div>
-      </header>
 
       <div class="efmp-main">
         <section class="card efmp-card" aria-label="EuphoricFM live player">

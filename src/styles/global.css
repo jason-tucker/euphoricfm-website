@@ -144,7 +144,8 @@
      phone iframe all the way to a 4K monitor. */
   .phone {
     width: 100%;
-    max-width: 100%;
+    /* Same width as the shared top bar (shared/efm-bar.css), so the page lines up under it. */
+    max-width: var(--efmh-max, 72rem);
     margin-left: auto;
     margin-right: auto;
     padding-left: clamp(0.5rem, 2vw, 2rem);
@@ -171,7 +172,9 @@
      barely room for a single entry. */
   .efm-hero {
     display: grid;
-    grid-template-columns: 1fr;
+    /* minmax(0, …) so a wide child cannot stretch the column past the
+       viewport (1fr alone let the page scroll sideways at 320px). */
+    grid-template-columns: minmax(0, 1fr);
     gap: clamp(0.5rem, 1.5vw, 1.25rem);
     align-items: start;
   }
@@ -479,12 +482,17 @@ html.efm-fx-off #np-status { animation: none; }
 
 /* --- Site-wide subtle reactions (kept "a lil"). ------------------------- */
 
-/* Header wordmark: pinned — no honey-float, no bass scale (the moving
-   wordmark read as the whole page shifting). Keeps only the bass glow,
-   which brightens in place without moving anything. */
-header h1 span {
-  text-shadow: 0 0 calc(var(--efm-bass) * 12px) rgb(var(--efm-sunburst-rgb) / calc(var(--efm-bass) * 0.5));
-  transition: text-shadow 80ms linear;
+/* Home tagline under the shared top bar (the wordmark lives in the bar now;
+   the bar itself is shared/efm-bar.css and never moves with the music). */
+.efm-tagline {
+  margin: 0;
+  padding: clamp(0.75rem, 1.5vw, 1.25rem) 0 clamp(0.5rem, 1vw, 0.75rem);
+  text-align: center;
+  text-transform: uppercase;
+  font-size: clamp(0.625rem, 1vw, 0.75rem);
+  font-weight: 600;
+  letter-spacing: 0.25em;
+  color: rgb(var(--efm-cream-rgb) / 0.55);
 }
 
 /* Action row + recently-played cards lift with bass kicks. Very small. */

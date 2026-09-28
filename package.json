@@ -2,7 +2,7 @@
   "name": "euphoricfm-website",
   "description": "In-game phone site for EuphoricFM — a GTA5 RP pop radio station. Astro static site embedded in a FiveM CEF iframe at info.euphoric.fm, with live AzuraCast now-playing, song requests, and Discord-webhook forms.",
   "type": "module",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "engines": {
     "node": ">=22.12.0"
   },
@@ -12,7 +12,8 @@
     "preview": "astro preview",
     "astro": "astro",
     "test": "node --test server/*.test.mjs",
-    "test:site": "node --test test/*.test.mjs"
+    "test:site": "node --test test/*.test.mjs",
+    "sync:shared": "node shared/sync.mjs"
   },
   "dependencies": {
     "astro": "^6.4.6"

@@ -1,5 +1,7 @@
 /* Copied from the site's src/styles/tokens.css (EuphoricFM brand palette +
- * semantic roles). Keep in sync by hand; the portal is its own app. */
+ * semantic roles). The portal is its own app (Docker context music/), so this
+ * is a copy: the site's test/shared-drift.test.mjs fails when any --efm-*
+ * declaration here differs from the site's file. */
 :root {
   /* --- Brand anchors (RGB channels) ------------------------------------- */
   --efm-ink-rgb: 10 10 10;        /* #0a0a0a  page surface (near-black)      */
@@ -13,6 +15,7 @@
      button + toggle gradients). #ffd23e is the same warm family as sunburst,
      one step brighter — a smooth amber ramp instead of an orange→neon jump. */
   --efm-gold-rgb: 255 210 62;     /* #ffd23e  warm highlight gold            */
+  --efm-ok-rgb: 52 211 153;       /* #34d399  "listening" / healthy dot      */
 
   /* --- Semantic roles (full colours, for bespoke CSS) ------------------- */
   --efm-surface: rgb(var(--efm-ink-rgb));
