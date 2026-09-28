@@ -108,21 +108,9 @@ const s = site.events.inquiry;
       overlay.setAttribute('aria-hidden', 'true');
       msg.classList.add('hidden');
     };
-    const fireClose = () => {
-      if (typeof document.startViewTransition === 'function') {
-        document.startViewTransition(closeOverlay);
-      } else {
-        closeOverlay();
-      }
-    };
+    const fireClose = closeOverlay;
 
-    document.addEventListener('efm:open-event-inquiry', () => {
-      if (typeof document.startViewTransition === 'function') {
-        document.startViewTransition(openOverlay);
-      } else {
-        openOverlay();
-      }
-    });
+    document.addEventListener('efm:open-event-inquiry', openOverlay);
 
     // Delegated close click — scoped to clicks inside THIS overlay only
     // (data-close lives on the close + cancel buttons here, never on the

@@ -3,8 +3,9 @@
 // now_playing or song_history. AzuraCast's request queue is behind auth, so
 // the shared `efm-requests` service (Caddy-proxied at /requests/*) owns the
 // cross-visitor list; nowplaying.ts fetches + prunes it on every poll. The
-// card always stays on the page: with nothing pending it shows a short empty
-// state, so the page never jumps when a request comes or goes.
+// card always stays on the page and its body has a fixed height (three rows;
+// more scroll inside it), with the empty state inside that same box, so the
+// page never jumps when a request comes or goes.
 import { site } from '../site.config';
 const r = site.home.requested;
 ---
@@ -15,8 +16,10 @@ const r = site.home.requested;
       <h2 id="req-h" class="hm-h3">{r.title}</h2>
       <span id="req-pending-count" class="hm-chip hidden" data-label={r.waiting}></span>
     </div>
-    <p id="req-pending-empty" class="hm-small hm-muted py-1">{r.empty}</p>
-    <ul id="req-pending-list" class="divide-y divide-cream/5 efm-sidebar-scroll"></ul>
+    <div class="hm-req-body">
+      <p id="req-pending-empty" class="hm-req-empty hm-small hm-muted">{r.empty}</p>
+      <ul id="req-pending-list" class="divide-y divide-cream/5 efm-sidebar-scroll hm-req-list"></ul>
+    </div>
     <button type="button" class="btn btn-ghost btn-sm w-full mt-3" data-open="request">
       <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>{r.button}
     </button>

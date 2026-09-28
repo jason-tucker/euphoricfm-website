@@ -12,6 +12,11 @@
 //
 // The event inquiry and stats detail overlays run their own close handling
 // (EventInquiryModal.astro, stats.ts), so they are left out here.
+//
+// Pop-ups open and close directly (their card fades in with .efm-modal-enter).
+// They used to go through a View Transition, which snapshots the whole page
+// first; on the long one-page home that held a pop-up back 1.5–4 s on a
+// loaded machine.
 ---
 
 <script is:inline>
@@ -23,10 +28,6 @@
       'event-inquiry': 'event-overlay',
     };
     var SELF_CLOSING = { 'event-overlay': 1 };
-    var withTransition = function (fn) {
-      if (typeof document.startViewTransition === 'function') document.startViewTransition(fn);
-      else fn();
-    };
     var close = function (o) {
       o.classList.add('hidden');
       o.setAttribute('aria-hidden', 'true');
@@ -40,7 +41,7 @@
         var name = opener.getAttribute('data-open');
         if (!name || !OVERLAYS[name] || !document.getElementById(OVERLAYS[name])) return;
         e.preventDefault();
-        withTransition(function () { document.dispatchEvent(new CustomEvent('efm:open-' + name)); });
+        document.dispatchEvent(new CustomEvent('efm:open-' + name));
         return;
       }
       var closer = t.closest('[data-close]');
@@ -48,7 +49,7 @@
       var id = closer.getAttribute('data-close');
       if (!id || SELF_CLOSING[id]) return;
       var overlay = document.getElementById(id);
-      if (overlay) withTransition(function () { close(overlay); });
+      if (overlay) close(overlay);
     });
 
     document.addEventListener('keydown', function (e) {

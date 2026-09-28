@@ -105,7 +105,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
         peak: 'peak listeners · {date}',
         peakPlain: 'peak listeners',
         always: '24/7',
-        alwaysSub: 'auto DJ + live specials',
+        alwaysSub: 'auto DJ, around the clock',
       },
       source: 'Live from the station’s stats',
       seeStats: 'See all stats',

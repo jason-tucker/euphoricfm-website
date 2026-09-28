@@ -2,7 +2,8 @@
 // #about — "What is EuphoricFM?" (site.aboutText) beside a card of live
 // station facts. The facts are filled by scripts/station-facts.ts from the
 // stats summary; each shows a placeholder until then and is hidden if the
-// sidecar has no data for it. No team section and no community-invite button
+// sidecar has no data for it. With JavaScript off they can never fill, so
+// they are hidden (.efm-js-only) and only the static 24/7 fact shows. No team section and no community-invite button
 // by owner decision.
 import { site } from '../site.config';
 const a = site.home.about;
@@ -29,12 +30,12 @@ const dynamic = [
     </div>
     <div id="about-facts" class="hm-surface hm-facts" aria-label="Station facts">
       {dynamic.map(([key, sub, hl]) => (
-        <div class:list={['hm-fact', { 'hm-fact-hl': hl }]} data-fact={key}>
+        <div class:list={['hm-fact', 'efm-js-only', { 'hm-fact-hl': hl }]} data-fact={key}>
           <b data-v>—</b><span data-s>{sub}</span>
         </div>
       ))}
       <div class="hm-fact"><b>{f.always}</b><span>{f.alwaysSub}</span></div>
-      <p class="hm-facts-src" data-facts-source>{a.source} · <a class="hm-link" href="#stats">{a.seeStats}</a></p>
+      <p class="hm-facts-src efm-js-only" data-facts-source>{a.source} · <a class="hm-link" href="#stats">{a.seeStats}</a></p>
     </div>
   </div>
 </section>

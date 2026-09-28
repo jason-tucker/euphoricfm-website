@@ -134,6 +134,17 @@ html.efm-cef .hm-surface { background: rgb(var(--efm-cream-rgb) / 0.05); }
   .hm-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 }
 .hm-side-surface { padding: 1rem; }
+/* Requested songs: a fixed-height body (three 56px rows + two 1px borders)
+   whatever the queue holds — the empty note fills it, a 4th+ request
+   scrolls inside it — so nothing below the hero moves as requests come in. */
+.hm-req-body { position: relative; height: 10.625rem; }
+.hm-req-list { height: 100%; max-height: none; }
+.hm-req-empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 0.75rem 1rem; text-align: center;
+  border: 1px dashed rgb(var(--efm-cream-rgb) / 0.12); border-radius: 0.75rem;
+}
+.hm-req-empty.hidden { display: none; }
 .hm-side-h { display: flex; align-items: center; justify-content: space-between; gap: 0.625rem; margin-bottom: 0.375rem; min-height: 44px; }
 
 /* ---- 2. About ------------------------------------------------------------ */

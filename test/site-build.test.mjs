@@ -117,6 +117,27 @@ test('home: the pieces each section promises', () => {
   assert.doesNotMatch(html, /efm-action-row|id="open-contact"|id="open-business"/);
 });
 
+test('home: no layout shift from requests or up-next, no dead controls without JS, no View Transitions', () => {
+  const html = read('index.html');
+  // Requested songs: fixed-height body with the empty note inside it.
+  assert.match(html, /class="hm-req-body"[^>]*>\s*<p id="req-pending-empty"[\s\S]*?id="req-pending-list"/);
+  // Up next: the row always shows (a note until the next track is known).
+  assert.match(html, /id="np-up-next"[\s\S]*?class="np-un-wait[\s\S]*?class="np-un-track/);
+  // JS off: html.efm-js is set by the pre-paint script; live facts + transport
+  // are marked JS-only and the player explains itself in a <noscript>.
+  assert.match(html, /classList\.add\('efm-js'\)/);
+  for (const key of ['since', 'listens', 'tracks', 'requests', 'peak']) {
+    assert.match(html, new RegExp(`class="[^"]*efm-js-only[^"]*"[^>]*data-fact="${key}"`), `fact ${key} JS-only`);
+  }
+  assert.match(html, /<noscript>[\s\S]*?href="#ways"[\s\S]*?<\/noscript>/);
+  // Pop-ups open directly (a whole-page View Transition delayed them seconds).
+  for (const page of ['index.html', 'events/index.html', 'player/index.html']) {
+    assert.doesNotMatch(read(page), /startViewTransition/, `${page} uses no View Transition`);
+  }
+  // No unbacked claim in the facts card.
+  assert.doesNotMatch(html, /live specials/i);
+});
+
 test('pop-ups sit above the sticky top bar: outside <main> (a z-[1] stacking context) and z-[70]', () => {
   for (const [page, list] of Object.entries({ 'events/index.html': ['event-overlay'], 'player/index.html': ['request-overlay'] })) {
     const html = read(page);

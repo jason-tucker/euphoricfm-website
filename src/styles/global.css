@@ -312,17 +312,12 @@
   100% { box-shadow: 0 0 0 0 rgb(var(--efm-sunburst-rgb) / 0); }
 }
 
-/* View Transitions API — name the now-playing card so the browser can
-   animate the modal-open/close crossfade smoothly. */
-@supports (view-transition-name: x) {
-  .vt-np  { view-transition-name: np-card; }
-  .vt-art { view-transition-name: np-art; }
-}
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 220ms;
-  animation-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
-}
+/* JavaScript off (BaseLayout adds html.efm-js before first paint): hide what
+   only a script can make work — a <button data-open> opens a pop-up, and
+   .efm-js-only marks live data and the player's transport. A link with
+   data-open keeps working through its href, so it stays. */
+html:not(.efm-js) button[data-open],
+html:not(.efm-js) .efm-js-only { display: none !important; }
 
 /* Modal overlays fade/scale in. */
 .efm-modal-enter {

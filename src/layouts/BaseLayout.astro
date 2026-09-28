@@ -84,10 +84,16 @@ const clientConfig = {
 
          2. Effects on/off. Mirrors effects.ts's logic: explicit localStorage
             choice wins; otherwise default off under reduced-motion, on elsewhere.
-            Sets `html.efm-fx-off` which CSS uses to force the static brand look. -->
+            Sets `html.efm-fx-off` which CSS uses to force the static brand look.
+
+         3. `html.efm-js` marks that scripts run at all. Controls that only work
+            through a script (a <button data-open>, the live station facts, the
+            home player's transport) are hidden without it (global.css), so a
+            visitor with JavaScript off never gets a dead button or a dash. -->
     <script is:inline>
       (function () {
         var el = document.documentElement;
+        el.classList.add('efm-js');
         try {
           if (/CitizenFX/i.test(navigator.userAgent)) el.classList.add('efm-cef');
         } catch (e) { /* navigator unavailable → assume a normal browser */ }
