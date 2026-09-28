@@ -56,10 +56,11 @@ paths = [
 [[rules]]
 id = "discord-client-id"
 [[rules.allowlists]]
-description = "EFM Music Portal verified false positives (2026-09-27)"
+description = "EFM Music Portal verified false positives (2026-09-27; archive-legacy UI test dummy snowflake added 2026-09-28)"
 paths = [
   '''^music/env/[A-Za-z0-9_-]+\.env\.example$''',
   '''^music/test/compose\.test\.yml$''',
   '''^music/test/primitives\.test\.ts$''',
+  '''^music/test/ui/archive-legacy\.test\.tsx$''',
   '''^music/src/server/azuracast/contract-baseline\.json$''',
 ]
