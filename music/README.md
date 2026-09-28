@@ -9,7 +9,7 @@ The design contract is the vault plan **"EFM Music Portal — Plan"** (v3.2, wit
 - **P4** requests and library management (edit/removal requests, manager edits, playlist merges, archive/restore, `apply_art`, admin settings and role bindings);
 - the **UI** (every page).
 
-**P5** (SoundCloud fetch, the site entry) is not in this build: `music-fetch` is still a stub.
+**P5** (v0.4.0): members can also add a song from a **SoundCloud link**; `music-fetch` downloads it and the probe converts it (see [SoundCloud links](#soundcloud-links-v040)).
 
 This is a separate package from the Astro site. It has its own `package.json`, `pnpm-lock.yaml`, Dockerfile and compose project (`efm-music`). The site build ignores `music/` (see the root `tsconfig.json` and `.dockerignore`).
 
@@ -23,7 +23,7 @@ This is a separate package from the Astro site. It has its own `package.json`, `
 | `music-db` | `postgres:16-alpine` | `music-int` (internal) | `db.env` |
 | `music-migrate` | `worker` (`node migrate.mjs`), one-shot | `music-int` | `migrate.env`: the owner URL, the `music_app` password and `SEED_REVIEW_ROLE_IDS` |
 | `music-init` | `worker` (`init-dirs.sh`), one-shot, root, no network | none | Nothing |
-| `music-fetch` | `fetch`, a **stub** until P5 | not in compose | |
+| `music-fetch` | `fetch/` (own Dockerfile: Python stdlib + hash-locked yt-dlp on a digest-pinned base; target `runtime`) | `fetch-egress` only (172.31.251.0/24, bridge `br-efm-fetch`) | Nothing: no env_file, no environment (it exits 78 on any unexpected variable name), no database, no port. One job at a time. |
 
 Every service runs as uid 1000 with a read-only rootfs, `cap_drop: ALL`, `no-new-privileges`, `init: true`, a hard `mem_limit` and a Node heap cap. Watchtower is **off**.
 
@@ -37,12 +37,13 @@ These are the plan's §3 mounts, from `${MUSIC_DATA_DIR:-./data}`:
 |---|---|
 | web | `staging/uploads` rw (tus), `staging/art-in` rw (raw album art), `staging/art` **ro**, `spool/probe/in-web` rw, `spool/probe/out` **ro** |
 | worker | `staging/final` **ro**, `staging/art` **ro**, `spool/probe/in-worker` rw, `spool/fetch/in` rw, `spool/probe/out` **ro**, `spool/fetch/out` **ro** |
-| probe | `staging/uploads`, `staging/final`, `staging/work`, `staging/art` rw, `staging/art-in` **ro** (not `staging/fetch`), `spool/probe` rw |
+| probe | `staging/uploads`, `staging/final`, `staging/work`, `staging/art` rw, `staging/art-in` **ro**, `staging/fetch` **ro** (v0.4.0), `spool/probe` rw |
+| fetch | `spool/fetch` rw (`in`, its own `claimed`, `out`), `staging/fetch` rw. Nothing else. |
 
 The probe also enforces **which request types each inbox may carry**:
 
 - `in-web` may carry `probe`, `art` and `art_release` only.
-- `in-worker` may carry `finalize`, `cover`, `probe_fetch` and `cleanup_final` (the worker's mount of `staging/final` is read-only, so the probe deletes finalized files 7 days after they went live or failed).
+- `in-worker` may carry `finalize`, `cover` (reserved, answered `not_implemented`), `probe_fetch` (v0.4.0: convert a SoundCloud download) and `cleanup_final` (the worker's mount of `staging/final` is read-only, so the probe deletes finalized files 7 days after they went live or failed).
 
 Every result records the inbox it came from.
 
@@ -50,7 +51,8 @@ Every result records the inbox it came from.
 
 - web cannot see `in-worker`, and cannot write `out`, `final` or `art`;
 - the worker cannot write `final`, `out` or `art`, can read `art`, and cannot see `uploads` or `art-in`;
-- the probe has no network and cannot write `art-in`.
+- the probe has no network and cannot write `art-in`;
+- (v0.4.0) the probe can read but not write `staging/fetch`; the worker cannot see it, can write `spool/fetch/in` and cannot write `spool/fetch/out`; web sees neither; music-fetch sees nothing but its spool and staging dir, has a read-only rootfs, has no network in the test stack, and refuses an unexpected env var (exit 78, name only).
 
 ## Security model
 
@@ -82,6 +84,7 @@ For each control, the table gives the plan section and the code that implements 
 | Album art (contract 2026-09-27): `POST /api/uploads/art` (multipart, exactly one `art` file, ≤5 MB, JPEG/PNG/WebP by magic bytes, never SVG/GIF; header dims ≤12 MP and a complete file checked before spooling) → 202 `{artId}`; `GET /api/uploads/art/:artId` (uploader or `review`, else 404) → `processing`/`ready`/`rejected` + a signed 5-min `previewUrl` (`/api/media/art/:id`, `image/jpeg`, nosniff, `CSP: sandbox`). Raw bytes live in `staging/art-in` (web rw); the probe alone writes `staging/art/<artId>/cover.jpg` (web + worker ro), a ≤1000 px baseline JPEG under the same decode bounds as embedded covers; the web re-hashes it before recording `jpeg_sha256`. Unreferenced art expires after 7 days (the probe deletes the JPEG on an `art_release` request). The worker's `uploadArt(mediaId, jpegPath, expectedSha256)` reads only `<STAGING_ART_DIR>/<uuid>/cover.jpg` (no symlinks), re-hashes it, and posts it through `validate()` (the media id must be a `Music/Artists` file under the prefix; write gate; station). | contract | `server/art/*`, `app/api/uploads/art/*`, `app/api/media/art/*`, `probe/art.ts`, `azuracast/client.ts` |
 | Album art on songs: `PUT`/`DELETE /api/items/:id/art` (owner while the batch is a draft, a reviewer while the item is pending in a submitted batch; the upload must be the viewer's own and ready) sets `items.custom_art_id` (FK to `art_uploads`, `ON DELETE SET NULL`). `/api/media/cover/:id` and the signed preview serve the **effective cover** with the same session, owner-or-review predicate and viewer-bound signature. Edit requests may propose art; managers set it directly (`PUT /api/library/:mediaId/art`); the worker's `apply_art` snapshots, runs `uploadArt` and verifies `art_updated_at` moved. Art referenced by an open item, request or queued `apply_art` job is kept. | contract | `submissions.ts`, `media/cover.ts`, `requests/*`, `worker/requests/jobs.ts`, `art/retention.ts` |
 | The tickets client (worker only) never forwards a staff comment. The webhook receiver enforces ±300 s, HMAC over the raw bytes checked with `timingSafeEqual` **before** parsing, delivery-id dedupe in the same transaction, and anchoring only within the ticket's own batch. | §3.1, §4.5 | `tickets/client.ts`, `hooks/*` |
+| SoundCloud links (v0.4.0): the web checks the link's shape only and never contacts SoundCloud or music-fetch; the worker writes music-fetch's request and reads its result with a strict schema, re-deriving every path; music-fetch (the only container with internet egress) holds nothing and never decodes media; the network-less probe decodes only AAC-in-MP4 / Opus-in-Ogg / MP3 with forced demuxers and decoders, `-protocol_whitelist file`, under prlimit / timeout / nice, from a read-only mount. Per-member limits, a global one-at-a-time queue and a kill switch. | P5 | `lib/soundcloud.ts`, `server/soundcloud.ts`, `server/spool/fetch.ts`, `worker/soundcloud.ts`, `probe/fetched.ts`, `fetch/` |
 | `audit_log` is append-only by trigger. Web and worker connect as the **non-owner** `music_app` role (DML only; `audit_log` is SELECT + INSERT only). | §3.1 | `drizzle/0001_audit_append_only.sql`, `migrate/main.ts` |
 
 ### Worker profile guard, as amended
@@ -102,6 +105,35 @@ Members may upload a WAV instead of an MP3 (WAV only: no FLAC, AIFF or M4A). The
 - **Duration.** A WAV or an MP3 may be 30 s to **24 min** (v0.3.5; was 15 / 20 min): the longest song whose 192 kbps MP3 still fits the 35 MiB final-file cap with a 2 MiB cover and its tags.
 - **Staging quota.** A WAV (or an MP3 too big to fit, v0.3.5) is charged at its full length (per-user in-flight and global `maxStagingBytes`) until the worker collects the probe result, which re-charges the upload row at the MP3's size; a rejected upload's bytes are deleted by the probe and the upload marked `expired`. While a WAV is being probed the probe's private copy in `staging/work` (up to 250 MB + the MP3) is on the same disk but not in the quota; the probe runs one job at a time, so that is bounded by one WAV, and at start-up it removes the job dirs a restart mid-job left there (an interrupted probe's upload is released like a rejected one). Every refusal, including a timeout, deletes the upload: a rejected item is never re-probed, so keeping the bytes would only hold staging quota.
 - **Cost on botvps.** Measured with the real probe image under the compose limits plus `--cpus 1` (2.1 GHz Xeon E5-2620 v4 core; v0.3.5, CHANGELOG has the table): a 250 MiB 24-bit/48 kHz WAV (15.2 min → 256k) takes 32.1 s end to end (ffmpeg 24.8 s), a 242 MiB 16-bit/44.1 kHz WAV of 24 min (the longest encode, → 192k) 38.4 s (ffmpeg 33.7 s), a 57.5 MB 320k MP3 of 24 min re-encoded to 192k 41.7 s (ffmpeg 38.7 s; 3 m 5 s with a CPU hog on the same core); ffmpeg's peak RSS is ~40 MiB and the cgroup's anonymous memory peaks at ~34 MiB (page cache fills the rest of the 256 MB limit and is reclaimed, no OOM). The probe container has `cpu_shares: 256` (cgroup weight ~10 vs ~39 for a default container), so a conversion and the copy / hash around it yield the CPU to the Discord bots; ffmpeg also runs at nice 19, which only matters inside the probe's own cgroup. The probe processes nothing else during a conversion.
+
+## SoundCloud links (v0.4.0)
+
+Owner request: "Direct SoundCloud links auto-download the MP3 plus info, which the user can edit." Any **public** SoundCloud track, in the browser, with the same rights attestation at submit.
+
+**Flow.**
+
+1. The member pastes a link under **Add from a SoundCloud link** on the submit page. The page checks its shape (the server does again), then `POST /api/batches/:id/soundcloud {url}`.
+2. **Web** (`server/soundcloud.ts`): only `https://soundcloud.com/<user>/<track>`, `https://m.soundcloud.com/<user>/<track>` or `https://on.soundcloud.com/<id>` (SoundCloud's share parameters are dropped; the URL is rebuilt from the validated parts). Sets, playlists, likes, reposts, profiles and secret links are refused (`sc_not_a_track`), anything else too (`sc_bad_url`). It records a `probing` item (`source 'soundcloud'`, `fetch_stage 'queued'`), an upload row for the future MP3 (charged 60 MiB for now) and a `soundcloud_fetch` job. The web has no egress to SoundCloud and never talks to music-fetch.
+3. **Worker** (`worker/soundcloud.ts`): writes `/spool/fetch/in/<id>.json`, one link at a time for the whole portal (`fetch_stage 'fetching'`). music-fetch validates the URL again, resolves a shortlink with its own redirect checks, runs the pinned yt-dlp and writes `/spool/fetch/out/<id>.json` plus `/staging/fetch/<id>/audio.<ext>` (+ `artwork.raw`). See `fetch/README.md`.
+4. The worker reads the result with a strict schema and re-checks every path, the format (AAC in MP4, Opus in Ogg or MP3 only), the canonical URL and the duration (≤ 24 min). The metadata becomes the pre-fill (title; uploader → artist; genre; cleaned with `clipTag`; the description is ignored), the license is kept, and it writes a `probe_fetch` request (`fetch_stage 'converting'`).
+5. **Probe** (`probe/fetched.ts`, network none, `staging/fetch` read-only): copies and re-hashes the download, checks the container by magic bytes, decodes it with a forced demuxer and decoder (file protocol only, prlimit / timeout / nice 19) and encodes a CBR MP3 on the fit ladder (320 / 256 / 192 kbps, the highest that fits the 35 MiB final file; an MP3 that already fits is kept untouched), published as `/staging/uploads/<upload>`. The artwork goes through the album-art path (JPEG / PNG / WebP only, → JPEG ≤ 1000 px).
+6. The worker collects the result like an upload's: the item becomes `pending` with the pre-fill, the upload row is charged the MP3's size, and it writes `/spool/fetch/in/<id>.release`: music-fetch deletes the raw download at once.
+7. The member edits the fields and submits with the rights attestation. Reviewers see **From SoundCloud (<license>)** and the source URL (review queue, item page, batch page, the ticket card).
+
+**Limits.** Per member: 10 attempts a minute, `caps.fetchesPerUserPerDay` links a day (default 20, Admin → Settings; every link counts), 3 in progress. Globally: one link at a time (a link waits at most 3 h for its turn). Duration 30 s – 24 min (the fit ladder's floor), media ≤ 60 MiB (music-fetch). music-fetch gives up after 10 min (`sc_timeout`); the worker gives up 15 min after its request with no answer (`sc_fetch_unanswered`, alerted). Every failure code has a message (`components/messages.ts`, `sc_*`).
+
+**Turn it off quickly** (kill switch), any of:
+
+- Admin → Settings → untick **Allow "Add from a SoundCloud link"** → Save. New links get `503 sc_disabled`; queued links are rejected instead of being fetched; songs already fetched are unaffected.
+- The same from the database (owner): `INSERT INTO settings (key, value) VALUES ('soundcloud_fetch_enabled', 'false') ON CONFLICT (key) DO UPDATE SET value = 'false';` (turn it on again with `'true'`, or delete the row).
+- Stop the container: `docker compose -p efm-music stop music-fetch`. Links already sent are rejected after 15 min (`sc_fetch_unanswered`); use the setting too, or new links pile up in the queue until then.
+
+**Operations.**
+
+- **Egress.** `music-fetch` is alone on `fetch-egress` (172.31.251.0/24, bridge `br-efm-fetch`, no IPv6) and on no other network, so it cannot reach `music-db` or any container. `efm-music-egress.service` on botvps already DROPs RFC1918, 169.254.0.0/16 and 100.64.0.0/10 from that subnet (DOCKER-USER). Recommended once, with it: `iptables -I INPUT -i br-efm-fetch -j DROP` (traffic to the host itself goes through INPUT, which DOCKER-USER does not see), persisted the same way. Verify with the snippet in `fetch/README.md` ("Only `1.1.1.1` may print `OPEN`"). music-fetch also refuses non-public addresses in-process.
+- **The monthly yt-dlp bump** (next review 2026-10-27; sooner for a yt-dlp security release or when SoundCloud extraction breaks): follow `fetch/README.md` → "Version pins and the monthly bump" (new version and wheel hash from PyPI, OSV check, `requirements.txt`, re-pin the base image digest, rebuild, run the test stage under the runtime constraints, check the pinned flags offline, `fetch/CHANGELOG.md`). Dependabot opens monthly PRs for `music/fetch` (pip + docker). A bump ships like any release: CI tests it and pushes `fetch-<sha7>`; set `MUSIC_TAG`, `up -d`.
+- **Memory** (v0.4.0 measurements in `CHANGELOG.md`): `mem_limit: 160m`. Check `memory.peak` of the container after the first real fetches (only a loopback HLS origin was measured).
+- **Logs.** `docker compose -p efm-music logs music-fetch`: one line per job (`<uuid> ok mp4 <bytes> <s>` or `<uuid> error <code>`), `released`, `swept`. The worker alerts on `sc_fetch_unanswered`.
 
 ## Unreleased songs: the UNRELEASED folder import (v0.3.6)
 
@@ -125,7 +157,7 @@ docker compose -p efm-music exec music-worker node /app/legacy-import.mjs status
 
 ## Database migrations
 
-`drizzle/` holds `0000_init`, `0001_audit_append_only` (the append-only trigger, hand-written), `0002_foundation_art` (album-art uploads) and `0003_integration` (P3 + P4, generated by drizzle-kit from the merged `schema.ts` on the 0002 snapshot: `ingest_runs`, `batches.attest_version`, `items.custom_art_id` with its FK, the P4 request and snapshot columns). `music-migrate` applies them as the owner, then (re)grants `music_app`. `schema.ts` and the migrations are equivalent (drizzle-kit `generate` reports no changes; a migrated database matches one built from `schema.ts` column for column, apart from the 0001 triggers). drizzle-kit `push` always proposes re-setting the five `'{}'::int[]` / `'{}'::text[]` array defaults: that is a drizzle-kit comparison artefact that does not converge and was already present at 0002, not drift. Later releases add `0004_v021_worker`, `0005_v022_archive_reconcile`, `0006_v030_wav_input` (`items.input_format`), `0007_v032_transcode_kbps` (`items.transcode_kbps`) and `0008_v036_archive_legacy` (`archive.origin` enum `portal` / `legacy_unreleased`, `reason`, `linked_user_id` → `user`, `release_artist_id` → `artists`, `release_playlist_ids`, `restore_path`), each generated by drizzle-kit from `schema.ts`.
+`drizzle/` holds `0000_init`, `0001_audit_append_only` (the append-only trigger, hand-written), `0002_foundation_art` (album-art uploads) and `0003_integration` (P3 + P4, generated by drizzle-kit from the merged `schema.ts` on the 0002 snapshot: `ingest_runs`, `batches.attest_version`, `items.custom_art_id` with its FK, the P4 request and snapshot columns). `music-migrate` applies them as the owner, then (re)grants `music_app`. `schema.ts` and the migrations are equivalent (drizzle-kit `generate` reports no changes; a migrated database matches one built from `schema.ts` column for column, apart from the 0001 triggers). drizzle-kit `push` always proposes re-setting the five `'{}'::int[]` / `'{}'::text[]` array defaults: that is a drizzle-kit comparison artefact that does not converge and was already present at 0002, not drift. Later releases add `0004_v021_worker`, `0005_v022_archive_reconcile`, `0006_v030_wav_input` (`items.input_format`), `0007_v032_transcode_kbps` (`items.transcode_kbps`) `0008_v036_archive_legacy` (`archive.origin` enum `portal` / `legacy_unreleased`, `reason`, `linked_user_id` → `user`, `release_artist_id` → `artists`, `release_playlist_ids`, `restore_path`) and `0009_v040_soundcloud` (`items.fetch_request_id`, `fetch_stage`, `fetch_requested_at`, `source_url`, `fetch_license`), each generated by drizzle-kit from `schema.ts`.
 
 ## Deploy (botvps, as botuser)
 
@@ -137,7 +169,8 @@ docker compose -p efm-music up -d
 ```
 
 - **Roll back:** set the previous `MUSIC_TAG`, then `up -d`.
-- **Images:** CI pushes `ghcr.io/jason-tucker/euphoricfm-website-music:{web,worker,probe}-<sha7>` and `-latest`. Only images that passed `test/run.sh` are pushed.
+- **Images:** CI pushes `ghcr.io/jason-tucker/euphoricfm-website-music:{web,worker,probe,fetch}-<sha7>` and `-latest`. Only images that passed `test/run.sh` are pushed.
+- **v0.4.0:** `compose.yml` creates `fetch-egress` itself (172.31.251.0/24): check that the subnet is free on botvps first (`docker network inspect`), and see [SoundCloud links](#soundcloud-links-v040) → Operations for the INPUT rule.
 - **Networks:** `efm-music-hooks` must exist first. The main session creates it at P1-net/Deploy-1:
 
   ```sh
@@ -152,7 +185,7 @@ docker compose -p efm-music up -d
 
 - Change the `worker-egress` subnet only together with that unit; otherwise the worker runs without the guard.
 - The worker reaches tickets-web over `efm-public-net`, whose traffic stays on its own bridge and is not affected.
-- The test harness (`test/compose.test.yml`) overrides `worker-egress` without a fixed subnet, so a test stack never takes the production range.
+- The test harness (`test/compose.test.yml`) overrides `worker-egress` and `fetch-egress` without a fixed subnet or bridge name, so a test stack never takes the production range, and runs `music-fetch` with `network_mode: none`.
 
 ## Tests
 
@@ -168,13 +201,16 @@ sh music/test/run.sh
 
 The harness builds the images, starts Postgres, the mocks and the real containers (the worker runs its real job loop against the mocks), and then runs:
 
-- `vitest` (unit, DB and e2e for every phase: foundation, ingest, requests, UI page smoke);
+- music-fetch's own unit suite (`fetch/tests`, network none, runtime constraints);
+- `vitest` (unit, DB and e2e for every phase: foundation, ingest, requests, UI page smoke, SoundCloud links);
 - the mount checks;
 - the worker start-up refusals.
 
 Finally it prints idle `docker stats`. The web's own retention sweeper is off in the harness (`MUSIC_DISABLE_SWEEPER=1`), because the retention tests call it directly.
 
 The UI component and route tests run without the stack (jsdom): `pnpm test:ui` (`vitest.ui.config.ts`).
+
+**No test contacts SoundCloud or any production system.** The test stack runs the real `music-fetch` image with `network_mode: none` and a launcher (`test/fetch-fake/`) that replaces only its network seams: a fake yt-dlp that plays fixture files the tests write (`/data/fetch-fixtures`), and fixture artwork and shortlinks.
 
 The mocks in `test/mocks/server.mjs` stand in for Discord OAuth and the member API, the tickets Integration API, AzuraCast (per the P0d and P0d-B contracts, **upstream-faithful**: a batch skips a missing source silently and a move overwrites an occupied destination, so the wrapper's own checks are what the tests exercise), and an egress canary. Controls cover seeding, per-record batch errors, the next move failing, a lost or dropped row, now-playing, drift, and art uploads. **No production credential is used anywhere in the tests.**
 
