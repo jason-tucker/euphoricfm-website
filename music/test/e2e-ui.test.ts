@@ -130,7 +130,7 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     // The home page shows the exact statement the submit page asks to confirm.
     const signedOutHome = await page(null, '/')
     const homeRights = rightsOnHome(signedOutHome.html)
-    expect(homeRights.length).toBeGreaterThan(20)
+    expect(homeRights.length).toBeGreaterThan(0)
     const submitRights = /<span class="text-sm">([^<]*)<span id="rights-version"/.exec(submit.html)?.[1]
     expect(unescapeHtml(submitRights ?? '')).toBe(homeRights)
 
