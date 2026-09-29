@@ -87,6 +87,9 @@ export const ErrorResponse = z.object({ error: z.string() }).passthrough()
 
 // ------------------------------------------------------- playlist pieces
 
+/** Resolved display label on tracks / announcements in responses; ignored on input. */
+export const MediaLabelSchema = z.object({ title: z.string(), artist: z.string().nullable(), lengthS: z.number().int().nullable() })
+
 export const EventTrackSchema = z
   .object({
     position: z.number().int().min(0).max(TRACKS_MAX),
@@ -94,6 +97,7 @@ export const EventTrackSchema = z
     mediaId: PositiveId.nullable(),
     audioId: PositiveId.nullable(),
     pinAt: IsoInstant.nullable(),
+    label: MediaLabelSchema.optional(),
   })
   .strict()
   .refine((t) => (t.source === 'library' ? t.mediaId !== null && t.audioId === null : t.audioId !== null && t.mediaId === null), 'library → mediaId, upload → audioId')
@@ -109,6 +113,7 @@ export const EventAnnouncementSchema = z
     everyMin: EveryMinSchema.nullable(),
     from: IsoInstant.nullable(),
     until: IsoInstant.nullable(),
+    label: MediaLabelSchema.optional(),
   })
   .strict()
   .refine((a) => (a.source === 'stinger' ? a.mediaId !== null && a.audioId === null : a.audioId !== null && a.mediaId === null), 'stinger → mediaId, upload → audioId')
@@ -155,6 +160,10 @@ export const FullEventViewSchema = z.object({
   freezeAt: IsoInstant,
   canEdit: z.boolean(),
   buildStatus: z.string().nullable(),
+  version: z.number().int().positive(),
+  denyReason: z.string().nullable(),
+  ownerName: z.string().nullable(),
+  ticketNumber: z.number().int().nullable(),
 })
 export const EventViewSchema = z.discriminatedUnion('kind', [PublicEventViewSchema, PrivateEventViewSchema, PendingEventViewSchema, FullEventViewSchema])
 
@@ -176,6 +185,8 @@ export const ConfigResponse = z.object({
   maxRows: z.number().int(),
   audioMaxItems: z.number().int(),
   endWaitS: z.number().int(),
+  // The tus chunk size (caps.chunkBytes) the uploader must use.
+  chunkBytes: z.number().int(),
   caps: z.object({ mp3Bytes: z.number().int(), wavBytes: z.number().int(), maxDurationS: z.number().int(), minDurationS: z.number().int() }),
   stationListenUrl: z.literal('https://euphoric.fm/listen/event/radio.mp3'),
   nowPlayingUrl: z.literal('https://euphoric.fm/api/nowplaying/event'),
@@ -206,7 +217,10 @@ export const EventResponse = EventViewSchema
 
 // GET /api/ev/availability — busy intervals; `gap` rows are the padding
 // around an event (events_gap_min) that a new event may not overlap either.
-export const AvailabilityQuery = RangeQuery
+// `exclude`: an event id to leave out (the one being edited).
+export const AvailabilityQuery = z
+  .object({ from: IsoInstant, to: IsoInstant, exclude: IdParam.optional() })
+  .refine((q) => Date.parse(q.to) > Date.parse(q.from), 'to must be after from')
 export const AvailabilityRow = z.object({ startsAt: IsoInstant, endsAt: IsoInstant, kind: z.enum(['event', 'gap']) })
 export const AvailabilityResponse = z.array(AvailabilityRow)
 
@@ -233,12 +247,14 @@ export const CreateEventRequest = z.object(eventFields).strict().refine(endsAfte
 export type CreateEventRequest = z.infer<typeof CreateEventRequest>
 
 // PATCH /api/ev/events/:id — any subset of the create fields. `version`
-// (optional) is the edit-conflict guard: when sent it must equal the row's.
+// (optional) is the edit-conflict guard: when sent it must equal the row's
+// (409 version_conflict). `confirmRestart`: staff confirm that a time change
+// to a LIVE event restarts the Event station (409 restart_required without).
 export const PatchEventRequest = z
-  .object({ ...eventFields, version: z.number().int().positive() })
+  .object({ ...eventFields, version: z.number().int().positive(), confirmRestart: z.boolean() })
   .partial()
   .strict()
-  .refine((o) => Object.keys(o).some((k) => k !== 'version'), 'empty patch')
+  .refine((o) => Object.keys(o).some((k) => k !== 'version' && k !== 'confirmRestart'), 'empty patch')
   .refine(endsAfterStart, 'endsAt must be after startsAt')
 export type PatchEventRequest = z.infer<typeof PatchEventRequest>
 
@@ -248,6 +264,9 @@ export const PutPlaylistRequest = z
     tracks: z.array(EventTrackSchema).max(TRACKS_MAX),
     announcements: z.array(EventAnnouncementSchema).max(ANNOUNCEMENTS_MAX),
     playlistOrder: PlaylistOrderSchema,
+    // Same meaning as on PATCH (a pin / announcement change to a LIVE event).
+    version: z.number().int().positive().optional(),
+    confirmRestart: z.boolean().optional(),
   })
   .strict()
   .refine((p) => new Set(p.tracks.map((t) => t.position)).size === p.tracks.length, 'duplicate track positions')
@@ -298,6 +317,9 @@ export const CreateAudioRequest = z
   .object({ uploadId: UploadId, kind: AudioKindSchema, title: singleLine(1, AUDIO_TITLE_MAX), artist: nullableText(singleLine(1, AUDIO_ARTIST_MAX)).optional() })
   .strict()
 export type CreateAudioRequest = z.infer<typeof CreateAudioRequest>
+
+// GET /api/ev/audio[?owner=<userId>] (owner: review only, lists that member's audio)
+export const AudioListQuery = z.object({ owner: z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/).optional() })
 
 // GET /api/ev/audio → AudioRow[]; POST → { audio: AudioRow }; DELETE → { deleted: true }
 // expiresAt: when an unused item will be swept (events_audio_unused_days), null once used.
