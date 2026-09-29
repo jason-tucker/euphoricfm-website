@@ -564,3 +564,23 @@ test('events schedule: "~" helper playlists are hidden, midnight splits still me
   ]);
   assert.deepEqual(eventRows([row(1, '~only helpers', 0, 10, true)]), []);
 });
+
+test('events schedule: the 0.5.2 helper names (EVT<id> s<n> / a<n>) are hidden too; look-alike titles are not', () => {
+  const row = (id, name, start, end, is_now = false) => ({
+    id, type: 'playlist', name, title: '', description: '',
+    start_timestamp: start, start: '', end_timestamp: end, end: '', is_now,
+  });
+  for (const name of ['EVT1 s1', 'EVT1 a1', 'EVT42 s12', 'EVT99999 a200', ' EVT7 s3 ', 'evt3 a2', '~EVT1 s1', '~EVT1 a2']) {
+    assert.equal(isHelperRow({ name }), true, name);
+  }
+  for (const name of ['EVT1 s1 afterparty', 'EVT party', 'Event 1 s1', 'EVT1s1', 'EVT1 x1', 'Club Night', 'Car Meet ~ Night']) {
+    assert.equal(isHelperRow({ name }), false, name);
+  }
+  const out = eventRows([
+    row(81, 'Grand Opening', 1000, 5000, true),
+    row(90, 'EVT1 s1', 2000, 2900, true),
+    row(91, 'EVT1 a1', 1800, 1900),
+    row(82, '~EVT1 s1', 2000, 2900),
+  ]);
+  assert.deepEqual(out.map((e) => [e.id, e.name]), [[81, 'Grand Opening']]);
+});

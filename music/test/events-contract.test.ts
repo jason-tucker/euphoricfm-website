@@ -9,8 +9,10 @@ import {
   EVENT_UPLOAD_RE,
   eventUploadPath,
   isEventUploadPathFor,
+  isReservedPlaylistName,
   LIBRARY_FILE_RE,
   mainName,
+  parseAnyInternalName,
   parseEventUploadPath,
   parseInternalName,
   pinName,
@@ -155,14 +157,31 @@ describe('event paths and playlist names', () => {
     expect(mainName({ visibility: 'public', title: '~~~' })).toBe('Event')
     expect(mainName({ visibility: 'public', title: '🎉' })).toBe('Event')
     expect(mainName({ visibility: 'public', title: 'x'.repeat(80) }).startsWith('~')).toBe(false)
-    expect(pinName(7, 1)).toBe('~EVT7 s1')
-    expect(annName(7, 2)).toBe('~EVT7 a2')
+    // 0.5.2: helper names are ASCII, no '~' (the 2026-09-29 station-14 outage)
+    expect(pinName(7, 1)).toBe('EVT7 s1')
+    expect(annName(7, 2)).toBe('EVT7 a2')
     expect(() => pinName(0, 1)).toThrow()
     expect(() => annName(1, 0)).toThrow()
-    expect(parseInternalName('~EVT7 s1')).toEqual({ eventId: 7, role: 'pin', n: 1 })
-    expect(parseInternalName('~EVT7 a12')).toEqual({ eventId: 7, role: 'announce', n: 12 })
-    expect(parseInternalName('~EVT7 x1')).toBeNull()
-    expect(parseInternalName('EVT7 s1')).toBeNull()
+    expect(parseInternalName('EVT7 s1')).toEqual({ eventId: 7, role: 'pin', n: 1 })
+    expect(parseInternalName('EVT7 a12')).toEqual({ eventId: 7, role: 'announce', n: 12 })
+    expect(parseInternalName('EVT7 x1')).toBeNull()
+    expect(parseInternalName('evt7 s1')).toBeNull()
+    // legacy '~' names are only ever recognised (to supersede them), never current
+    expect(parseInternalName('~EVT7 s1')).toBeNull()
+    expect(parseAnyInternalName('~EVT7 s1')).toEqual({ eventId: 7, role: 'pin', n: 1, legacy: true })
+    expect(parseAnyInternalName('EVT7 a2')).toEqual({ eventId: 7, role: 'announce', n: 2, legacy: false })
+    expect(parseAnyInternalName('Club Night')).toBeNull()
+  })
+
+  it('titles shaped like a helper name are reserved; a main name never looks like one', () => {
+    for (const t of ['EVT1 s1', 'evt12 a3', 'Evt1 S1', '~EVT1 s1', ' EVT1 s1 ', 'EVT1-s1', 'evt1.a2', 'E V T 1 s 1', 'ＥＶＴ１ ｓ１']) {
+      expect(isReservedPlaylistName(t), t).toBe(true)
+      expect(mainName({ visibility: 'public', title: t }), t).toBe('Event')
+    }
+    for (const t of ['EVT party', 'Event 1 s1', 'EVT1 s1 afterparty', 'Club Night', 'EVTs 1', 'S1 EVT1']) {
+      expect(isReservedPlaylistName(t), t).toBe(false)
+    }
+    expect(mainName({ visibility: 'public', title: 'EVT1 s1 afterparty' })).toBe('EVT1 s1 afterparty')
   })
 })
 

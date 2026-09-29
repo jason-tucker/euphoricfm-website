@@ -84,7 +84,8 @@
 .ev-choice:hover { border-color: rgb(var(--efm-sunburst-rgb) / 0.5); }
 .ev-choice:has(input:checked) { border-color: rgb(var(--efm-sunburst-rgb) / 0.8); background: rgb(var(--efm-sunburst-rgb) / 0.1); }
 .ev-choice input { margin-top: 3px; width: 20px; height: 20px; accent-color: rgb(var(--efm-sunburst-rgb)); flex: none; }
-.ev-select { appearance: auto; min-height: 44px; }
+/* Look (opaque dark fill, chevron, option list) from globals.css select.input. */
+.ev-select { min-height: 44px; }
 .ev-field-hint { margin-top: 4px; font-size: 12px; color: rgb(var(--efm-cream-rgb) / 0.55); }
 .ev-iconbtn {
   display: inline-flex;

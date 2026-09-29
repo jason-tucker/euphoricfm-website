@@ -154,7 +154,7 @@ describe('compiler: pins', () => {
   it('single_track + loop_once, window [pin, pin+15], no interrupt, not in main', () => {
     const plan = compile(pinned('2026-10-10T20:30:00-04:00'))
     const pin = plan.playlists.find((p) => p.key === 's1')!
-    expect(pin.name).toBe('~EVT42 s1')
+    expect(pin.name).toBe('EVT42 s1')
     expect(pin.role).toBe('pin')
     expect(pin.mediaIds).toEqual([777])
     expect(pin.body.backend_options).toEqual(['single_track'])
@@ -203,8 +203,8 @@ describe('compiler: pins', () => {
       }),
     )
     expect(plan.playlists.filter((p) => p.role === 'pin').map((p) => [p.name, p.mediaIds[0]])).toEqual([
-      ['~EVT42 s1', 3],
-      ['~EVT42 s2', 2],
+      ['EVT42 s1', 3],
+      ['EVT42 s2', 2],
     ])
   })
 })
@@ -215,7 +215,7 @@ describe('compiler: announcements', () => {
   it("'at': interrupt + single_track + loop_once, [t, t+dur+1m] rounded up", () => {
     const plan = compile(input({ announcements: [ann({ at: T('2026-10-10T20:30:00-04:00') })] }))
     const a = plan.playlists.find((p) => p.key === 'a1')!
-    expect(a.name).toBe('~EVT42 a1')
+    expect(a.name).toBe('EVT42 a1')
     expect(a.body.backend_options).toEqual(['interrupt', 'single_track'])
     expect(a.body.schedule_items).toEqual([{ start_time: 2030, end_time: 2032, start_date: '2026-10-10', end_date: '2026-10-10', days: [], loop_once: true }])
   })

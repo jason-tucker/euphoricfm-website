@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { writeSpoolResultNoClobber } from '@/server/spool/protocol'
 import { probeRequestIdForUpload } from '@/events/contract/paths'
 import { finalizeRequestIdFor } from '@/events/worker/jobs/audio'
-import { liquidsoapConfigErrors } from '@/events/worker/jobs/build'
+import { lastLiquidsoapBanner, liquidsoapConfigErrors } from '@/events/worker/jobs/build'
 import { endWaitTarget } from '@/events/worker/jobs/kicks'
 import { eventsAlerter } from '@/events/worker/main'
 import { EVENTS_MUTATING_KINDS, runEventJob, tickPeriodic } from '@/events/worker/loop'
@@ -171,7 +171,7 @@ describe('events worker: build', () => {
     expect(mainIdOf(h, 42)).toBe(main)
     expect(s2.playlists).toEqual([74])
     const pin = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!
-    expect(pin.intentName).toBe('~EVT42 s1')
+    expect(pin.intentName).toBe('EVT42 s1')
     expect(h.az.files.get(503)!.playlists).toEqual([pin.playlistId])
     expect(h.az.playlists.get(pin.playlistId!)!.backend_options).toEqual(['single_track'])
     expect(h.store.buildRows.find((b) => b.version === 2)!.status).toBe('applied')
@@ -389,25 +389,565 @@ describe('events worker: kicks and teardown', () => {
     expect(h.store.job('ticket_post', (p) => p.kind === 'on_air')).toHaveLength(1)
   })
 
-  it('start kick: retries once after 30 s, then fails the build, tells the ticket and alerts (never loops)', async () => {
+  // ---- 0.5.2: restart confirmation + rollback (2026-09-29 station-14 outage) ----
+
+  const restartCalls = (h: Harness) => h.az.calls.filter((c) => c.path.endsWith('/backend/restart')).length
+  const statusReads = (h: Harness) => h.az.calls.filter((c) => c.path === '/api/station/14/status').length
+  const eventIds = (h: Harness, eventId = 42) => h.store.reg.filter((r) => r.eventId === eventId && !r.deletedAt && r.playlistId !== null).map((r) => r.playlistId!)
+
+  // event 42 with a pinned song and an 'at' stinger: main + `EVT42 s1` + `EVT42 a1`
+  async function builtWithHelpers() {
+    const w = world()
+    w.h.store.trackRows.set(42, [
+      { position: 1, source: 'library', mediaId: 501, audioId: null, pinAt: null },
+      { position: 2, source: 'library', mediaId: 502, audioId: null, pinAt: new Date('2026-10-10T21:00:00-04:00') },
+    ])
+    w.h.store.annRows.set(42, [{ id: 1, source: 'stinger', mediaId: 601, audioId: null, mode: 'at', at: new Date('2026-10-10T20:30:00-04:00'), everyMin: null, fromAt: null, untilAt: null }])
+    await w.h.store.enqueue('build_now', { eventId: 42 })
+    await drain(w.h)
+    expect(w.h.store.events[0]!.status).toBe('built')
+    return w
+  }
+
+  it('start kick: confirms backend_running (two running reads in a row) before going live', async () => {
     const { h } = await built()
-    h.az.failRestarts = 5
+    // supervisord flickering right after the restart: running, not running, then steady
+    h.az.statusScript = [true, false]
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(1)
+    expect(statusReads(h)).toBeGreaterThanOrEqual(4)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.alerts).toEqual([])
+  })
+
+  it('start kick: a failed restart call is rolled back at once (no retry) — event playlists disabled, one more restart, station confirmed, build failed, ticket + alert', async () => {
+    const { h } = await builtWithHelpers()
+    const ids = eventIds(h)
+    expect(ids).toHaveLength(3)
+    expect(ids.every((id) => h.az.playlists.get(id)!.is_enabled)).toBe(true)
+    h.az.failRestarts = 1
     h.clock.t = T('2026-10-10T20:00:05-04:00')
     await drain(h)
     const kick = h.store.job('start_kick')[0]!
-    expect(kick.status).toBe('queued')
-    expect(kick.runAfter).toBe(h.clock.t + 30_000)
-    h.clock.t += 30_000
-    await drain(h)
-    expect(kick.status).toBe('dead')
-    const restartCalls = h.az.calls.filter((c) => c.path.endsWith('/backend/restart'))
-    expect(restartCalls).toHaveLength(2)
-    expect(h.store.buildRows.at(-1)!.status).toBe('failed')
+    expect(kick.status).toBe('done')
+    expect(restartCalls(h)).toBe(2)
+    // every playlist of the event disabled BETWEEN the failed restart and the rollback restart
+    const w = h.az.writes().map((x) => `${x.method} ${x.path}`)
+    const first = w.indexOf('POST /api/station/14/backend/restart')
+    const second = w.lastIndexOf('POST /api/station/14/backend/restart')
+    for (const id of ids) {
+      const at = w.indexOf(`PUT /api/station/14/playlist/${id}`, first)
+      expect(at).toBeGreaterThan(first)
+      expect(at).toBeLessThan(second)
+      expect(h.az.playlists.get(id)!.is_enabled).toBe(false)
+    }
+    expect(h.az.backendRunning).toBe(true)
+    expect(h.store.events[0]!.status).toBe('failed')
+    const build = h.store.buildRows.at(-1)!
+    expect(build.status).toBe('failed')
+    expect(build.lastError).toContain('rolled back')
     expect(h.store.job('ticket_post', (p) => p.kind === 'failed')).toHaveLength(1)
-    expect(h.alerts.some((a) => a.includes('start kick FAILED'))).toBe(true)
+    expect(h.alerts).toContain('start of event 42 failed — rolled back, Event station restored')
+    expect(h.alerts.some((a) => a.includes('EVENT STATION DOWN'))).toBe(false)
+    // never a loop: nothing restarts again
     h.clock.t += 3600_000
     await drain(h)
-    expect(h.az.calls.filter((c) => c.path.endsWith('/backend/restart'))).toHaveLength(2)
+    expect(restartCalls(h)).toBe(2)
+  })
+
+  // The 2026-09-29 incident (live test 2): the event's '~EVT1 s1' / '~EVT1 a1'
+  // playlists were enabled, the restart regenerated the .liq, Liquidsoap hit
+  // `playlist_~evt1_s1 = playlist(…)` — "Error 2: Parse error" — and the
+  // backend went FATAL. The start kick retried once, then left it down.
+  it('the incident: an enabled "~" playlist of the event makes Liquidsoap refuse the config; the kick sees the backend down, rolls back within ~40 s and the station is back', async () => {
+    const { h } = await builtWithHelpers()
+    const pinRow = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!
+    // what production held: the registry and the station both carry the old name
+    pinRow.intentName = '~EVT42 s1'
+    h.az.playlists.get(pinRow.playlistId!)!.name = '~EVT42 s1'
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    const t0 = h.clock.t
+    await drain(h)
+    // the restart "worked" (200) but the backend never came up: parse error, no banner
+    expect(h.az.liquidsoapLog).toContain('Error 2: Parse error (playlist_~evt42_s1')
+    expect(restartCalls(h)).toBe(2)
+    expect(statusReads(h)).toBeLessThanOrEqual(14 + 14 + 2)
+    expect(h.clock.t - t0).toBeLessThanOrEqual(2 * 42_000)
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled === false)).toBe(true)
+    expect(h.az.invalidLiquidsoapPlaylists()).toEqual([])
+    expect(h.az.backendRunning).toBe(true)
+    expect(h.store.events[0]!.status).toBe('failed')
+    expect(h.store.buildRows.at(-1)!.status).toBe('failed')
+    expect(h.alerts).toContain('start of event 42 failed — rolled back, Event station restored')
+    const failed = h.store.audits.find((a) => a.action === 'events.kick.start_failed')!
+    expect(failed.detail).toMatchObject({ stage: 'not_running', backend: 'not running', newStart: false })
+    expect(String((failed.detail.liquidsoapErrors as string[]).join('\n'))).toContain('Error 2: Parse error')
+  })
+
+  // Incident fact: after staff disabled 81–84 and restarted, the station still
+  // played a song from playlist 81 — the AutoDJ had queued it before the
+  // disable. The rollback purges the queue AFTER disabling, BEFORE restarting.
+  it('the rollback purges a song the AutoDJ queued from an event playlist: disable → purge queue → restart → confirm', async () => {
+    const { h } = await builtWithHelpers()
+    const pinRow = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!
+    pinRow.intentName = '~EVT42 s1'
+    h.az.playlists.get(pinRow.playlistId!)!.name = '~EVT42 s1'
+    h.az.queue = [7] // purged by the kick itself before its restart
+    const queueAtRestart: number[][] = []
+    h.az.onRestart = () => {
+      queueAtRestart.push([...h.az.queue])
+      // the AutoDJ queues the next song from the (still enabled) event main playlist
+      if (h.az.restarts === 1) h.az.queue.push(31)
+    }
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    // queue empty at BOTH restarts, the event's song removed by the rollback
+    expect(queueAtRestart).toEqual([[], []])
+    expect(h.az.queue).toEqual([])
+    const w = h.az.writes().map((x) => `${x.method} ${x.path}`)
+    const first = w.indexOf('POST /api/station/14/backend/restart')
+    const second = w.lastIndexOf('POST /api/station/14/backend/restart')
+    const purge = w.indexOf('DELETE /api/station/14/queue/31')
+    const lastDisable = Math.max(...eventIds(h).map((id) => w.indexOf(`PUT /api/station/14/playlist/${id}`, first)))
+    expect(first).toBeLessThan(lastDisable)
+    expect(lastDisable).toBeLessThan(purge)
+    expect(purge).toBeLessThan(second)
+    expect(h.alerts).toContain('start of event 42 failed — rolled back, Event station restored')
+  })
+
+  it('the off-air restart purges the queue after the playlists are off and before it restarts', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    const main = mainIdOf(h, 42)
+    h.az.queue = [44]
+    h.clock.t = T('2026-10-10T22:00:00-04:00') + 91_000
+    await drain(h)
+    const w = h.az.writes().map((x) => `${x.method} ${x.path}`)
+    const disable = w.lastIndexOf(`PUT /api/station/14/playlist/${main}`)
+    const purge = w.indexOf('DELETE /api/station/14/queue/44')
+    const restart = w.lastIndexOf('POST /api/station/14/backend/restart')
+    expect(disable).toBeGreaterThan(-1)
+    expect(disable).toBeLessThan(purge)
+    expect(purge).toBeLessThan(restart)
+    expect(h.az.queue).toEqual([])
+  })
+
+  // ---- verifier cases (fresh-context refutation of the first rollback) ----
+
+  const kinds = (h: Harness) => h.store.job('ticket_post').map((j) => (j.payload as { kind: string }).kind)
+  function withFetch(h: Harness, wrap: (orig: typeof fetch) => typeof fetch) {
+    const orig = h.az.fetch
+    ;(h.az as unknown as { fetch: typeof fetch }).fetch = wrap(orig)
+    h.ctx.az = h.az.client()
+    h.ctx.az.setWriteGate(async () => {
+      if (h.store.paused) throw new Error('queues paused')
+    })
+  }
+
+  it('a rollback is durable: a second queued start kick (other version) never restarts into it again — 2 restarts, one alert, no "on air"', async () => {
+    const { h } = await built()
+    h.store.events[0]!.version = 2
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v2' })
+    await drain(h)
+    expect(h.store.job('start_kick')).toHaveLength(2)
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    h.clock.t += 120_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    expect(h.alerts).toEqual(['start of event 42 failed — rolled back, Event station restored'])
+    // the EVENT status is the one record: the second kick sees `failed` and skips
+    expect(h.store.events[0]!.status).toBe('failed')
+    expect(h.store.job('start_kick').every((j) => j.status === 'done')).toBe(true)
+    expect(h.store.audits.some((a) => a.action === 'events.job.stale' && a.detail.kind === 'start_kick' && a.detail.status === 'failed')).toBe(true)
+    expect(kinds(h)).not.toContain('on_air')
+    expect(h.alerts.some((a) => a.includes('needs rebuild'))).toBe(false)
+  })
+
+  it('a backend that reports running for a few seconds and then dies (late parse failure) is rolled back: running reads must span ≥ 12 s', async () => {
+    const { h } = await built()
+    h.az.forceBackendDown = 1
+    h.az.statusScript = [true, true]
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    expect(h.store.events[0]!.status).toBe('failed')
+    expect(h.az.backendRunning).toBe(true)
+    expect(h.alerts).toEqual(['start of event 42 failed — rolled back, Event station restored'])
+  })
+
+  it('the end kick of a rolled-back event neither restarts nor posts "ended"; it keeps the playlists off and schedules the teardown', async () => {
+    const { h } = await built()
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    h.clock.t = T('2026-10-10T22:00:00-04:00') + 91_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    expect(h.store.job('off_air_restart')).toHaveLength(0)
+    expect(h.store.events[0]!.status).toBe('failed') // stays failed (not 'ended')
+    expect(kinds(h)).not.toContain('ended')
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled === false)).toBe(true)
+    expect(h.store.job('teardown')).toHaveLength(1)
+  })
+
+  it('no off-air restart runs while another event is inside its window: it is requeued until 2 min after that event ends', async () => {
+    const { h } = await built()
+    h.store.addEvent({ id: 44, title: 'Late Show', createdByStaff: true, startsAt: new Date('2026-10-10T22:15:00-04:00'), endsAt: new Date('2026-10-10T23:00:00-04:00') })
+    h.store.trackRows.set(44, [{ position: 1, source: 'library', mediaId: 503, audioId: null, pinAt: null }])
+    await h.store.enqueue('build_now', { eventId: 44 })
+    await drain(h)
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    // event 42's end kick is held up until event 44 is on air
+    const endA = h.store.jobs.find((j) => j.kind === 'end_kick' && (j.payload as { eventId: number }).eventId === 42)!
+    endA.runAfter = T('2026-10-10T22:20:00-04:00')
+    h.clock.t = T('2026-10-10T22:15:05-04:00')
+    await drain(h)
+    expect(h.store.events[1]!.status).toBe('live')
+    const before = restartCalls(h)
+    h.clock.t = T('2026-10-10T22:20:00-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('ended')
+    expect(restartCalls(h)).toBe(before)
+    expect(h.store.audits.some((a) => a.action === 'events.kick.off_air_deferred' && a.detail.onAir === 44)).toBe(true)
+    expect(eventIds(h, 44).every((id) => h.az.playlists.get(id)!.is_enabled)).toBe(true)
+    // requeued, not done: it runs 2 min after event 44's end (never while 44 airs)
+    const offAir = h.store.jobs.find((j) => j.kind === 'off_air_restart' && (j.payload as { eventId: number }).eventId === 42)!
+    expect(offAir.status).toBe('queued')
+    expect(offAir.runAfter).toBe(T('2026-10-10T23:00:00-04:00') + 120_000)
+    h.clock.t = T('2026-10-10T22:59:00-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(before)
+    h.clock.t = T('2026-10-10T23:00:00-04:00') + 120_000
+    await drain(h)
+    expect(offAir.status).toBe('done')
+    expect(restartCalls(h)).toBeGreaterThan(before)
+  })
+
+  it('a failed live re-kick (staff-confirmed schedule change) says the live event was taken off air — never "restored" — and later kicks stay silent', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    const ev = h.store.events[0]!
+    ev.version = 2
+    ev.endsAt = new Date('2026-10-10T22:30:00-04:00')
+    h.az.forceBackendDown = 1
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v2' })
+    await drain(h)
+    expect(restartCalls(h)).toBe(3)
+    expect(h.alerts).toEqual(['live event 42 taken off air — rolled back, Event station restarted without it'])
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled === false)).toBe(true)
+    // the v2 start kick at the (unchanged) start already ran; anything later is quiet
+    await h.store.enqueue('start_kick', { eventId: 42 }, { dedupeExtra: 'late' })
+    await drain(h)
+    expect(restartCalls(h)).toBe(3)
+    expect(h.alerts.some((a) => a.includes('needs rebuild'))).toBe(false)
+  })
+
+  it('Build now after a rollback (same version, inside the window) re-arms a FRESH start kick: confirmed restart, then live', async () => {
+    const { h } = await built()
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    h.clock.t = T('2026-10-10T20:10:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'again' })
+    await drain(h)
+    expect(h.store.job('start_kick')).toHaveLength(2)
+    expect(restartCalls(h)).toBe(3)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled)).toBe(true)
+  })
+
+  it('a queue purge that fails on one row still clears the others, and the rollback alert does not claim "restored"', async () => {
+    const { h } = await built()
+    let queued = false
+    h.az.onRestart = () => {
+      if (!queued) {
+        queued = true
+        h.az.queue.push(31, 32)
+      }
+    }
+    withFetch(h, (orig) => (async (i: string | URL, init?: RequestInit) => (init?.method === 'DELETE' && String(i).endsWith('/queue/31') ? new Response('err', { status: 500 }) : orig(i as string, init))) as typeof fetch)
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.az.queue).toEqual([31])
+    expect(h.alerts).toHaveLength(1)
+    expect(h.alerts[0]).toContain('queue could not be purged')
+    expect(h.alerts[0]).not.toContain('restored')
+  })
+
+  it('a hanging status endpoint cannot hold the kick: the confirmation is bounded by elapsed time', async () => {
+    const { h } = await built()
+    withFetch(h, (orig) => (async (i: string | URL, init?: RequestInit) => {
+      if (String(i).endsWith('/status')) {
+        h.clock.t += 30_000 // each read runs into its timeout
+        throw new DOMException('timeout', 'TimeoutError')
+      }
+      return orig(i as string, init)
+    }) as typeof fetch)
+    const t0 = T('2026-10-10T20:00:05-04:00')
+    h.clock.t = t0
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    expect(h.clock.t - t0).toBeLessThan(3 * 60_000)
+    expect(h.alerts[0]).toMatch(/^EVENT STATION DOWN/)
+  })
+
+  // ---- redesign (event status `failed` is the one record of a rollback) ----
+
+  it('N1: a no-change Build now on a LIVE event (even one re-armed after a rollback) never restarts', async () => {
+    const { h } = await built()
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('failed')
+    h.clock.t = T('2026-10-10T20:10:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'staff1' })
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(restartCalls(h)).toBe(3) // kick + rollback + the ONE re-armed kick
+    for (const [i, t] of ['20:20', '20:30', '20:40'].entries()) {
+      h.clock.t = T(`2026-10-10T${t}:00-04:00`)
+      await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: `again${i}` })
+      await drain(h)
+    }
+    // autobuild rebuilds of the same inputs change nothing either
+    h.store.settingRows = settingsWith({ events_autobuild_enabled: true })
+    await h.store.enqueue('build', { eventId: 42, version: 1 }, { dedupeExtra: 'auto' })
+    await drain(h)
+    expect(restartCalls(h)).toBe(3)
+    expect(h.store.job('start_kick')).toHaveLength(2)
+  })
+
+  it('no-change Build now on a live event that never failed: zero restarts', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(1)
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'nochange' })
+    await drain(h)
+    expect(restartCalls(h)).toBe(1)
+    expect(h.store.events[0]!.status).toBe('live')
+  })
+
+  it('N5: an event re-armed after a rollback whose later verify only logs a config error ends NORMALLY (off-air restart + "ended")', async () => {
+    const { h } = await built()
+    h.store.events[0]!.version = 2
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v2' })
+    await drain(h)
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    h.clock.t = T('2026-10-10T20:10:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'staff1' })
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(restartCalls(h)).toBe(3)
+    h.az.liquidsoapLog = '2026/10/11 [main:3] Liquidsoap 2.2.5\n2026/10/11 At line 3, char 4: Error 5: something\n'
+    h.clock.t += 120_000
+    await drain(h)
+    expect(h.alerts.at(-1)).toContain('liquidsoap log shows config errors')
+    h.clock.t = T('2026-10-10T22:00:00-04:00') + 91_000
+    await drain(h)
+    h.clock.t += 120_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(4) // the normal off-air restart
+    expect(h.store.events[0]!.status).toBe('ended')
+    expect(kinds(h)).toContain('ended')
+  })
+
+  it('queues paused when a rollback is needed: page "rollback needed but queues are paused" and change NOTHING (no status flip, no DOWN page, no writes)', async () => {
+    const { h } = await builtWithHelpers()
+    h.az.forceBackendDown = 1
+    h.az.onRestart = () => {
+      h.store.paused = true // staff pause while the kick waits for the backend
+    }
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(1)
+    expect(h.store.events[0]!.status).toBe('built')
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled)).toBe(true)
+    const w = h.az.writes().map((x) => `${x.method} ${x.path}`)
+    expect(w.slice(w.indexOf('POST /api/station/14/backend/restart') + 1)).toEqual([]) // nothing written after the restart
+    expect(h.alerts).toHaveLength(1)
+    expect(h.alerts[0]).toMatch(/rollback needed for start of event 42 but queues are paused — nothing was changed/)
+    expect(h.alerts.some((a) => a.includes('EVENT STATION DOWN'))).toBe(false)
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+  })
+
+  it('verify while queues are paused and the backend is down: one DOWN page, no writes, no state change', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    h.store.paused = true
+    h.az.backendRunning = false
+    const writes = h.az.writes().length
+    const job = h.store.jobs.find((j) => j.kind === 'verify' && j.status === 'queued')!
+    job.runAfter = 0
+    await runOne(h, 'verify')
+    expect(h.az.writes().length).toBe(writes)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    expect(h.alerts).toHaveLength(1)
+    expect(h.alerts[0]).toMatch(/^EVENT STATION DOWN/)
+  })
+
+  it('staff Build now on a failed event: back to built, exactly ONE fresh start kick and ONE restart; the event airs', async () => {
+    const { h } = await builtWithHelpers()
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('failed')
+    expect(restartCalls(h)).toBe(2)
+    h.clock.t = T('2026-10-10T20:15:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'staff' })
+    await drain(h)
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(3)
+    expect(h.store.job('start_kick')).toHaveLength(2)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled)).toBe(true)
+  })
+
+  it('AzuraCast answering the restart with 500 ("Exited too quickly") rolls back without waiting for status polls', async () => {
+    const { h } = await builtWithHelpers()
+    const pinRow = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!
+    pinRow.intentName = '~EVT42 s1'
+    h.az.playlists.get(pinRow.playlistId!)!.name = '~EVT42 s1'
+    h.az.restartErrorsWhenDown = true
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    // one diagnostic read after the failed call, then the rollback restart's confirmation
+    const w = h.az.calls.map((c) => `${c.method} ${c.path}`)
+    const first = w.indexOf('POST /api/station/14/backend/restart')
+    const second = w.lastIndexOf('POST /api/station/14/backend/restart')
+    expect(w.slice(first, second).filter((x) => x.endsWith('/status'))).toHaveLength(1)
+    expect(h.alerts).toContain('start of event 42 failed — rolled back, Event station restored')
+  })
+
+  it('a rollback restart that does not bring the station back pages EVENT STATION DOWN once and stops (never a restart loop)', async () => {
+    const { h } = await builtWithHelpers()
+    // a foreign enabled playlist the event rollback cannot touch keeps the config broken
+    h.az.playlists.set(160, { ...h.az.playlists.get(76)!, id: 160, name: '~Staff special', is_enabled: true })
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    expect(h.az.backendRunning).toBe(false)
+    expect(h.az.playlists.get(160)!.is_enabled).toBe(true) // never written
+    expect(h.az.writes().some((x) => x.path.endsWith('/playlist/160'))).toBe(false)
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled === false)).toBe(true)
+    const down = h.alerts.filter((a) => a.startsWith('EVENT STATION DOWN — manual action needed'))
+    expect(down).toHaveLength(1)
+    expect(down[0]).toContain('start of event 42 failed')
+    expect(h.alerts.some((a) => a.includes('Event station restored'))).toBe(false)
+    expect(h.store.buildRows.at(-1)!.lastError).toContain('station still down')
+    expect(h.store.job('ticket_post', (p) => p.kind === 'failed')).toHaveLength(1)
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+  })
+
+  it('a start kick whose build still names legacy "~" playlists (pre-0.5.2, like production event 1) never restarts: it asks for a rebuild', async () => {
+    const { h } = await builtWithHelpers()
+    for (const r of h.store.reg.filter((x) => x.eventId === 42 && x.role !== 'main')) {
+      const legacy = `~${r.intentName}`
+      h.az.playlists.get(r.playlistId!)!.name = legacy
+      for (const p of (h.store.buildRows[0]!.plan as { playlists: { name: string }[] }).playlists) if (p.name === r.intentName) p.name = legacy
+      r.intentName = legacy
+    }
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(0)
+    expect(h.alerts.some((a) => a.includes('needs rebuild'))).toBe(true)
+    expect(h.store.events[0]!.status).toBe('built')
+  })
+
+  it('supersede: a rebuild of a pre-0.5.2 build creates the ASCII helper playlists and DELETEs the old "~" ones (never a PUT rename); then the start kick airs it', async () => {
+    const { h } = await builtWithHelpers()
+    const main = mainIdOf(h, 42)
+    const old = new Map<number, string>()
+    for (const r of h.store.reg.filter((x) => x.eventId === 42 && x.role !== 'main')) {
+      const legacy = `~${r.intentName}`
+      const pl = h.az.playlists.get(r.playlistId!)!
+      pl.name = legacy
+      pl.is_enabled = false // disabled by hand after the outage
+      for (const p of (h.store.buildRows[0]!.plan as { playlists: { name: string }[] }).playlists) if (p.name === r.intentName) p.name = legacy
+      r.intentName = legacy
+      old.set(r.playlistId!, legacy)
+    }
+    expect([...old.values()].sort()).toEqual(['~EVT42 a1', '~EVT42 s1'])
+    // autobuild, same version: the applied-but-legacy build is NOT skipped
+    h.store.settingRows = settingsWith({ events_autobuild_enabled: true })
+    const before = h.az.calls.length
+    await h.store.enqueue('build', { eventId: 42, version: 1 }, { dedupeExtra: 'supersede' })
+    await drain(h)
+    const calls = h.az.calls.slice(before)
+    for (const [id] of old) {
+      expect(h.az.playlists.has(id)).toBe(false)
+      const onOld = calls.filter((c) => c.method !== 'GET' && c.path === `/api/station/14/playlist/${id}`)
+      expect(onOld.map((c) => c.method)).toEqual(['DELETE'])
+    }
+    const live = h.store.reg.filter((r) => r.eventId === 42 && !r.deletedAt)
+    expect(live.map((r) => r.intentName).sort()).toEqual(['EVT42 a1', 'EVT42 s1', 'Grand Opening'])
+    expect(h.store.reg.filter((r) => old.has(r.playlistId!)).every((r) => r.deletedAt)).toBe(true)
+    expect(mainIdOf(h, 42)).toBe(main)
+    const pin = live.find((r) => r.role === 'pin')!
+    const ann = live.find((r) => r.role === 'announce')!
+    expect(h.az.playlists.get(pin.playlistId!)!).toMatchObject({ name: 'EVT42 s1', is_enabled: true })
+    expect(h.az.playlists.get(ann.playlistId!)!).toMatchObject({ name: 'EVT42 a1', is_enabled: true })
+    expect(h.az.files.get(502)!.playlists).toEqual([pin.playlistId])
+    expect(h.az.files.get(601)!.playlists).toEqual([ann.playlistId])
+    expect(h.az.invalidLiquidsoapPlaylists()).toEqual([])
+    const verified = h.store.audits.filter((a) => a.action === 'events.build.verified').at(-1)!
+    expect(verified.detail.problems).toEqual([])
+    // the start kick now restarts into a config Liquidsoap accepts
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(1)
+    expect(h.az.backendRunning).toBe(true)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.alerts.filter((a) => !a.includes('adopted'))).toEqual([])
+  })
+
+  it('an off-air restart that leaves the backend down pages EVENT STATION DOWN at once; one retry, then the final alert (bounded)', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    const end = T('2026-10-10T22:00:00-04:00')
+    h.clock.t = end + 91_000
+    h.az.forceBackendDown = 2
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('ended')
+    const down = () => h.alerts.filter((a) => a.startsWith('EVENT STATION DOWN — manual action needed'))
+    expect(down()).toHaveLength(1)
+    expect(down()[0]).toContain("off-air restart after event 42's end")
+    const job = h.store.job('off_air_restart')[0]!
+    expect(job.status).toBe('queued')
+    h.clock.t += 60_000
+    await drain(h)
+    expect(job.status).toBe('dead')
+    expect(down()).toHaveLength(2)
+    expect(h.alerts.some((a) => a.includes('off-air restart FAILED for event #42'))).toBe(true)
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(3) // the start kick + 2 off-air attempts
   })
 
   it('end kick: waits for the last song (≤ 90 s), then disables, purges, restarts; teardown 24 h later', async () => {
@@ -641,13 +1181,13 @@ describe('events worker: kicks and teardown', () => {
     expect(h.alerts.some((a) => a.includes('off-air restart FAILED for event #42') && a.includes('after its teardown'))).toBe(true)
   })
 
-  it('verify after the start kick reads the liquidsoap log: a config-load error after the restart fails the build and alerts', async () => {
+  it('verify after the start kick reads the liquidsoap log: a config-load error after the restart is ALERTED only (the backend runs; nothing changes)', async () => {
     const { h } = await built()
     // an older error before the last start banner is ignored; the one after it fails the build
     h.az.liquidsoapLog = [
       '2026/10/10 23:40:00 [lang:2] Parse error: an old run, before this restart',
       '2026/10/11 00:00:06 [main:3] Liquidsoap 2.2.5',
-      '2026/10/11 00:00:07 [lang:1] Error while loading playlist ~EVT42 s1',
+      '2026/10/11 00:00:07 [lang:1] Error while loading playlist EVT42 s1',
     ].join('\n')
     h.clock.t = T('2026-10-10T20:00:05-04:00')
     await drain(h)
@@ -655,10 +1195,11 @@ describe('events worker: kicks and teardown', () => {
     h.clock.t += 61_000
     await drain(h)
     const build = h.store.buildRows[0]!
-    expect(build.status).toBe('failed')
-    expect(build.lastError).toContain('liquidsoap: 2026/10/11 00:00:07 [lang:1] Error while loading playlist')
-    expect(build.lastError).not.toContain('an old run')
-    expect(h.alerts.some((a) => a.includes('failed verification'))).toBe(true)
+    expect(build.status).toBe('applied')
+    expect(h.store.events[0]!.status).toBe('live')
+    const verified = h.store.audits.filter((a) => a.action === 'events.build.verified').at(-1)!
+    expect(verified.detail.liquidsoapErrors).toEqual(['2026/10/11 00:00:07 [lang:1] Error while loading playlist EVT42 s1'])
+    expect(h.alerts).toEqual(["events: station 14's liquidsoap log shows config errors after event 42's kick (the backend is running)"])
     expect(h.az.calls.some((c) => c.path === '/api/station/14/log/liquidsoap_log')).toBe(true)
   })
 
@@ -701,6 +1242,46 @@ describe('events worker: kicks and teardown', () => {
     expect(liquidsoapConfigErrors(noBanner)).toEqual([])
     expect(liquidsoapConfigErrors('x\nScript error: recent')).toEqual(['Script error: recent'])
     expect(liquidsoapConfigErrors('')).toEqual([])
+    // the 2026-09-29 outage's shapes: a position line, then "Error 2: Parse error"
+    expect(liquidsoapConfigErrors('[main:3] Liquidsoap 2.2.5\nAt line 212, char 9-10:\nError 2: Parse error')).toEqual(['At line 212, char 9-10:', 'Error 2: Parse error'])
+    expect(liquidsoapConfigErrors('[main:3] Liquidsoap 2.2.5\nUnknown position:\nError 2: Parse error')).toEqual(['Unknown position:', 'Error 2: Parse error'])
+    // Liquidsoap refusing the config never logs a new banner: judged on the tail
+    expect(liquidsoapConfigErrors('ok\nAt line 3, char 1-2:\nError 2: Parse error')).toEqual(['At line 3, char 1-2:', 'Error 2: Parse error'])
+    expect(lastLiquidsoapBanner('a\n2026/10/11 00:00:01 [main:3] Liquidsoap 2.2.5\nError 2: Parse error')).toBe('2026/10/11 00:00:01 [main:3] Liquidsoap 2.2.5')
+    expect(lastLiquidsoapBanner('Error 2: Parse error')).toBeNull()
+  })
+
+  it('verify NEVER rolls back or writes: one "not running" read is re-checked with the kick\'s span; still down → one EVENT STATION DOWN page, nothing changed', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    h.az.backendRunning = false
+    h.az.liquidsoapLog = 'At line 212, char 9-10:\nError 2: Parse error'
+    const writes = h.az.writes().length
+    h.clock.t += 61_000
+    await drain(h)
+    expect(h.az.writes().length).toBe(writes) // no disable, no purge, no restart
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    expect(h.alerts).toHaveLength(1)
+    expect(h.alerts[0]).toMatch(/^EVENT STATION DOWN — manual action needed: station 14's backend is not running during live event 42/)
+    expect(h.store.audits.some((a) => a.action === 'events.verify.station_down')).toBe(true)
+  })
+
+  it('verify: a single "not running" read that recovers on the re-check (running reads spanning 12 s) changes nothing and pages nobody', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    h.az.statusScript = [false]
+    const writes = h.az.writes().length
+    h.clock.t += 61_000
+    await drain(h)
+    expect(h.az.writes().length).toBe(writes)
+    expect(h.alerts).toEqual([])
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    const verified = h.store.audits.filter((a) => a.action === 'events.build.verified').at(-1)!
+    expect(verified.detail.backend).toBe('running (after a re-check)')
   })
 
   it('teardown of an event sent back for review only disables its playlists', async () => {

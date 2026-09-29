@@ -25,7 +25,7 @@ export const EVENT_STATUS: Record<EventStatus, { label: string; tone: ChipTone; 
   withdrawn: { label: 'Withdrawn', tone: 'muted', help: 'You withdrew this request.' },
   cancelled: { label: 'Cancelled', tone: 'bad', help: 'Cancelled by the EuphoricFM team. Details are in your ticket.' },
   expired: { label: 'Expired', tone: 'muted', help: 'Nobody reviewed it in time, so the request expired.' },
-  failed: { label: 'Needs attention', tone: 'bad', help: 'Setting it up on Event Radio failed. The team has been told.' },
+  failed: { label: 'Failed — rolled back', tone: 'bad', help: 'Event Radio could not play this event, so it was taken off the air. The team has been told.' },
 }
 
 export const statusOf = (s: string) => EVENT_STATUS[s as EventStatus] ?? { label: s, tone: 'neutral' as ChipTone, help: '' }

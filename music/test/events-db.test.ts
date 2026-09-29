@@ -177,7 +177,7 @@ describe.skipIf(!DBENV())('events: library sync foreign set', () => {
       VALUES (${u.id}, ${u.discordId}, 'T', 'other', now() + interval '2 days', now() + interval '2 days 2 hours', 'UTC', 'public', 'approved') RETURNING id`
     const [b] = await ownerSql()`INSERT INTO event_builds (event_id, version, plan) VALUES (${ev!.id}, 1, '{}'::jsonb) RETURNING id`
     const pid = 90_000 + Math.floor(Math.random() * 9_000)
-    await ownerSql()`INSERT INTO event_registry (event_id, build_id, role, intent_name, playlist_id) VALUES (${ev!.id}, ${b!.id}, 'main', 'T', ${pid}), (${ev!.id}, ${b!.id}, 'pin', '~EVT1 s1', NULL)`
+    await ownerSql()`INSERT INTO event_registry (event_id, build_id, role, intent_name, playlist_id) VALUES (${ev!.id}, ${b!.id}, 'main', 'T', ${pid}), (${ev!.id}, ${b!.id}, 'pin', 'EVT1 s1', NULL)`
     const ids = await eventRegistryPlaylistIds(db())
     expect(ids).toContain(pid)
     expect(ids.every((n) => Number.isSafeInteger(n) && n > 0)).toBe(true)
@@ -192,12 +192,30 @@ describe.skipIf(!DBENV())('events: create-attempt marker (worker store, orphan a
     const store = new PgEventsStore(db())
     const b = await store.createBuild(Number(ev!.id), 1, {})
     const row = await store.insertIntent(Number(ev!.id), b.id, 'main', 'T')
-    const other = await store.insertIntent(Number(ev!.id), b.id, 'pin', `~EVT${ev!.id} s1`)
+    const other = await store.insertIntent(Number(ev!.id), b.id, 'pin', `EVT${ev!.id} s1`)
     expect(await store.createAttempt(row.id)).toBeNull()
     await store.markCreateAttempt(row.id, { eventId: Number(ev!.id), buildId: b.id, name: 'T', maxIdBefore: 140 })
     await store.markCreateAttempt(row.id, { eventId: Number(ev!.id), buildId: b.id, name: 'T', maxIdBefore: 155 })
     expect(await store.createAttempt(row.id)).toEqual({ eventId: Number(ev!.id), buildId: b.id, name: 'T', maxIdBefore: 155 })
     expect(await store.createAttempt(other.id)).toBeNull()
+  })
+})
+
+describe.skipIf(!DBENV())('events: another event on air (worker store, off-air restart deferral)', () => {
+  it('finds a built/live event whose window contains the instant, never the asking event or one outside its window', async () => {
+    const u = await mkUser()
+    const ins = async (status: string, from: string, to: string) =>
+      (await ownerSql()`INSERT INTO events (owner_user_id, owner_discord_id, title, event_type, starts_at, ends_at, entered_tz, visibility, status)
+        VALUES (${u.id}, ${u.discordId}, 'T', 'other', now() + ${from}::interval, now() + ${to}::interval, 'UTC', 'public', ${status}) RETURNING id`)[0]!.id as number
+    const onAir = Number(await ins('live', '300 days', '300 days 2 hours'))
+    const asking = Number(await ins('ended', '299 days 23 hours', '300 days 1 hour'))
+    await ins('approved', '300 days', '300 days 2 hours') // not built: never counts
+    const store = new PgEventsStore(db())
+    const [row] = (await ownerSql()`SELECT extract(epoch FROM now() + interval '300 days 1 hour') * 1000 AS t`) as unknown as { t: string }[]
+    const at = Number(row!.t)
+    expect((await store.eventOnAirAt(asking, at))?.id).toBe(onAir)
+    expect(await store.eventOnAirAt(onAir, at)).toBeNull()
+    expect(await store.eventOnAirAt(asking, at + 2 * 3600_000)).toBeNull()
   })
 })
 

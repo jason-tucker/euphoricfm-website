@@ -12,6 +12,7 @@ import { badRequest, forbidden, HttpError, notFound } from '../../server/http/er
 import { oneOrConflict } from '../../server/authz/transitions'
 import { enqueueEventJob } from '../enqueue'
 import { buildInputKey } from '../contract/build-key'
+import { isReservedPlaylistName } from '../contract/paths'
 import { CALENDAR_MAX_WINDOW_DAYS, CALENDAR_STATUSES, SLOT_HOLDING_STATUSES } from '../contract/rules'
 import type { EventsSettings } from '../contract/settings'
 import type { CreateEventRequest, PatchEventRequest, PutPlaylistRequest, StaffBookRequest } from '../contract/api'
@@ -217,7 +218,16 @@ export async function staffQueue(db: DB, actor: Actor, clock?: Clock) {
 
 // ------------------------------------------------------------ create ----
 
+// A public title becomes the main playlist's name on the Events station. A
+// title shaped like the internal helper playlists (`EVT<id> s<n>` /
+// `EVT<id> a<n>`, any case or separator, with or without '~') is refused, so
+// a main playlist can never pass for — or be hidden like — a helper.
+function assertTitleAllowed(title: string | undefined): void {
+  if (title !== undefined && isReservedPlaylistName(title)) throw badRequest('title_reserved')
+}
+
 export async function createEvent(db: DB, actor: Actor, input: CreateEventRequest, clock?: Clock): Promise<FullEventView> {
+  assertTitleAllowed(input.title)
   const now = nowOf(clock)
   const s = await loadEventsSettings(db)
   if (!s.events_enabled && !actor.staff) throw forbidden('events_disabled')
@@ -255,6 +265,7 @@ export async function createEvent(db: DB, actor: Actor, input: CreateEventReques
 
 export async function staffBook(db: DB, actor: Actor, input: StaffBookRequest, clock?: Clock): Promise<FullEventView> {
   if (!actor.staff) throw forbidden()
+  assertTitleAllowed(input.title)
   const now = nowOf(clock)
   const s = await loadEventsSettings(db)
   const w = { startsAt: Date.parse(input.startsAt), endsAt: Date.parse(input.endsAt) }
@@ -332,6 +343,7 @@ type KeyEvent = Pick<EventRow, 'title' | 'visibility' | 'startsAt' | 'endsAt' | 
 const inputKey = (ev: KeyEvent, p: { tracks: readonly EventTrack[]; announcements: readonly EventAnnouncement[] }) => buildInputKey(ev, p.tracks, p.announcements)
 
 export async function patchEvent(db: DB, actor: Actor, id: number, input: PatchEventRequest, clock?: Clock): Promise<FullEventView> {
+  assertTitleAllowed(input.title)
   const now = nowOf(clock)
   const s = await loadEventsSettings(db)
   return db.transaction(async (tx) => {
@@ -474,7 +486,9 @@ export async function buildNow(db: DB, actor: Actor, id: number, clock?: Clock):
   const now = nowOf(clock)
   return db.transaction(async (tx) => {
     const ev = await loadOwned(tx, actor, id, true)
-    if (!MAY_BE_BUILT.includes(ev.status as EventStatus) || ev.endsAt.getTime() <= now) throw clash('not_editable')
+    // `failed` = rolled back by a start kick (0.5.2): Build now is how staff
+    // put it back on air (the worker re-arms exactly one start kick).
+    if (!(MAY_BE_BUILT.includes(ev.status as EventStatus) || ev.status === 'failed') || ev.endsAt.getTime() <= now) throw clash('not_editable')
     // Permanent dedupe keys: one per version per minute (a second press in
     // the same minute is a no-op; a later press can retry).
     await enqueueEventJob(tx, 'build_now', { eventId: ev.id }, { dedupeExtra: `v${ev.version}:${Math.floor(now / MIN)}` })

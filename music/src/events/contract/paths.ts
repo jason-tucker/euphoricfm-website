@@ -81,19 +81,26 @@ export const isStingerFile = (path: string) => STINGER_FILE_RE.test(path)
 // ---------------------------------------------------------- playlist names
 
 // Playlist names are PUBLIC (now-playing, the info site's Events card) and
-// travel into Liquidsoap config: letters, digits, space and basic punctuation
-// only. No '~' (reserved for the internal pin/announcement playlists, which
-// the info site hides), no quotes other than the apostrophe, no slashes,
-// backslashes, control, format or bidi characters.
+// travel into Liquidsoap config: AzuraCast turns a name into the variable
+// `playlist_<short name>` (ConfigWriter::getPlaylistVariableName over
+// Strings::getProgrammaticString), and the one character that survives that
+// pipeline AND breaks a Liquidsoap identifier is '~' (rawurlencode leaves it
+// alone). On 2026-09-29 the helper name "~EVT1 s1" became
+// `playlist_~evt1_s1`, Liquidsoap refused the whole config ("Error 2: Parse
+// error") and station 14 went down. So every name built here is safe BY
+// CONSTRUCTION: letters, digits, space and basic punctuation only — no '~',
+// no quotes other than the apostrophe, no slashes, backslashes, control,
+// format or bidi characters (test/events-liq-names.test.ts runs every name
+// the compiler can emit through a port of AzuraCast's pipeline).
 const NAME_DISALLOWED = /[^\p{L}\p{N} .,'!?&()\-:#+]/gu
 const NAME_LEADING = /^[^\p{L}\p{N}]+/u
 
 /**
  * Strict sanitizer for a public playlist name. NFKC-normalises (fullwidth
  * and compatibility forms fold to ASCII), strips combining marks, replaces
- * anything outside the allowlist with a space, collapses whitespace, drops
- * leading punctuation, and cuts to `max` code points. Returns '' when
- * nothing usable is left.
+ * anything outside the allowlist (including '~') with a space, collapses
+ * whitespace, drops leading punctuation, and cuts to `max` code points.
+ * Returns '' when nothing usable is left.
  */
 export function sanitizePlaylistName(input: string, max = MAIN_NAME_MAX): string {
   let s = String(input).normalize('NFKD').replace(/\p{M}/gu, '').normalize('NFKC')
@@ -103,36 +110,83 @@ export function sanitizePlaylistName(input: string, max = MAIN_NAME_MAX): string
   return s
 }
 
+/** The helper-playlist shape `EVT<id> s<n>` / `EVT<id> a<n>`, any case. */
+export const HELPER_NAME_SHAPE_RE = /^EVT\d+ [sa]\d+$/i
+
+/**
+ * Whether a title (or playlist name) could pass for a helper playlist: the
+ * exact helper shape in any case, or anything that folds to it once case,
+ * '~' and separators are dropped ("evt1-s1", "~EVT1 s1", "EVT 1 s 1"). Such
+ * a title is refused by the API (title_reserved) and never becomes a main
+ * playlist name (mainName falls back to 'Event'), so a main playlist can
+ * never be mistaken for — or hidden like — a pin / announcement playlist.
+ */
+export function isReservedPlaylistName(name: string): boolean {
+  const s = String(name).normalize('NFKC')
+  if (HELPER_NAME_SHAPE_RE.test(s.trim())) return true
+  const folded = s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return /^evt\d+[sa]\d+$/.test(folded)
+}
+
 /** The main playlist's name: sanitized public title, or 'Private event'. */
 export function mainName(view: { visibility: Visibility; title: string }): string {
   if (view.visibility !== 'public') return PRIVATE_PLAYLIST_NAME
   const s = sanitizePlaylistName(view.title)
-  return s === '' || s.startsWith('~') ? 'Event' : s
+  return s === '' || s.includes('~') || isReservedPlaylistName(s) || isReservedPlaylistName(view.title) ? 'Event' : s
 }
 
 function assertPositiveInt(n: number, code: string) {
   if (!Number.isSafeInteger(n) || n <= 0) throw new EventPathError(code)
 }
 
-/** Internal pinned-song playlist `~EVT<id> s<n>` (n ≥ 1). */
+/** Internal pinned-song playlist `EVT<id> s<n>` (n ≥ 1). ASCII only, no '~'. */
 export function pinName(eventId: number, n: number): string {
   assertPositiveInt(eventId, 'bad_event_id')
   assertPositiveInt(n, 'bad_index')
-  return `~EVT${eventId} s${n}`
+  return `EVT${eventId} s${n}`
 }
 
-/** Internal announcement playlist `~EVT<id> a<n>` (n ≥ 1). */
+/** Internal announcement playlist `EVT<id> a<n>` (n ≥ 1). ASCII only, no '~'. */
 export function annName(eventId: number, n: number): string {
   assertPositiveInt(eventId, 'bad_event_id')
   assertPositiveInt(n, 'bad_index')
-  return `~EVT${eventId} a${n}`
+  return `EVT${eventId} a${n}`
 }
 
-export const INTERNAL_NAME_RE = /^~EVT([1-9]\d{0,15}) ([sa])([1-9]\d{0,5})$/
+export const INTERNAL_NAME_RE = /^EVT([1-9]\d{0,15}) ([sa])([1-9]\d{0,5})$/
+/**
+ * The pre-0.5.2 helper names (`~EVT<id> s<n>`), which broke Liquidsoap.
+ * Recognised ONLY to find and delete them (a rebuild supersedes them, the
+ * info site hides them); never built, never sent in a playlist body.
+ */
+export const LEGACY_INTERNAL_NAME_RE = /^~EVT([1-9]\d{0,15}) ([sa])([1-9]\d{0,5})$/
 
-/** Parse `~EVT<id> s<n>` / `~EVT<id> a<n>`; null for anything else. */
-export function parseInternalName(name: string): { eventId: number; role: 'pin' | 'announce'; n: number } | null {
-  const m = INTERNAL_NAME_RE.exec(name)
+type InternalName = { eventId: number; role: 'pin' | 'announce'; n: number }
+
+function parseWith(re: RegExp, name: string): InternalName | null {
+  const m = re.exec(name)
   if (!m || !m[1] || !m[2] || !m[3]) return null
   return { eventId: Number(m[1]), role: m[2] === 's' ? 'pin' : 'announce', n: Number(m[3]) }
+}
+
+/** Parse `EVT<id> s<n>` / `EVT<id> a<n>`; null for anything else (incl. legacy names). */
+export function parseInternalName(name: string): InternalName | null {
+  return parseWith(INTERNAL_NAME_RE, name)
+}
+
+/** Parse a current OR legacy (`~EVT…`) helper name. */
+export function parseAnyInternalName(name: string): (InternalName & { legacy: boolean }) | null {
+  const cur = parseWith(INTERNAL_NAME_RE, name)
+  if (cur) return { ...cur, legacy: false }
+  const old = parseWith(LEGACY_INTERNAL_NAME_RE, name)
+  return old ? { ...old, legacy: true } : null
+}
+
+/**
+ * Whether a playlist name is one the current build contract may emit
+ * (a clean main name or a current helper name): never a legacy '~' name.
+ * build.ts treats a plan holding any other name as needing a rebuild.
+ */
+export function isCurrentPlaylistName(name: string): boolean {
+  return !name.includes('~')
 }

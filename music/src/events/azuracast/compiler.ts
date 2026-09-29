@@ -6,10 +6,10 @@
 // What it produces for one event:
 //   * main playlist — the event's non-pinned songs, shuffle or sequential,
 //     one row per America/New_York date of the event;
-//   * one pin playlist per pinned song (`~EVT<id> s<n>`): single_track,
+//   * one pin playlist per pinned song (`EVT<id> s<n>`): single_track,
 //     loop_once, window [pin, min(pin + 15 min, end)] (no interrupt: songs
 //     never cut);
-//   * one announcement playlist per distinct audio (`~EVT<id> a<n>`):
+//   * one announcement playlist per distinct audio (`EVT<id> a<n>`):
 //     interrupt + single_track, loop_once, one row per occurrence
 //     [t, t + duration + 1 min] ('every' expanded), clamped to the event.
 //

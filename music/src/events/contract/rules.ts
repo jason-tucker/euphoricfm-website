@@ -74,6 +74,18 @@ export const ANNOUNCEMENTS_MAX = 100
 
 export const START_KICK_DELAY_S = 5
 export const START_KICK_RETRY_S = 30
+/**
+ * After every POST /backend/restart the worker confirms GET /status
+ * backend_running: a read every RESTART_CONFIRM_POLL_S (each with a
+ * RESTART_CONFIRM_STATUS_TIMEOUT_S timeout), until consecutive running reads
+ * span RESTART_CONFIRM_SPAN_S (supervisord may briefly report a process that
+ * is about to exit on a config it cannot parse), for at most
+ * RESTART_CONFIRM_MAX_S of elapsed time. Bounded: never a restart loop.
+ */
+export const RESTART_CONFIRM_POLL_S = 3
+export const RESTART_CONFIRM_MAX_S = 40
+export const RESTART_CONFIRM_SPAN_S = 12
+export const RESTART_CONFIRM_STATUS_TIMEOUT_S = 5
 export const RECHECK_BEFORE_MIN = 60
 export const PLAYLIST_DELETE_AFTER_H = 24
 export const PENDING_EXPIRE_BEFORE_START_H = 12

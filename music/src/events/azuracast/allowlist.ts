@@ -13,7 +13,7 @@
 
 import { z } from 'zod'
 import { assertSafePath } from '../../server/paths/builder'
-import { eventUploadPath, INTERNAL_NAME_RE } from '../contract/paths'
+import { eventUploadPath, INTERNAL_NAME_RE, isReservedPlaylistName } from '../contract/paths'
 import { LEGACY_EVENT_PLAYLIST_IDS, MAIN_NAME_MAX, PLAYLIST_ID_FLOOR as FLOOR } from '../contract/rules'
 import { etWallToUtc, hhmmToMinutes, isHhmm, isValidDate } from './time'
 
@@ -73,15 +73,17 @@ export function safePath(p: string): boolean {
 // ---------------------------------------------------------------- names --
 
 // Main playlist names are the public title, sanitized (plan §4): letters,
-// digits, spaces and basic punctuation, ≤ 60 chars, never a leading `~`
-// (the info card hides `~` names). Pins and announcements use the opaque
-// `~EVT<id> s<n>` / `~EVT<id> a<n>`.
+// digits, spaces and basic punctuation, ≤ 60 chars, never a `~` (AzuraCast
+// carries '~' into the Liquidsoap variable name, which then fails to parse —
+// the 2026-09-29 station-14 outage) and never anything shaped like a helper
+// name (contract paths.isReservedPlaylistName). Pins and announcements use
+// the opaque ASCII `EVT<id> s<n>` / `EVT<id> a<n>`.
 // Same charset as contract paths.sanitizePlaylistName (no '/', no '~').
 export const MAIN_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} .,'!?&()\-:#+]*$/u
 export const MARKED_NAME_RE = INTERNAL_NAME_RE
 
 export function isMainName(name: string): boolean {
-  return MAIN_NAME_RE.test(name) && Array.from(name).length <= MAIN_NAME_MAX && name === name.trim() && !/\s{2}/.test(name)
+  return MAIN_NAME_RE.test(name) && Array.from(name).length <= MAIN_NAME_MAX && name === name.trim() && !/\s{2}/.test(name) && !isReservedPlaylistName(name)
 }
 
 export function markedNameEventId(name: string): number | null {

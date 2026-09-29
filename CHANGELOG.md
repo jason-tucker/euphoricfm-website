@@ -5,6 +5,14 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.22.5] — 2026-09-29 — Events card hides the new helper playlist names
+
+### Fixed
+- **The schedule card (home + `/events/`) hides the Events station's pin and announcement playlists under their new names.** The events portal (music portal 0.5.2) renamed them from `~EVT<id> s<n>` / `~EVT<id> a<n>` to `EVT<id> s<n>` / `EVT<id> a<n>`: AzuraCast carried the `~` into the Liquidsoap variable name (`playlist_~evt1_s1`), Liquidsoap refused the whole config ("Error 2: Parse error") and the Event station went off the air during the 2026-09-29 live test. `isHelperRow` (`src/lib/event-schedule.ts`) now hides names matching `/^EVT\d+ [sa]\d+$/i` as well as any leftover `~` row, so only the main event row shows. The portal refuses event titles of that shape, so no real event is hidden.
+
+### Tests
+- `test/site-build.test.mjs`: the new helper names (any case, padded) and legacy `~EVT…` rows are hidden; look-alike titles (`EVT1 s1 afterparty`, `EVT party`, `EVT1s1`, `Car Meet ~ Night`) still show; a mixed schedule collapses to the main row.
+
 ## [0.22.4] — 2026-09-29 — Events move to events.euphoric.fm
 
 ### Changed

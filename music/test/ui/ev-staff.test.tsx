@@ -104,4 +104,18 @@ describe('staff: needs rebuild', () => {
     expect(await screen.findByText(/Needs rebuild — press Build now/)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Build now' })).toBeTruthy()
   })
+  it('a rolled-back event shows "Failed — rolled back" and offers Build now to managers', async () => {
+    stubFetch({
+      'GET /api/ev/config': { status: 200, body: { ...DEFAULT_CONFIG, eventsEnabled: true } },
+      'GET /api/ev/events/6': { status: 200, body: view({ id: 6, status: 'failed' }) },
+    })
+    render(
+      <TzProvider>
+        <StaffDecision id={6} manage={true} />
+      </TzProvider>,
+    )
+    expect(await screen.findByText(/Failed — rolled back\. The Event station could not play this event/)).toBeTruthy()
+    expect(screen.getAllByText(/restarts the Event station once/).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Build now' })).toBeTruthy()
+  })
 })

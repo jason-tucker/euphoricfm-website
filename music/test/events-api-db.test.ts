@@ -60,7 +60,11 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
   let ownAudio: number
   let otherAudio: number
   // A private window far enough ahead for member notice, unique per run.
-  const base = Math.floor((Date.now() + (20 + rnd(140)) * 24 * H) / H) * H + rnd(12) * H
+  // A random day 20–160 days out, starting 16:00–18:00 UTC (12–2 PM ET), so the
+  // test's windows never touch the 01:55–02:05 ET nightly-restart band (a
+  // random hour used to land there now and then → nightly_restart instead of
+  // the expected error).
+  const base = Math.floor((Date.now() + (20 + rnd(140)) * 24 * H) / (24 * H)) * (24 * H) + (16 + rnd(3)) * H
   const start = new Date(base)
   const end = new Date(base + 3 * H)
   const iso = (t: number) => new Date(t).toISOString()
@@ -115,8 +119,11 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
   let ev: FullEventView
 
   it('creates a draft, saves a playlist (no-op re-save), refuses another member’s audio', async () => {
+    // 0.5.2: a title shaped like a helper playlist is refused before anything is written
+    for (const title of ['EVT1 s1', 'evt7 a2', '~EVT1 s1', 'EVT1-s1']) expect(await codeOf(svc.createEvent(db(), owner, { ...draft, title }))).toBe('title_reserved')
     ev = await svc.createEvent(db(), owner, draft)
     expect(ev).toMatchObject({ kind: 'full', status: 'draft', version: 1, visibility: 'private', ownerName: null })
+    expect(await codeOf(svc.patchEvent(db(), owner, ev.id, { title: 'EVT1 a1' }))).toBe('title_reserved')
     expect(await codeOf(svc.putPlaylist(db(), owner, ev.id, { tracks: [...tracks(), { position: 3, source: 'upload', mediaId: null, audioId: otherAudio, pinAt: null }], announcements: [], playlistOrder: 'shuffle' }))).toBe('media_not_allowed')
     ev = await svc.putPlaylist(db(), owner, ev.id, { tracks: tracks(), announcements: anns(), playlistOrder: 'shuffle' })
     expect(ev.version).toBe(2)
@@ -215,6 +222,11 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
       expect(builds.at(-1)!.payload).toEqual({ eventId: ev.id, version: ev.version })
       expect(await codeOf(svc.buildNow(db(), owner, ev.id))).toBe('forbidden')
       expect(await svc.buildNow(db(), staff, ev.id)).toEqual({ queued: true })
+      // 0.5.2: a start kick that rolled the event back leaves it `failed`;
+      // Build now stays allowed (it is how staff put it back on air)
+      await ownerSql()`UPDATE events SET status = 'failed' WHERE id = ${ev.id}`
+      expect(await svc.buildNow(db(), staff, ev.id, { now: () => Date.now() + 61_000 })).toEqual({ queued: true })
+      await ownerSql()`UPDATE events SET status = 'approved' WHERE id = ${ev.id}`
     } finally {
       await setSetting('events_autobuild_enabled', false)
     }
@@ -268,6 +280,7 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
     const pub = await svc.getEventView(db(), other, b.id)
     expect(pub).toMatchObject({ kind: 'public', title: 'Staff Night' })
     expect(await codeOf(svc.staffBook(db(), owner, { ...draft, startsAt: iso(base + 60 * H), endsAt: iso(base + 61 * H), openTicket: false }))).toBe('forbidden')
+    expect(await codeOf(svc.staffBook(db(), staff, { ...draft, title: 'EVT3 s1', startsAt: iso(base + 60 * H), endsAt: iso(base + 61 * H), openTicket: false }))).toBe('title_reserved')
   })
 
   it('My audio: attach a complete events upload → probing + a probe request under the derived id', async () => {

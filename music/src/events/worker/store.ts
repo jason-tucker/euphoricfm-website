@@ -116,6 +116,8 @@ export interface EventsStore {
   announcements(eventId: number): Promise<AnnouncementRow[]>
   // A built/live event (other than `eventId`) starting in [fromMs, toMs).
   eventStartingBetween(eventId: number, fromMs: number, toMs: number): Promise<EventRow | null>
+  // A built/live event (other than `eventId`) whose window contains atMs.
+  eventOnAirAt(eventId: number, atMs: number): Promise<EventRow | null>
   eventsByStatus(status: EventStatus, limit: number): Promise<EventRow[]>
 
   // ---- audio
