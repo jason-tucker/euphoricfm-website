@@ -11,7 +11,7 @@ import { useJson } from '@/components/hooks'
 import { Notice } from '@/components/ui'
 import { REASON_MAX } from '@/events/contract/rules'
 import { ANNOUNCE_STRATEGIES, EVENTS_SETTING_DEFAULTS, EVENTS_SETTING_KEYS, type EventsSettingKey, type EventsSettings, PIN_STRATEGIES } from '@/events/contract/settings'
-import { api, evMessage } from './ev-api'
+import { api, evMessage, isVersionConflict } from './ev-api'
 import { StatusChip } from './EventViewCard'
 import { useEvConfig, useNow } from './hooks'
 import { DetailsFields, TimeFields, useAvailability, VisibilityFields } from './RequestParts'
@@ -122,7 +122,7 @@ export function StaffDecision({ id, manage }: { id: number; manage: boolean }) {
     setBusy(true)
     setMsg(null)
     try {
-      if (a === 'visibility') await api(`/api/ev/events/${id}`, { method: 'PATCH', json: { visibility: view.visibility === 'public' ? 'private' : 'public' } })
+      if (a === 'visibility') await api(`/api/ev/events/${id}`, { method: 'PATCH', json: { visibility: view.visibility === 'public' ? 'private' : 'public', version: view.version } })
       else if (a === 'deny' || a === 'cancel') await api(`/api/ev/events/${id}/${a}`, { json: { reason: reason.trim() } })
       else await api(`/api/ev/events/${id}/${a}`, { json: {} })
       setMsg({ tone: 'ok', text: a === 'approve' ? 'Approved.' : a === 'deny' ? 'Declined.' : a === 'cancel' ? 'Cancelled.' : a === 'build-now' ? 'Build queued.' : 'Visibility changed.' })
@@ -133,6 +133,8 @@ export function StaffDecision({ id, manage }: { id: number; manage: boolean }) {
     } catch (e) {
       setMsg({ tone: 'error', text: evMessage(e) })
       setOpen(null)
+      // The event changed under us: show the latest version.
+      if (isVersionConflict(e)) setReload((n) => n + 1)
     } finally {
       setBusy(false)
     }

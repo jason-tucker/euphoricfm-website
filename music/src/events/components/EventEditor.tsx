@@ -2,14 +2,18 @@
 
 // Owner (and staff) editing of one event: status + ticket, details, time,
 // visibility, playlist, submit / withdraw. Explains re-approval when an
-// approved event is edited, and locks everything at the freeze time.
+// approved event is edited, and locks everything at the freeze time (for
+// members; staff may edit until the end). Every save sends the loaded
+// `version`: a 409 version_conflict reloads the event and says why. A change
+// to a LIVE event that the server answers with 409 restart_required opens a
+// staff confirmation, and only then is it re-sent with confirmRestart.
 
 import { useEffect, useMemo, useState } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useJson } from '@/components/hooks'
 import { Notice } from '@/components/ui'
 import type { EventTrack } from '@/events/contract/types'
-import { api, evMessage } from './ev-api'
+import { api, evMessage, isRestartRequired, isVersionConflict } from './ev-api'
 import { StatusChip } from './EventViewCard'
 import { useEvConfig, useNow } from './hooks'
 import { EVENT_TYPE_LABEL, statusOf } from './labels'
@@ -97,6 +101,7 @@ export function EventEditor({ id, staff, viewerDiscordId }: { id: number; staff:
   const audio = useJson<unknown>('/api/ev/audio')
   const stingers = useJson<unknown>('/api/ev/stingers')
   const [view, setView] = useState<FullView | null>(null)
+  const [flash, setFlash] = useState<string | null>(null)
   useEffect(() => {
     if (ev.data) setView(ev.data)
   }, [ev.data])
@@ -111,20 +116,50 @@ export function EventEditor({ id, staff, viewerDiscordId }: { id: number; staff:
       own={view.ownerDiscordId === viewerDiscordId}
       audio={listOf<AudioItem>(audio.data)}
       stingers={listOf<Stinger>(stingers.data)}
-      onChanged={(v) => (v ? setView(v) : setReload((n) => n + 1))}
+      flash={flash}
+      onChanged={(v) => {
+        setFlash(null)
+        if (v) setView(v)
+        else setReload((n) => n + 1)
+      }}
+      onConflict={(text) => {
+        setFlash(text)
+        setReload((n) => n + 1)
+      }}
     />
   )
 }
 
-function EditorBody({ view, staff, own, audio, stingers, onChanged }: { view: FullView; staff: boolean; own: boolean; audio: AudioItem[]; stingers: Stinger[]; onChanged: (v: FullView | null) => void }) {
+function EditorBody({
+  view,
+  staff,
+  own,
+  audio,
+  stingers,
+  flash,
+  onChanged,
+  onConflict,
+}: {
+  view: FullView
+  staff: boolean
+  own: boolean
+  audio: AudioItem[]
+  stingers: Stinger[]
+  flash: string | null
+  onChanged: (v: FullView | null) => void
+  onConflict: (text: string) => void
+}) {
   const { config } = useEvConfig()
   const { mode, zone } = useTz()
   const now = useNow(30_000)
   const [draft, setDraft] = useState<Draft>(() => draftFromView(view, zone))
   const [builder, setBuilder] = useState<Builder>(() => builderFromView(view, audio, stingers))
   const [busy, setBusy] = useState<string | null>(null)
-  const [msg, setMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
+  const [msg, setMsg] = useState<{ tone: 'ok' | 'error'; text: string } | null>(() => (flash ? { tone: 'error', text: flash } : null))
   const [confirm, setConfirm] = useState<null | 'withdraw' | 'details' | 'playlist'>(null)
+  // A live-event save the server refused with restart_required, waiting for
+  // the staff member to confirm the station restart.
+  const [restart, setRestart] = useState<null | 'details' | 'playlist'>(null)
 
   // Re-split the inputs when the viewer flips the zone toggle.
   useEffect(() => {
@@ -136,7 +171,9 @@ function EditorBody({ view, staff, own, audio, stingers, onChanged }: { view: Fu
   const detailErrors = checkDetails(draft)
   const problems = useMemo(() => (time.startsAt && time.endsAt ? builderProblems(builder, time.startsAt, time.endsAt, config.maxRows) : []), [builder, time.startsAt, time.endsAt, config.maxRows])
 
-  const frozen = !view.canEdit || now >= Date.parse(view.freezeAt)
+  // The server's canEdit already applies the freeze to members; staff may
+  // keep editing (a live event needs the restart confirmation below).
+  const frozen = !view.canEdit || (!staff && now >= Date.parse(view.freezeAt))
   const reapproval = RE_APPROVAL_STATUSES.has(view.status) && !staff
   const st = statusOf(view.status)
   const patch = patchFor(view, draft, time.startsAt, time.endsAt, enteredTz(mode))
@@ -152,22 +189,30 @@ function EditorBody({ view, staff, own, audio, stingers, onChanged }: { view: Fu
       setMsg({ tone: 'ok', text: okText })
       onChanged(v)
     } catch (e) {
-      setMsg({ tone: 'error', text: evMessage(e) })
+      if (isVersionConflict(e)) onConflict(evMessage(e))
+      else if (staff && isRestartRequired(e) && (label === 'details' || label === 'playlist')) setRestart(label)
+      else setMsg({ tone: 'error', text: evMessage(e) })
     } finally {
       setBusy(null)
       setConfirm(null)
     }
   }
 
-  const saveDetails = () =>
-    run('details', async () => (await api<{ event: FullView }>(`/api/ev/events/${view.id}`, { method: 'PATCH', json: patch })).event, 'Saved.')
-  const savePlaylist = () =>
-    run('playlist', async () => (await api<{ event: FullView }>(`/api/ev/events/${view.id}/playlist`, { method: 'PUT', json: toPayload(builder) })).event, 'Playlist saved.')
+  // confirmRestart is only ever sent from the restart confirmation dialog.
+  const guard = (confirmRestart: boolean) => ({ version: view.version, ...(confirmRestart ? { confirmRestart: true } : {}) })
+  const saveDetails = (confirmRestart = false) =>
+    run('details', async () => (await api<{ event: FullView }>(`/api/ev/events/${view.id}`, { method: 'PATCH', json: { ...patch, ...guard(confirmRestart) } })).event, 'Saved.')
+  const savePlaylist = (confirmRestart = false) =>
+    run(
+      'playlist',
+      async () => (await api<{ event: FullView }>(`/api/ev/events/${view.id}/playlist`, { method: 'PUT', json: { ...toPayload(builder), ...guard(confirmRestart) } })).event,
+      'Playlist saved.',
+    )
   const submit = () =>
     run(
       'submit',
       async () => {
-        await api(`/api/ev/events/${view.id}/playlist`, { method: 'PUT', json: toPayload(builder) })
+        await api(`/api/ev/events/${view.id}/playlist`, { method: 'PUT', json: { ...toPayload(builder), ...guard(false) } })
         return (await api<{ event: FullView }>(`/api/ev/events/${view.id}/submit`, { json: {} })).event
       },
       'Submitted. A ticket opens in the EuphoricFM Discord in a minute or two.',
@@ -303,6 +348,23 @@ function EditorBody({ view, staff, own, audio, stingers, onChanged }: { view: Fu
         onCancel={() => setConfirm(null)}
       >
         <p>This event is approved. Saving this change puts it back to Pending until the team approves it again. Your slot stays held.</p>
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={restart !== null}
+        title="Restart the Event station?"
+        confirmLabel="Restart and save"
+        confirmClass="btn-danger"
+        busy={busy === 'details' || busy === 'playlist'}
+        onConfirm={() => {
+          const what = restart
+          setRestart(null)
+          void (what === 'details' ? saveDetails(true) : savePlaylist(true))
+        }}
+        onCancel={() => setRestart(null)}
+      >
+        <p>
+          &quot;{view.title}&quot; is on air. This change restarts the Event station and cuts the current song; the new schedule is checked again after the restart.
+        </p>
       </ConfirmDialog>
     </div>
   )

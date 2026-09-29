@@ -48,7 +48,22 @@ export const EV_ERROR_TEXT: Record<string, string> = {
   reason_required: 'A reason is required.',
   invalid_body: 'Something in the form is not valid. Check the fields and try again.',
   invalid: 'Something in the form is not valid. Check the fields and try again.',
+  invalid_query: 'That search or date range is not valid. Change it and try again.',
+  version_conflict: 'Someone else changed this event while you were editing it. The latest version has been loaded: check it and make your change again.',
+  restart_required: 'This event is on air. The change restarts the Event station and cuts the current song, so it needs a staff confirmation.',
+  upload_not_available: "That upload isn't available any more (it may have expired or already been used). Upload the file again.",
+  probe_unavailable: "The audio checker isn't reachable right now. Try again in a few minutes.",
+  preview_unavailable: "A preview isn't available for this audio right now.",
+  unknown_member: "That Discord user hasn't signed in to the EuphoricFM portals yet. Ask them to sign in once, then try again.",
+  bad_signature: 'This preview link has expired. Reload the page to get a fresh one.',
+  warn_below_min_notice: 'The short-notice warning must be at least the minimum notice.',
+  invalid_setting: 'One of the settings is not valid. Check the values and try again.',
 }
+
+/** A 409 version_conflict: the event changed since this page loaded it. */
+export const isVersionConflict = (err: unknown) => err instanceof ApiError && err.code === 'version_conflict'
+/** A 409 restart_required: a change to a live event needs staff to confirm the station restart. */
+export const isRestartRequired = (err: unknown) => err instanceof ApiError && err.code === 'restart_required'
 
 /** The sentence shown for an error from the events API. */
 export function evMessage(err: unknown): string {

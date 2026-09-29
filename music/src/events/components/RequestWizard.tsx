@@ -87,8 +87,15 @@ export function RequestWizard({ staff }: { staff: boolean }) {
     if (!time.startsAt || !time.endsAt) return null
     const body = detailsBody(draft, time.startsAt, time.endsAt, mode)
     const r = saved
-      ? await api<{ event: FullView }>(`/api/ev/events/${saved.id}`, { method: 'PATCH', json: body })
+      ? await api<{ event: FullView }>(`/api/ev/events/${saved.id}`, { method: 'PATCH', json: { ...body, version: saved.version } })
       : await api<{ event: FullView }>('/api/ev/events', { json: { ...body, playlistOrder: builder.order } })
+    setSaved(r.event)
+    return r.event
+  }
+
+  // Saves the playlist of the draft (with its version) and keeps the returned view.
+  const savePlaylist = async (ev: FullView): Promise<FullView> => {
+    const r = await api<{ event: FullView }>(`/api/ev/events/${ev.id}/playlist`, { method: 'PUT', json: { ...toPayload(builder), version: ev.version } })
     setSaved(r.event)
     return r.event
   }
@@ -103,7 +110,7 @@ export function RequestWizard({ staff }: { staff: boolean }) {
     setBusy(true)
     try {
       if (step === 2) await saveEvent()
-      if (step === 3 && saved) await api(`/api/ev/events/${saved.id}/playlist`, { method: 'PUT', json: toPayload(builder) })
+      if (step === 3 && saved) await savePlaylist(saved)
       const n = step + 1
       setStep(n)
       setMaxReached((m) => Math.max(m, n))
@@ -120,8 +127,8 @@ export function RequestWizard({ staff }: { staff: boolean }) {
     setApiError(null)
     setBusy(true)
     try {
-      await saveEvent()
-      await api(`/api/ev/events/${saved.id}/playlist`, { method: 'PUT', json: toPayload(builder) })
+      const ev = (await saveEvent()) ?? saved
+      await savePlaylist(ev)
       const r = await api<{ event: FullView }>(`/api/ev/events/${saved.id}/submit`, { json: {} })
       setDone(r.event)
     } catch (e) {
