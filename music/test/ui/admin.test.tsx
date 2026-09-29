@@ -49,28 +49,59 @@ describe('P4 codes and the new-artist wait', () => {
   })
 })
 
+const settingsInput = (soundcloudEnabled?: boolean) => ({
+  assignablePlaylistIds: [1],
+  stationPlaylistIds: [1],
+  foreignPlaylistIds: [],
+  defaultPlaylistIds: [1],
+  playlistNames: { '1': 'General Rotation' },
+  autoCloseDays: 7,
+  caps: { maxItemsPerBatch: 20, ingestPerHour: 6, ingestSpacingS: 600, fetchesPerUserPerDay: 20 },
+  rights: { version: 'v1', text: 'I own it.' },
+  inviteUrl: null,
+  ...(soundcloudEnabled === undefined ? {} : { soundcloudEnabled }),
+})
+
 describe('v0.4.1: the SoundCloud kill switch help text', () => {
   it('says the switch is on by default and that music-fetch relies on the botvps host rules (keep it off on a new server)', () => {
-    render(
-      <SettingsForm
-        initial={{
-          assignablePlaylistIds: [1],
-          stationPlaylistIds: [1],
-          foreignPlaylistIds: [],
-          defaultPlaylistIds: [1],
-          playlistNames: { '1': 'General Rotation' },
-          autoCloseDays: 7,
-          caps: { maxItemsPerBatch: 20, ingestPerHour: 6, ingestSpacingS: 600, fetchesPerUserPerDay: 20 },
-          rights: { version: 'v1', text: 'I own it.' },
-          inviteUrl: null,
-          soundcloudEnabled: true,
-        }}
-      />,
-    )
+    render(<SettingsForm initial={settingsInput(true)} />)
     expect(screen.getByLabelText('Allow “Add from a SoundCloud link”')).toBeTruthy()
     const note = screen.getByTestId('sc-host-note').textContent!
     expect(note).toMatch(/On by default \(no saved setting counts as on\)/)
     expect(note).toMatch(/botvps host firewall \(efm-music-egress\)/)
     expect(note).toMatch(/keep this off until those rules are verified/)
+  })
+})
+
+describe('v0.4.0: the SoundCloud kill switch saves as its own setting', () => {
+  it('no saved setting shows ON; turning it off PUTs soundcloud_fetch_enabled=false and nothing else', async () => {
+    const calls = stubFetch({ 'PUT /api/admin/settings': (body) => ({ status: 200, body }) })
+    render(<SettingsForm initial={settingsInput()} />)
+    const box = screen.getByLabelText('Allow “Add from a SoundCloud link”') as HTMLInputElement
+    expect(box.checked).toBe(true)
+    fireEvent.click(box)
+    expect(box.checked).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+    await vi.waitFor(() => expect(screen.getByText('Saved: soundcloud_fetch_enabled.')).toBeTruthy())
+    expect(calls).toEqual([{ method: 'PUT', url: '/api/admin/settings', body: { key: 'soundcloud_fetch_enabled', value: false } }])
+  })
+
+  it('a saved OFF shows off; turning it back on PUTs true', async () => {
+    const calls = stubFetch({ 'PUT /api/admin/settings': (body) => ({ status: 200, body }) })
+    render(<SettingsForm initial={settingsInput(false)} />)
+    const box = screen.getByLabelText('Allow “Add from a SoundCloud link”') as HTMLInputElement
+    expect(box.checked).toBe(false)
+    fireEvent.click(box)
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0]!.body).toEqual({ key: 'soundcloud_fetch_enabled', value: true })
+  })
+
+  it('unchanged: Save sends nothing', () => {
+    const calls = stubFetch({})
+    render(<SettingsForm initial={settingsInput(true)} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+    expect(screen.getByText('Nothing changed.')).toBeTruthy()
+    expect(calls).toEqual([])
   })
 })
