@@ -1,6 +1,6 @@
 // v0.4.1 (second pass): the portal's static security headers, read from the
 // real next.config.ts (the built server is checked by e2e-web.test.ts).
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import nextConfig from '../../next.config'
 
@@ -16,9 +16,15 @@ describe('next.config.ts security headers', () => {
       'Referrer-Policy': 'same-origin',
       'Permissions-Policy': 'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()',
     })
-    // the same value info.euphoric.fm sends (repo-root Caddyfile)
-    const caddy = readFileSync('../Caddyfile', 'utf8')
-    expect(caddy).toContain(`Permissions-Policy "${h['Permissions-Policy']}"`)
+  })
+
+  // The harness image holds only music/: the cross-check with the repo-root
+  // Caddyfile runs where the whole repo is checked out (pnpm test:ui, CI's
+  // jsdom step) and is skipped inside the image.
+  it.skipIf(!existsSync('../Caddyfile'))('the value is the one info.euphoric.fm sends (repo-root Caddyfile)', async () => {
+    const rules = await nextConfig.headers!()
+    const pp = rules[0]!.headers.find((x) => x.key === 'Permissions-Policy')!.value
+    expect(readFileSync('../Caddyfile', 'utf8')).toContain(`Permissions-Policy "${pp}"`)
   })
 
   it('the unused duplicate of these headers in csp.ts is gone (one source)', () => {

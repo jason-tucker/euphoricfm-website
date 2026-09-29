@@ -54,12 +54,27 @@ beforeEach(() => {
   state.signIn = []
 })
 
+// What a page did: 'NEXT_REDIRECT <url>', 'NEXT_NOT_FOUND' or 'rendered'.
+// The real next/navigation (the harness, which has no jsdom setup file)
+// throws errors whose digest is 'NEXT_REDIRECT;<type>;<url>;<status>;' or
+// 'NEXT_HTTP_ERROR_FALLBACK;404'; test/ui/setup.ts's stub (pnpm test:ui)
+// throws messages already in the short form.
+export function navOutcome(e: unknown): string {
+  const digest = (e as { digest?: unknown } | null)?.digest
+  if (typeof digest === 'string') {
+    const parts = digest.split(';')
+    if (parts[0] === 'NEXT_REDIRECT') return `NEXT_REDIRECT ${parts.slice(2, -2).join(';')}`
+    if ((parts[0] === 'NEXT_HTTP_ERROR_FALLBACK' && parts[1] === '404') || parts[0] === 'NEXT_NOT_FOUND') return 'NEXT_NOT_FOUND'
+  }
+  return (e as Error).message
+}
+
 async function outcome(p: Promise<unknown>): Promise<string> {
   try {
     await p
     return 'rendered'
   } catch (e) {
-    return (e as Error).message
+    return navOutcome(e)
   }
 }
 
@@ -138,6 +153,13 @@ describe('sign-in keeps the destination (A10)', async () => {
     await signInWithDiscord()
     await signInWithDiscord(form('/..//evil.example')) // v0.4.1 review: resolves to '//evil.example'
     expect(state.signIn).toEqual([{ redirectTo: '/library?intent=remove' }, { redirectTo: '/' }, { redirectTo: '/' }, { redirectTo: '/' }, { redirectTo: '/' }])
+  })
+
+  it('the outcome helper reads the real Next digests too', () => {
+    expect(navOutcome(Object.assign(new Error('NEXT_REDIRECT'), { digest: 'NEXT_REDIRECT;replace;/library/501;307;' }))).toBe('NEXT_REDIRECT /library/501')
+    expect(navOutcome(Object.assign(new Error('NEXT_REDIRECT'), { digest: 'NEXT_REDIRECT;replace;/?next=%2Fa;b;307;' }))).toBe('NEXT_REDIRECT /?next=%2Fa;b')
+    expect(navOutcome(Object.assign(new Error('x'), { digest: 'NEXT_HTTP_ERROR_FALLBACK;404' }))).toBe('NEXT_NOT_FOUND')
+    expect(navOutcome(new Error('NEXT_REDIRECT /x'))).toBe('NEXT_REDIRECT /x')
   })
 
   it('safeNext accepts only same-origin relative paths', () => {
