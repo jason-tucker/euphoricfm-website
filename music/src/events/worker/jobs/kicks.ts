@@ -24,7 +24,7 @@ import type { EventStatus } from '../../contract/types'
 import type { EventsCtx } from '../ctx'
 import { Permanent, Retry, waitUntil } from '../errors'
 import type { EventRow, RegistryRow } from '../store'
-import { playlistScope } from './build'
+import { playlistScope, staleJob } from './build'
 import { postToTicket, whenLine } from './tickets'
 
 const KICKABLE: readonly EventStatus[] = ['built', 'live']
@@ -68,7 +68,7 @@ export async function startKick(ctx: EventsCtx, p: EventJobPayload<'start_kick'>
   const ev = await ctx.store.getEvent(p.eventId)
   if (!ev) throw new Permanent('event missing')
   if (!KICKABLE.includes(ev.status)) {
-    await ctx.store.audit('events.kick.skipped', 'event', ev.id, { kind: 'start', status: ev.status })
+    await staleJob(ctx, 'start_kick', ev, {})
     return
   }
   const build = await ctx.store.latestAppliedBuild(ev.id)
@@ -132,8 +132,12 @@ export function endWaitTarget(np: NowPlaying | null, endMs: number, deadlineMs: 
 export async function endKick(ctx: EventsCtx, p: EventJobPayload<'end_kick'>): Promise<void> {
   const ev = await ctx.store.getEvent(p.eventId)
   if (!ev) throw new Permanent('event missing')
+  // No version check here, on purpose: the end kick is what takes the event
+  // off the station, so an edit that bumped the version without a rebuild
+  // (autobuild off) must not strand it. A rebuilt version's own end kick
+  // then finds the event ended and skips.
   if (!KICKABLE.includes(ev.status)) {
-    await ctx.store.audit('events.kick.skipped', 'event', ev.id, { kind: 'end', status: ev.status })
+    await staleJob(ctx, 'end_kick', ev, {})
     return
   }
   const now = ctx.now()

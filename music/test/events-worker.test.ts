@@ -387,6 +387,107 @@ describe('events worker: kicks and teardown', () => {
   })
 })
 
+describe('events worker: stale jobs do nothing (event moved on)', () => {
+  const stale = (h: Harness, kind: string) => h.store.audits.filter((a) => a.action === 'events.job.stale' && a.detail.kind === kind)
+
+  it('build: an older version or a non-buildable status is done with a note, no station write', async () => {
+    const { h } = world()
+    h.store.settingRows = settingsWith({ events_autobuild_enabled: true })
+    h.store.events[0]!.version = 2
+    await h.store.enqueue('build', { eventId: 42, version: 1 })
+    h.store.events[0]!.status = 'approved'
+    await drain(h)
+    expect(h.store.job('build')[0]!.status).toBe('done')
+    expect(stale(h, 'build')[0]!.detail).toMatchObject({ jobVersion: 1, version: 2 })
+    h.store.events[0]!.status = 'pending'
+    await h.store.enqueue('build', { eventId: 42, version: 2 })
+    await drain(h)
+    expect(stale(h, 'build')).toHaveLength(2)
+    expect(h.az.writes()).toHaveLength(0)
+    expect(h.store.buildRows).toHaveLength(0)
+  })
+
+  it('build_now on a withdrawn event: done with a note, not dead, no alert', async () => {
+    const { h } = world()
+    h.store.events[0]!.status = 'withdrawn'
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(h.store.job('build_now')[0]!.status).toBe('done')
+    expect(stale(h, 'build_now')).toHaveLength(1)
+    expect(h.alerts).toEqual([])
+    expect(h.az.writes()).toHaveLength(0)
+  })
+
+  it('an edit that lands DURING the build: the build is recorded, but the event is not marked built and no kicks are scheduled', async () => {
+    const { h } = world()
+    const ev = h.store.events[0]!
+    h.az.onCreate = () => {
+      ev.version = 2
+      ev.status = 'pending'
+    }
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(ev.status).toBe('pending')
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    for (const k of ['start_kick', 'end_kick', 'recheck', 'verify']) expect(h.store.job(k), k).toHaveLength(0)
+    expect(stale(h, 'build')[0]!.detail).toMatchObject({ buildVersion: 1, version: 2, status: 'pending' })
+  })
+
+  it('verify, recheck, start and end kicks of an event sent back to pending: done with a note, nothing written', async () => {
+    const w = world()
+    const h = w.h
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const build = h.store.buildRows[0]!
+    const ev = h.store.events[0]!
+    // a member edit: back to pending at a new version (the web enqueues the teardown)
+    ev.version = 2
+    ev.status = 'pending'
+    const writesBefore = h.az.writes().length
+    await h.store.enqueue('verify', { eventId: 42, buildId: build.id }, { dedupeKey: 'verify:stale' })
+    await drain(h)
+    expect(stale(h, 'verify')[0]!.detail).toMatchObject({ buildId: build.id, buildVersion: 1 })
+    expect(build.status).toBe('applied')
+    h.clock.t = T('2026-10-10T19:00:00-04:00')
+    await drain(h)
+    expect(stale(h, 'recheck')).toHaveLength(1)
+    h.clock.t = T('2026-10-10T22:05:00-04:00')
+    await drain(h)
+    expect(stale(h, 'start_kick')).toHaveLength(1)
+    expect(stale(h, 'end_kick')).toHaveLength(1)
+    for (const k of ['recheck', 'start_kick', 'end_kick']) expect(h.store.job(k)[0]!.status, k).toBe('done')
+    expect(h.az.writes()).toHaveLength(writesBefore)
+    expect(h.az.restarts).toBe(0)
+    expect(h.store.job('ticket_post', (p) => p.kind === 'on_air' || p.kind === 'ended')).toHaveLength(0)
+  })
+
+  it('recheck of a built event whose version moved on without a rebuild: done with a note', async () => {
+    const { h, s2 } = world()
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    h.store.events[0]!.version = 2
+    s2.path = 'Removed/12/b.mp3'
+    h.clock.t = T('2026-10-10T19:00:00-04:00')
+    await runOne(h, 'recheck')
+    expect(stale(h, 'recheck')[0]!.detail).toMatchObject({ buildVersion: 1, version: 2 })
+    expect(h.store.job('ticket_post', (p) => p.kind === 'recheck')).toHaveLength(0)
+  })
+
+  it('an end kick is never dropped for a version bump alone (it is what takes the event off air)', async () => {
+    const { h } = world()
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    h.store.events[0]!.version = 2 // a live details edit with autobuild off: no rebuild
+    h.clock.t = T('2026-10-10T22:01:30-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('ended')
+    expect(h.az.playlists.get(mainIdOf(h, 42))!.is_enabled).toBe(false)
+  })
+})
+
 describe('events worker: custom audio', () => {
   const UPLOAD = 'ab'.repeat(16)
 

@@ -37,6 +37,16 @@ import { postToTicket } from './tickets'
 const BUILDABLE: readonly EventStatus[] = ['approved', 'built', 'live']
 export const START_KICK_MAX_ATTEMPTS = 2
 
+/**
+ * A job whose event moved on (an edit sent it back to pending, bumped its
+ * version, or it was withdrawn / cancelled) does nothing: the job ends done
+ * and this note says why. The edit that moved it enqueued whatever the new
+ * state needs (a teardown, a rebuild with its own kicks).
+ */
+export async function staleJob(ctx: EventsCtx, kind: string, ev: Pick<EventRow, 'id' | 'status' | 'version'>, detail: Record<string, unknown>): Promise<void> {
+  await ctx.store.audit('events.job.stale', 'event', ev.id, { kind, status: ev.status, version: ev.version, ...detail })
+}
+
 export class BuildFailure extends Error {
   constructor(
     readonly code: string,
@@ -208,6 +218,15 @@ export async function applyBuild(ctx: EventsCtx, ev: EventRow, opts: { force: bo
   }
 
   await ctx.store.setBuild(build.id, { status: 'applied', lastError: null })
+  // The web may have moved the event while the build ran (an edit back to
+  // pending, a withdraw / cancel, a newer version). Then this build must not
+  // mark it built or schedule kicks for the old version: the edit enqueued
+  // its teardown or rebuild, which runs next.
+  const fresh = await ctx.store.getEvent(ev.id)
+  if (!fresh || fresh.version !== ev.version || !BUILDABLE.includes(fresh.status)) {
+    await staleJob(ctx, 'build', fresh ?? ev, { buildId: build.id, buildVersion: ev.version, reason: 'event changed during the build' })
+    return
+  }
   await ctx.store.setEventStatus(ev.id, ['approved'], 'built')
   await ctx.store.audit('events.build.applied', 'event', ev.id, { buildId: build.id, version: ev.version })
   await scheduleKicks(ctx, ev, build, plan, planOf(prevApplied))
@@ -336,7 +355,10 @@ export async function buildJob(ctx: EventsCtx, p: EventJobPayload<'build'>): Pro
     await ctx.store.audit('events.build.skipped', 'event', ev.id, { reason: 'autobuild_disabled', version: p.version })
     return
   }
-  if (ev.version !== p.version || !BUILDABLE.includes(ev.status)) return
+  if (ev.version !== p.version || !BUILDABLE.includes(ev.status)) {
+    await staleJob(ctx, 'build', ev, { jobVersion: p.version })
+    return
+  }
   await applyBuild(ctx, ev, { force: false })
 }
 
@@ -345,7 +367,10 @@ export async function buildJob(ctx: EventsCtx, p: EventJobPayload<'build'>): Pro
 export async function buildNowJob(ctx: EventsCtx, p: EventJobPayload<'build_now'>): Promise<void> {
   const ev = await ctx.store.getEvent(p.eventId)
   if (!ev) throw new Permanent('event missing')
-  if (!BUILDABLE.includes(ev.status)) throw new Permanent(`event is ${ev.status}`)
+  if (!BUILDABLE.includes(ev.status)) {
+    await staleJob(ctx, 'build_now', ev, {})
+    return
+  }
   await applyBuild(ctx, ev, { force: true })
 }
 
@@ -419,7 +444,10 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
   if (!ev) throw new Permanent('event missing')
   const build = await ctx.store.getBuild(p.buildId)
   if (!build || build.eventId !== ev.id) throw new Permanent('build missing')
-  if (build.status !== 'applied' || build.version !== ev.version || !BUILDABLE.includes(ev.status)) return
+  if (build.status !== 'applied' || build.version !== ev.version || !BUILDABLE.includes(ev.status)) {
+    await staleJob(ctx, 'verify', ev, { buildId: build.id, buildVersion: build.version, buildStatus: build.status })
+    return
+  }
   const problems = await verifyBuild(ctx, ev, build)
   let backend = 'n/a'
   if (ev.status === 'live') {
@@ -463,10 +491,16 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
 export async function recheckJob(ctx: EventsCtx, p: EventJobPayload<'recheck'>): Promise<void> {
   const ev = await ctx.store.getEvent(p.eventId)
   if (!ev) throw new Permanent('event missing')
-  if (ev.status !== 'built') return
+  if (ev.status !== 'built') {
+    await staleJob(ctx, 'recheck', ev, {})
+    return
+  }
   const build = await ctx.store.latestAppliedBuild(ev.id)
   const plan = planOf(build)
-  if (!build || !plan || build.version !== ev.version) return
+  if (!build || !plan || build.version !== ev.version) {
+    await staleJob(ctx, 'recheck', ev, { buildVersion: build?.version ?? null })
+    return
+  }
   const rows = await ctx.store.registry(ev.id)
   const eventIds = new Set(rows.filter((r) => r.playlistId !== null).map((r) => r.playlistId!))
   const ownerPrefix = `Events/Uploads/${ev.ownerDiscordId}/`
