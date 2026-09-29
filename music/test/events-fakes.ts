@@ -219,7 +219,7 @@ export class FakeAz {
     return this.json(404, {})
   }) as unknown as typeof fetch
 
-  client(canaries: number[] = [1, 7]): EventsAzuraCastClient {
+  client(canaries: number[] = [7]): EventsAzuraCastClient {
     return new EventsAzuraCastClient({ baseUrl: 'https://az.invalid', apiKey: 'k'.repeat(24), stationId: 14, canaryStationIds: canaries, fetchImpl: this.fetch })
   }
 }

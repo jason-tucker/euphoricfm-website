@@ -234,9 +234,14 @@ const eventsWorkerSchema = z.object({
     .default('https://events.euphoric.fm')
     .transform((v) => new URL(v).origin),
   // Stations the events key must NOT reach (startup self-check expects 403).
+  // Default 7 only: since 2026-09-29 the events worker uses the SAME
+  // AzuraCast account as the music portal (music-portal@euphoric.fm, role 9,
+  // which manages stations 1 and 14), so station 1 answers 200 and cannot be
+  // a canary. Key isolation is code-level (the events wrapper only ever
+  // drives station 14); station 7 still proves the key is not a superadmin.
   EVENTS_CANARY_STATION_IDS: z
     .string()
-    .default('1,7')
+    .default('7')
     .refine((v) => /^\d+(,\d+)*$/.test(v), 'must be comma-separated station ids')
     .transform((v) => v.split(',').map(Number))
     .refine((ids) => ids.length > 0 && !ids.includes(14), 'must not include the Events station (14)'),

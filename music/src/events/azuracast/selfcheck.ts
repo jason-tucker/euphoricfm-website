@@ -1,14 +1,17 @@
 // Events worker start-up self-check (plan §4, last bullet):
 //   * the events key reads station 14 (200);
-//   * every canary station (EVENTS_CANARY_STATION_IDS, default 1 and 7)
-//     answers 403, proving the key is station-scoped (station 1 shares
-//     storage 2 with station 14);
+//   * every canary station (EVENTS_CANARY_STATION_IDS, default 7) answers
+//     403, proving the key is not a superadmin key. Station 1 is NOT a
+//     canary: since 2026-09-29 events and music share one AzuraCast account
+//     (music-portal@euphoric.fm, role 9 manages stations 1 and 14), so the
+//     key reads station 1. Isolation from station 1 is in code: the events
+//     wrapper (allowlist.ts) refuses every route outside station 14;
 //   * ingest is refused while a station-14 playlist has a folder link that
 //     covers where uploads land (Events/, Events/Uploads/, an owner folder):
 //     AzuraCast's CheckFolderPlaylistsTask would put custom audio on air.
 //
-// Station 1's folder links are NOT readable with the events key (its reads
-// must 403). The ingest verify therefore also re-reads every freshly
+// Station 1's folder links are not read here (the wrapper never reads
+// another station). The ingest verify therefore also re-reads every freshly
 // ingested file after the folder-playlist task has run and requires it to
 // be in no playlist on any station (jobs/audio.ts), which catches a
 // station-1 link by its effect.

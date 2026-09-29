@@ -297,17 +297,25 @@ describe('events wrapper: default deny (no write leaves the process)', () => {
 })
 
 describe('events self-check', () => {
-  it('own station 200 and canaries 1, 7 → 403 passes', async () => {
-    const az = new FakeAz()
-    await keySelfCheck(az.client())
-    expect(az.calls.map((x) => x.path)).toEqual(['/api/station/14/playlists', '/api/station/1/playlists', '/api/station/7/playlists'])
-  })
-
-  it('a key that reads a canary station refuses', async () => {
+  it('own station 200 and the default canary 7 → 403 passes; station 1 is not probed (shared account)', async () => {
     const az = new FakeAz()
     const f = az.fetch
+    // the one AzuraCast account manages stations 1 and 14: station 1 reads 200
     az.fetch = (async (u: string, i: RequestInit) => (String(u).includes('/station/1/') ? new Response('[]', { status: 200 }) : f(u, i))) as unknown as typeof fetch
+    await keySelfCheck(az.client())
+    expect(az.calls.map((x) => x.path)).toEqual(['/api/station/14/playlists', '/api/station/7/playlists'])
+  })
+
+  it('a key that reads a canary station refuses (a superadmin key reads station 7)', async () => {
+    const az = new FakeAz()
+    const f = az.fetch
+    az.fetch = (async (u: string, i: RequestInit) => (String(u).includes('/station/7/') ? new Response('[]', { status: 200 }) : f(u, i))) as unknown as typeof fetch
     await expect(keySelfCheck(az.client())).rejects.toMatchObject({ code: 'self_check_canary_not_403' })
+    // an explicit canary list is still honoured
+    const az2 = new FakeAz()
+    const f2 = az2.fetch
+    az2.fetch = (async (u: string, i: RequestInit) => (String(u).includes('/station/1/') ? new Response('[]', { status: 200 }) : f2(u, i))) as unknown as typeof fetch
+    await expect(keySelfCheck(az2.client([1, 7]))).rejects.toMatchObject({ code: 'self_check_canary_not_403', detail: { station: 1 } })
   })
 
   it('a key that cannot read station 14 refuses', async () => {

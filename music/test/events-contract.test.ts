@@ -302,7 +302,8 @@ describe('env forbidden keys both ways (v0.5.0)', () => {
 
   it('events worker: station 14 only, own keys only, canaries parsed', () => {
     const e = loadEventsWorkerEnv(evWorker)
-    expect(e.EVENTS_CANARY_STATION_IDS).toEqual([1, 7])
+    expect(e.EVENTS_CANARY_STATION_IDS).toEqual([7]) // one AzuraCast account: station 1 is readable
+    expect(loadEventsWorkerEnv({ ...evWorker, EVENTS_CANARY_STATION_IDS: '1,7' }).EVENTS_CANARY_STATION_IDS).toEqual([1, 7])
     expect(e.PORTAL_ORIGIN).toBe('https://events.euphoric.fm')
     expect(e.AZURACAST_BASE_URL).toBe('https://euphoric.fm')
     expect(() => loadEventsWorkerEnv({ ...evWorker, EVENTS_STATION_ID: '1' })).toThrow()
