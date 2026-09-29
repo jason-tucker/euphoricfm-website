@@ -22,7 +22,10 @@ export async function stingerSync(ctx: EventsCtx): Promise<number> {
   const rows: StingerRow[] = []
   for (const e of entries) {
     const m = e.media
-    if (e.type !== 'file' || !m || m.path !== e.path || !STINGER_FILE_RE.test(e.path)) continue
+    // AzuraCast lists audio files as type 'media' ('other' = not processed
+    // yet, 'directory' = a folder); 'file' is accepted too for older
+    // listings. Found live on 2026-09-29: checking only 'file' dropped all 12.
+    if ((e.type !== 'media' && e.type !== 'file') || !m || m.path !== e.path || !STINGER_FILE_RE.test(e.path)) continue
     const lengthS = Math.round(typeof m.length === 'number' ? m.length : 0)
     if (lengthS < 1) continue
     const base = e.path.slice(e.path.lastIndexOf('/') + 1).replace(/\.[a-z0-9]{1,5}$/i, '')

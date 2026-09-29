@@ -182,7 +182,8 @@ describe('events wrapper: default deny (no write leaves the process)', () => {
     await refused(send(c, 'DELETE', '/api/station/14/playlist/102', { playlist: { ...scope, registry: new Map([[102, 'Grand Opening']]) } }), 'refused_registry_name_mismatch')
     await refused(send(c, 'PUT', '/api/station/14/playlist/101', { body: { is_enabled: true }, playlist: scope }), 'refused_playlist_body')
     await refused(send(c, 'PUT', '/api/station/14/playlist/101', { body: body({ name: 'Renamed' }), playlist: { ...scope, intentNames: new Set(['Renamed']) } }), 'refused_playlist_name_mismatch')
-    await refused(send(c, 'PUT', '/api/station/14/playlist/101/order', { body: { order: [1, 2] }, playlist: scope }), 'refused_order_not_permutation')
+    az.playlists.get(101)!.order = 'sequential'
+    await refused(send(c, 'PUT', '/api/station/14/playlist/101/order', { body: { order: { '1': 1, '2': 2 } }, playlist: scope }), 'refused_order_not_permutation')
     await refused(send(c, 'DELETE', '/api/station/14/playlist/101', { body: { x: 1 }, playlist: scope }), 'refused_body_on_delete')
     expect(az.writes()).toHaveLength(0)
     await c.disablePlaylist(101, scope)
@@ -190,14 +191,52 @@ describe('events wrapper: default deny (no write leaves the process)', () => {
     expect(az.writes().map((w) => w.method)).toEqual(['PUT', 'DELETE'])
   })
 
-  it('order: a permutation of the playlist’s own fresh entries', async () => {
+  it('order: a {entry id: weight 1..n} map over exactly the playlist’s own fresh entries', async () => {
     const { az, c, scope } = setup()
+    az.playlists.get(101)!.order = 'sequential'
     const a = az.addFile('Music/Artists/A/a.mp3', { playlists: [101] })
     const b = az.addFile('Music/Artists/B/b.mp3', { playlists: [101] })
-    await refused(send(c, 'PUT', '/api/station/14/playlist/101/order', { body: { order: [101 * 100000 + a.id] }, playlist: scope }), 'refused_order_not_permutation')
-    await refused(send(c, 'PUT', '/api/station/14/playlist/101/order', { body: { order: [101 * 100000 + a.id, 101 * 100000 + a.id] }, playlist: scope }), 'refused_order_duplicates')
+    const ea = String(101 * 100000 + a.id)
+    const eb = String(101 * 100000 + b.id)
+    // the 0.5.1 live-build shape: a JSON list (AzuraCast would update no row)
+    await refused(send(c, 'PUT', '/api/station/14/playlist/101/order', { body: { order: [Number(eb), Number(ea)] }, playlist: scope }), 'refused_order_body')
+    await refused(send(c, 'PUT', '/api/station/14/playlist/101/order', { body: { order: { [ea]: 1 } }, playlist: scope }), 'refused_order_not_permutation')
+    await refused(send(c, 'PUT', '/api/station/14/playlist/101/order', { body: { order: { [ea]: 1, [eb]: 2, '999': 3 } }, playlist: scope }), 'refused_order_not_permutation')
+    await refused(send(c, 'PUT', '/api/station/14/playlist/101/order', { body: { order: { [ea]: 1, [eb]: 1 } }, playlist: scope }), 'refused_order_duplicates')
+    await refused(send(c, 'PUT', '/api/station/14/playlist/101/order', { body: { order: { [ea]: 1, [eb]: 7 } }, playlist: scope }), 'refused_order_weights')
+    await refused(send(c, 'PUT', '/api/station/14/playlist/101/order', { body: { order: { [ea]: 1, [eb]: 2 }, extra: 1 }, playlist: scope }), 'refused_order_body')
+    expect(az.writes()).toHaveLength(0)
     await c.setOrder(101, [b.id, a.id], scope)
-    expect((await c.getPlaylistOrder(101)).map((e) => e.media?.id)).toEqual([b.id, a.id])
+    // sent exactly as AzuraCast's setMediaOrder reads it
+    expect(az.writes()).toEqual([{ method: 'PUT', path: '/api/station/14/playlist/101/order', body: { order: { [eb]: 1, [ea]: 2 } } }])
+    expect((await c.playlistMediaOrder(101)).map((e) => e.mediaId)).toEqual([b.id, a.id])
+    await c.setOrder(101, [a.id, b.id], scope)
+    expect((await c.getPlaylistOrder(101)).map((e) => e.media?.id)).toEqual([a.id, b.id])
+  })
+
+  it('order: an echo that is not the sent map, or an order that did not change, fails the build step', async () => {
+    const { az, c, scope } = setup()
+    az.playlists.get(101)!.order = 'sequential'
+    const a = az.addFile('Music/Artists/A/a.mp3', { playlists: [101] })
+    const b = az.addFile('Music/Artists/B/b.mp3', { playlists: [101] })
+    const real = az.fetch
+    // AzuraCast answering 200 without applying the order (what a list body did)
+    az.fetch = (async (input: string | URL, init: RequestInit = {}) => {
+      if (init.method === 'PUT' && String(input).endsWith('/order')) {
+        const sent = JSON.parse(String(init.body)) as { order: Record<string, number> }
+        return new Response(JSON.stringify(sent.order), { status: 200 })
+      }
+      return real(input, init)
+    }) as unknown as typeof fetch
+    const c2 = az.client()
+    await expect(c2.setOrder(101, [b.id, a.id], scope)).rejects.toMatchObject({ code: 'order_not_applied' })
+    // an echo of a list (the production answer to a list body)
+    az.fetch = (async (input: string | URL, init: RequestInit = {}) => {
+      if (init.method === 'PUT' && String(input).endsWith('/order')) return new Response(JSON.stringify([1, 2]), { status: 200 })
+      return real(input, init)
+    }) as unknown as typeof fetch
+    await expect(az.client().setOrder(101, [b.id, a.id], scope)).rejects.toMatchObject({ code: 'unexpected_shape' })
+    void c
   })
 
   it('POST /files only for the exact Events/Uploads path of that owner and audio id', async () => {
@@ -262,6 +301,21 @@ describe('events wrapper: default deny (no write leaves the process)', () => {
     expect(await c.clearQueue()).toBe(2)
     await c.restartBackend()
     expect(az.restarts).toBe(1)
+  })
+
+  it('queue rows are addressed by their links.self (AzuraCast sends no id); a foreign or inconsistent link is refused', async () => {
+    const { az, c } = setup()
+    az.queue = [11]
+    expect(await c.getQueue()).toMatchObject([{ id: 11 }])
+    const real = az.fetch
+    const withQueue = (rows: unknown) =>
+      Object.assign(new FakeAz(), {
+        fetch: (async (input: string | URL, init: RequestInit = {}) => (String(input).endsWith('/api/station/14/queue') ? new Response(JSON.stringify(rows), { status: 200 }) : real(input, init))) as unknown as typeof fetch,
+      }).client()
+    await expect(withQueue([{ links: { self: 'https://az.invalid/api/station/1/queue/11' } }]).getQueue()).rejects.toMatchObject({ code: 'unexpected_shape' })
+    await expect(withQueue([{ id: 12, links: { self: 'https://az.invalid/api/station/14/queue/11' } }]).getQueue()).rejects.toMatchObject({ code: 'unexpected_shape' })
+    await expect(withQueue([{ song: { text: 'x' } }]).getQueue()).rejects.toMatchObject({ code: 'unexpected_shape' })
+    expect(await withQueue([{ id: 11 }, { links: { self: '/api/station/14/queue/12' } }]).getQueue()).toMatchObject([{ id: 11 }, { id: 12 }])
   })
 
   it('a scope never rides on a read; the write gate runs last', async () => {

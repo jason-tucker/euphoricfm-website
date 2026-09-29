@@ -44,6 +44,7 @@ import {
   matchRoute,
   MembershipBody,
   OrderBody,
+  orderMapOf,
   PlaylistBody,
   safePath,
   STINGER_DIR,
@@ -134,6 +135,16 @@ const scheduleRead = z
   })
   .passthrough()
 
+// AzuraCast stores backend_options as one comma-joined string and answers
+// explode(',', …): a playlist with none reads back as [""] (seen on station
+// 14's real GET /playlist), never []. Normalised once, at the boundary, to
+// the sorted list of non-empty options, so every comparison (verify's diff,
+// any re-read check) sees [] for "none".
+export function normalizeBackendOptions(v: unknown): string[] {
+  const parts = Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : []
+  return [...new Set(parts.filter((s): s is string => typeof s === 'string').map((s) => s.trim()).filter((s) => s.length > 0))].sort()
+}
+
 export const playlistRead = z
   .object({
     id: z.number().int().positive(),
@@ -146,7 +157,10 @@ export const playlistRead = z
     include_in_requests: z.boolean().optional(),
     include_in_on_demand: z.boolean().optional(),
     remote_url: z.string().nullable().optional(),
-    backend_options: z.union([z.array(z.string()), z.string(), z.null()]).optional(),
+    backend_options: z
+      .union([z.array(z.string()), z.string(), z.null()])
+      .optional()
+      .transform((v) => normalizeBackendOptions(v)),
     schedule_items: z.array(scheduleRead).optional().default([]),
   })
   .passthrough()
@@ -159,7 +173,13 @@ export const mediaRead = z
     path: z.string(),
     title: z.string().nullable().optional(),
     artist: z.string().nullable().optional(),
-    length: z.number().nullable().optional(),
+    // A number on GET /file (165) and GET /order (165.198…); files/list
+    // builds its rows from a scalar DB result, so a numeric string is taken
+    // too.
+    length: z
+      .union([z.number(), z.string().regex(/^\d+(?:\.\d+)?$/).transform(Number)])
+      .nullable()
+      .optional(),
     playlists: z
       .array(z.object({ id: z.number().int() }).passthrough())
       .optional()
@@ -173,12 +193,60 @@ const listEntry = z
   .passthrough()
 export type ListEntryRead = z.infer<typeof listEntry>
 
+// GET /playlist/{id}/order (GetOrderAction): a JSON ARRAY of
+// station_playlist_media rows sorted by weight — {playlist_id, media_id,
+// weight, is_queued, last_played, id, media: {id, …}}. `id` is the entry id
+// the PUT order map is keyed by.
 const orderEntry = z
-  .object({ id: z.number().int().positive(), media: z.object({ id: z.number().int().positive() }).passthrough().nullable().optional() })
+  .object({
+    id: z.number().int().positive(),
+    playlist_id: z.number().int().positive().optional(),
+    media_id: z.number().int().positive().optional(),
+    weight: z.number().int().optional(),
+    media: z.object({ id: z.number().int().positive() }).passthrough().nullable().optional(),
+  })
   .passthrough()
 export type OrderEntry = z.infer<typeof orderEntry>
 
-const queueEntry = z.object({ id: z.number().int().positive() }).passthrough()
+// PUT /playlist/{id}/order answers `withJson($order)`: the map it was sent
+// (PHP re-encodes the entry-id keys as a JSON object).
+const orderEcho = z.record(z.string(), z.number())
+
+// GET /queue: AzuraCast's StationQueueDetailed rows carry no `id` field —
+// the row is addressed by its links.self (…/api/station/14/queue/{id}),
+// which is what the AzuraCast UI deletes. An explicit `id`, if a version
+// sends one, must agree with the link.
+const QUEUE_SELF_RE = new RegExp(`^/api/station/${EVENTS_STATION_ID}/queue/([1-9]\\d{0,9})$`)
+function queueIdFromSelf(self: string): number | null {
+  let u: URL
+  try {
+    u = new URL(self, 'http://x')
+  } catch {
+    return null
+  }
+  const m = QUEUE_SELF_RE.exec(u.pathname)
+  return m ? Number(m[1]) : null
+}
+const queueEntry = z
+  .object({ id: z.number().int().positive().optional(), links: z.object({ self: z.string() }).passthrough().optional() })
+  .passthrough()
+  .transform((q, ctx) => {
+    const fromLink = q.links ? queueIdFromSelf(q.links.self) : null
+    if (q.links && fromLink === null) {
+      ctx.addIssue({ code: 'custom', message: 'queue links.self is not a station-14 queue row' })
+      return z.NEVER
+    }
+    if (q.id !== undefined && fromLink !== null && q.id !== fromLink) {
+      ctx.addIssue({ code: 'custom', message: 'queue id disagrees with links.self' })
+      return z.NEVER
+    }
+    const id = q.id ?? fromLink
+    if (id === null || id === undefined) {
+      ctx.addIssue({ code: 'custom', message: 'queue row without id or links.self' })
+      return z.NEVER
+    }
+    return { ...q, id }
+  })
 const statusRead = z.object({ backend_running: z.boolean(), frontend_running: z.boolean() }).passthrough()
 const successRead = z.object({ success: z.boolean() }).passthrough()
 const batchRead = z.object({ success: z.boolean(), errors: z.array(z.string()).default([]) }).passthrough()
@@ -202,11 +270,8 @@ export const nowPlayingRead = z
   .passthrough()
 export type NowPlaying = z.infer<typeof nowPlayingRead>
 
-export function backendOptionsOf(p: PlaylistRead): string[] {
-  const v = p.backend_options
-  if (Array.isArray(v)) return [...v].filter(Boolean).sort()
-  if (typeof v === 'string') return v.split(',').map((s) => s.trim()).filter(Boolean).sort()
-  return []
+export function backendOptionsOf(p: Pick<PlaylistRead, 'backend_options'>): string[] {
+  return normalizeBackendOptions(p.backend_options)
 }
 
 // -------------------------------------------------------------- client ----
@@ -411,8 +476,8 @@ export class EventsAzuraCastClient {
     await this.checkRegistryPlaylist(id, opts.playlist)
     const r = OrderBody.safeParse(opts.body)
     if (!r.success) throw new EventsAzuraCastError('refused_order_body')
-    const fresh = await this.getPlaylistOrder(id)
-    checkOrderPermutation(r.data.order, fresh.map((e) => e.id))
+    const fresh = await this.playlistMediaOrder(id)
+    checkOrderPermutation(r.data.order, fresh.map((e) => e.entryId))
   }
 
   private async checkMembership(opts: SendOpts): Promise<void> {
@@ -605,23 +670,41 @@ export class EventsAzuraCastClient {
     if (!r.success) throw new EventsAzuraCastError('delete_failed', { id })
   }
 
+  // The media ids of a sequential playlist in play order (GET /order is
+  // sorted by weight). Each row must name one media, belong to `id`, and
+  // no media may appear twice.
+  async playlistMediaOrder(id: number): Promise<{ mediaId: number; entryId: number }[]> {
+    const out: { mediaId: number; entryId: number }[] = []
+    const seen = new Set<number>()
+    for (const e of await this.getPlaylistOrder(id)) {
+      if (e.playlist_id !== undefined && e.playlist_id !== id) throw new EventsAzuraCastError('order_foreign_entry', { id, entry: e.id })
+      const mid = e.media?.id ?? e.media_id
+      if (!mid) throw new EventsAzuraCastError('order_shape_unknown', { id })
+      if (e.media_id !== undefined && e.media?.id !== undefined && e.media_id !== e.media.id) throw new EventsAzuraCastError('order_shape_unknown', { id, entry: e.id })
+      if (seen.has(mid)) throw new EventsAzuraCastError('order_duplicate_media', { id, mediaId: mid })
+      seen.add(mid)
+      out.push({ mediaId: mid, entryId: e.id })
+    }
+    return out
+  }
+
   // Sets a sequential playlist's order to `mediaIds` (the playlist must hold
   // exactly those media). The order entries are read fresh and mapped; the
-  // PUT carries that read's own entry ids, permuted.
+  // PUT carries that read's own entry ids as the {entry id: weight 1..n}
+  // map AzuraCast's setMediaOrder takes (allowlist.ts OrderBody). The echo
+  // must be that map, and a fresh read must then show the order: AzuraCast
+  // answers 200 even when no row was updated.
   async setOrder(id: number, mediaIds: readonly number[], scope: PlaylistScope): Promise<void> {
-    const entries = await this.getPlaylistOrder(id)
-    const byMedia = new Map<number, number>()
-    for (const e of entries) {
-      const mid = e.media?.id
-      if (!mid) throw new EventsAzuraCastError('order_shape_unknown', { id })
-      if (byMedia.has(mid)) throw new EventsAzuraCastError('order_duplicate_media', { id, mediaId: mid })
-      byMedia.set(mid, e.id)
-    }
-    if (byMedia.size !== mediaIds.length || mediaIds.some((m) => !byMedia.has(m))) throw new EventsAzuraCastError('order_membership_mismatch', { id })
-    const order = mediaIds.map((m) => byMedia.get(m)!)
+    const entries = await this.playlistMediaOrder(id)
+    const byMedia = new Map(entries.map((e) => [e.mediaId, e.entryId]))
+    if (byMedia.size !== mediaIds.length || new Set(mediaIds).size !== mediaIds.length || mediaIds.some((m) => !byMedia.has(m))) throw new EventsAzuraCastError('order_membership_mismatch', { id })
+    const order = orderMapOf(mediaIds.map((m) => byMedia.get(m)!))
     const { status, text } = await this.#send('PUT', this.sid(`/playlist/${id}/order`), { body: { order }, playlist: scope })
-    const r = this.parse(status, text, successRead, 'order')
-    if (!r.success) throw new EventsAzuraCastError('order_failed', { id })
+    const echo = this.parse(status, text, orderEcho, 'order put')
+    const sentKeys = Object.keys(order)
+    if (Object.keys(echo).length !== sentKeys.length || sentKeys.some((k) => echo[k] !== order[k])) throw new EventsAzuraCastError('order_failed', { id })
+    const after = (await this.playlistMediaOrder(id)).map((e) => e.mediaId)
+    if (after.length !== mediaIds.length || after.some((m, i) => m !== mediaIds[i])) throw new EventsAzuraCastError('order_not_applied', { id })
   }
 
   // REPLACES the file's station-14 playlist set (validate() applies the

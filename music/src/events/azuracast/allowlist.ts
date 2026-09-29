@@ -141,9 +141,33 @@ export type PlaylistBodyT = z.infer<typeof PlaylistBody>
 // whole pinned body.
 export const DisableBody = z.object({ is_enabled: z.literal(false) }).strict()
 
+// PUT /playlist/{id}/order: AzuraCast's PutOrderAction hands `order` to
+// StationPlaylistMediaRepository::setMediaOrder, which runs
+// `UPDATE station_playlist_media SET weight = :weight WHERE playlist_id = :p
+// AND id = :id` for each `id => weight` pair — a MAP of order-entry id (the
+// `id` of each GET /order row, a station_playlist_media id) to its new
+// weight (1..n, GET /order sorts by weight ascending), exactly as the
+// AzuraCast UI's reorder dialog sends it. A JSON LIST would reach PHP as
+// 0 => id, 1 => id…, update no row and still answer 200 (the 0.5.1 live
+// build hit this), so a list is refused here.
+export const ORDER_ENTRY_ID_RE = /^[1-9]\d{0,9}$/
 export const OrderBody = z
-  .object({ order: z.array(z.number().int().positive().max(2_147_483_647)).min(1).max(2000) })
+  .object({
+    order: z
+      .record(z.string().regex(ORDER_ENTRY_ID_RE, 'order key must be an entry id'), z.number().int().min(1).max(2000))
+      .refine((o) => Object.keys(o).length >= 1 && Object.keys(o).length <= 2000, 'order must name 1–2000 entries'),
+  })
   .strict()
+export type OrderBodyT = z.infer<typeof OrderBody>
+
+// The map setOrder sends: entry ids in the wanted order → weights 1..n.
+export function orderMapOf(entryIds: readonly number[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  entryIds.forEach((id, i) => {
+    out[String(id)] = i + 1
+  })
+  return out
+}
 
 const filePathStr = z.string().min(1).max(1024)
 export const MembershipBody = z
@@ -324,12 +348,18 @@ export function checkMembershipWrite(opts: {
   return { current14, next: [...next].sort((a, b) => a - b), added, removed }
 }
 
-// PUT /playlist/{id}/order: a permutation of exactly the entry ids a fresh
-// GET of that playlist's order returned.
-export function checkOrderPermutation(sent: readonly number[], fresh: readonly number[]): void {
-  if (new Set(sent).size !== sent.length) throw new AllowlistError('refused_order_duplicates')
+// PUT /playlist/{id}/order: the map's keys are exactly the entry ids a fresh
+// GET of that playlist's order returned (each once), and its weights are
+// exactly 1..n (each once) — a pure reordering of the playlist's own rows.
+export function checkOrderPermutation(sent: Readonly<Record<string, number>>, fresh: readonly number[]): void {
+  const keys = Object.keys(sent)
+  if (keys.some((k) => !ORDER_ENTRY_ID_RE.test(k))) throw new AllowlistError('refused_order_not_permutation')
+  const ids = keys.map(Number)
+  const weights = keys.map((k) => sent[k]!)
+  if (new Set(ids).size !== ids.length || new Set(weights).size !== weights.length) throw new AllowlistError('refused_order_duplicates')
   const f = new Set(fresh)
-  if (f.size !== fresh.length || sent.length !== f.size || sent.some((id) => !f.has(id))) throw new AllowlistError('refused_order_not_permutation')
+  if (f.size !== fresh.length || ids.length !== f.size || ids.some((id) => !f.has(id))) throw new AllowlistError('refused_order_not_permutation')
+  if (weights.some((w) => !Number.isInteger(w) || w < 1 || w > ids.length)) throw new AllowlistError('refused_order_weights')
 }
 
 export function dirOf(p: string): string {

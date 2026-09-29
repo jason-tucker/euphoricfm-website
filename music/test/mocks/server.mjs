@@ -161,11 +161,19 @@ function playlistRecord(id, fields = {}) {
     include_in_requests: false,
     include_in_on_demand: false,
     avoid_duplicates: true,
-    backend_options: [],
+    // AzuraCast keeps backend_options comma-joined and answers explode(','):
+    // none reads back as [""] (test/fixtures/azuracast-real/).
+    backend_options: [''],
     schedule_items: [],
     ...fields,
+    ...('backend_options' in fields ? { backend_options: storedBackendOptions(fields.backend_options) } : {}),
     links: { self: `/api/station/${EVENTS_STATION}/playlist/${id}` },
   }
+}
+
+function storedBackendOptions(v) {
+  const list = Array.isArray(v) ? v.map(String).filter((x) => x !== '') : []
+  return list.length ? list : ['']
 }
 reset()
 
@@ -757,10 +765,11 @@ function orderEntries(pid) {
     const k = `${pid}:${f.id}`
     if (!state.az.order14.has(k)) state.az.order14.set(k, { entryId: state.az.nextEntryId++, weight: ++max })
   }
+  // GetOrderAction's rows: station_playlist_media + its media, by weight.
   return members
     .map((f) => ({ f, e: state.az.order14.get(`${pid}:${f.id}`) }))
     .sort((a, b) => a.e.weight - b.e.weight)
-    .map(({ f, e }) => ({ id: e.entryId, weight: e.weight, media: azMedia(f) }))
+    .map(({ f, e }) => ({ playlist_id: pid, media_id: f.id, weight: e.weight, is_queued: true, last_played: 0, id: e.entryId, media: azMedia(f) }))
 }
 
 // A playlist body as the events wrapper must send it (plan §4): source
@@ -805,6 +814,8 @@ async function handleStation14(req, res, url, rest, body) {
       return send(res, 404, { code: 404, message: 'Record not found' })
     }
     if (pm[2]) {
+      // Get/PutOrderAction: only a sequential songs playlist has an order.
+      if (pl.source !== 'songs' || pl.order !== 'sequential') return send(res, 500, { code: 500, message: 'This playlist is not a sequential playlist.' })
       if (m === 'GET') return send(res, 200, orderEntries(id))
       if (m === 'PUT') {
         if (id <= PLAYLIST_ID_FLOOR) {
@@ -812,17 +823,24 @@ async function handleStation14(req, res, url, rest, body) {
           return send(res, 403, { code: 403, message: 'refused by mock' })
         }
         const entries = orderEntries(id)
-        const order = Array.isArray(body?.order) ? body.order.map(Number) : null
+        const sent = body?.order
+        // setMediaOrder: foreach ($order as $id => $weight) UPDATE weight
+        // WHERE playlist_id AND id. A JSON list arrives as 0 => …, 1 => …,
+        // matches no row, changes nothing, and is echoed with a 200.
+        if (Array.isArray(sent)) {
+          violation(req, rest, 'order body is a list (AzuraCast reads a {entry id: weight} map; a list updates nothing)', body)
+          return send(res, 200, sent)
+        }
+        const pairs = sent && typeof sent === 'object' ? Object.entries(sent).map(([k, w]) => [Number(k), Number(w)]) : null
         const known = new Set(entries.map((e) => e.id))
-        if (!order || order.length !== entries.length || new Set(order).size !== order.length || order.some((x) => !known.has(x))) {
-          violation(req, rest, 'order body is not a permutation of the playlist entries', body)
+        const weights = (pairs ?? []).map(([, w]) => w)
+        if (!pairs || pairs.length !== entries.length || pairs.some(([k]) => !known.has(k)) || new Set(weights).size !== weights.length || weights.some((w) => !Number.isInteger(w) || w < 1 || w > entries.length)) {
+          violation(req, rest, 'order map is not a permutation of the playlist entries with weights 1..n', body)
           return send(res, 500, { code: 500, message: 'bad order' })
         }
         const byEntry = new Map([...state.az.order14.entries()].filter(([k]) => k.startsWith(`${id}:`)).map(([k, v]) => [v.entryId, k]))
-        order.forEach((entryId, i) => {
-          state.az.order14.get(byEntry.get(entryId)).weight = i + 1
-        })
-        return send(res, 200, UPDATED)
+        for (const [entryId, w] of pairs) state.az.order14.get(byEntry.get(entryId)).weight = w
+        return send(res, 200, sent)
       }
     } else {
       if (m === 'GET') return send(res, 200, station14Playlists().find((p) => p.id === id))
@@ -840,6 +858,8 @@ async function handleStation14(req, res, url, rest, body) {
         }
         const { schedule_items: items, ...fields } = body
         Object.assign(pl, fields)
+        if ('backend_options' in fields) pl.backend_options = storedBackendOptions(fields.backend_options)
+        // setScheduleItems: rows sent without an id replace the old ones
         if (items) pl.schedule_items = withScheduleIds(items)
         if (typeof fields.name === 'string') state.az.playlists.set(id, fields.name)
         return send(res, 200, UPDATED)
@@ -929,7 +949,14 @@ async function handleStation14(req, res, url, rest, body) {
     }
     return send(res, 200, { success: true, errors: [], files, directories: body.dirs ?? [], record: null })
   }
-  if (m === 'GET' && rest === '/queue') return send(res, 200, state.az.queue14)
+  // StationQueueDetailed rows carry no `id`: each is addressed by links.self.
+  if (m === 'GET' && rest === '/queue') {
+    return send(
+      res,
+      200,
+      state.az.queue14.map(({ id, ...q }) => ({ cued_at: 0, played_at: 0, duration: 180, playlist: null, is_request: false, sent_to_autodj: false, is_played: false, autodj_custom_uri: null, log: null, ...q, links: { self: `https://euphoric.fm/api/station/${EVENTS_STATION}/queue/${id}` } })),
+    )
+  }
   const qm = /^\/queue\/(\d+)$/.exec(rest)
   if (qm && m === 'DELETE') {
     const i = state.az.queue14.findIndex((q) => q.id === Number(qm[1]))
@@ -937,7 +964,7 @@ async function handleStation14(req, res, url, rest, body) {
     state.az.queue14.splice(i, 1)
     return send(res, 200, { success: true, message: 'Record deleted successfully.', formatted_message: 'Record deleted successfully.' })
   }
-  if (m === 'GET' && rest === '/status') return send(res, 200, { backend_running: true, frontend_running: true })
+  if (m === 'GET' && rest === '/status') return send(res, 200, { backend_running: true, frontend_running: true, station_has_started: true, station_needs_restart: false })
   if (m === 'POST' && rest === '/backend/restart') {
     state.az.restarts14.push(new Date().toISOString())
     return send(res, 200, { success: true, message: 'Backend restarted.', formatted_message: 'Backend restarted.' })
