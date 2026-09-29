@@ -213,10 +213,45 @@ test('pop-ups sit above the sticky top bar: outside <main> (a z-[1] stacking con
   }
 });
 
-test('no built info page mentions Discord (owner decision)', () => {
+test('no built info page mentions Discord (owner decision) or spells the brand "Euphoric FM"', () => {
   for (const page of ['index.html', 'events/index.html', 'player/index.html']) {
-    assert.doesNotMatch(read(page), /discord/i, page);
+    const html = read(page);
+    assert.doesNotMatch(html, /discord/i, page);
+    assert.doesNotMatch(html, /Euphoric FM/, `${page}: the spelling is "EuphoricFM"`);
   }
+});
+
+test('copy: sentence case on /events/ and the pop-up headings, FAQ names the Requested tab', () => {
+  const events = read('events/index.html');
+  for (const t of ['Plan Your Event', 'How It Works', 'Tell Us About Your Event', 'We Build the Sound', 'Your Event. Your Sound.', 'Good For', 'Happening Now', 'On the Calendar', 'Listen Live', 'Send Inquiry', 'Plan an Event']) {
+    assert.ok(!events.includes(t), `/events/ still says "${t}"`);
+  }
+  assert.ok(events.includes('<meta name="description" content="Bring EuphoricFM to your next event'), 'events meta');
+  assert.ok(events.includes('<meta property="og:description" content="Bring EuphoricFM to your next event'), 'events og');
+  const home = read('index.html');
+  assert.match(home, />Request a song<\/h2>/);
+  assert.match(home, />Contact us<\/h2>/);
+  assert.match(home, />Plan an event with EuphoricFM<\/h2>/);
+  assert.doesNotMatch(home, /Requested songs/);
+  assert.ok(site.home.faq.items.some((i) => i.a.includes('the Requested tab')), 'FAQ points at the Requested tab');
+});
+
+test('portal links: every Submit music goes to /submit, the fix link keeps its intent, one product name', () => {
+  const home = read('index.html');
+  const submits = [...home.matchAll(/<a\b[^>]*href="([^"]*)"[^>]*>(?:(?!<\/a>)[\s\S])*?Submit music(?:(?!<\/a>)[\s\S])*?<\/a>/g)].map((m) => m[1]);
+  assert.ok(submits.length >= 3, `bar, #music and footer (found ${submits.length})`);
+  for (const href of submits) assert.equal(href, 'https://music.euphoric.fm/submit');
+  assert.match(home, /<a href="https:\/\/music\.euphoric\.fm\/library\?intent=edit"[^>]*>Fix or remove a song<\/a>/, 'footer fix link');
+  const nav = JSON.parse(src('shared/nav.json'));
+  assert.equal(nav.musicMenu.title, 'EuphoricFM Music Portal');
+  assert.equal(nav.sheet.musicHeading, 'EuphoricFM Music Portal');
+});
+
+test('shared phone bar fits a 320 px viewport (row budget in efm-bar.css)', () => {
+  const css = src('shared/efm-bar.css');
+  assert.match(css, /@media \(max-width: 359px\) \{\s*\.efmh-in \{ gap: 4px; \}\s*\.efmh-player \{ padding: 0 8px; \}/);
+  assert.match(css, /@media \(max-width: 339px\) \{ \.efmh-brand \{ min-width: 124px; \} \}/);
+  assert.match(css, /@media \(max-width: 339px\) \{\s*\.efmh-euph \{ font-size: 14px; \}\s*\.efmh-fm \{ font-size: 18px; \}/);
 });
 
 test('stats.ts is not in the home entry script (loaded when #stats nears the viewport)', () => {

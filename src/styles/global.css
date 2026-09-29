@@ -842,7 +842,7 @@ html.efm-cef .card {
 }
 
 /* ---------------------------------------------------------------------------
- * Euphoric FM Events (src/pages/events.astro + EventsHero/EventsHowItWorks/
+ * EuphoricFM Events (src/pages/events.astro + EventsHero/EventsHowItWorks/
  * EventsServices/EventStatus/EventInquiryModal). Tokens only — every colour
  * below resolves to the shared --efm-*-rgb channels in tokens.css, same
  * discipline as the rest of this file. No filter/backdrop-filter (CEF-safe

@@ -1,5 +1,5 @@
 ---
-// /events page only — the "Plan Your Event" inquiry form. Unlike the
+// /events page only — the "Plan your event" inquiry form. Unlike the
 // homepage modals, this component ships with NO ActionRow on the page, so it
 // can't lean on ActionRow's shared `[data-close]`/Escape script (that script
 // only ships on `/`). Everything below is fully self-contained: its own
@@ -190,7 +190,7 @@ const s = site.events.inquiry;
       fields.push({ name: 'Details', value: details.length > 1024 ? details.slice(0, 1021) + '…' : details });
 
       const embed = {
-        title: '📅 Euphoric FM Event Inquiry',
+        title: '📅 EuphoricFM Event Inquiry',
         color: 0xfeb139,
         fields,
         timestamp: new Date().toISOString(),

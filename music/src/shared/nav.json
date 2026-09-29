@@ -47,7 +47,7 @@
     }
   ],
   "musicMenu": {
-    "title": "Music portal",
+    "title": "EuphoricFM Music Portal",
     "blurb": "Get your songs played on EuphoricFM",
     "submit": {
       "id": "submit",
@@ -82,7 +82,7 @@
     "open": "Menu",
     "close": "Close",
     "stationHeading": "EuphoricFM",
-    "musicHeading": "Music portal"
+    "musicHeading": "EuphoricFM Music Portal"
   },
   "icons": {
     "caret": [
