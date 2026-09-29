@@ -73,13 +73,14 @@
     # behaviour, so every origin the app legitimately talks to is allow-listed:
     #   img-src    : same-origin art (/efm-art), data: placeholder, raw
     #                euphoric.fm art used by the Media Session API.
-    #   connect-src: euphoric.fm (now-playing + library fetches) + discord.com
-    #                (contact/event-inquiry webhook POSTs) + self (/requests, /api proxies).
+    #   connect-src: euphoric.fm (now-playing + library fetches) + self
+    #                (/requests, /stats, /contact, /api proxies). No discord.com:
+    #                the contact forms post to the same-origin /contact/* relay.
     #   media-src  : the euphoric.fm audio stream.
     # script-src/style-src keep 'unsafe-inline' because the page is inline-script
     # heavy (no nonces); the stored-XSS fix is the server+client escaping, this
     # is a second layer. object-src/base-uri lock down plugin + <base> injection.
-    Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://euphoric.fm; font-src 'self'; connect-src 'self' https://euphoric.fm https://discord.com; media-src https://euphoric.fm; object-src 'none'; base-uri 'self'; form-action 'self'; worker-src 'self'; frame-ancestors *"
+    Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://euphoric.fm; font-src 'self'; connect-src 'self' https://euphoric.fm; media-src https://euphoric.fm; object-src 'none'; base-uri 'self'; form-action 'self'; worker-src 'self'; frame-ancestors *"
 
     # Remove default X-Frame-Options so it doesn't conflict with frame-ancestors.
     -X-Frame-Options
@@ -88,25 +89,15 @@
     -Server
   }
 
-  # ---- Runtime-injected config ------------------------------------------
-  # Caddy renders /efm-runtime-config.js inline from env vars at request time
-  # so webhook URLs aren't baked into the static bundle. Edit `.env` +
-  # `docker compose up -d` to swap a webhook; no rebuild needed.
-  #
-  # Only the contact webhook is served now: the song-submission form (and its
-  # PUBLIC_DISCORD_REQUEST_WEBHOOK) was replaced by the music portal, so that
-  # URL is no longer handed to visitors.
-  #
-  # SECURITY NOTE: the contact webhook URL IS exposed to anyone visiting the
-  # site — that's a deliberate trade-off (client posts directly to Discord
-  # so Discord sees real user IPs for its own rate limiting). If the
-  # webhooks ever get abused at scale, rotate them in the Discord channel
-  # settings and update .env.
+  # ---- Retired runtime config ---------------------------------------------
+  # Until v0.22.3 this path served a script carrying the contact webhook URL
+  # to every visitor. The forms now post to the /contact/* relay below, so
+  # the path answers a plain, uncached 410 (never the home-page fallback) and
+  # carries nothing (test/caddy-player.sh).
   @runtimeConfig path /efm-runtime-config.js
   handle @runtimeConfig {
-    header Content-Type "application/javascript; charset=utf-8"
     header Cache-Control "no-store"
-    respond `(function(){window.__EFM_CONFIG__=window.__EFM_CONFIG__||{};window.__EFM_CONFIG__.contact={webhook:"{$PUBLIC_DISCORD_CONTACT_WEBHOOK}"};})();`
+    respond "Gone" 410
   }
 
   # ---- Music portal entry: /music → music.euphoric.fm -------------------
@@ -157,6 +148,9 @@
   redir /about /#about 301
   redir /listen /#listen 301
   redir /contact /#contact 301
+  # /contact/ too: `handle /contact/*` below would otherwise send it to the
+  # sidecar's JSON 404.
+  redir /contact/ /#contact 301
 
   # ---- Shared pending-requests API --------------------------------------
   # Tiny Node service in the `efm-requests` container holds the cross-visitor
@@ -168,6 +162,25 @@
       # Pass the real visitor IP so efm-requests' per-IP rate limiter works.
       # Safe to trust: efm-requests has no host port binding and is only
       # reachable through this Caddy, so no external client can forge it.
+      header_up X-Forwarded-For {remote_host}
+    }
+  }
+
+  # ---- Contact relay ------------------------------------------------------
+  # The "Contact us" and /events inquiry forms POST their fields to
+  # /contact/message and /contact/event; the same `efm-requests` container
+  # validates them, rate-limits per IP (5 per 10 min) and forwards them to the
+  # Discord webhook, whose URL lives only in that container's env
+  # (DISCORD_CONTACT_WEBHOOK). The bare /contact and /contact/ are the
+  # redirects above (`redir` runs before `handle`). request_body caps what we
+  # forward; the sidecar enforces its own 16 KiB limit too.
+  handle /contact/* {
+    request_body {
+      max_size 32KB
+    }
+    reverse_proxy efm-requests:3000 {
+      # LOAD-BEARING: the per-IP contact limit keys on this header, same as
+      # /requests/* above.
       header_up X-Forwarded-For {remote_host}
     }
   }
@@ -321,8 +334,6 @@
   log {
     output stdout
     format json
-    # Don't log the runtime-config endpoint — its response body includes
-    # webhook URLs and we don't want them in logs.
     level INFO
   }
 }
