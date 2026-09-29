@@ -26,7 +26,7 @@ import { EventsAzuraCastError } from '../../azuracast/client'
 import { folderLinkCheck } from '../../azuracast/selfcheck'
 import type { EventJobPayload } from '../../contract/jobs'
 import { probeRequestIdForUpload, uuidV4FromHex } from '../../contract/paths'
-import { EVENTS_INGEST_PER_HOUR, EVENTS_INGEST_SPACING_S } from '../../contract/rules'
+import { EVENTS_ANNOUNCEMENT_MIN_DURATION_S, EVENTS_INGEST_PER_HOUR, EVENTS_INGEST_SPACING_S, EVENTS_SONG_MIN_DURATION_S } from '../../contract/rules'
 import type { EventsCtx } from '../ctx'
 import { Permanent, Wait, waitUntil } from '../errors'
 import type { AudioRow } from '../store'
@@ -123,6 +123,15 @@ export async function collectAudio(ctx: EventsCtx): Promise<number> {
       continue
     }
     if (r.ok && 'sha256' in r && r.type === 'probe') {
+      // The events probe accepts files from 3 s (short announcements); a
+      // song keeps the music portal's 30 s minimum. The web's staging sweep
+      // releases the upload of a rejected row.
+      const minS = a.kind === 'song' ? EVENTS_SONG_MIN_DURATION_S : EVENTS_ANNOUNCEMENT_MIN_DURATION_S
+      if (!(r.durationS >= minS)) {
+        await ctx.store.updateAudio(a.id, { status: 'rejected', durationS: Math.round(r.durationS), lastError: 'too_short' }, ['probing'])
+        n++
+        continue
+      }
       const moved = await ctx.store.updateAudio(
         a.id,
         { status: 'ready', durationS: Math.round(r.durationS), probeSha256: r.sha256, transcodeKbps: r.transcodeKbps ?? null, inputFormat: r.inputFormat ?? 'mp3', lastError: null },

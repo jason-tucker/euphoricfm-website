@@ -187,7 +187,15 @@ export const ConfigResponse = z.object({
   endWaitS: z.number().int(),
   // The tus chunk size (caps.chunkBytes) the uploader must use.
   chunkBytes: z.number().int(),
-  caps: z.object({ mp3Bytes: z.number().int(), wavBytes: z.number().int(), maxDurationS: z.number().int(), minDurationS: z.number().int() }),
+  // minDurationS: the events probe's floor (the shortest file it accepts);
+  // minDurationByKind: what is accepted per kind (songs 30 s, announcements 3 s).
+  caps: z.object({
+    mp3Bytes: z.number().int(),
+    wavBytes: z.number().int(),
+    maxDurationS: z.number().int(),
+    minDurationS: z.number().int(),
+    minDurationByKind: z.object({ song: z.number().int(), announcement: z.number().int() }),
+  }),
   stationListenUrl: z.literal('https://euphoric.fm/listen/event/radio.mp3'),
   nowPlayingUrl: z.literal('https://euphoric.fm/api/nowplaying/event'),
 })

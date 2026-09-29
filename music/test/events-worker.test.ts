@@ -491,9 +491,9 @@ describe('events worker: stale jobs do nothing (event moved on)', () => {
 describe('events worker: custom audio', () => {
   const UPLOAD = 'ab'.repeat(16)
 
-  async function probed(h: Harness, over: Record<string, unknown> = {}) {
+  async function probed(h: Harness, over: Record<string, unknown> = {}, durationS = 29.6) {
     h.store.addAudio({ id: 7, uploadId: UPLOAD, kind: 'announcement', title: 'Welcome to the show', ...over })
-    await writeSpoolResultNoClobber(dirs.spoolOut, { v: 1, id: probeRequestIdForUpload(UPLOAD), source: 'in-web', type: 'probe', ok: true, sha256: 'a'.repeat(64), size: 1000, durationS: 29.6, bitrate: 192000, tags: { title: null, artist: null, album: null, genre: null }, cover: null, flags: [] })
+    await writeSpoolResultNoClobber(dirs.spoolOut, { v: 1, id: probeRequestIdForUpload(UPLOAD), source: 'in-web', type: 'probe', ok: true, sha256: 'a'.repeat(64), size: 1000, durationS, bitrate: 192000, tags: { title: null, artist: null, album: null, genre: null }, cover: null, flags: [] })
     await tickPeriodic(h.ctx, {})
   }
 
@@ -581,17 +581,33 @@ describe('events worker: custom audio', () => {
     const h = harness('2026-10-01T12:03:00Z', dirs)
     h.store.settingRows = settingsWith({})
     h.store.library = [{ artist: 'GRIM', title: 'Touch' }]
-    await probed(h, { kind: 'song', title: 'Touch', artist: 'grim' })
+    await probed(h, { kind: 'song', title: 'Touch', artist: 'grim' }, 200)
     await drain(h)
     const req = JSON.parse(readFileSync(join(dirs.spoolIn, readdirSync(dirs.spoolIn)[0]!), 'utf8'))
     expect(req.tags).toMatchObject({ title: 'Touch (event version)', artist: 'grim' })
     const h2 = harness('2026-10-01T12:03:00Z', { ...dirs, spoolOut: mkdtempSync(join(tmpdir(), 'out2-')) })
     h2.store.settingRows = settingsWith({})
     dirs.spoolOut = h2.ctx.spoolOutDir
-    await probed(h2, { kind: 'song', title: 'Untitled', artist: '  ' })
+    await probed(h2, { kind: 'song', title: 'Untitled', artist: '  ' }, 200)
     await drain(h2)
     expect(h2.store.audio[0]!.status).toBe('failed')
     expect(h2.store.audio[0]!.lastError).toBe('empty_tags')
+  })
+
+  it('a 5 s announcement (the events probe accepts from 3 s) becomes ready', async () => {
+    const h = harness('2026-10-01T12:03:00Z', dirs)
+    h.store.settingRows = settingsWith({})
+    await probed(h, {}, 5)
+    expect(h.store.audio[0]!.status).toBe('ready')
+    expect(h.store.audio[0]!.durationS).toBe(5)
+  })
+
+  it('a song under 30 s passes the (3 s) probe but is rejected too_short by audio_collect', async () => {
+    const h2 = harness('2026-10-01T12:03:00Z', dirs)
+    h2.store.settingRows = settingsWith({})
+    await probed(h2, { kind: 'song', title: 'Short', artist: 'grim' }, 29.6)
+    expect(h2.store.audio[0]).toMatchObject({ status: 'rejected', lastError: 'too_short', durationS: 30 })
+    expect(h2.store.job('audio_finalize')).toHaveLength(0)
   })
 
   it('a rejected probe releases the staging bytes', async () => {

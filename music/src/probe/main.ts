@@ -10,6 +10,7 @@
 import { lstat, mkdir, readdir, rename, rm, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { assertProbeEnvClean } from '../server/env'
+import { DEFAULT_MIN_DURATION_S, probeMinDurationS } from './min-duration'
 import {
   INBOX_TYPES,
   listSpoolIds,
@@ -199,6 +200,9 @@ export async function clearStaleWork(work = DIRS.work): Promise<number> {
 
 export async function main() {
   assertProbeEnvClean()
+  // Validates the optional PROBE_MIN_DURATION_S (throws on a bad value).
+  const minS = probeMinDurationS()
+  if (minS !== DEFAULT_MIN_DURATION_S) console.log(`[probe] minimum duration ${minS} s (PROBE_MIN_DURATION_S)`)
   for (const d of [join(DIRS.spool, 'claimed'), join(DIRS.spool, 'out'), DIRS.work, DIRS.final, DIRS.art]) await mkdir(d, { recursive: true, mode: 0o750 })
   const stale = await clearStaleWork()
   if (stale > 0) console.warn(`[probe] removed ${stale} job dir(s) left in ${DIRS.work} by an interrupted run`)

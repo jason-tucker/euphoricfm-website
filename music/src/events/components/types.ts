@@ -38,7 +38,7 @@ export type EvConfig = {
   maxRows: number
   audioMaxItems: number
   endWaitS: number
-  caps: { mp3Bytes: number; wavBytes: number; maxDurationS: number; minDurationS: number }
+  caps: { mp3Bytes: number; wavBytes: number; maxDurationS: number; minDurationS: number; minDurationByKind: { song: number; announcement: number } }
   stationListenUrl: string
   nowPlayingUrl: string
 }
@@ -59,7 +59,7 @@ export const DEFAULT_CONFIG: EvConfig = {
   maxRows: 150,
   audioMaxItems: 20,
   endWaitS: 90,
-  caps: { mp3Bytes: 100 * 1024 * 1024, wavBytes: 250 * 1024 * 1024, maxDurationS: 24 * 60, minDurationS: 1 },
+  caps: { mp3Bytes: 100 * 1024 * 1024, wavBytes: 250 * 1024 * 1024, maxDurationS: 24 * 60, minDurationS: 3, minDurationByKind: { song: 30, announcement: 3 } },
   stationListenUrl: 'https://euphoric.fm/listen/event/radio.mp3',
   nowPlayingUrl: 'https://euphoric.fm/api/nowplaying/event',
 }

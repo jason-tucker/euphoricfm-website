@@ -26,12 +26,16 @@ import { runLimited } from './exec'
 import { copyNoFollowHashed, ProbeReject, publishFile, reader, sha256File } from './files'
 import { MAX_TAG_BYTES, scanId3 } from './id3scan'
 import { checkMp3Magic, id3v2TagSize } from './magic'
+import { DEFAULT_MIN_DURATION_S, probeMinDurationS } from './min-duration'
 import { mp3TranscodeArgs } from './transcode'
 import { CONVERT_NICE, CONVERT_TIMEOUT_S, CONVERT_VMEM_KB, convertArgs, judgeWavFfprobe, scanWav, sniffWav, wavFfprobeArgs, type WavInfo } from './wav'
 
 export type ProbeDirs = { uploads: string; work: string; mmChild: string }
 
-export const MIN_DURATION_S = 30
+// The music rule (and the UI's number). The probe enforces
+// probeMinDurationS(), which is this unless PROBE_MIN_DURATION_S lowers it
+// (min-duration.ts; the events probe only).
+export const MIN_DURATION_S = DEFAULT_MIN_DURATION_S
 // v0.3.5: the longest song that fits at the ladder's floor (fit.ts, 24 min),
 // for MP3 and WAV alike (was 20 min for an MP3).
 export { MAX_DURATION_S }
@@ -84,7 +88,7 @@ export function judgeFfprobe(json: unknown, maxDurationS: number = MAX_DURATION_
   if (other.some((s) => s.codec_type !== 'video' || s.disposition?.attached_pic !== 1)) throw new ProbeReject('unexpected_streams')
   const durationS = Number(format.duration)
   if (!Number.isFinite(durationS)) throw new ProbeReject('no_duration')
-  if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
+  if (durationS < probeMinDurationS()) throw new ProbeReject('too_short')
   if (durationS > maxDurationS) throw new ProbeReject('too_long')
   const bitrate = Number(audio[0]!.bit_rate ?? format.bit_rate)
   if (!Number.isFinite(bitrate) || bitrate < MIN_BITRATE) throw new ProbeReject('bitrate_too_low')
@@ -261,7 +265,7 @@ async function probeMp3(job: Job, copy: string, sha256: string, size: number): P
   //    would inflate the estimate of a file without one.
   if (info.sampleRate === null || !MP3_RATES.has(info.sampleRate) || info.channels === null || info.channels > 2) throw new ProbeReject('not_mp3')
   const durationS = await countedDurationS(copy, job.work, info.sampleRate)
-  if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
+  if (durationS < probeMinDurationS()) throw new ProbeReject('too_short')
   const bitrate = pickBitrate(durationS)
   if (bitrate === null) throw new ProbeReject('too_long')
   const out = join(job.work, 'out.mp3')

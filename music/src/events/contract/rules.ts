@@ -82,6 +82,14 @@ export const STINGER_SYNC_EVERY_H = 6
 /** Events ingests: ≥ 90 s after the music worker's last upload, ≤ 4 per hour. */
 export const EVENTS_INGEST_SPACING_S = 90
 export const EVENTS_INGEST_PER_HOUR = 4
+/**
+ * Shortest custom audio per kind. Songs keep the music portal's 30 s; short
+ * announcements are allowed from 3 s. The events probe runs with
+ * PROBE_MIN_DURATION_S=3 (src/probe/min-duration.ts) and the worker's
+ * audio_collect rejects a song under 30 s after its probe.
+ */
+export const EVENTS_SONG_MIN_DURATION_S = 30
+export const EVENTS_ANNOUNCEMENT_MIN_DURATION_S = 3
 
 // ---- API ----
 

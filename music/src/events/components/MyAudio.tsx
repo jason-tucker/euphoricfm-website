@@ -174,8 +174,9 @@ export function MyAudio({ chunkBytes }: { chunkBytes: number }) {
             Upload audio
           </h2>
           <p className="text-sm text-cream/75">
-            MP3 up to {mb(config.caps.mp3Bytes)} MB or WAV up to {mb(config.caps.wavBytes)} MB, at most {Math.round(config.caps.maxDurationS / 60)} minutes. Need a longer file? Ask in your
-            ticket. You can keep up to {config.audioMaxItems} files ({count} used).
+            MP3 up to {mb(config.caps.mp3Bytes)} MB or WAV up to {mb(config.caps.wavBytes)} MB, at most {Math.round(config.caps.maxDurationS / 60)} minutes. Songs must be at least{' '}
+            {config.caps.minDurationByKind.song} seconds long, announcements at least {config.caps.minDurationByKind.announcement} seconds. Need a longer file? Ask in your ticket. You
+            can keep up to {config.audioMaxItems} files ({count} used).
           </p>
           {full ? (
             <Notice tone="warn">Your My audio is full. Delete something you no longer need first.</Notice>
@@ -274,7 +275,18 @@ export function MyAudio({ chunkBytes }: { chunkBytes: number }) {
   )
 }
 
+/** Why a rejected / failed file can't be used, in words where we have them. */
+export function audioProblemText(a: Pick<AudioItem, 'kind' | 'lastError'>, minS: { song: number; announcement: number }): string {
+  if (a.lastError === 'too_short') {
+    return a.kind === 'song'
+      ? `This file can't be used: songs must be at least ${minS.song} seconds long.`
+      : `This file can't be used: announcements must be at least ${minS.announcement} seconds long.`
+  }
+  return a.lastError ? `This file can't be used (${a.lastError}).` : "This file can't be used."
+}
+
 function AudioRowView({ a, onDelete }: { a: AudioItem; onDelete: () => void }) {
+  const { config } = useEvConfig()
   const [url, setUrl] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const s = STATUS[a.status] ?? { label: a.status, tone: 'pending' as const }
@@ -297,7 +309,7 @@ function AudioRowView({ a, onDelete }: { a: AudioItem; onDelete: () => void }) {
         </span>
         <Chip tone={s.tone}>{s.label}</Chip>
       </div>
-      {a.status === 'rejected' || a.status === 'failed' ? <p className="text-xs text-rose-200">{a.lastError ? `This file can't be used (${a.lastError}).` : "This file can't be used."}</p> : null}
+      {a.status === 'rejected' || a.status === 'failed' ? <p className="text-xs text-rose-200">{audioProblemText(a, config.caps.minDurationByKind)}</p> : null}
       {a.expiresAt && !a.usedAt ? (
         <p className="text-xs text-cream/60">
           Not used in an event yet: it will be deleted on <When at={a.expiresAt} format="date" /> unless you add it to one.

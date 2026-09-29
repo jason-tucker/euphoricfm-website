@@ -51,7 +51,8 @@ import { runLimited } from './exec'
 import { copyNoFollowHashed, ProbeReject, publishFile, reader, sha256File } from './files'
 import { MAX_TAG_BYTES, scanId3 } from './id3scan'
 import { checkMp3Magic } from './magic'
-import { checkEncoded, countedDurationS, ffprobeMp3, MIN_DURATION_S, MP3_RATES, publishEncoded } from './probe'
+import { probeMinDurationS } from './min-duration'
+import { checkEncoded, countedDurationS, ffprobeMp3, MP3_RATES, publishEncoded } from './probe'
 import { mp3TargetRate, mp3TranscodeArgs } from './transcode'
 import { CONVERT_NICE, CONVERT_TIMEOUT_S, CONVERT_VMEM_KB } from './wav'
 
@@ -125,7 +126,7 @@ export function judgeFetchedFfprobe(json: unknown, format: Exclude<Format, 'mp3'
   if (!Number.isInteger(channels) || channels < 1 || channels > 8) throw new ProbeReject('sc_bad_media')
   const durationS = Number(f.duration ?? a.duration)
   if (!Number.isFinite(durationS) || durationS <= 0) throw new ProbeReject('no_duration')
-  if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
+  if (durationS < probeMinDurationS()) throw new ProbeReject('too_short')
   if (durationS > MAX_DURATION_S) throw new ProbeReject('too_long')
   return { durationS, sampleRate, channels }
 }
@@ -171,7 +172,7 @@ async function encodeTo(job: Job, args: string[], bitrate: number, sourceDuratio
   if (c.code !== 0) throw new ProbeReject('sc_decode_failed')
   const tolerance = Math.max(2, sourceDurationS * 0.02)
   const enc = await checkEncoded(job, out, bitrate, sourceDurationS, tolerance, { tooLarge: 'sc_converted_too_large', invalid: 'sc_convert_invalid' })
-  if (enc.durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
+  if (enc.durationS < probeMinDurationS()) throw new ProbeReject('too_short')
   const sha256 = await publishEncoded(job, out)
   job.publishedAudio = true
   return { sha256, size: enc.size, durationS: enc.durationS, bitrate: enc.bitrate, inputFormat, transcodeKbps: bitrate / 1000 }
@@ -203,7 +204,7 @@ async function convertMp3(job: Job, copy: string, size: number): Promise<Encoded
     if (!v.ok) throw new ProbeReject(v.reason)
   }
   const info = await ffprobeMp3(copy, job.work, MAX_DURATION_S, WL)
-  if (mp3FitsUntouched(size, magic.id3Size) && info.durationS >= MIN_DURATION_S) {
+  if (mp3FitsUntouched(size, magic.id3Size) && info.durationS >= probeMinDurationS()) {
     // Kept byte for byte (finalize strips the ID3 tag and writes the portal's).
     const sha256 = await publishEncoded(job, copy)
     job.publishedAudio = true
@@ -211,7 +212,7 @@ async function convertMp3(job: Job, copy: string, size: number): Promise<Encoded
   }
   if (info.sampleRate === null || !MP3_RATES.has(info.sampleRate) || info.channels === null || info.channels > 2) throw new ProbeReject('not_mp3')
   const durationS = await countedDurationS(copy, job.work, info.sampleRate, WL)
-  if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
+  if (durationS < probeMinDurationS()) throw new ProbeReject('too_short')
   const bitrate = pickBitrate(Math.max(durationS, job.req.declaredDurationS))
   if (bitrate === null) throw new ProbeReject('too_long')
   const args = mp3TranscodeArgs(copy, join(job.work, 'out.mp3'), { sampleRate: info.sampleRate, channels: info.channels }, bitrate, WL)
