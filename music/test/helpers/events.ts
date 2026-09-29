@@ -19,7 +19,14 @@ export const EV_ORIGIN = 'https://events.euphoric.fm'
 export const EV_WEB = () => process.env.E2E_EVENTS_WEB_URL!
 export const EVENTS_E2E = () => has('E2E_EVENTS_WEB_URL', 'E2E_WEB_URL', 'MOCKS_CONTROL', 'TEST_OWNER_DATABASE_URL', 'TEST_DATA_DIR')
 
-export const REVIEWER_ROLE = '1144462744456794153' // bound to review by the migrator seed
+export const REVIEWER_ROLE = '1144462744456794153' // seeded with review AND manage (every seed role is)
+// A role bound to `review` only (the seed gives every staff role manage too).
+export const REVIEW_ONLY_ROLE = '1299990000000000001'
+export async function bindReviewOnlyRole(): Promise<string> {
+  await ownerSql()`INSERT INTO role_bindings (role_id, permission, note, created_by) VALUES (${REVIEW_ONLY_ROLE}, 'review', 'events e2e', 'test')
+    ON CONFLICT DO NOTHING`
+  return REVIEW_ONLY_ROLE
+}
 export const ADMIN_ID = '117501528641634310' // PORTAL_OWNER_IDS: admin ⇒ review + manage
 
 let seq = 0

@@ -28,6 +28,7 @@ import {
   newMemberId,
   playlistIds,
   REVIEWER_ROLE,
+  bindReviewOnlyRole,
   seedLibrarySongs,
   setEventsSettings,
   station14,
@@ -52,6 +53,7 @@ describe.skipIf(!EVENTS_E2E())('events flow: request → ticket → approve → 
   let second: Jar
   let secondId: string
   let reviewer: Jar
+  let reviewOnly: Jar
   let admin: Jar
   let songA: MockMedia
   let shared: MockMedia
@@ -86,6 +88,7 @@ describe.skipIf(!EVENTS_E2E())('events flow: request → ticket → approve → 
     owner = await evLoginOk({ id: ownerId })
     second = await evLoginOk({ id: secondId })
     reviewer = await evLoginOk({ id: newMemberId(), roles: [REVIEWER_ROLE] })
+    reviewOnly = await evLoginOk({ id: newMemberId(), roles: [await bindReviewOnlyRole()] })
     admin = await evLoginOk({ id: ADMIN_ID })
     for (const id of [ownerId, secondId]) await control('/__mock/tickets/member', { id, member: true })
     const seeded = await seedLibrarySongs([
@@ -160,8 +163,9 @@ describe.skipIf(!EVENTS_E2E())('events flow: request → ticket → approve → 
     expect(await registry(ev1)).toEqual([])
   })
 
-  it('[A] build-now is manage-only', async () => {
-    expect((await evJson(reviewer, `/api/ev/events/${ev1}/build-now`, { json: {} })).status).toBe(403)
+  it('[A] build-now is manage-only (a review-only role is refused)', async () => {
+    expect((await evJson<{ perms: Record<string, boolean> }>(reviewOnly, '/api/ev/me')).body.perms).toMatchObject({ review: true, manage: false })
+    expect((await evJson(reviewOnly, `/api/ev/events/${ev1}/build-now`, { json: {} })).status).toBe(403)
     expect((await evJson(owner, `/api/ev/events/${ev1}/build-now`, { json: {} })).status).toBe(403)
   })
 

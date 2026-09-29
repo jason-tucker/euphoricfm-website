@@ -146,11 +146,10 @@ describe.skipIf(!EVENTS_E2E())('events privacy: a second member, anonymous visit
       expect(b).not.toMatch(/^LOCATION/m)
     }
     expect(vevents.some((b) => summaryOf(b) === `Public ${tag}`)).toBe(true)
-    for (const b of vevents) {
-      const uid = /^UID[^:]*:(.*)$/m.exec(b)?.[1]?.trim() ?? ''
-      expect(uid).not.toBe('')
-      for (const id of Object.values(ids)) expect(uid).not.toMatch(new RegExp(`(^|\\D)${id}(\\D|$)`))
-    }
+    // opaque UIDs: a random-looking token (not the event id), one per event
+    const uids = vevents.map((b) => /^UID[^:]*:(.*)$/m.exec(b)?.[1]?.trim() ?? '')
+    for (const uid of uids) expect(uid.split('@')[0]).toMatch(/^[A-Za-z0-9_-]{16,}$/)
+    expect(new Set(uids).size).toBe(uids.length)
   })
 
   it('[A] detail: the second member gets projections; drafts are 404; the owner and staff get the full view', async () => {
