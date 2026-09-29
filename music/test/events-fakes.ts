@@ -12,6 +12,7 @@ import { EVENTS_SETTING_DEFAULTS, resolveEventsSettings, type EventsSettings } f
 import type { AudioStatus, BuildStatus, EventStatus, RegistryRole } from '@/events/contract/types'
 import type { EventsCtx } from '@/events/worker/ctx'
 import type { AnnouncementRow, AudioPatch, AudioRow, BuildRow, ClaimedJob, CreateAttemptMarker, EnqueueOpts, EventRow, EventsStore, JobOutcome, RegistryRow, StingerRow, TrackRow } from '@/events/worker/store'
+import { azuracastLiqVarName, isLiquidsoapSafePlaylistName } from './helpers/azuracast-liq'
 
 export const OWNER = '700000000000000001'
 export const OTHER = '700000000000000002'
@@ -46,6 +47,23 @@ export class FakeAz {
   calls: Call[] = []
   restarts = 0
   failRestarts = 0
+  // GET /status backend_running. Like AzuraCast + supervisord: a restart
+  // regenerates the .liq from the ENABLED playlists; a name whose Liquidsoap
+  // variable is not a valid identifier (the 2026-09-29 "~EVT1 s1") makes
+  // Liquidsoap refuse the config ("Error 2: Parse error", no start banner)
+  // and the backend stays down.
+  backendRunning = true
+  // Force the next N restarts to leave the backend down whatever the config.
+  forceBackendDown = 0
+  // Answer a restart that leaves the backend down with a 500 (AzuraCast's
+  // "Exited too quickly") instead of a 200.
+  restartErrorsWhenDown = false
+  // backend_running reads over time: a queue of values served before the
+  // steady state (e.g. [true, false] = a flicker right after a restart).
+  statusScript: boolean[] = []
+  // Append a start banner to liquidsoapLog on every good restart (off by
+  // default: most tests set the log they want the verify to read).
+  logRestarts = false
   np: unknown = { is_online: true, now_playing: null }
   // station 14's liquidsoap log (GET /logs, /log/liquidsoap_log)
   liquidsoapLog = ''
@@ -269,7 +287,10 @@ export class FakeAz {
       this.queue = this.queue.filter((q) => q !== Number(x![1]))
       return this.json(200, { success: true })
     }
-    if (rest === '/status') return this.json(200, { backend_running: true, frontend_running: true, station_has_started: true, station_needs_restart: false })
+    if (rest === '/status') {
+      const running = this.statusScript.length > 0 ? this.statusScript.shift()! : this.backendRunning
+      return this.json(200, { backend_running: running, frontend_running: true, station_has_started: running, station_needs_restart: false })
+    }
     if (rest === '/logs' && method === 'GET')
       return this.json(200, [
         { key: 'liquidsoap_log', name: 'Liquidsoap Log', path: '/var/azuracast/stations/media/config/liquidsoap.log', tail: true, links: { self: '/api/station/14/log/liquidsoap_log' } },
@@ -282,10 +303,26 @@ export class FakeAz {
         return this.json(500, { success: false })
       }
       this.restarts++
+      const bad = this.invalidLiquidsoapPlaylists()
+      const forced = this.forceBackendDown > 0
+      if (forced) this.forceBackendDown--
+      if (bad.length > 0 || forced) {
+        this.backendRunning = false
+        this.liquidsoapLog += bad.length > 0 ? `At line 212, char 9-10:\nError 2: Parse error (${bad[0]} = playlist(...))\n` : 'Error 4: Invalid value\n'
+        if (this.restartErrorsWhenDown) return this.json(500, { code: 500, message: 'Exited too quickly' })
+        return this.json(200, { success: true })
+      }
+      this.backendRunning = true
+      if (this.logRestarts) this.liquidsoapLog += `2026/10/11 00:00:0${this.restarts % 10} [main:3] Liquidsoap 2.2.5\n`
       return this.json(200, { success: true })
     }
     return this.json(404, {})
   }) as unknown as typeof fetch
+
+  /** The Liquidsoap variables AzuraCast would write for enabled playlists that are not valid identifiers. */
+  invalidLiquidsoapPlaylists(): string[] {
+    return [...this.playlists.values()].filter((p) => p.is_enabled && !isLiquidsoapSafePlaylistName(p.name)).map((p) => azuracastLiqVarName(p.name))
+  }
 
   client(canaries: number[] = [7]): EventsAzuraCastClient {
     return new EventsAzuraCastClient({ baseUrl: 'https://az.invalid', apiKey: 'k'.repeat(24), stationId: 14, canaryStationIds: canaries, fetchImpl: this.fetch })
@@ -624,6 +661,10 @@ export function harness(startIso: string, dirs: { spoolIn: string; spoolOut: str
     spoolOutDir: dirs.spoolOut,
     finalDir: dirs.final,
     now,
+    // restart confirmation polls: advance the fake clock, never wait
+    sleep: async (ms) => {
+      clock.t += ms
+    },
     alert: async (title) => {
       alerts.push(title)
     },

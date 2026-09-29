@@ -18,6 +18,9 @@ export type EventsCtx = {
   // /staging/final (ro)
   finalDir: string
   now: () => number
+  // Real-time pause (restart confirmation polls). Unset: setTimeout. The
+  // unit tests pass one that advances their fake clock instead.
+  sleep?: (ms: number) => Promise<void>
   alert: (title: string, detail: Record<string, unknown>) => Promise<void>
   // In-process ingest gate: set when a folder link (or a playlist attached
   // to a fresh upload) was seen; cleared only by a restart after a human

@@ -13,6 +13,9 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
+// AzuraCast's playlist name → Liquidsoap variable pipeline (TypeScript,
+// loaded through Node's type stripping; erasable syntax only).
+import { azuracastLiqVarName, isLiquidsoapSafePlaylistName } from '../helpers/azuracast-liq.ts'
 
 const GUILD = process.env.MOCK_GUILD_ID ?? '915830850694815765'
 const LINK_ORIGIN = process.env.MOCK_LINK_ORIGIN ?? 'https://music.euphoric.fm'
@@ -129,6 +132,14 @@ function reset() {
       queue14: [], // [{id, song:{…}}]
       nextQueueId: 1,
       restarts14: [], // ISO timestamps of POST /backend/restart
+      // GET /status backend_running. Like AzuraCast + supervisord: a restart
+      // regenerates the .liq from the ENABLED playlists; a name whose
+      // Liquidsoap variable is not a valid identifier (2026-09-29: "~EVT1 s1"
+      // → playlist_~evt1_s1) makes Liquidsoap refuse the config ("Error 2:
+      // Parse error", no start banner) and the backend stays down.
+      backend14: true,
+      forceDown14: 0, // the next N restarts leave the backend down whatever the config
+      restartErrorsWhenDown14: false, // answer such a restart 500 ("Exited too quickly")
       log14: '2026-09-29 00:00:00 [main:3] Liquidsoap 2.2.5\n2026-09-29 00:00:01 [startup:3] Loaded configuration without errors.\n',
       eventsSuperadmin: false, // the events key may read stations 1 / 7 (self-check refusal tests)
       // Events-key requests the events wrapper must never send (a route or
@@ -964,9 +975,21 @@ async function handleStation14(req, res, url, rest, body) {
     state.az.queue14.splice(i, 1)
     return send(res, 200, { success: true, message: 'Record deleted successfully.', formatted_message: 'Record deleted successfully.' })
   }
-  if (m === 'GET' && rest === '/status') return send(res, 200, { backend_running: true, frontend_running: true, station_has_started: true, station_needs_restart: false })
+  if (m === 'GET' && rest === '/status') return send(res, 200, { backend_running: state.az.backend14, frontend_running: true, station_has_started: state.az.backend14, station_needs_restart: false })
   if (m === 'POST' && rest === '/backend/restart') {
     state.az.restarts14.push(new Date().toISOString())
+    const bad = [...state.az.pl14.values()].filter((p) => p.is_enabled && !isLiquidsoapSafePlaylistName(p.name)).map((p) => azuracastLiqVarName(p.name))
+    const forced = state.az.forceDown14 > 0
+    if (forced) state.az.forceDown14--
+    const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19)
+    if (bad.length > 0 || forced) {
+      state.az.backend14 = false
+      state.az.log14 += bad.length > 0 ? `At line 212, char 9-10:\nError 2: Parse error (${bad[0]} = playlist(...))\n` : 'Error 4: Invalid value\n'
+      if (state.az.restartErrorsWhenDown14) return send(res, 500, { code: 500, message: 'Exited too quickly' })
+      return send(res, 200, { success: true, message: 'Backend restarted.', formatted_message: 'Backend restarted.' })
+    }
+    state.az.backend14 = true
+    state.az.log14 += `${stamp} [main:3] Liquidsoap 2.2.5\n${stamp} [startup:3] Loaded configuration without errors.\n`
     return send(res, 200, { success: true, message: 'Backend restarted.', formatted_message: 'Backend restarted.' })
   }
   if (m === 'GET' && rest === '/logs') return send(res, 200, [{ key: 'liquidsoap_log', name: 'Liquidsoap Log', tail: true, links: { self: `/api/station/${EVENTS_STATION}/log/liquidsoap_log` } }])
@@ -1075,6 +1098,8 @@ async function handleControl(req, res, url) {
       order: Object.fromEntries([...state.az.pl14.keys()].map((id) => [id, orderEntries(id).map((e) => e.media.id)])),
       queue: state.az.queue14,
       restarts: state.az.restarts14,
+      backendRunning: state.az.backend14,
+      log: state.az.log14,
       violations: state.az.violations,
       dirLinks: Object.fromEntries(state.az.dirLinks),
     })
@@ -1093,6 +1118,13 @@ async function handleControl(req, res, url) {
     const items = body?.items ?? Array.from({ length: body?.count ?? 1 }, (_, i) => ({ song: { text: `Queued ${i + 1}` } }))
     for (const it of items) state.az.queue14.push({ ...it, id: state.az.nextQueueId++ })
     return send(res, 200, state.az.queue14)
+  }
+  // The station-14 backend: {running?, forceDown?, restartErrorsWhenDown?}.
+  if (p === '/__mock/az/station14/backend' && req.method === 'POST') {
+    if (typeof body?.running === 'boolean') state.az.backend14 = body.running
+    if (Number.isInteger(body?.forceDown)) state.az.forceDown14 = body.forceDown
+    if (typeof body?.restartErrorsWhenDown === 'boolean') state.az.restartErrorsWhenDown14 = body.restartErrorsWhenDown
+    return send(res, 200, { running: state.az.backend14, forceDown: state.az.forceDown14, restartErrorsWhenDown: state.az.restartErrorsWhenDown14 })
   }
   if (p === '/__mock/az/station14/log' && req.method === 'POST') {
     state.az.log14 = typeof body?.contents === 'string' ? body.contents : state.az.log14

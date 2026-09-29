@@ -178,6 +178,10 @@ export type Station14 = {
   order: Record<string, number[]>
   queue: { id: number }[]
   restarts: string[]
+  // GET /status backend_running (a restart into a config Liquidsoap refuses leaves it false)
+  backendRunning: boolean
+  // station 14's liquidsoap log (GET /log/liquidsoap_log)
+  log: string
   violations: { method: string; path: string; why: string }[]
 }
 export async function station14(): Promise<Station14> {

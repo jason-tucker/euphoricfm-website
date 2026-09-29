@@ -580,9 +580,21 @@ export async function verifyBuild(ctx: EventsCtx, ev: EventRow, build: BuildRow)
 // UTC or the station's zone. A log with no banner is judged on its last
 // LOG_FALLBACK_LINES lines.
 export const LIQUIDSOAP_BANNER_RE = /\bLiquidsoap (?:v?\d+\.\d+|.*\b(?:start|version))/i
-// What a config that did not load cleanly leaves in the log.
-export const LIQUIDSOAP_CONFIG_ERROR_RE = /Error while loading|Parse error|Script error|\bError \d+:|At line \d+, char/i
+// What a config that did not load cleanly leaves in the log: Liquidsoap
+// 2.x reports a script it cannot load as a position line ("At line 12, char
+// 4-5:" or "Unknown position:") followed by "Error <n>: <kind>" — e.g. the
+// 2026-09-29 outage's "Error 2: Parse error" for `playlist_~evt1_s1`.
+export const LIQUIDSOAP_CONFIG_ERROR_RE = /Error while loading|Parse error|Script error|\bError \d+:|At line \d+, char|Unknown position/i
 const LOG_FALLBACK_LINES = 200
+
+/** The most recent Liquidsoap start banner line (with its timestamp), or null. */
+export function lastLiquidsoapBanner(contents: string): string | null {
+  const lines = contents.split(/\r?\n/)
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (LIQUIDSOAP_BANNER_RE.test(lines[i]!) && !LIQUIDSOAP_CONFIG_ERROR_RE.test(lines[i]!)) return lines[i]!.trim()
+  }
+  return null
+}
 
 /** Config-load errors logged after the most recent Liquidsoap start banner. */
 export function liquidsoapConfigErrors(contents: string): string[] {
@@ -604,17 +616,24 @@ export function liquidsoapConfigErrors(contents: string): string[] {
   return out
 }
 
-// Reads station 14's liquidsoap log through the wrapper's read routes. A
-// log that cannot be read is recorded, not a verify failure.
-async function liquidsoapLogCheck(ctx: EventsCtx): Promise<{ state: string; errors: string[] }> {
+/** Station 14's liquidsoap log contents through the wrapper's read routes (null: no such log). */
+export async function readLiquidsoapLog(ctx: EventsCtx): Promise<string | null> {
+  const keys = (await ctx.az.listLogs()).map((l) => l.key)
+  const key = keys.includes('liquidsoap_log') ? 'liquidsoap_log' : keys.find((k) => /^liquidsoap[a-z0-9_]*log$/.test(k))
+  if (!key) return null
+  return (await ctx.az.getLog(key)).contents
+}
+
+// Reads station 14's liquidsoap log. A log that cannot be read is recorded,
+// not a verify failure. `banner`: whether any start banner is in the log.
+async function liquidsoapLogCheck(ctx: EventsCtx): Promise<{ state: string; errors: string[]; banner: boolean | null }> {
   try {
-    const keys = (await ctx.az.listLogs()).map((l) => l.key)
-    const key = keys.includes('liquidsoap_log') ? 'liquidsoap_log' : keys.find((k) => /^liquidsoap[a-z0-9_]*log$/.test(k))
-    if (!key) return { state: 'no liquidsoap log', errors: [] }
-    const errors = liquidsoapConfigErrors((await ctx.az.getLog(key)).contents)
-    return { state: errors.length ? 'config errors' : 'clean', errors }
+    const contents = await readLiquidsoapLog(ctx)
+    if (contents === null) return { state: 'no liquidsoap log', errors: [], banner: null }
+    const errors = liquidsoapConfigErrors(contents)
+    return { state: errors.length ? 'config errors' : 'clean', errors, banner: lastLiquidsoapBanner(contents) !== null }
   } catch (e) {
-    return { state: `unreadable (${e instanceof EventsAzuraCastError ? e.code : e instanceof Error ? e.name : 'error'})`, errors: [] }
+    return { state: `unreadable (${e instanceof EventsAzuraCastError ? e.code : e instanceof Error ? e.name : 'error'})`, errors: [], banner: null }
   }
 }
 
@@ -644,6 +663,7 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
       const log = await liquidsoapLogCheck(ctx)
       liquidsoapLog = log.state
       for (const e of log.errors) problems.push(`liquidsoap: ${e}`)
+      if (log.banner === false && backend === 'not running') problems.push('liquidsoap: did not start (no start banner, backend not running)')
     }
   }
   await ctx.store.audit('events.build.verified', 'event', ev.id, { buildId: build.id, problems, backend, liquidsoapLog })
