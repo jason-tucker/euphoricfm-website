@@ -160,6 +160,9 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
               Allow “Add from a SoundCloud link”
             </label>
             <p className="text-xs text-cream/50">Kill switch: when off, new links are refused and queued links are not fetched. Songs already fetched are not affected.</p>
+            <p className="text-xs text-cream/50" data-testid="sc-host-note">
+              On by default (no saved setting counts as on). The SoundCloud downloader is kept away from private addresses only by the botvps host firewall (efm-music-egress), which this portal cannot check: on a new or rebuilt server, keep this off until those rules are verified (README, “Pre-deploy: the host egress guard”).
+            </p>
           </div>
         </div>
         <Text id="sc-per-day" label="SoundCloud links per member per day" value={scPerDay} onChange={setScPerDay} inputMode="numeric" help="At most 20." />

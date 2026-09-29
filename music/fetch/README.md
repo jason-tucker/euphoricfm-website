@@ -220,6 +220,8 @@ yt-dlp's own connections (SoundCloud's API and CDN) do not go through the in-pro
 - `EFM-MUSIC-TAILNET` (first in `mangle FORWARD`): drops the same sources routed out `tailscale+` (Tailscale's `ts-forward` accepts container → tailnet traffic before `DOCKER-USER`);
 - `EFM-MUSIC-INPUT` (first in `INPUT`): drops NEW connections to the host itself from `br-efm-fetch`, the worker-egress and `music-int` bridges and music-web.
 
+**The portal's kill switch is on by default** (`soundcloud_fetch_enabled`: a missing row counts as on), so these host rules are the only thing standing between yt-dlp and private addresses on a new host. On a fresh or rebuilt host, or with a restored database, set the switch to `false` before the first `up -d` and turn it on only once the checks below pass (`music/README.md`, "The switch defaults ON").
+
 **Before music-fetch starts**, run the four pre-deploy checks in the portal's `music/README.md` ("Pre-deploy: the host egress guard") and `systemctl is-enabled efm-music-egress.service efm-music-egress-check.timer`.
 
 - **DNS.** Container DNS goes to Docker's embedded resolver at 127.0.0.11, inside the container's namespace. If the droplet's upstream resolver is itself an RFC1918 or CGNAT address, the guard needs an `ACCEPT` for exactly that resolver's IP and port 53 above its drops. DigitalOcean's default resolvers (67.207.67.2 and .3) are public.
