@@ -4,7 +4,8 @@ For each /spool/fetch/in/<uuid>.json {uuid, url, requestedBy}:
   1. claim it (rename into claimed/), validate the document;
   2. validate the URL (and resolve a shortlink WITHOUT yt-dlp) -> canonical URL;
   3. create /staging/fetch/<uuid>/ (must be new) and run the pinned yt-dlp;
-  4. parse the info JSON as DATA only (never executed): extractor, type, duration;
+  4. parse the info JSON as DATA only (never executed): extractor, type,
+     a preview-only format (0.2.1), duration;
   5. magic-byte check of the audio, size cap, rawSha256;
   6. artwork: only https://*.sndcdn.com, 5 MiB cap, stored raw (never decoded);
   7. write /spool/fetch/out/<uuid>.json (never overwriting an existing result).
@@ -123,6 +124,14 @@ def check_info(info: dict, max_duration_s: float) -> None:
         raise FetchError(E.NOT_A_TRACK, 'info JSON is a playlist')
     if info.get('extractor') != 'soundcloud' or info.get('extractor_key') != 'Soundcloud':
         raise FetchError(E.NOT_A_TRACK, 'not the soundcloud track extractor')
+    # 0.2.1: a Go+ (premium) track offers an anonymous client only 30 s
+    # preview transcodings. yt-dlp ranks them last (preference -10) but still
+    # picks one when nothing else exists, while `duration` stays the full
+    # length. The info JSON carries the SELECTED format's fields and is
+    # written before the download, so this stops the job before any media.
+    fid = info.get('format_id')
+    if (isinstance(fid, str) and 'preview' in fid.lower()) or info.get('snipped') is True:
+        raise FetchError(E.PREVIEW_ONLY, f'selected format {fid!r} is a preview')
     d = _duration(info)
     if d is None:
         raise FetchError(E.EXTRACTOR_FAILED, 'no usable duration in info JSON')
@@ -416,8 +425,18 @@ class Service:
         artwork_sha = None
         artwork_host = None
         art_url = choose_artwork_url(info)
+        art = None
         if art_url is not None:
-            art = validate_artwork_url(art_url)  # raises artwork_host
+            # 0.2.1: a URL outside the allowlist drops the artwork (warning
+            # `artwork_host`) instead of failing the job. Nothing is requested
+            # from it either way, and artwork is optional.
+            try:
+                art = validate_artwork_url(art_url)
+            except FetchError as e:
+                if e.code != E.ARTWORK_HOST:
+                    raise
+                warnings.append(E.ARTWORK_HOST)
+        if art is not None:
             res = fetch_artwork(art, os.path.join(job_dir, ARTWORK_NAME), cfg.art_opener)
             if isinstance(res, str):
                 warnings.append(res)

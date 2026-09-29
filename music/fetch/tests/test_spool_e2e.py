@@ -9,8 +9,8 @@ import time
 import unittest
 
 from fetchsvc.envguard import CHILD_PATH
-from fetchsvc.errors import (ARTWORK_HOST, BAD_MEDIA, BAD_REQUEST, BAD_URL, EXTRACTOR_FAILED, INTERRUPTED,
-                             NOT_A_TRACK, REDIRECT_HOST, TIMEOUT, TOO_LARGE, TOO_LONG)
+from fetchsvc.errors import (BAD_MEDIA, BAD_REQUEST, BAD_URL, EXTRACTOR_FAILED, INTERRUPTED, NOT_A_TRACK,
+                             PREVIEW_ONLY, REDIRECT_HOST, TIMEOUT, TOO_LARGE, TOO_LONG)
 from tests.helpers import JPEG, Env
 
 SC = 'https://soundcloud.com/stub/'
@@ -155,6 +155,17 @@ class ErrorPathTests(E2EBase):
         self.assertError(SC + 'long', TOO_LONG)
         self.assertLess(time.monotonic() - t, 10)  # stub would sleep 30 s before writing audio
 
+    def test_preview_only_stops_download_early(self):
+        # 0.2.1 (second pass A2): a Go+ track whose only format is the 30 s
+        # preview, with the full length in `duration`, is refused on the info
+        # JSON alone: no media is downloaded (the stub sleeps 30 s first).
+        self.env.svc.cfg.timeout_s = 60
+        for slug in ('preview', 'snipped'):
+            with self.subTest(slug=slug):
+                t = time.monotonic()
+                self.assertError(SC + slug, PREVIEW_ONLY)
+                self.assertLess(time.monotonic() - t, 10)
+
     def test_playlist_info_stops_early(self):
         self.env.svc.cfg.timeout_s = 60
         t = time.monotonic()
@@ -234,9 +245,19 @@ class ErrorPathTests(E2EBase):
 
 class ArtworkE2ETests(E2EBase):
     def test_artwork_host_allowlist(self):
+        # 0.2.1 (second pass): a disallowed artwork URL drops the artwork and
+        # keeps the song (it used to fail the job with artwork_host); still no
+        # request is made to it.
         for slug in ['evil', 'lookalike', 'at', 'http', 'port', 'bare', 'suffix', 'meta']:
             with self.subTest(slug=slug):
-                self.assertError(SC + f'art-{slug}', ARTWORK_HOST)
+                uid, res = self.env.run(SC + f'art-{slug}')
+                self.assertEqual(res['status'], 'ok', res)
+                self.assertIsNone(res['errorCode'])
+                self.assertEqual(res['warnings'], ['artwork_host'])
+                self.assertNotIn('artwork', res['files'])
+                self.assertNotIn('artworkSha256', res)
+                self.assertIsNone(res['meta']['artworkSourceHost'])
+                self.assertEqual(os.listdir(self.env.job_dir(uid)), ['audio.mp3'])
         self.assertEqual(self.env.art.calls, [], 'no request may be made to a non-allowlisted host')
 
     def test_artwork_transfer_problems_only_drop_artwork(self):
