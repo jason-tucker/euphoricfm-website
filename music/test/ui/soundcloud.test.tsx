@@ -126,6 +126,15 @@ describe('SoundCloud link shape (shared by the page and the server)', () => {
     const coverOnly = new Set(['cover_hash_mismatch', 'cover_type', 'cover_header', 'cover_decode']) // flags, never a rejection
     expect([...codes].filter((c) => !PROBE_ERROR_TEXT[c] && !coverOnly.has(c))).toEqual([])
   })
+
+  it('v0.4.1: the portal accepts exactly the codes music-fetch can write (fetch/fetchsvc/errors.py), preview_only included', () => {
+    const py = readFileSync('fetch/fetchsvc/errors.py', 'utf8')
+    const pyCodes = [...py.matchAll(/^[A-Z_]+ = '([a-z_]+)'/gm)].map((m) => m[1]!)
+    expect(pyCodes).toContain('preview_only')
+    expect([...pyCodes].sort()).toEqual([...FETCH_ERROR_CODES].sort())
+    expect(PROBE_ERROR_TEXT.sc_preview_only).toMatch(/^SoundCloud only offers a preview of this track/)
+    expect(PROBE_ERROR_TEXT.sc_duration_mismatch).toMatch(/preview/)
+  })
 })
 
 describe('the submit page’s SoundCloud box', () => {

@@ -200,6 +200,8 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   sc_bad_media: 'SoundCloud sent a file that is not a supported audio format. Upload the file instead.',
   sc_interrupted: 'Fetching from SoundCloud was interrupted by a server restart. Add the link again.',
   sc_internal: 'Something went wrong while fetching from SoundCloud. Add the link again, or upload the file instead.',
+  // v0.4.1: a Go+ (premium) track, which SoundCloud only offers logged out as a 30 s preview
+  sc_preview_only: 'SoundCloud only offers a preview of this track (it is for SoundCloud Go subscribers), so it was not added. Upload the file instead.',
   // ...the worker's own checks of music-fetch's answer
   sc_disabled: 'Adding songs from SoundCloud was switched off before this link was fetched. Upload the file instead.',
   sc_queue_timeout: 'This link waited too long for its turn. Add it again later.',
@@ -215,6 +217,8 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   sc_convert_timeout: 'Converting the SoundCloud track took too long. Try again later.',
   sc_convert_invalid: "The track from SoundCloud couldn't be converted to a valid MP3. Upload the file instead.",
   sc_converted_too_large: `The converted MP3 would be larger than ${mibOf(MAX_UPLOAD_BYTES)} MB. Upload a shorter song.`,
+  // v0.4.1: the audio is not as long as SoundCloud says the track is (a preview or a cut-off download)
+  sc_duration_mismatch: 'SoundCloud only offers a preview of this track, or sent less than the whole song, so it was not added. Upload the file instead.',
 }
 
 export function probeErrorText(code: string | null | undefined): string {

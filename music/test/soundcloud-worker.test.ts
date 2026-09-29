@@ -415,7 +415,7 @@ describe.skipIf(!DBENV())('SoundCloud links: worker ↔ music-fetch spool (v0.4.
   })
 
   it('music-fetch error codes reject the item as sc_<code> and release the staging charge', async () => {
-    for (const code of ['not_a_track', 'extractor_failed', 'too_long', 'timeout', 'too_large', 'interrupted']) {
+    for (const code of ['not_a_track', 'extractor_failed', 'too_long', 'timeout', 'too_large', 'interrupted', 'preview_only']) {
       const x = await mkScItem({ stage: 'fetching', requestedAgoS: 5 })
       writeFetchOut(x.fetchId, { v: 1, uuid: x.fetchId, status: 'error', errorCode: code, files: null, meta: null, rawSha256: null })
       await collectFetchResults(ctx)
