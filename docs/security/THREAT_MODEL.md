@@ -49,7 +49,8 @@ Modelled as internet-facing with untrusted, hostile users.
 - Read path: browser → `euphoric.fm` (CORS now-playing/library) + Caddy
   `/efm-art` (same-origin art) + `/requests/pending` (shared list).
 - Write path: browser → Caddy `/api/*` → AzuraCast (enqueue) and →
-  `/requests/track` (record pending) and → Discord (submit/contact webhook).
+  `/requests/track` (record pending) and → `/contact/*` (sidecar relays to the
+  Discord contact webhook server-side; the URL never reaches the browser).
 - Background: `efm-requests` polls AzuraCast now-playing every 30s to prune aired
   requests; 6h TTL evicts stragglers.
 
