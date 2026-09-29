@@ -95,7 +95,10 @@ describe.skipIf(!EVENTS_E2E())('events flow: request → ticket → approve → 
       { path: `Music/Artists/EvFlow ${tag}/EvFlow ${tag} - Alpha.mp3`, title: 'Alpha', artist: `EvFlow ${tag}`, playlists: [2] },
       // in station 1's rotation AND the legacy Events playlist 74
       { path: `Music/Artists/EvFlow ${tag}/EvFlow ${tag} - Shared.mp3`, title: 'Shared', artist: `EvFlow ${tag}`, playlists: [2, 74] },
-      { path: `Music/Artists/EvFlow ${tag}/EvFlow ${tag} - Gamma.mp3`, title: 'Gamma', artist: `EvFlow ${tag}`, playlists: [3] },
+      // in no playlist at all. (Never put playlist 3 on the library surface:
+      // the music sync would record it as unconfirmed, and e2e-requests relies
+      // on 3 being a confirmed station-1 id.)
+      { path: `Music/Artists/EvFlow ${tag}/EvFlow ${tag} - Gamma.mp3`, title: 'Gamma', artist: `EvFlow ${tag}`, playlists: [] },
     ])
     songA = seeded[0]!
     shared = seeded[1]!
@@ -190,7 +193,7 @@ describe.skipIf(!EVENTS_E2E())('events flow: request → ticket → approve → 
     // preserve-only: station-1 rotation and legacy 74 stay
     expect(playlistIds(await mockFile(songA.path))).toEqual([2, main.playlist_id!].sort((a, b) => a - b))
     expect(playlistIds(await mockFile(shared.path))).toEqual([2, 74, main.playlist_id!].sort((a, b) => a - b))
-    expect(playlistIds(await mockFile(songC.path))).toEqual([3])
+    expect(playlistIds(await mockFile(songC.path))).toEqual([])
     // sequential: the order was set explicitly to the builder's order
     expect(st.order[String(main.playlist_id)]).toEqual([songA.id, shared.id])
     expect(st.violations).toEqual([])
@@ -214,7 +217,7 @@ describe.skipIf(!EVENTS_E2E())('events flow: request → ticket → approve → 
     expect(st.playlists.find((p) => p.id === m2)!.name).toBe('Private event')
     expect(playlistIds(await mockFile(shared.path))).toEqual([2, 74, m1, m2].sort((a, b) => a - b))
     expect(playlistIds(await mockFile(songA.path))).toEqual([2, m1].sort((a, b) => a - b))
-    expect(playlistIds(await mockFile(songC.path))).toEqual([3, m2].sort((a, b) => a - b))
+    expect(playlistIds(await mockFile(songC.path))).toEqual([m2])
     expect(st.order[String(m1)]).toEqual([songA.id, shared.id]) // untouched by event 2
     expect(st.violations).toEqual([])
     await setEventsSettings({ events_autobuild_enabled: false })
@@ -245,7 +248,7 @@ describe.skipIf(!EVENTS_E2E())('events flow: request → ticket → approve → 
     await waitFor(async () => (playlistIds(await mockFile(songA.path)).includes(m1) ? null : true), 150_000, 1000)
     expect(playlistIds(await mockFile(songA.path))).toEqual([2])
     expect(playlistIds(await mockFile(shared.path))).toEqual([2, 74, m2].sort((a, b) => a - b))
-    expect(playlistIds(await mockFile(songC.path))).toEqual([3, m2].sort((a, b) => a - b))
+    expect(playlistIds(await mockFile(songC.path))).toEqual([m2])
     const st = await station14()
     expect(st.playlists.some((p) => p.id === m2)).toBe(true)
     for (const legacy of [74, 75, 76, 77, 78]) expect(st.playlists.some((p) => p.id === legacy)).toBe(true)
