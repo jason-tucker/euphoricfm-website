@@ -47,6 +47,7 @@ export const EV_ERROR_TEXT: Record<string, string> = {
   invalid_reason: 'A reason is required.',
   reason_required: 'A reason is required.',
   invalid_body: 'Something in the form is not valid. Check the fields and try again.',
+  title_reserved: "That title is reserved for the station's own playlists. Pick a different title.",
   invalid: 'Something in the form is not valid. Check the fields and try again.',
   invalid_query: 'That search or date range is not valid. Change it and try again.',
   version_conflict: 'Someone else changed this event while you were editing it. The latest version has been loaded: check it and make your change again.',

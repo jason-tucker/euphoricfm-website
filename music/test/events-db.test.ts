@@ -177,7 +177,7 @@ describe.skipIf(!DBENV())('events: library sync foreign set', () => {
       VALUES (${u.id}, ${u.discordId}, 'T', 'other', now() + interval '2 days', now() + interval '2 days 2 hours', 'UTC', 'public', 'approved') RETURNING id`
     const [b] = await ownerSql()`INSERT INTO event_builds (event_id, version, plan) VALUES (${ev!.id}, 1, '{}'::jsonb) RETURNING id`
     const pid = 90_000 + Math.floor(Math.random() * 9_000)
-    await ownerSql()`INSERT INTO event_registry (event_id, build_id, role, intent_name, playlist_id) VALUES (${ev!.id}, ${b!.id}, 'main', 'T', ${pid}), (${ev!.id}, ${b!.id}, 'pin', '~EVT1 s1', NULL)`
+    await ownerSql()`INSERT INTO event_registry (event_id, build_id, role, intent_name, playlist_id) VALUES (${ev!.id}, ${b!.id}, 'main', 'T', ${pid}), (${ev!.id}, ${b!.id}, 'pin', 'EVT1 s1', NULL)`
     const ids = await eventRegistryPlaylistIds(db())
     expect(ids).toContain(pid)
     expect(ids.every((n) => Number.isSafeInteger(n) && n > 0)).toBe(true)
@@ -192,7 +192,7 @@ describe.skipIf(!DBENV())('events: create-attempt marker (worker store, orphan a
     const store = new PgEventsStore(db())
     const b = await store.createBuild(Number(ev!.id), 1, {})
     const row = await store.insertIntent(Number(ev!.id), b.id, 'main', 'T')
-    const other = await store.insertIntent(Number(ev!.id), b.id, 'pin', `~EVT${ev!.id} s1`)
+    const other = await store.insertIntent(Number(ev!.id), b.id, 'pin', `EVT${ev!.id} s1`)
     expect(await store.createAttempt(row.id)).toBeNull()
     await store.markCreateAttempt(row.id, { eventId: Number(ev!.id), buildId: b.id, name: 'T', maxIdBefore: 140 })
     await store.markCreateAttempt(row.id, { eventId: Number(ev!.id), buildId: b.id, name: 'T', maxIdBefore: 155 })

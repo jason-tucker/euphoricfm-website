@@ -31,7 +31,7 @@ import { backendOptionsOf, EventsAzuraCastError, type MediaRead, type PlaylistRe
 import { applyFileMembership } from '../../azuracast/membership'
 import { buildInputKey } from '../../contract/build-key'
 import type { EventJobPayload } from '../../contract/jobs'
-import { mainName } from '../../contract/paths'
+import { isCurrentPlaylistName, mainName, parseAnyInternalName } from '../../contract/paths'
 import { RECHECK_BEFORE_MIN, START_KICK_DELAY_S } from '../../contract/rules'
 import type { EventStatus } from '../../contract/types'
 import type { EventsCtx } from '../ctx'
@@ -107,6 +107,11 @@ export async function currentInputKey(ctx: EventsCtx, ev: EventRow): Promise<str
  * station).
  */
 export async function buildIsCurrent(ctx: EventsCtx, ev: EventRow, build: BuildRow): Promise<boolean> {
+  // A plan that still names a pre-0.5.2 '~' helper playlist would put that
+  // name into the Liquidsoap config on the next restart (the 2026-09-29
+  // outage): it is never current, whatever its version — it needs a rebuild,
+  // which supersedes (creates the new names, deletes the old playlists).
+  if (planHasLegacyNames(planOf(build))) return false
   if (build.version === ev.version) return true
   const key = planOf(build)?.inputKey
   return typeof key === 'string' && key === (await currentInputKey(ctx, ev))
@@ -192,6 +197,11 @@ export function planOf(b: BuildRow | null): CompiledPlan | null {
   return p && p.v === 1 && Array.isArray(p.playlists) ? p : null
 }
 
+/** Whether a plan names any playlist the current contract no longer emits (a legacy '~' name). */
+export function planHasLegacyNames(plan: CompiledPlan | null): boolean {
+  return !!plan && plan.playlists.some((p) => typeof p.name !== 'string' || !isCurrentPlaylistName(p.name))
+}
+
 // --------------------------------------------------------------- apply ---
 
 async function markFailed(ctx: EventsCtx, ev: EventRow, build: BuildRow | null, code: string, detail: Record<string, unknown>): Promise<void> {
@@ -242,7 +252,10 @@ export async function applyBuild(ctx: EventsCtx, ev: EventRow, opts: { force: bo
   }
 
   let build = await ctx.store.buildFor(ev.id, ev.version)
-  if (build && build.status === 'applied' && !opts.force) return
+  // An applied build is re-applied only when forced, or when its plan still
+  // names legacy '~' playlists (a name change is a supersede: step 5 deletes
+  // the old registry playlists once the new ones are in place).
+  if (build && build.status === 'applied' && !opts.force && !planHasLegacyNames(planOf(build))) return
   const previous = await ctx.store.builds(ev.id)
   if (build) await ctx.store.setBuild(build.id, { status: 'applying', plan, lastError: null })
   else build = await ctx.store.createBuild(ev.id, ev.version, plan)
@@ -546,12 +559,15 @@ export async function verifyBuild(ctx: EventsCtx, ev: EventRow, build: BuildRow)
       if (!order || JSON.stringify(order) !== JSON.stringify(p.mediaIds)) problems.push(`${p.key}: order`)
     }
   }
-  // Orphans: station-14 playlists carrying this event's marker that the
-  // registry does not know.
+  // Orphans: station-14 playlists carrying this event's helper name (current
+  // `EVT<id> …` or legacy `~EVT<id> …`) that the registry does not know.
   const known = new Set(rows.map((r) => r.playlistId).filter((x): x is number => x !== null))
   for (const s of await ctx.az.listPlaylists()) {
-    if (s.name.startsWith(`~EVT${ev.id} `) && !known.has(s.id)) problems.push(`orphan playlist ${s.id}`)
+    if (parseAnyInternalName(s.name)?.eventId === ev.id && !known.has(s.id)) problems.push(`orphan playlist ${s.id}`)
   }
+  // A registry playlist still carrying a legacy '~' name is a broken
+  // Liquidsoap identifier waiting for the next restart.
+  for (const r of rows) if (r.playlistId !== null && !isCurrentPlaylistName(r.intentName)) problems.push(`legacy playlist name ${r.playlistId} (${r.intentName}): rebuild to supersede it`)
   return problems
 }
 

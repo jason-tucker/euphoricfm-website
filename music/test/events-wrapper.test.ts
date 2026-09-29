@@ -38,7 +38,7 @@ function setup() {
   // An event playlist of event 42 (registry id 101), one of event 43 (102).
   az.playlists.set(101, { ...az.playlists.get(76)!, id: 101, name: 'Grand Opening' })
   az.playlists.set(102, { ...az.playlists.get(76)!, id: 102, name: 'Other Event' })
-  const scope: PlaylistScope = { eventId: 42, window: WINDOW, registry: new Map([[101, 'Grand Opening']]), intentNames: new Set(['Grand Opening', '~EVT42 s1']) }
+  const scope: PlaylistScope = { eventId: 42, window: WINDOW, registry: new Map([[101, 'Grand Opening']]), intentNames: new Set(['Grand Opening', 'EVT42 s1']) }
   return { az, c, scope }
 }
 
@@ -160,7 +160,11 @@ describe('events wrapper: default deny (no write leaves the process)', () => {
       [{ schedule_items: [{ ...row, start_time: 1900 }] }, 'refused_row_outside_event'],
       [{ schedule_items: [{ ...row, end_time: 2230 }] }, 'refused_row_outside_event'],
       [{ schedule_items: [{ ...row, start_date: '2026-10-11', end_date: '2026-10-11' }] }, 'refused_row_outside_event'],
-      [{ name: '~EVT43 s1' }, 'refused_playlist_name_event'],
+      [{ name: 'EVT43 s1' }, 'refused_playlist_name_event'],
+      // the pre-0.5.2 '~' helper name is never sent again (Liquidsoap parse error)
+      [{ name: '~EVT42 s1' }, 'refused_playlist_body'],
+      // a main-looking name shaped like a helper name (any case) is refused
+      [{ name: 'evt42 s1' }, 'refused_playlist_body'],
       [{ name: 'Some other name' }, 'refused_create_without_intent'],
       [{ name: '~hidden' }, 'refused_playlist_body'],
     ]

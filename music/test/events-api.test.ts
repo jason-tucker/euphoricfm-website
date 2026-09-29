@@ -30,6 +30,7 @@ import { jobsFor, nextStatus, TRANSITIONS } from '@/events/server/state'
 import { diffLines, editedBody, type DiffSide } from '@/events/server/tickets-outbound'
 import { etDatesSpanned, onGrid, overlapsNightlyRestart } from '@/events/server/time'
 import { fullView, publicView, viewEvent, type EventRecord, type FullExtras } from '@/events/server/view'
+import * as svc from '@/events/server/service'
 
 const H = 3600_000
 const M = 60_000
@@ -546,5 +547,22 @@ describe('probe request id', () => {
     const id = probeRequestIdForUpload('0123456789abcdef0123456789abcdef')
     expect(id).toBe('01234567-89ab-4def-8123-456789abcdef')
     expect(() => probeRequestIdForUpload('../x')).toThrow()
+  })
+})
+
+describe('reserved titles (0.5.2: a title never passes for a helper playlist)', () => {
+  // Any DB access fails the test: the refusal comes before the database.
+  const noDb = new Proxy({}, { get: () => { throw new Error('db touched') } }) as never
+  const input = { title: 'x', hostName: null, description: null, location: null, eventType: 'party', startsAt: new Date(NOW + 48 * H).toISOString(), endsAt: new Date(NOW + 50 * H).toISOString(), enteredTz: 'America/New_York', visibility: 'public', playlistOrder: 'shuffle' } as never as Parameters<typeof svc.createEvent>[2]
+  const code = (p: Promise<unknown>) => p.then(() => 'ok', (e: { code?: string; message?: string }) => e.code ?? e.message ?? 'error')
+
+  it('create, staff booking and title edits answer title_reserved for EVT<id> s<n> / a<n> in any case or spelling', async () => {
+    for (const title of ['EVT1 s1', 'EVT42 a3', 'evt1 S1', '~EVT1 s1', 'EVT1-s1', 'E.V.T.1 s1', 'ＥＶＴ１ ｓ１']) {
+      expect(await code(svc.createEvent(noDb, member(), { ...input, title })), title).toBe('title_reserved')
+      expect(await code(svc.staffBook(noDb, { ...member(), staff: true }, { ...input, title, openTicket: false } as never)), title).toBe('title_reserved')
+      expect(await code(svc.patchEvent(noDb, member(), 1, { title })), title).toBe('title_reserved')
+    }
+    // an ordinary title gets past the check (and then needs the database)
+    expect(await code(svc.createEvent(noDb, member(), { ...input, title: 'EVT1 s1 afterparty' }))).toBe('db touched')
   })
 })

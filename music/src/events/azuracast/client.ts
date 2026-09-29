@@ -436,7 +436,7 @@ export class EventsAzuraCastClient {
     // Names: a main name (sanitized title) or this event's marker name.
     const marked = markedNameEventId(b.name)
     if (marked !== null && marked !== scope.eventId) throw new EventsAzuraCastError('refused_playlist_name_event', { name: b.name })
-    if (marked === null && (!isMainName(b.name) || b.name.startsWith('~'))) throw new EventsAzuraCastError('refused_playlist_name', { name: b.name })
+    if (marked === null && (!isMainName(b.name) || b.name.includes('~'))) throw new EventsAzuraCastError('refused_playlist_name', { name: b.name })
     if (expectedName !== null && b.name !== expectedName) throw new EventsAzuraCastError('refused_playlist_name_mismatch', { name: b.name })
     assertRowsInsideEvent(b.schedule_items, scope.window)
     return b

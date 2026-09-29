@@ -115,8 +115,11 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
   let ev: FullEventView
 
   it('creates a draft, saves a playlist (no-op re-save), refuses another member’s audio', async () => {
+    // 0.5.2: a title shaped like a helper playlist is refused before anything is written
+    for (const title of ['EVT1 s1', 'evt7 a2', '~EVT1 s1', 'EVT1-s1']) expect(await codeOf(svc.createEvent(db(), owner, { ...draft, title }))).toBe('title_reserved')
     ev = await svc.createEvent(db(), owner, draft)
     expect(ev).toMatchObject({ kind: 'full', status: 'draft', version: 1, visibility: 'private', ownerName: null })
+    expect(await codeOf(svc.patchEvent(db(), owner, ev.id, { title: 'EVT1 a1' }))).toBe('title_reserved')
     expect(await codeOf(svc.putPlaylist(db(), owner, ev.id, { tracks: [...tracks(), { position: 3, source: 'upload', mediaId: null, audioId: otherAudio, pinAt: null }], announcements: [], playlistOrder: 'shuffle' }))).toBe('media_not_allowed')
     ev = await svc.putPlaylist(db(), owner, ev.id, { tracks: tracks(), announcements: anns(), playlistOrder: 'shuffle' })
     expect(ev.version).toBe(2)
@@ -268,6 +271,7 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
     const pub = await svc.getEventView(db(), other, b.id)
     expect(pub).toMatchObject({ kind: 'public', title: 'Staff Night' })
     expect(await codeOf(svc.staffBook(db(), owner, { ...draft, startsAt: iso(base + 60 * H), endsAt: iso(base + 61 * H), openTicket: false }))).toBe('forbidden')
+    expect(await codeOf(svc.staffBook(db(), staff, { ...draft, title: 'EVT3 s1', startsAt: iso(base + 60 * H), endsAt: iso(base + 61 * H), openTicket: false }))).toBe('title_reserved')
   })
 
   it('My audio: attach a complete events upload → probing + a probe request under the derived id', async () => {

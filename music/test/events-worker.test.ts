@@ -171,7 +171,7 @@ describe('events worker: build', () => {
     expect(mainIdOf(h, 42)).toBe(main)
     expect(s2.playlists).toEqual([74])
     const pin = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!
-    expect(pin.intentName).toBe('~EVT42 s1')
+    expect(pin.intentName).toBe('EVT42 s1')
     expect(h.az.files.get(503)!.playlists).toEqual([pin.playlistId])
     expect(h.az.playlists.get(pin.playlistId!)!.backend_options).toEqual(['single_track'])
     expect(h.store.buildRows.find((b) => b.version === 2)!.status).toBe('applied')
@@ -647,7 +647,7 @@ describe('events worker: kicks and teardown', () => {
     h.az.liquidsoapLog = [
       '2026/10/10 23:40:00 [lang:2] Parse error: an old run, before this restart',
       '2026/10/11 00:00:06 [main:3] Liquidsoap 2.2.5',
-      '2026/10/11 00:00:07 [lang:1] Error while loading playlist ~EVT42 s1',
+      '2026/10/11 00:00:07 [lang:1] Error while loading playlist EVT42 s1',
     ].join('\n')
     h.clock.t = T('2026-10-10T20:00:05-04:00')
     await drain(h)
