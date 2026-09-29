@@ -115,3 +115,17 @@ describe('calendar', () => {
     expect(calls.length).toBeGreaterThanOrEqual(2)
   })
 })
+
+describe('calendar touch targets on phones', () => {
+  it('month buttons and day cells are at least 48 px tall below 768 px, and the grid cannot overflow', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const css = readFileSync(join(process.cwd(), 'src/events/components/events.css'), 'utf8')
+    const phone = (max: number) => css.slice(css.indexOf(`@media (max-width: ${max}px)`))
+    const px = (block: string, sel: string, prop: string) => Number(new RegExp(`\\${sel} \\{[^}]*\\b${prop}: (\\d+)px`).exec(block)?.[1] ?? 0)
+    expect(px(phone(767), '.ev-iconbtn', 'min-height')).toBeGreaterThanOrEqual(48)
+    expect(px(phone(767), '.ev-iconbtn', 'min-width')).toBeGreaterThanOrEqual(48)
+    expect(px(phone(639), '.ev-cal-day', 'min-height')).toBeGreaterThanOrEqual(48)
+    expect(phone(639)).toMatch(/\.ev-cal \{[^}]*repeat\(7, minmax\(0, 1fr\)\)/)
+  })
+})

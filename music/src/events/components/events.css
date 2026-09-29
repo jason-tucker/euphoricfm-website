@@ -163,8 +163,9 @@
 .ev-cal-ev[data-kind='private'], .ev-cal-ev[data-kind='full'] { background: rgb(var(--efm-midnight-rgb) / 0.6); border-color: rgb(140 160 255 / 0.5); color: rgb(200 210 255); }
 .ev-cal-ev[data-kind='pending'] { background: transparent; border-color: rgb(var(--efm-cream-rgb) / 0.35); border-style: dashed; color: rgb(var(--efm-cream-rgb) / 0.75); }
 @media (max-width: 639px) {
-  .ev-cal { gap: 2px; }
-  .ev-cal-day { min-height: 52px; padding: 3px 2px; }
+  /* 7 × minmax(0, 1fr) never overflows 390 px; each day stays a 48 px+ target. */
+  .ev-cal { gap: 2px; grid-template-columns: repeat(7, minmax(0, 1fr)); max-width: 100%; }
+  .ev-cal-day { min-height: 56px; min-width: 0; padding: 3px 2px; }
   /* Phones: one dot per event; the agenda below the grid has the details. */
   .ev-cal-ev { min-height: 10px; height: 10px; padding: 0; font-size: 0; border-radius: 9999px; }
 }
@@ -248,6 +249,7 @@
   .ev-tz-btn { min-height: 48px; }
   .ev-root .input, .ev-root select, .ev-select { min-height: 48px; }
   .ev-root .btn-sm, .ev-step, .ev-seg > button, .ev-seg > a { min-height: 48px; }
+  .ev-iconbtn { min-width: 48px; min-height: 48px; }
   .ev-foot { align-items: center; }
   .ev-back, .ev-foot a { display: inline-flex; align-items: center; min-height: 48px; }
 }
