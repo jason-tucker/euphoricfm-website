@@ -73,9 +73,11 @@ src/
                                ships nowplaying/effects/stats/events + the webhook runtime config,
                                `scripts="none"` ships neither (the Web Player loads its own entry)
   pages/index.astro            composes the page top-to-bottom
-  pages/events.astro           composes the Euphoric FM Events page (Header → EventsHero →
-                               EventsHowItWorks → EventsServices → EventStatus → Footer,
-                               EventInquiryModal outside .phone)
+  pages/events.astro           the EuphoricFM Events explainer (Header → EventsHero →
+                               EventsHowItWorks → EventsServices → EventStatus → Footer). A <head>
+                               script sends TOP-LEVEL visits to events.euphoric.fm
+                               (`window.self === window.parent`, never window.top); inside an
+                               iframe (in-game phone) the page stays. No inquiry pop-up here
   pages/player.astro           the Web Player (/player/, dist/player/index.html): the shared top bar
                                (Web Player marked current), full layout + pop-out strip (no bar)
                                (?popout=1 or ≤420×260 → html.efm-popout), reuses RequestModal.
@@ -112,10 +114,11 @@ src/
                                scripts/stats.ts)
   components/EventsHero.astro, EventsHowItWorks.astro, EventsServices.astro,
     EventStatus.astro, EventInquiryModal.astro
-                               /events page components; EventInquiryModal posts to the
-                               existing contact Discord webhook with a distinguished embed;
+                               /events page components; EventInquiryModal (home page only,
+                               "Plan an event") posts to the /contact/event relay;
                                EventStatus renders off-air/on-air/calendar blocks hydrated by
-                               scripts/events.ts from the events station's schedule — a
+                               scripts/events.ts from the events station's schedule ("~"
+                               helper playlists hidden, lib/event-schedule.ts) — a
                                non-null site.events.status.current still overrides it
 shared/                        files BOTH sites use: nav.json (top-bar items) + efm-bar.css (its
                                styles). The portal builds from music/ only, so it keeps byte-for-

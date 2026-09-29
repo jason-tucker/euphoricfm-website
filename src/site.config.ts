@@ -135,13 +135,11 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       heading: 'Bring EuphoricFM to your next event.',
       body: 'Grand openings, private parties, car meets, club nights — our team builds the sound and runs it live on the Euphoric Events station.',
       goodFor: 'Good for:',
-      plan: 'Plan your event',
-      more: 'How events work',
+      learn: 'Learn about events',
       statusTitle: 'Happening now',
       offAirBody: 'When an event is on air, it shows up here with a Listen live button.',
       calendarTitle: 'On the calendar',
-      calendarEmpty: 'No upcoming events yet —',
-      calendarBook: 'book the first one',
+      calendarEmpty: 'No upcoming events yet.',
     },
     music: {
       eyebrow: 'For artists',
@@ -375,7 +373,8 @@ San Andreas is not only our home; it's also the source of incredible talent wait
   },
 
   // EuphoricFM Events — public /events page (src/pages/events.astro +
-  // EventsHero/EventsHowItWorks/EventsServices/EventStatus/EventInquiryModal).
+  // EventsHero/EventsHowItWorks/EventsServices/EventStatus) and the home
+  // page's "Plan an event" pop-up (EventInquiryModal, `inquiry` below).
   // EVERY user-visible string those components render comes from here, same
   // discipline as `stats` above. Discord payload copy (username, embed title/
   // color/footer) stays inline in EventInquiryModal.astro's script — same
@@ -389,7 +388,6 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       eyebrow: 'EuphoricFM Events',
       heading: 'Bring EuphoricFM to your next event.',
       body: "Whether you're planning a grand opening, private party, car meet, club night, community gathering, or something entirely your own, EuphoricFM can help give your event its own sound. Work with our team to create curated music and radio programming tailored to your event.",
-      ctaPlan: 'Plan your event',
       ctaListen: 'Listen to EuphoricFM',
     },
 
@@ -462,8 +460,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       offAir: {
         pill: 'OFF AIR',
         heading: 'Nothing on the calendar right now.',
-        body: "EuphoricFM Events isn't currently broadcasting for an event. Planning something? Let's change that.",
-        cta: 'Plan your event',
+        body: "EuphoricFM Events isn't broadcasting for an event right now. When one goes live, it shows up here.",
       },
       onAir: {
         pill: 'ON AIR',
@@ -478,6 +475,16 @@ San Andreas is not only our home; it's also the source of incredible talent wait
         status: string;
         listenUrl?: string;
       },
+    },
+
+    // events.euphoric.fm — where requests, the calendar and event radio live.
+    // pages/events.astro sends top-level visitors there (never out of an
+    // iframe: the in-game phone can't load it, so /events/ explains events
+    // there instead). `noscript`/`label` are the low-key no-JS fallback link.
+    portal: {
+      url: 'https://events.euphoric.fm/',
+      noscript: 'Event requests and the calendar are at',
+      label: 'events.euphoric.fm',
     },
 
     // Euphoric Events station (`event` shortcode) public schedule feed —

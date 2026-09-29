@@ -48,7 +48,6 @@ const current = s.current;
           </span>
           <h3 id="evst-heading" class="mt-2 text-base font-bold text-cream">{s.offAir.heading}</h3>
           <p id="evst-body" class="mt-1 text-sm text-cream/70 leading-relaxed">{s.offAir.body}</p>
-          <button type="button" id="evst-cta" class="btn btn-sunburst mt-3 w-full">{s.offAir.cta}</button>
         </div>
 
         <!-- Filled by events.ts on is_now === true. The pill needs no id —
@@ -77,12 +76,3 @@ const current = s.current;
   </div>
 </section>
 
-<script is:inline>
-  (function () {
-    var cta = document.getElementById('evst-cta');
-    if (!cta) return;
-    cta.addEventListener('click', function () {
-      document.dispatchEvent(new CustomEvent('efm:open-event-inquiry'));
-    });
-  })();
-</script>

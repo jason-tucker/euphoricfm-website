@@ -1,7 +1,7 @@
 ---
-// Home events teaser → /events/. "Plan your event" opens the event inquiry
-// pop-up (EventInquiryModal, also rendered on the home page) and falls back to
-// /events/ as a plain link. The right-hand status card carries the same
+// Home events teaser → /events/ ("Learn about events"). /events/ sends real
+// browsers on to events.euphoric.fm and explains events inside the in-game
+// phone, so this is a plain link. The right-hand status card carries the same
 // evst-* ids as /events' EventStatus, so scripts/events.ts hydrates it from
 // the Euphoric Events station's public schedule unchanged (ON AIR card with a
 // Listen live link, or off air + the upcoming calendar).
@@ -20,10 +20,9 @@ const current = st.current;
       <p class="hm-lede">{e.body}</p>
       <p class="hm-goodfor"><b>{e.goodFor}</b> {site.events.goodFor.items.join(' · ')}</p>
       <div class="hm-btnrow mt-5">
-        <a class="btn btn-sunburst" href="/events/" data-open="event-inquiry">
-          <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M16 3v4M8 3v4M4 10h16"/></svg>{e.plan}
+        <a class="btn btn-sunburst" href="/events/">
+          <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M16 3v4M8 3v4M4 10h16"/></svg>{e.learn}
         </a>
-        <a class="btn btn-ghost" href="/events/">{e.more}<span class="hm-chev" aria-hidden="true">›</span></a>
       </div>
     </div>
 
@@ -50,7 +49,7 @@ const current = st.current;
           </div>
           <div class="hm-cal">
             <b class="hm-small">{e.calendarTitle}</b>
-            <p id="evst-calendar-empty" class="hm-small hm-muted">{e.calendarEmpty} <a class="hm-link" href="/events/" data-open="event-inquiry">{e.calendarBook}</a>.</p>
+            <p id="evst-calendar-empty" class="hm-small hm-muted">{e.calendarEmpty}</p>
             <div id="evst-calendar" class="hidden"><ul id="evst-calendar-list"></ul></div>
           </div>
         </>

@@ -25,6 +25,7 @@ import {
   SLOW_RETRY_AFTER,
   SLOW_RETRY_MS,
 } from '../src/scripts/np-core.ts';
+import { eventRows, isHelperRow } from '../src/lib/event-schedule.ts';
 import { DEFAULT_EXCLUDE_PLAYLISTS } from '../server/stats.mjs';
 import {
   CONTACT_AVATAR_URL,
@@ -100,7 +101,11 @@ test('home: the pieces each section promises', () => {
   assert.doesNotMatch(html, /\bid="team"|>Team</i);
   // Events teaser reuses the live status block from /events.
   assert.match(html, /id="evst-card"/);
-  assert.match(html, /href="\/events\/"[^>]*data-open="event-inquiry"/);
+  // …and links to /events/ plainly (no inquiry pop-up from the teaser).
+  const teaser = /<section id="events"[\s\S]*?<\/section>/.exec(html)?.[0] ?? '';
+  assert.ok(teaser.includes(site.home.events.learn), 'Learn about events');
+  assert.match(teaser, /href="\/events\/"/);
+  assert.doesNotMatch(teaser, /data-open=/);
   // For artists → the portal (submit + library intents).
   assert.match(html, /href="https:\/\/music\.euphoric\.fm\/"/);
   assert.match(html, /href="https:\/\/music\.euphoric\.fm\/library\?intent=edit"/);
@@ -203,7 +208,7 @@ test('home: ONE side card with Recently played / Requested tabs (ARIA tablist), 
 });
 
 test('pop-ups sit above the sticky top bar: outside <main> (a z-[1] stacking context) and z-[70]', () => {
-  for (const [page, list] of Object.entries({ 'events/index.html': ['event-overlay'], 'player/index.html': ['request-overlay'] })) {
+  for (const [page, list] of Object.entries({ 'player/index.html': ['request-overlay'] })) {
     const html = read(page);
     for (const ov of list) assert.ok(html.indexOf(`id="${ov}"`) > html.indexOf('</main>'), `${page}: #${ov} after </main>`);
   }
@@ -230,7 +235,7 @@ test('the contact forms post to the same-origin relay; no page loads a runtime c
     assert.doesNotMatch(html, /__EFM_CONFIG__\.contact|getWebhook/, page);
   }
   assert.match(read('index.html'), /fetch\('\/contact\/message'/);
-  assert.match(read('events/index.html'), /fetch\('\/contact\/event'/);
+  assert.match(read('index.html'), /fetch\('\/contact\/event'/);
 });
 
 test('the sidecar contact relay mirrors site.config (avatar, name, profile pattern)', () => {
@@ -504,4 +509,58 @@ test('/player/#history opens the full Song history', () => {
   assert.match(src('src/scripts/player.ts'), /location\.hash === '#history'\) setExpanded\(true\)/);
   assert.match(src('src/scripts/player.ts'), /addEventListener\('hashchange', expandForHash\)/);
   assert.match(read('index.html'), /href="\/player\/#history"/);
+});
+
+// ---- /events → events.euphoric.fm ------------------------------------------
+
+test('/events/ sends top-level visitors to events.euphoric.fm, never out of an iframe', () => {
+  const html = read('events/index.html');
+  const tag = /<script[^>]*id="events-redirect"[^>]*>([\s\S]*?)<\/script>/.exec(html);
+  assert.ok(tag, 'redirect script on /events/');
+  assert.ok(html.indexOf(tag[0]) < html.indexOf('</head>'), 'runs from <head>, before the page paints');
+  assert.match(tag[1], /window\.self\s*===\s*window\.parent/);
+  assert.match(tag[1], /location\.replace\(/);
+  assert.ok(html.includes(JSON.stringify(site.events.portal.url)), 'target URL from site.config');
+  assert.equal(site.events.portal.url, 'https://events.euphoric.fm/');
+  // No-JS fallback: a small plain link, no inquiry pop-up or CTA any more.
+  assert.match(html, /<noscript>[\s\S]*href="https:\/\/events\.euphoric\.fm\/"[\s\S]*<\/noscript>/);
+  assert.doesNotMatch(html, /id="event-overlay"|efm:open-event-inquiry|id="evst-cta"|id="events-hero-plan"/);
+  assert.doesNotMatch(html, /fetch\('\/contact\/event'/);
+  // The explainer sections stay.
+  for (const t of [site.events.howItWorks.title, site.events.services.title, site.events.status.title]) {
+    assert.ok(html.includes(t), `/events/ keeps "${t}"`);
+  }
+});
+
+test('the redirect is only on /events/, and no page uses window.top', () => {
+  for (const page of ['index.html', 'player/index.html']) {
+    const html = read(page);
+    assert.doesNotMatch(html, /id="events-redirect"/, page);
+    assert.doesNotMatch(html, /location\.replace\(["']https:\/\/events\.euphoric\.fm/, page);
+  }
+  for (const page of ['index.html', 'events/index.html', 'player/index.html']) {
+    assert.doesNotMatch(read(page), /window\.top\b|\btop\.location\b/, page);
+  }
+});
+
+test('events schedule: "~" helper playlists are hidden, midnight splits still merge', () => {
+  const row = (id, name, start, end, is_now = false) => ({
+    id, type: 'playlist', name, title: '', description: '',
+    start_timestamp: start, start: '', end_timestamp: end, end: '', is_now,
+  });
+  assert.equal(isHelperRow({ name: '~Pinned songs' }), true);
+  assert.equal(isHelperRow({ name: ' ~Announcements' }), true);
+  assert.equal(isHelperRow({ name: 'Car Meet ~ Night' }), false);
+  const out = eventRows([
+    row(7, 'Fasion Show', 1000, 2000, true),
+    row(8, '~Fasion Show pins', 1000, 2000, true),
+    row(9, '~Announcements', 1500, 1600),
+    row(7, 'Fasion Show', 2060, 3000), // post-midnight half, 60 s seam
+    row(10, 'Club Night', 9000, 12000),
+  ]);
+  assert.deepEqual(out.map((e) => [e.id, e.name, e.start_timestamp, e.end_timestamp, e.is_now]), [
+    [7, 'Fasion Show', 1000, 3000, true],
+    [10, 'Club Night', 9000, 12000, false],
+  ]);
+  assert.deepEqual(eventRows([row(1, '~only helpers', 0, 10, true)]), []);
 });
