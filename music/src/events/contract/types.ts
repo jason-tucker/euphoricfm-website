@@ -42,12 +42,20 @@ export type RegistryRole = (typeof REGISTRY_ROLES)[number]
 /** Statuses a public projection may carry. */
 export type PublicStatus = 'approved' | 'built' | 'live' | 'ended'
 
+/** Resolved display label (library_cache / event_stingers / event_audio); responses only. */
+export interface MediaLabel {
+  title: string
+  artist: string | null
+  lengthS: number | null
+}
+
 export interface EventTrack {
   position: number
   source: TrackSource
   mediaId: number | null
   audioId: number | null
   pinAt: string | null /* ISO UTC */
+  label?: MediaLabel
 }
 
 export interface EventAnnouncement {
@@ -60,6 +68,7 @@ export interface EventAnnouncement {
   everyMin: EveryMin | null
   from: string | null
   until: string | null
+  label?: MediaLabel
 }
 
 // What any viewer may see (output of viewEvent). kind decides which fields are present.
@@ -88,6 +97,12 @@ export type EventView =
       freezeAt: string
       canEdit: boolean
       buildStatus: string | null
+      // Edit-conflict guard (PATCH / PUT playlist `version`), and the details
+      // the owner and staff pages show.
+      version: number
+      denyReason: string | null
+      ownerName: string | null
+      ticketNumber: number | null
     }
 
 export type EventViewKind = EventView['kind']

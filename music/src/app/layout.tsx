@@ -6,11 +6,17 @@ import './globals.css'
 // The shared EuphoricFM top bar styles (copy of the repo's shared/efm-bar.css).
 import '@/shared/efm-bar.css'
 
-export const metadata: Metadata = {
+const musicMetadata: Metadata = {
   title: { default: 'EFM Music Portal', template: '%s · EFM Music Portal' },
   description: 'Submit music to EuphoricFM',
   robots: { index: false, follow: false },
   icons: { icon: '/favicon.svg' },
+}
+
+// Per request (not a static export): one image serves both sites. On the
+// events host app/ev/layout.tsx supplies the titles.
+export function generateMetadata(): Metadata {
+  return process.env.PORTAL_SITE === 'events' ? { icons: { icon: '/favicon.svg' } } : musicMetadata
 }
 
 export const viewport: Viewport = { width: 'device-width', initialScale: 1, themeColor: '#0a0a0a' }
@@ -19,6 +25,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // Reading the nonce makes every page dynamic, so Next stamps it on its
   // inline scripts (the CSP has no 'unsafe-inline').
   await headers()
+  // v0.5.0: on events.euphoric.fm app/ev/layout.tsx owns the bar, <main> and footer.
+  if (process.env.PORTAL_SITE === 'events') {
+    return (
+      <html lang="en">
+        <body className="min-h-screen bg-ink text-cream antialiased">{children}</body>
+      </html>
+    )
+  }
   const viewer = await headerViewer()
   return (
     <html lang="en">
