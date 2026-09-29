@@ -25,7 +25,8 @@ export const EVENT_UPLOAD_ROOT = 'Events/Uploads/'
 const SNOWFLAKE_RE = /^\d{17,20}$/
 const UPLOAD_ID_RE = /^[0-9a-f]{32}$/
 
-function uuidV4FromHex(hex: string): string {
+/** A v4-shaped UUID from 32 hex chars (shared by web and worker spool ids). */
+export function uuidV4FromHex(hex: string): string {
   if (!/^[0-9a-f]{32}$/.test(hex)) throw new EventPathError('bad_uuid_source')
   const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16)
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
@@ -35,7 +36,8 @@ function uuidV4FromHex(hex: string): string {
  * The probe request id for an events upload: a v4-shaped UUID derived from
  * the (random, unique) tus upload id, so events-web (which writes the probe
  * request) and the events worker (which reads the result) agree without a
- * stored column. Byte-identical to worker/jobs/audio.ts probeRequestIdForUpload.
+ * stored column. The worker imports this function (never a copy);
+ * test/events-contract.test.ts pins a known input → output.
  */
 export function probeRequestIdForUpload(uploadId: string): string {
   if (!UPLOAD_ID_RE.test(uploadId)) throw new EventPathError('bad_upload_id')

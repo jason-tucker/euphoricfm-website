@@ -25,6 +25,7 @@ import { EVENTS_UPLOAD_DIR, eventUploadPathFor } from '../../azuracast/allowlist
 import { EventsAzuraCastError } from '../../azuracast/client'
 import { folderLinkCheck } from '../../azuracast/selfcheck'
 import type { EventJobPayload } from '../../contract/jobs'
+import { probeRequestIdForUpload, uuidV4FromHex } from '../../contract/paths'
 import { EVENTS_INGEST_PER_HOUR, EVENTS_INGEST_SPACING_S } from '../../contract/rules'
 import type { EventsCtx } from '../ctx'
 import { Permanent, Wait, waitUntil } from '../errors'
@@ -40,19 +41,9 @@ export const EVENT_VERSION_SUFFIX = ' (event version)'
 
 // ----------------------------------------------------------- spool ids --
 
-function uuidV4FromHex(hex: string): string {
-  if (!/^[0-9a-f]{32}$/.test(hex)) throw new Error('uuid source must be 32 hex')
-  const variant = ((parseInt(hex[16]!, 16) & 0x3) | 0x8).toString(16)
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
-}
-
-// The probe request id for an events upload: derived from the (random,
-// unique) tus upload id, so the web does not need to store it and the worker
-// can find the result. events-web MUST name its probe request with this.
-export function probeRequestIdForUpload(uploadId: string): string {
-  if (!UPLOAD_ID_RE.test(uploadId)) throw new Error('bad upload id')
-  return uuidV4FromHex(uploadId)
-}
+// The probe request id for an events upload is contract/paths.ts
+// probeRequestIdForUpload: events-web writes the request under it and
+// audio_collect reads the result under it (imported, never copied).
 
 // The finalize request id: deterministic per (audio, upload, probe sha), so a
 // retried job finds the result of its own earlier request.

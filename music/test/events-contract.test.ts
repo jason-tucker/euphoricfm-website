@@ -14,6 +14,7 @@ import {
   parseEventUploadPath,
   parseInternalName,
   pinName,
+  probeRequestIdForUpload,
   sanitizePlaylistName,
   STINGER_FILE_RE,
 } from '@/events/contract/paths'
@@ -100,6 +101,18 @@ describe('per-site CSP', () => {
 
 describe('event paths and playlist names', () => {
   const snow = '123456789012345678'
+
+  it('probeRequestIdForUpload: pinned input → output (web writes, worker reads the same id)', () => {
+    // events-web (server/audio.ts) names the probe request with this and the
+    // events worker (jobs/audio.ts audio_collect) reads the result with it.
+    // Both import this one function; these pins stop the mapping drifting.
+    expect(probeRequestIdForUpload('0123456789abcdef0123456789abcdef')).toBe('01234567-89ab-4def-8123-456789abcdef')
+    expect(probeRequestIdForUpload('ffffffffffffffffffffffffffffffff')).toBe('ffffffff-ffff-4fff-bfff-ffffffffffff')
+    expect(probeRequestIdForUpload('a'.repeat(32))).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    for (const bad of ['', 'A'.repeat(32), 'a'.repeat(31), 'a'.repeat(33), '../' + 'a'.repeat(29)]) {
+      expect(() => probeRequestIdForUpload(bad), bad).toThrow()
+    }
+  })
 
   it('builds and parses the one custom-audio path', () => {
     expect(eventUploadPath(snow, 42)).toBe(`Events/Uploads/${snow}/evt-a42.mp3`)
