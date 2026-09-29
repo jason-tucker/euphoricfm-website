@@ -11,14 +11,14 @@ import { STINGER_SYNC_EVERY_H } from '../contract/rules'
 import type { EventsCtx } from './ctx'
 import { Permanent, Retry, Wait } from './errors'
 import { audioDelete, audioFinalize, audioIngest, collectAudio } from './jobs/audio'
-import { buildJob, buildNowJob, recheckJob, verifyJob } from './jobs/build'
-import { endKick, startKick, startKickFailed, teardown } from './jobs/kicks'
+import { buildJob, buildNowJob, rebuildNeededJob, recheckJob, verifyJob } from './jobs/build'
+import { endKick, offAirRestart, offAirRestartFailed, startKick, startKickFailed, teardown } from './jobs/kicks'
 import { audioExpire, pendingExpire, pendingReminder, stingerSync } from './jobs/sweeps'
 import { ticketClose, ticketOpen, ticketPost } from './jobs/tickets'
 import type { ClaimedJob } from './store'
 
 // Every kind that writes to AzuraCast (queues_paused holds them).
-export const EVENTS_MUTATING_KINDS: readonly EventJobKind[] = ['audio_ingest', 'audio_delete', 'build', 'build_now', 'start_kick', 'end_kick', 'teardown', 'recheck']
+export const EVENTS_MUTATING_KINDS: readonly EventJobKind[] = ['audio_ingest', 'audio_delete', 'build', 'build_now', 'start_kick', 'end_kick', 'teardown', 'off_air_restart', 'recheck']
 
 export async function dispatch(ctx: EventsCtx, kind: EventJobKind, payload: unknown): Promise<void> {
   switch (kind) {
@@ -52,6 +52,10 @@ export async function dispatch(ctx: EventsCtx, kind: EventJobKind, payload: unkn
       return endKick(ctx, parseEventJobPayload(kind, payload))
     case 'teardown':
       return teardown(ctx, parseEventJobPayload(kind, payload))
+    case 'off_air_restart':
+      return offAirRestart(ctx, parseEventJobPayload(kind, payload))
+    case 'rebuild_needed':
+      return rebuildNeededJob(ctx, parseEventJobPayload(kind, payload))
     case 'recheck':
       return recheckJob(ctx, parseEventJobPayload(kind, payload))
     case 'pending_expire':
@@ -79,6 +83,7 @@ async function onDead(ctx: EventsCtx, job: ClaimedJob, error: string): Promise<v
   const eventId = typeof p.eventId === 'number' ? p.eventId : null
   const audioId = typeof p.audioId === 'number' ? p.audioId : null
   if (job.kind === 'start_kick' && eventId) await startKickFailed(ctx, eventId, error)
+  if (job.kind === 'off_air_restart' && eventId) await offAirRestartFailed(ctx, eventId, p.reason, error)
   if ((job.kind === 'build' || job.kind === 'build_now') && eventId) {
     const ev = await ctx.store.getEvent(eventId)
     const b = ev ? await ctx.store.buildFor(ev.id, ev.version) : null

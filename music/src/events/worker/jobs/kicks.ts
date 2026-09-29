@@ -8,23 +8,30 @@
 //     loops restarts (the efm watchdog has its own 10-min cooldown);
 //   * end kick at the end: wait for the song that was playing at the end to
 //     finish, at most events_end_wait_s (90 s, before the watchdog's third
-//     mismatch minute), then disable the event's playlists, purge, restart.
+//     mismatch minute), then disable the event's playlists and hand the
+//     purge + restart to an off_air_restart job.
 //     When another built event starts within events_gap_min of this end
 //     (a staff-booked adjacent pair), only disable: the next start kick does
 //     the single purge + restart;
 //   * teardown deletes the event's playlists 24 h after the end, or at once
 //     for a cancelled/withdrawn/denied/expired event (with a purge + restart
 //     if it was on air); an event sent back to pending/approved by an edit
-//     only has its playlists disabled until it is rebuilt.
+//     only has its playlists disabled until it is rebuilt;
+//   * off_air_restart (after an end kick or an on-air teardown) is enqueued
+//     BEFORE the playlists are touched, so the decision survives a failed
+//     restart and a retried teardown that finds no registry rows left. It
+//     waits until none of the event's playlists is enabled any more, then
+//     purges and restarts: 2 attempts 30 s apart, then an alert (never a
+//     loop of restarts).
 
 import { EventsAzuraCastError, type NowPlaying, type PlaylistScope } from '../../azuracast/client'
 import type { EventJobPayload } from '../../contract/jobs'
 import { PLAYLIST_DELETE_AFTER_H, START_KICK_DELAY_S, START_KICK_RETRY_S } from '../../contract/rules'
 import type { EventStatus } from '../../contract/types'
 import type { EventsCtx } from '../ctx'
-import { Permanent, Retry, waitUntil } from '../errors'
+import { Permanent, Retry, Wait, waitUntil } from '../errors'
 import type { EventRow, RegistryRow } from '../store'
-import { playlistScope, staleJob } from './build'
+import { buildIsCurrent, playlistScope, staleJob } from './build'
 import { postToTicket, whenLine } from './tickets'
 
 const KICKABLE: readonly EventStatus[] = ['built', 'live']
@@ -72,9 +79,10 @@ export async function startKick(ctx: EventsCtx, p: EventJobPayload<'start_kick'>
     return
   }
   const build = await ctx.store.latestAppliedBuild(ev.id)
-  if (!build || build.version !== ev.version) {
-    // Never restart into a build that is not the event's current version.
-    await ctx.alert(`events start kick for event #${ev.id}: no applied build for version ${ev.version}; not restarting`, { eventId: ev.id })
+  if (!build || !(await buildIsCurrent(ctx, ev, build))) {
+    // Never restart into a build compiled from other inputs than the event
+    // has now (a details-only edit keeps the applied build current).
+    await ctx.alert(`events start kick for event #${ev.id}: no applied build for version ${ev.version} (needs rebuild — press Build now); not restarting`, { eventId: ev.id })
     return
   }
   const now = ctx.now()
@@ -164,9 +172,8 @@ export async function endKick(ctx: EventsCtx, p: EventJobPayload<'end_kick'>): P
     const target = endWaitTarget(np, end, deadline, now)
     if (target > now) throw waitUntil(now, target, 'last song')
   }
+  await requestOffAirRestart(ctx, ev, 'end', `v${ev.version}:end`)
   await disableAll(ctx, ev, rows, scope)
-  await clearQueueQuietly(ctx, ev.id)
-  await restartOrRetry(ctx, 'end kick')
   await finishEnded(ctx, ev, {})
 }
 
@@ -210,19 +217,59 @@ export async function teardown(ctx: EventsCtx, p: EventJobPayload<'teardown'>): 
     await deleteAll(ctx, ev, rows, scope)
     return
   }
+  // On air: the restart is decided (and persisted) before anything is
+  // removed, never from what is left afterwards.
+  if (onAirWindow) await requestOffAirRestart(ctx, ev, 'teardown', `${ev.status}:v${ev.version}`)
   if (GONE.includes(ev.status)) {
     await deleteAll(ctx, ev, rows, scope)
-    if (onAirWindow) {
-      await clearQueueQuietly(ctx, ev.id)
-      await restartOrRetry(ctx, 'teardown')
-    }
     return
   }
   // pending / approved / draft: an edit sent it back for review. Keep the
   // playlists for the rebuild, but nothing of it may air meanwhile.
   await disableAll(ctx, ev, rows, scope)
-  if (onAirWindow) {
-    await clearQueueQuietly(ctx, ev.id)
-    await restartOrRetry(ctx, 'teardown')
+}
+
+// ----------------------------------------------------- off-air restart --
+
+const OFF_AIR_WAIT_S = 15
+const OFF_AIR_MAX_WAIT_S = 3600
+
+// Like the start kick: one retry after START_KICK_RETRY_S, then the job is
+// dead, staff are paged (offAirRestartFailed) and it never loops restarts.
+export const OFF_AIR_RESTART_MAX_ATTEMPTS = 2
+
+async function requestOffAirRestart(ctx: EventsCtx, ev: EventRow, reason: 'end' | 'teardown', discriminator: string): Promise<void> {
+  await ctx.store.enqueue('off_air_restart', { eventId: ev.id, reason }, { dedupeExtra: discriminator, maxAttempts: OFF_AIR_RESTART_MAX_ATTEMPTS })
+}
+
+// An off-air restart that ran out of attempts (loop.ts failure hook).
+export async function offAirRestartFailed(ctx: EventsCtx, eventId: number, reason: unknown, error: string): Promise<void> {
+  const ev = await ctx.store.getEvent(eventId)
+  const when = ev ? ` (${whenLine(ev)})` : ''
+  await ctx.alert(`events off-air restart FAILED for event #${eventId}${when} after its ${reason === 'end' ? 'end' : 'teardown'}: station 14 did not restart; its playlists may keep airing until the next restart`, { eventId, error })
+}
+
+/**
+ * The purge + restart that takes an event off air (after its end kick or an
+ * on-air teardown). Runs once none of the event's playlists is enabled on
+ * the station any more (the enqueuing job disables or deletes them first;
+ * until then it waits), so the regenerated .liq cannot carry them over.
+ */
+export async function offAirRestart(ctx: EventsCtx, p: EventJobPayload<'off_air_restart'>): Promise<void> {
+  const ev = await ctx.store.getEvent(p.eventId)
+  if (!ev) throw new Permanent('event missing')
+  // Sent back for review and rebuilt meanwhile: the new build's own start
+  // kick restarts.
+  if (p.reason === 'teardown' && KICKABLE.includes(ev.status)) {
+    await staleJob(ctx, 'off_air_restart', ev, { reason: p.reason })
+    return
   }
+  for (const r of await ctx.store.registry(ev.id)) {
+    if (r.playlistId === null) continue
+    const pl = await ctx.az.getPlaylistOrNull(r.playlistId)
+    if (pl && pl.is_enabled !== false) throw new Wait(OFF_AIR_WAIT_S, `playlist ${r.playlistId} of event ${ev.id} still enabled`, { maxAgeS: OFF_AIR_MAX_WAIT_S })
+  }
+  await clearQueueQuietly(ctx, ev.id)
+  await restartOrRetry(ctx, `off-air restart (${p.reason})`)
+  await ctx.store.audit('events.kick.off_air', 'event', ev.id, { reason: p.reason })
 }

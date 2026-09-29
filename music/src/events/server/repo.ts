@@ -240,6 +240,19 @@ async function latestBuildStatus(q: Q, ids: readonly number[]): Promise<Map<numb
   return out
 }
 
+/** The latest applied build per event: version + the plan's build-input key. */
+async function latestAppliedBuilds(q: Q, ids: readonly number[]): Promise<Map<number, { version: number; inputKey: string | null }>> {
+  const out = new Map<number, { version: number; inputKey: string | null }>()
+  if (ids.length === 0) return out
+  const rows = await q
+    .select({ eventId: eventBuilds.eventId, version: eventBuilds.version, inputKey: sql<string | null>`${eventBuilds.plan}->>'inputKey'` })
+    .from(eventBuilds)
+    .where(and(inArray(eventBuilds.eventId, [...ids]), eq(eventBuilds.status, 'applied')))
+    .orderBy(asc(eventBuilds.eventId), desc(eventBuilds.id))
+  for (const r of rows) if (!out.has(r.eventId)) out.set(r.eventId, { version: r.version, inputKey: typeof r.inputKey === 'string' ? r.inputKey : null })
+  return out
+}
+
 async function userNames(q: Q, userIds: readonly string[]): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>()
   if (userIds.length === 0) return out
@@ -251,7 +264,13 @@ async function userNames(q: Q, userIds: readonly string[]): Promise<Map<string, 
 /** Everything the full projection needs, for a batch of events. */
 export async function loadFullExtras(q: Q, rows: readonly EventRow[], settings: EventsSettings, now: number): Promise<Map<number, FullExtras>> {
   const ids = rows.map((r) => r.id)
-  const [tracks, anns, builds, names] = await Promise.all([tracksOf(q, ids), announcementsOf(q, ids), latestBuildStatus(q, ids), userNames(q, rows.map((r) => r.ownerUserId))])
+  const [tracks, anns, builds, applied, names] = await Promise.all([
+    tracksOf(q, ids),
+    announcementsOf(q, ids),
+    latestBuildStatus(q, ids),
+    latestAppliedBuilds(q, ids),
+    userNames(q, rows.map((r) => r.ownerUserId)),
+  ])
   const lists = ids.map((id) => ({ tracks: tracks.get(id) ?? [], announcements: anns.get(id) ?? [] }))
   const lookup = await loadLookup(q, lookupIds(lists))
   const out = new Map<number, FullExtras>()
@@ -261,6 +280,7 @@ export async function loadFullExtras(q: Q, rows: readonly EventRow[], settings: 
       announcements: lists[i]!.announcements,
       lookup,
       buildStatus: builds.get(r.id) ?? null,
+      appliedBuild: applied.get(r.id) ?? null,
       ownerName: names.get(r.ownerUserId) ?? null,
       settings,
       now,

@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { closeDb, getDb } from '@/server/db/client'
 import { HttpError } from '@/server/http/errors'
+import { buildInputKey } from '@/events/contract/build-key'
 import { probeRequestIdForUpload } from '@/events/contract/paths'
 import type { EventAnnouncement, EventTrack, FullEventView } from '@/events/contract/types'
 import { createAudio, deleteAudio, listAudio } from '@/events/server/audio'
@@ -290,5 +291,35 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
     expect((await listAudio(db(), owner)).map((r) => r.id)).not.toContain(a.id)
     expect(await codeOf(listAudio(db(), owner, other.userId))).toBe('forbidden')
     expect((await listAudio(db(), staff, other.userId)).map((r) => r.id)).toContain(a.id)
+  })
+
+  it('autobuild off: details edits keep the applied build current; a staff build-input edit flags needsRebuild + a rebuild_needed job; a member title edit needs re-approval', async () => {
+    let e = await svc.staffBook(db(), staff, { ...draft, visibility: 'public', title: 'Launch Night', ownerDiscordId: owner.discordId, startsAt: iso(base + 80 * H), endsAt: iso(base + 82 * H), openTicket: false })
+    e = await svc.putPlaylist(db(), staff, e.id, { tracks: tracks().filter((t) => t.source === 'library').map((t) => ({ ...t, pinAt: null })), announcements: [], playlistOrder: 'shuffle' })
+    const kinds = async () => (await jobs(e.id)).map((r) => r.kind)
+    expect(await kinds()).toEqual(['rebuild_needed'])
+    // the worker built it: an applied build carrying the key of these inputs
+    const key = buildInputKey(e, e.tracks, e.announcements)
+    await ownerSql()`UPDATE events SET status = 'built' WHERE id = ${e.id}`
+    await ownerSql()`INSERT INTO event_builds (event_id, version, plan, status) VALUES (${e.id}, ${e.version}, ${ownerSql().json({ v: 1, playlists: [], inputKey: key })}, 'applied')`
+    e = (await svc.getEventView(db(), staff, e.id)) as FullEventView
+    expect(e).toMatchObject({ status: 'built', needsRebuild: false })
+    // details only (staff or member): version moves, the build stays current, no job
+    e = await svc.patchEvent(db(), staff, e.id, { description: 'Doors at 8', hostName: 'DJ Staff', location: 'Pier 4', eventType: 'club_night' })
+    e = await svc.patchEvent(db(), owner, e.id, { description: 'Doors at 8:30' })
+    expect(e).toMatchObject({ status: 'built', needsRebuild: false })
+    expect(await kinds()).toEqual(['rebuild_needed'])
+    // a staff title edit renames the public main playlist: needs a rebuild
+    e = await svc.patchEvent(db(), staff, e.id, { title: 'Launch Night Live' })
+    expect(e).toMatchObject({ status: 'built', needsRebuild: true })
+    const rj = (await jobs(e.id)).filter((r) => r.kind === 'rebuild_needed').at(-1)!
+    expect(rj.payload).toEqual({ eventId: e.id, version: e.version })
+    // reverting it makes the applied build current again
+    e = await svc.patchEvent(db(), staff, e.id, { title: 'Launch Night' })
+    expect(e.needsRebuild).toBe(false)
+    // members: a title edit of a built event goes back to review (and off the station)
+    e = await svc.patchEvent(db(), owner, e.id, { title: 'My Launch' })
+    expect(e.status).toBe('pending')
+    expect((await jobs(e.id)).map((r) => r.kind).at(-1)).toBe('teardown')
   })
 })

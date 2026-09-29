@@ -23,19 +23,16 @@
 // pins and announcements compete with the main playlist (live test §7.8).
 
 import { annName, pinName } from '../contract/paths'
-import { ANNOUNCE_TAIL_S, PIN_WINDOW_MIN } from '../contract/rules'
 import { ANNOUNCE_STRATEGIES, PIN_STRATEGIES, type AnnounceStrategy, type PinStrategy } from '../contract/settings'
 import { BACKEND_OPTIONS, isMainName, PlaylistBody, type BackendOption, type PlaylistBodyT, type ScheduleItem } from './allowlist'
 import { ceilMinute, etParts, floorMinute, isFallBackDate, minutesToHhmm, segmentMinutes, splitByEtDate } from './time'
+import { announcementWindow, crossesMidnight, overlapsRestartBand, pinWindow, PIN_WINDOW_MS, type Window } from './windows'
 
-export const PIN_WINDOW_MS = PIN_WINDOW_MIN * 60_000
-export const ANNOUNCE_SLACK_MS = ANNOUNCE_TAIL_S * 1000
+export { ANNOUNCE_SLACK_MS, PIN_WINDOW_MS, RESTART_BAND } from './windows'
+
 // split_main: the main rows leave this gap after each pin, so at the first
 // song break inside it only the pin qualifies. Bounded by the pin window.
 export const SPLIT_MAIN_GAP_MS = 5 * 60_000
-// Nightly AzuraCast stack restart (02:00 ET): windows touching this
-// wall-clock band are refused for pins/announcements.
-export const RESTART_BAND = { start: 1 * 60 + 55, end: 2 * 60 + 5 }
 export const MAX_OCCURRENCES_PER_ANNOUNCEMENT = 2000
 
 export { ANNOUNCE_STRATEGIES, PIN_STRATEGIES, type AnnounceStrategy, type PinStrategy }
@@ -104,10 +101,11 @@ export type CompiledPlan = {
   playlists: CompiledPlaylist[]
   rowCount: number
   warnings: string[]
+  // Set by the worker (not the compiler): contract/build-key.ts of the
+  // inputs this plan was compiled from.
+  inputKey?: string
 }
 
-
-type Window = { startMs: number; endMs: number }
 
 function assertDate(d: Date | null | undefined, what: string): number {
   if (!(d instanceof Date) || !Number.isFinite(d.getTime())) throw new CompileError('invalid_time', { what })
@@ -142,41 +140,11 @@ function splitRows(w: Window, loopOnce: boolean): ScheduleItem[] {
   return out
 }
 
-function overlapsRestartBand(w: Window): boolean {
-  for (const seg of splitByEtDate(w.startMs, w.endMs)) {
-    const { start, end } = segmentMinutes(seg)
-    // [start, end] against [01:55, 02:05)
-    if (start < RESTART_BAND.end && end > RESTART_BAND.start) return true
-    if (start === end && start >= RESTART_BAND.start && start < RESTART_BAND.end) return true
-  }
-  return false
-}
-
-// The repeated wall-clock hour of the fall-back day: a row there matches
-// twice (once per pass), so pins/announcements may not touch it.
-function touchesFallBackHour(w: Window): boolean {
-  for (const seg of splitByEtDate(w.startMs, w.endMs)) {
-    if (!isFallBackDate(seg.date)) continue
-    const { start, end } = segmentMinutes(seg)
-    if (start < 2 * 60 && end >= 1 * 60) return true
-  }
-  return false
-}
-
 // True when the instant's wall time is inside the repeated hour.
 function inFallBackHour(ms: number): boolean {
   const p = etParts(ms)
   const date = `${String(p.y).padStart(4, '0')}-${String(p.m).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`
   return isFallBackDate(date) && p.hh === 1
-}
-
-function crossesMidnight(w: Window): boolean {
-  return splitByEtDate(w.startMs, w.endMs).length > 1
-}
-
-function truncateAtMidnight(w: Window): Window {
-  const segs = splitByEtDate(w.startMs, w.endMs)
-  return { startMs: w.startMs, endMs: segs[0]!.endMs }
 }
 
 // Removes the [cut.start, cut.end) intervals from `w`.
@@ -258,10 +226,9 @@ export function compile(input: CompileInput): CompiledPlan {
       const n = i + 1
       if (at < start || at >= end) throw new CompileError('pin_outside_event', { position: t.position })
       if (at > end - PIN_WINDOW_MS) throw new CompileError('pin_too_late', { position: t.position })
-      let w: Window = { startMs: at, endMs: Math.min(at + PIN_WINDOW_MS, end) }
-      if (crossesMidnight(w)) w = truncateAtMidnight(w)
-      if (overlapsRestartBand(w)) throw new CompileError('pin_in_restart_window', { position: t.position })
-      if (touchesFallBackHour(w)) throw new CompileError('dst_ambiguous', { position: t.position })
+      // windows.ts: the same rules the web's playlist validation applies.
+      const { window: w, refusal } = pinWindow(at, end)
+      if (refusal) throw new CompileError(refusal, { position: t.position })
       const row = rowOf(w, true)
       pinWindows.push(w)
       pinPlaylists.push({
@@ -303,10 +270,8 @@ export function compile(input: CompileInput): CompiledPlan {
       // The audio itself must finish inside the event (an interrupt row
       // cuts its track at the row's end); only the +1 min slack is clamped.
       if (t + a.durationS * 1000 > end) throw new CompileError('announcement_past_end', { announcement: idx, at: new Date(t).toISOString() })
-      const w: Window = { startMs: t, endMs: Math.min(ceilMinute(t + a.durationS * 1000 + ANNOUNCE_SLACK_MS), end) }
-      if (crossesMidnight(w)) throw new CompileError('announcement_crosses_midnight', { announcement: idx, at: new Date(t).toISOString() })
-      if (overlapsRestartBand(w)) throw new CompileError('announcement_in_restart_window', { announcement: idx, at: new Date(t).toISOString() })
-      if (touchesFallBackHour(w)) throw new CompileError('dst_ambiguous', { announcement: idx, at: new Date(t).toISOString() })
+      const { window: w, refusal } = announcementWindow(t, a.durationS, end)
+      if (refusal) throw new CompileError(refusal, { announcement: idx, at: new Date(t).toISOString() })
       for (const o of allAnnWindows) {
         if (w.startMs < o.endMs && o.startMs < w.endMs) throw new CompileError('announcement_overlap', { announcement: idx, at: new Date(t).toISOString() })
       }

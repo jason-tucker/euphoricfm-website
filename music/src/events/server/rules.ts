@@ -9,6 +9,7 @@ import { ANNOUNCE_TAIL_S, AUDIO_USABLE_STATUSES, PIN_WINDOW_MIN, SLOT_HOLDING_ST
 import type { EventsSettings } from '../contract/settings'
 import type { AudioStatus, EventAnnouncement, EventStatus, EventTrack, MediaLabel, PlaylistOrder, Visibility } from '../contract/types'
 import { isLibraryFile } from '../contract/paths'
+import { announcementWindow, pinWindow } from '../azuracast/windows'
 import { etDatesSpanned, inRepeatedHour, onGrid, overlapsNightlyRestart } from './time'
 
 const MIN = 60_000
@@ -211,6 +212,12 @@ export function validatePlaylist(
       const at = Date.parse(t.pinAt)
       if (!onGrid(at) || at < start || at > end - PIN_WINDOW_MIN * MIN) throw bad('pin_out_of_range', { position: t.position })
       if (overlapsNightlyRestart(at, Math.min(at + PIN_WINDOW_MIN * MIN, end))) throw bad('nightly_restart', { position: t.position })
+      // The compiler's own window rules (azuracast/windows.ts): a window
+      // truncated at 23:59 under a minute, or touching the repeated
+      // fall-back hour (a row ending at 01:00 included).
+      const refusal = pinWindow(at, end).refusal
+      if (refusal === 'row_too_short') throw bad('pin_out_of_range', { position: t.position })
+      if (refusal) throw bad('nightly_restart', { position: t.position })
     }
   }
 
@@ -240,6 +247,10 @@ export function validatePlaylist(
       const w: [number, number] = [t, Math.min(Math.ceil((t + lengthS * 1000 + ANNOUNCE_TAIL_S * 1000) / MIN) * MIN, end)]
       if (etDatesSpanned(w[0], w[1]) > 1) throw bad('bad_announcement', { announcement: idx, at: new Date(t).toISOString(), reason: 'crosses_midnight' })
       if (overlapsNightlyRestart(w[0], w[1])) throw bad('nightly_restart', { announcement: idx, at: new Date(t).toISOString() })
+      // The compiler's own window rules (azuracast/windows.ts).
+      const refusal = announcementWindow(t, lengthS, end).refusal
+      if (refusal === 'announcement_crosses_midnight') throw bad('bad_announcement', { announcement: idx, at: new Date(t).toISOString(), reason: 'crosses_midnight' })
+      if (refusal) throw bad('nightly_restart', { announcement: idx, at: new Date(t).toISOString() })
       for (const o of windows) if (w[0] < o[1] && o[0] < w[1]) throw bad('bad_announcement', { announcement: idx, at: new Date(t).toISOString(), reason: 'overlap' })
       windows.push(w)
     }
@@ -281,8 +292,12 @@ export type DetailFields = {
   playlistOrder: PlaylistOrder
 }
 
-/** Fields whose change by a member sends an approved/built event back to review. */
-export const REAPPROVAL_FIELDS = ['startsAt', 'endsAt', 'visibility', 'playlistOrder'] as const
+/**
+ * Fields whose change by a member sends an approved/built event back to
+ * review. Title too: it names the public main playlist on the station (and
+ * the public calendar), so staff see it before it airs.
+ */
+export const REAPPROVAL_FIELDS = ['title', 'startsAt', 'endsAt', 'visibility', 'playlistOrder'] as const
 
 export function needsReapproval(changed: readonly string[], playlistChanged: boolean): boolean {
   return playlistChanged || changed.some((k) => (REAPPROVAL_FIELDS as readonly string[]).includes(k))

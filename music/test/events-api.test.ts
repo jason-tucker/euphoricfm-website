@@ -6,6 +6,8 @@ import { EVENTS_SETTING_DEFAULTS, type EventsSettings } from '@/events/contract/
 import type { EventAnnouncement, EventStatus, EventTrack } from '@/events/contract/types'
 import { EventMutationResponse, EventViewSchema, FullEventViewSchema, PutPlaylistRequest } from '@/events/contract/api'
 import { probeRequestIdForUpload } from '@/events/contract/paths'
+import { compile, CompileError } from '@/events/azuracast/compiler'
+import { pinWindow } from '@/events/azuracast/windows'
 import { buildIcs, foldLine, icsText, icsUid } from '@/events/server/ics'
 import {
   assertEditable,
@@ -259,6 +261,46 @@ describe('validatePlaylist', () => {
     // every: one occurrence lands in the band
     expect(code(() => validatePlaylist(late, { tracks: [lib(0, 101)], announcements: [every(et(6, 0), et(6, 3), 30)] }, lookup(), S, OWNER))).toBe('nightly_restart')
   })
+  it('mirrors the compiler (shared azuracast/windows.ts): fall-back hour and sub-minute pin rows', () => {
+    const fb = { ...EV, startsAt: new Date('2026-10-31T22:00:00-04:00'), endsAt: new Date('2026-11-01T04:00:00-05:00') }
+    // a pin at 00:45 EDT: its window 00:45–01:00 ends on the repeated hour
+    expect(code(() => validatePlaylist(fb, { tracks: [lib(0, 101), lib(1, 102, '2026-11-01T04:45:00.000Z')], announcements: [] }, lookup(), S, OWNER))).toBe('nightly_restart')
+    expect(code(() => validatePlaylist(fb, { tracks: [lib(0, 101), lib(1, 102, '2026-11-01T04:40:00.000Z')], announcements: [] }, lookup(), S, OWNER))).toBe('ok')
+    // a 4-minute announcement at 00:55 EDT: 00:55 + 4 min + 1 min tail ends at 01:00
+    const long = lookup({ stingers: [{ mediaId: 900, title: 'Long', lengthS: 240 }] })
+    expect(code(() => validatePlaylist(fb, { tracks: [lib(0, 101)], announcements: [at(Date.parse('2026-11-01T04:55:00.000Z'))] }, long, S, OWNER))).toBe('nightly_restart')
+    // a pin at 23:59 (off the grid for the server anyway): its row truncated at 23:59 is empty
+    expect(pinWindow(Date.parse('2026-10-10T23:59:00-04:00'), Date.parse('2026-10-11T01:00:00-04:00')).refusal).toBe('row_too_short')
+    expect(pinWindow(Date.parse('2026-10-10T23:55:00-04:00'), Date.parse('2026-10-11T01:00:00-04:00')).refusal).toBeNull()
+    // every grid instant of the fall-back night: the server accepts a pin / an
+    // announcement exactly when the compiler does
+    const compiles = (tracks: { position: number; mediaId: number; pinAt: Date | null }[], anns: { mediaId: number; durationS: number; mode: 'at'; at: Date; everyMin: null; from: null; until: null }[]) => {
+      try {
+        compile({
+          event: { id: 42, version: 1, startsAt: fb.startsAt, endsAt: fb.endsAt, mainName: 'Grand Opening', playlistOrder: 'shuffle' },
+          tracks,
+          announcements: anns,
+          settings: { maxRows: 500, pinStrategy: 'overlap', announceStrategy: 'interrupt_rows' },
+          now: new Date('2026-09-29T12:00:00Z'),
+        })
+        return 'ok'
+      } catch (e) {
+        if (e instanceof CompileError) return e.code
+        throw e
+      }
+    }
+    let checked = 0
+    for (let t = fb.startsAt.getTime(); t < fb.endsAt.getTime(); t += 5 * 60_000) {
+      const server = code(() => validatePlaylist(fb, { tracks: [lib(0, 101), lib(1, 102, iso(t))], announcements: [] }, lookup(), S, OWNER))
+      const compiler = compiles([{ position: 0, mediaId: 101, pinAt: null }, { position: 1, mediaId: 102, pinAt: new Date(t) }], [])
+      expect(server === 'ok', `pin ${iso(t)}: server ${server}, compiler ${compiler}`).toBe(compiler === 'ok')
+      const sa = code(() => validatePlaylist(fb, { tracks: [lib(0, 101)], announcements: [at(t)] }, long, S, OWNER))
+      const ca = compiles([{ position: 0, mediaId: 101, pinAt: null }], [{ mediaId: 900, durationS: 240, mode: 'at', at: new Date(t), everyMin: null, from: null, until: null }])
+      expect(sa === 'ok', `announcement ${iso(t)}: server ${sa}, compiler ${ca}`).toBe(ca === 'ok')
+      checked++
+    }
+    expect(checked).toBe(84) // 7 wall hours: 22:00–04:00 with 01:00 twice
+  })
   it('announcements: grid, inside the event, finishing before the end, no overlaps', () => {
     expect(ok([lib(0, 101)], [at(et(5, 21, 3))])).toBe('bad_announcement')
     expect(ok([lib(0, 101)], [at(et(5, 23))])).toBe('bad_announcement')
@@ -292,11 +334,12 @@ describe('validatePlaylist', () => {
 // ------------------------------------------------------------ edits -----
 
 describe('re-approval and change detection', () => {
-  it('time, visibility and play order need re-approval; details do not', () => {
+  it('title, time, visibility and play order need re-approval; details do not', () => {
     expect(needsReapproval(['startsAt'], false)).toBe(true)
     expect(needsReapproval(['visibility'], false)).toBe(true)
     expect(needsReapproval(['playlistOrder'], false)).toBe(true)
-    expect(needsReapproval(['title', 'description', 'hostName', 'location', 'eventType'], false)).toBe(false)
+    expect(needsReapproval(['title'], false)).toBe(true)
+    expect(needsReapproval(['description', 'hostName', 'location', 'eventType'], false)).toBe(false)
     expect(needsReapproval([], true)).toBe(true)
   })
   it('changedFields compares dates by instant', () => {
@@ -362,6 +405,7 @@ describe('viewEvent privacy (every surface uses this projection)', () => {
     announcements: [at(et(5, 21))],
     lookup: lookup(),
     buildStatus: 'applied',
+    appliedBuild: null,
     ownerName: 'Owner',
     settings: S,
     now: NOW,

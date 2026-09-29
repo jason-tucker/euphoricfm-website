@@ -97,6 +97,10 @@ export type EventView =
       freezeAt: string
       canEdit: boolean
       buildStatus: string | null
+      // approved/built/live with an applied build compiled from other inputs
+      // than the event has now (autobuild off after a staff edit): staff
+      // must press "Build now" before it airs (contract/build-key.ts).
+      needsRebuild: boolean
       // Edit-conflict guard (PATCH / PUT playlist `version`), and the details
       // the owner and staff pages show.
       version: number

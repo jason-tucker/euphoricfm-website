@@ -11,7 +11,7 @@ import { eventJobDedupeKey, parseEventJobPayload, PERIODIC_EVENT_JOB_KINDS, type
 import { EVENTS_SETTING_DEFAULTS, resolveEventsSettings, type EventsSettings } from '@/events/contract/settings'
 import type { AudioStatus, BuildStatus, EventStatus, RegistryRole } from '@/events/contract/types'
 import type { EventsCtx } from '@/events/worker/ctx'
-import type { AnnouncementRow, AudioPatch, AudioRow, BuildRow, ClaimedJob, EnqueueOpts, EventRow, EventsStore, JobOutcome, RegistryRow, StingerRow, TrackRow } from '@/events/worker/store'
+import type { AnnouncementRow, AudioPatch, AudioRow, BuildRow, ClaimedJob, CreateAttemptMarker, EnqueueOpts, EventRow, EventsStore, JobOutcome, RegistryRow, StingerRow, TrackRow } from '@/events/worker/store'
 
 export const OWNER = '700000000000000001'
 export const OTHER = '700000000000000002'
@@ -47,6 +47,8 @@ export class FakeAz {
   restarts = 0
   failRestarts = 0
   np: unknown = { is_online: true, now_playing: null }
+  // station 14's liquidsoap log (GET /logs, /log/liquidsoap_log)
+  liquidsoapLog = ''
   nextPlaylistId = 101
   nextScheduleId = 1000
   nextMediaId = 9000
@@ -208,6 +210,8 @@ export class FakeAz {
       return this.json(200, { success: true })
     }
     if (rest === '/status') return this.json(200, { backend_running: true, frontend_running: true })
+    if (rest === '/logs' && method === 'GET') return this.json(200, [{ key: 'liquidsoap_log', name: 'Liquidsoap Log' }, { key: 'liquidsoap_liq', name: 'Liquidsoap Configuration' }])
+    if (rest === '/log/liquidsoap_log' && method === 'GET') return this.json(200, { contents: this.liquidsoapLog, eof: true })
     if (rest === '/backend/restart' && method === 'POST') {
       if (this.failRestarts > 0) {
         this.failRestarts--
@@ -464,6 +468,13 @@ export class MemStore implements EventsStore {
   }
   async audit(action: string, _t: string, targetId: number, detail: Record<string, unknown> = {}) {
     this.audits.push({ action, targetId, detail, at: this.now() })
+  }
+  async markCreateAttempt(rowId: number, m: CreateAttemptMarker) {
+    this.audits.push({ action: 'events.registry.create_attempt', targetId: rowId, detail: { ...m }, at: this.now() })
+  }
+  async createAttempt(rowId: number) {
+    const a = this.audits.filter((x) => x.action === 'events.registry.create_attempt' && x.targetId === rowId).at(-1)
+    return a ? (a.detail as CreateAttemptMarker) : null
   }
   async lastStartKickMs(eventId: number) {
     const t = this.audits.filter((a) => a.action === 'events.kick.start' && a.targetId === eventId).map((a) => a.at)

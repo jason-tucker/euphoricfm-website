@@ -23,6 +23,8 @@ The same app, run a second time with `PORTAL_SITE=events`, is the new Events por
 - **Sweepers:** the staging and album-art sweeps only touch their own site's rows; events releases an upload once its audio is live, rejected, failed or deleted.
 - **Discord token refresh:** both webs share the `account` rows, so a refresh takes a per-user advisory lock, re-reads the tokens, and re-reads once more before revoking after a failed refresh.
 - **Library sync:** every event playlist id in `event_registry` counts as foreign, so the music sync never absorbs or alerts on event playlists.
+- **Edits vs builds:** a member's title change on an approved or built event now needs staff re-approval, like time, visibility and playlist changes (the title names the public main playlist). Details-only edits (description, host, location, event type) no longer make the applied build stale: the start kick, verify and recheck compare the build's inputs, not the version. With autobuild off, a staff edit that changes what airs alerts staff and notes the ticket ("needs rebuild — press Build now"), and the staff view gets `needsRebuild`.
+- **Pin and announcement checks** share the compiler's window rules (`src/events/azuracast/windows.ts`): the request form now refuses a pin or announcement whose window touches the repeated 01:00 hour of the fall-back night (a window ending at 01:00 included) or whose pin row would be under a minute, instead of accepting it and failing the build later.
 
 ## [0.4.1] — 2026-09-29 — Second pass: fixes, copy, polling and housekeeping
 

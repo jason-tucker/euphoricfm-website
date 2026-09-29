@@ -76,6 +76,8 @@ export type RegistryRow = {
   deletedAt: Date | null
 }
 
+export type CreateAttemptMarker = { eventId: number; buildId: number; name: string; maxIdBefore: number }
+
 export type StingerRow = { mediaId: number; path: string; title: string; lengthS: number }
 
 export type ClaimedJob = { id: number; kind: string; payload: unknown; attempts: number; maxAttempts: number; ageS: number }
@@ -155,6 +157,12 @@ export interface EventsStore {
   markRegistryDeleted(rowId: number): Promise<void>
   // Every playlist id any registry row ever recorded (deleted rows too).
   everRegisteredPlaylistIds(): Promise<Set<number>>
+  // Create-attempt marker of an intent row, committed right before its
+  // POST /playlists: which build tried it and the highest station-14
+  // playlist id that existed just before (AzuraCast ids only grow). The
+  // only proof an orphan adoption accepts (build.ts).
+  markCreateAttempt(rowId: number, marker: CreateAttemptMarker): Promise<void>
+  createAttempt(rowId: number): Promise<CreateAttemptMarker | null>
   // Live registry playlist ids split by their event's status.
   registryIdsByActivity(): Promise<{ active: Set<number>; inactive: Set<number> }>
   // Serializes station-14 membership writes (pg_advisory_xact_lock).

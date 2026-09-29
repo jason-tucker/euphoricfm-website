@@ -4,10 +4,14 @@
 // (exact path per source; custom audio must be the event owner's, live and
 // not deleted), compiles the plan, then applies it idempotently:
 //
-//   1. one registry INTENT row per playlist is committed before its create;
-//      a crash between the create and recording its id is healed by
-//      adopting the single disabled, never-registered station-14 playlist
-//      with exactly that name (more than one: the build fails);
+//   1. one registry INTENT row per playlist is committed before its create,
+//      and a create-attempt marker (build id + the highest station-14 id
+//      before the POST) right before the POST; a crash between the create
+//      and recording its id is healed by adopting the single disabled,
+//      never-registered playlist with exactly that name and an id above the
+//      marker — only for an intent row left by an EARLIER attempt. Any
+//      other same-named disabled, never-registered playlist (e.g. a staff
+//      playlist a member title matches) fails the build and pages staff;
 //   2. playlists are created (or updated) DISABLED unless the event is live;
 //   3. membership: one serialized read-merge-write per file under the
 //      membership lock (membership.ts), covering the plan's files and every
@@ -25,14 +29,16 @@ import { compile, CompileError, type CompileAnnouncement, type CompiledPlan, typ
 import { ARCHIVED_FILE_RE, eventUploadPathFor, LEGACY_PLAYLIST_IDS, LIBRARY_FILE_RE, PLAYLIST_ID_FLOOR, STINGER_FILE_RE, type ScheduleItem } from '../../azuracast/allowlist'
 import { backendOptionsOf, EventsAzuraCastError, type MediaRead, type PlaylistRead, type PlaylistScope } from '../../azuracast/client'
 import { applyFileMembership } from '../../azuracast/membership'
+import { etWallToUtc } from '../../azuracast/time'
+import { buildInputKey } from '../../contract/build-key'
 import type { EventJobPayload } from '../../contract/jobs'
 import { mainName } from '../../contract/paths'
 import { RECHECK_BEFORE_MIN, START_KICK_DELAY_S } from '../../contract/rules'
 import type { EventStatus } from '../../contract/types'
 import type { EventsCtx } from '../ctx'
 import { Permanent, Wait } from '../errors'
-import type { BuildRow, EventRow, RegistryRow } from '../store'
-import { postToTicket } from './tickets'
+import type { AnnouncementRow, BuildRow, EventRow, RegistryRow, TrackRow } from '../store'
+import { postToTicket, whenLine } from './tickets'
 
 const BUILDABLE: readonly EventStatus[] = ['approved', 'built', 'live']
 export const START_KICK_MAX_ATTEMPTS = 2
@@ -65,6 +71,8 @@ export type Resolved = {
   // media id → the exact live path the wrapper will see
   paths: Map<number, string>
   dropped: { position: number; mediaId: number | null; reason: string }[]
+  // contract/build-key.ts of exactly the rows resolved here
+  inputKey: string
 }
 
 async function fileOrNull(ctx: EventsCtx, id: number): Promise<MediaRead | null> {
@@ -85,9 +93,31 @@ async function resolveUpload(ctx: EventsCtx, ev: EventRow, audioId: number): Pro
   return { mediaId: f.id, path, lengthS: typeof f.length === 'number' && f.length > 0 ? f.length : (a.durationS ?? 0) }
 }
 
+const inputKeyOf = (ev: EventRow, tracks: readonly TrackRow[], anns: readonly AnnouncementRow[]) =>
+  buildInputKey(ev, tracks, anns.map((a) => ({ ...a, from: a.fromAt, until: a.untilAt })))
+
+/** The build-input key of the event as it is now (its current rows). */
+export async function currentInputKey(ctx: EventsCtx, ev: EventRow): Promise<string> {
+  return inputKeyOf(ev, await ctx.store.tracks(ev.id), await ctx.store.announcements(ev.id))
+}
+
+/**
+ * Whether an applied build still is the event's build: same version, or
+ * compiled from the same build inputs (a details-only edit — description,
+ * host, location, type — bumps the version but changes nothing on the
+ * station).
+ */
+export async function buildIsCurrent(ctx: EventsCtx, ev: EventRow, build: BuildRow): Promise<boolean> {
+  if (build.version === ev.version) return true
+  const key = planOf(build)?.inputKey
+  return typeof key === 'string' && key === (await currentInputKey(ctx, ev))
+}
+
 export async function resolveEvent(ctx: EventsCtx, ev: EventRow): Promise<Resolved | { wait: string }> {
-  const out: Resolved = { tracks: [], announcements: [], paths: new Map(), dropped: [] }
-  for (const t of await ctx.store.tracks(ev.id)) {
+  const trackRows = await ctx.store.tracks(ev.id)
+  const annRows = await ctx.store.announcements(ev.id)
+  const out: Resolved = { tracks: [], announcements: [], paths: new Map(), dropped: [], inputKey: inputKeyOf(ev, trackRows, annRows) }
+  for (const t of trackRows) {
     if (t.source === 'library') {
       const f = t.mediaId ? await fileOrNull(ctx, t.mediaId) : null
       if (!f || !LIBRARY_FILE_RE.test(f.path)) {
@@ -108,7 +138,7 @@ export async function resolveEvent(ctx: EventsCtx, ev: EventRow): Promise<Resolv
       out.tracks.push({ position: t.position, mediaId: r.mediaId, pinAt: t.pinAt })
     }
   }
-  for (const a of await ctx.store.announcements(ev.id)) {
+  for (const a of annRows) {
     let mediaId: number
     let lengthS: number
     if (a.source === 'stinger') {
@@ -188,6 +218,7 @@ export async function applyBuild(ctx: EventsCtx, ev: EventRow, opts: { force: bo
       settings: { maxRows: settings.events_max_rows, pinStrategy: settings.events_pin_strategy, announceStrategy: settings.events_announce_strategy },
       now: new Date(ctx.now()),
     })
+    plan = { ...plan, inputKey: resolved.inputKey }
   } catch (e) {
     if (e instanceof CompileError) {
       let b = await ctx.store.buildFor(ev.id, ev.version)
@@ -222,8 +253,9 @@ export async function applyBuild(ctx: EventsCtx, ev: EventRow, opts: { force: bo
   // pending, a withdraw / cancel, a newer version). Then this build must not
   // mark it built or schedule kicks for the old version: the edit enqueued
   // its teardown or rebuild, which runs next.
+  // A details-only edit meanwhile (same build inputs) does not make it stale.
   const fresh = await ctx.store.getEvent(ev.id)
-  if (!fresh || fresh.version !== ev.version || !BUILDABLE.includes(fresh.status)) {
+  if (!fresh || !BUILDABLE.includes(fresh.status) || (fresh.version !== ev.version && (await currentInputKey(ctx, fresh)) !== resolved.inputKey)) {
     await staleJob(ctx, 'build', fresh ?? ev, { buildId: build.id, buildVersion: ev.version, reason: 'event changed during the build' })
     return
   }
@@ -261,9 +293,38 @@ async function scheduleKicks(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan
   }
 }
 
+// Same-named station-14 playlists no registry row ever held, above the
+// floor, not legacy, disabled: what a crash between a create and recording
+// its id would leave behind — but also what a member-chosen title could
+// collide with (a disabled staff playlist kept for later).
+function orphanCandidates(station: readonly PlaylistRead[], name: string, ever: ReadonlySet<number>): PlaylistRead[] {
+  return station.filter((s) => s.name === name && s.id > PLAYLIST_ID_FLOOR && !LEGACY_PLAYLIST_IDS.includes(s.id) && !ever.has(s.id) && s.is_enabled === false)
+}
+
+/**
+ * Whether the intent row's playlist may be adopted instead of created, and
+ * which one. Adoption needs PROOF that this worker created it: the row
+ * existed before this build attempt (never one inserted just now), it
+ * carries a create-attempt marker for this event and name, and exactly one
+ * candidate has an id above the highest id that existed right before that
+ * attempt. A same-named candidate without that proof fails the build (and
+ * pages staff) — it is never adopted, never duplicated.
+ */
+async function adoptableOrphan(ctx: EventsCtx, ev: EventRow, row: RegistryRow, preexisting: boolean, candidates: readonly PlaylistRead[]): Promise<PlaylistRead | null> {
+  const marker = preexisting ? await ctx.store.createAttempt(row.id) : null
+  const proven = marker && marker.eventId === ev.id && marker.name === row.intentName ? candidates.filter((c) => c.id > marker.maxIdBefore) : []
+  const unproven = candidates.filter((c) => !proven.includes(c))
+  if (unproven.length > 0) throw new BuildFailure('playlist_name_collision', { name: row.intentName, ids: unproven.map((c) => c.id) })
+  if (proven.length > 1) throw new BuildFailure('ambiguous_orphan_playlists', { name: row.intentName, ids: proven.map((o) => o.id) })
+  return proven[0] ?? null
+}
+
 async function applyPlan(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: CompiledPlan, resolved: Resolved, previous: readonly BuildRow[]): Promise<void> {
   const live = ev.status === 'live'
   let rows = await ctx.store.registry(ev.id)
+  // Intent rows that existed before this attempt (the only ones a crash
+  // can have left without a recorded id).
+  const preexisting = new Set(rows.map((r) => r.id))
   const byName = new Map(rows.map((r) => [r.intentName, r]))
   const station = await ctx.az.listPlaylists()
   const ever = await ctx.store.everRegisteredPlaylistIds()
@@ -278,16 +339,19 @@ async function applyPlan(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: Co
       rows = [...rows, row]
     }
     if (row.playlistId === null) {
-      const orphans = station.filter((s) => s.name === p.name && s.id > PLAYLIST_ID_FLOOR && !LEGACY_PLAYLIST_IDS.includes(s.id) && !ever.has(s.id) && s.is_enabled === false)
-      if (orphans.length > 1) throw new BuildFailure('ambiguous_orphan_playlists', { name: p.name, ids: orphans.map((o) => o.id) })
+      const orphan = await adoptableOrphan(ctx, ev, row, preexisting.has(row.id), orphanCandidates(station, p.name, ever))
       let id: number
       let scheduleIds: number[] = []
-      if (orphans.length === 1) {
-        id = orphans[0]!.id
-        await ctx.store.audit('events.registry.adopted', 'event', ev.id, { name: p.name, playlistId: id })
+      if (orphan) {
+        id = orphan.id
+        await ctx.store.audit('events.registry.adopted', 'event', ev.id, { name: p.name, playlistId: id, rowId: row.id })
         await ctx.alert(`events build #${build.id}: adopted orphan playlist ${id} (${p.name})`, { eventId: ev.id, playlistId: id })
       } else {
-        // The create names the intent row that is already committed.
+        // The create-attempt marker commits before the POST (with the
+        // highest id on the station right now), then the create names the
+        // intent row that is already committed.
+        const before = await ctx.az.listPlaylists()
+        await ctx.store.markCreateAttempt(row.id, { eventId: ev.id, buildId: build.id, name: p.name, maxIdBefore: before.reduce((m, x) => Math.max(m, x.id), 0) })
         const made = await ctx.az.createPlaylist({ ...p.body, is_enabled: live }, playlistScope(ev, rows))
         id = made.id
         scheduleIds = scheduleIdsOf(made)
@@ -296,7 +360,7 @@ async function applyPlan(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: Co
       row = { ...row, playlistId: id, scheduleIds }
       byName.set(p.name, row)
       rows = rows.map((r) => (r.id === row!.id ? row! : r))
-      if (orphans.length === 1) await ctx.az.updatePlaylist(id, { ...p.body, is_enabled: live }, playlistScope(ev, rows))
+      if (orphan) await ctx.az.updatePlaylist(id, { ...p.body, is_enabled: live }, playlistScope(ev, rows))
     } else {
       await ctx.az.updatePlaylist(row.playlistId, { ...p.body, is_enabled: live }, playlistScope(ev, rows))
       const fresh = await ctx.az.getPlaylist(row.playlistId)
@@ -374,6 +438,28 @@ export async function buildNowJob(ctx: EventsCtx, p: EventJobPayload<'build_now'
   await applyBuild(ctx, ev, { force: true })
 }
 
+// A staff edit changed build inputs while events_autobuild_enabled is off
+// (service.ts editJobs). Nothing rebuilds by itself then, and the start
+// kick refuses a stale build: page staff and note the ticket — only when
+// the applied build really is stale by now (a later edit may have reverted
+// it, or someone pressed Build now meanwhile).
+export async function rebuildNeededJob(ctx: EventsCtx, p: EventJobPayload<'rebuild_needed'>): Promise<void> {
+  const ev = await ctx.store.getEvent(p.eventId)
+  if (!ev) throw new Permanent('event missing')
+  if (!BUILDABLE.includes(ev.status)) {
+    await staleJob(ctx, 'rebuild_needed', ev, { jobVersion: p.version })
+    return
+  }
+  const build = await ctx.store.latestAppliedBuild(ev.id)
+  if (!build || (await buildIsCurrent(ctx, ev, build))) {
+    await ctx.store.audit('events.build.rebuild_not_needed', 'event', ev.id, { jobVersion: p.version, version: ev.version, buildId: build?.id ?? null })
+    return
+  }
+  await ctx.store.audit('events.build.rebuild_needed', 'event', ev.id, { jobVersion: p.version, version: ev.version, buildId: build.id, buildVersion: build.version })
+  await ctx.alert(`events event #${ev.id} (${whenLine(ev)}) needs rebuild — press Build now: a staff edit changed what the station airs and autobuild is off`, { eventId: ev.id, version: ev.version, buildVersion: build.version })
+  await postToTicket(ctx, ev.id, 'note', 'Staff changed this event. It needs a rebuild on the Events station before it airs; staff have been alerted.', `rebuild_needed:${ev.id}:v${ev.version}`)
+}
+
 // ------------------------------------------------------------- verify ---
 
 // Differences between a fresh playlist read and the compiled playlist.
@@ -439,17 +525,73 @@ export async function verifyBuild(ctx: EventsCtx, ev: EventRow, build: BuildRow)
   return problems
 }
 
+// ------------------------------------------------ liquidsoap log check ---
+
+// A log line's timestamp ("2026/10/10 20:00:07 [main:3] …", or with dashes /
+// brackets). Liquidsoap writes it in the container's local time, which may
+// be UTC or the station's zone: both readings are tried, and a line counts
+// as "after the restart" when either lands inside [kick − 1 min, now +
+// 1 min] (the two readings are 4–5 h apart, so at most one can).
+const LOG_TS_RE = /^\[?(\d{4})[/-](\d{2})[/-](\d{2})[ T](\d{2}):(\d{2}):(\d{2})/
+// What a config that did not load cleanly leaves in the log.
+export const LIQUIDSOAP_CONFIG_ERROR_RE = /Error while loading|Parse error|Script error|\bError \d+:|At line \d+, char/i
+const LOG_SLACK_MS = 60_000
+
+function logInstants(m: RegExpExecArray): number[] {
+  const [y, mo, d, h, mi, se] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number]
+  const out = [Date.UTC(y, mo - 1, d, h, mi, se)]
+  try {
+    for (const u of etWallToUtc(`${m[1]}-${m[2]}-${m[3]}`, h * 60 + mi)) out.push(u + se * 1000)
+  } catch {
+    // not a calendar date / minute: the UTC reading only
+  }
+  return out
+}
+
+/**
+ * Config-load errors logged after the restart at `sinceMs`. Lines without a
+ * timestamp (e.g. the "Error 5: …" under "At line 12, char 3-10:") belong to
+ * the timestamped line above them; lines before the first timestamp are
+ * never counted.
+ */
+export function liquidsoapConfigErrors(contents: string, sinceMs: number, nowMs: number): string[] {
+  const out: string[] = []
+  let after = false
+  for (const line of contents.split(/\r?\n/)) {
+    const m = LOG_TS_RE.exec(line)
+    if (m) after = logInstants(m).some((t) => t >= sinceMs - LOG_SLACK_MS && t <= nowMs + LOG_SLACK_MS)
+    if (after && LIQUIDSOAP_CONFIG_ERROR_RE.test(line)) out.push(line.trim().slice(0, 200))
+    if (out.length >= 10) break
+  }
+  return out
+}
+
+// Reads station 14's liquidsoap log through the wrapper's read routes. A
+// log that cannot be read is recorded, not a verify failure.
+async function liquidsoapLogCheck(ctx: EventsCtx, sinceMs: number): Promise<{ state: string; errors: string[] }> {
+  try {
+    const keys = (await ctx.az.listLogs()).map((l) => l.key)
+    const key = keys.includes('liquidsoap_log') ? 'liquidsoap_log' : keys.find((k) => /^liquidsoap[a-z0-9_]*log$/.test(k))
+    if (!key) return { state: 'no liquidsoap log', errors: [] }
+    const errors = liquidsoapConfigErrors((await ctx.az.getLog(key)).contents, sinceMs, ctx.now())
+    return { state: errors.length ? 'config errors' : 'clean', errors }
+  } catch (e) {
+    return { state: `unreadable (${e instanceof EventsAzuraCastError ? e.code : e instanceof Error ? e.name : 'error'})`, errors: [] }
+  }
+}
+
 export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): Promise<void> {
   const ev = await ctx.store.getEvent(p.eventId)
   if (!ev) throw new Permanent('event missing')
   const build = await ctx.store.getBuild(p.buildId)
   if (!build || build.eventId !== ev.id) throw new Permanent('build missing')
-  if (build.status !== 'applied' || build.version !== ev.version || !BUILDABLE.includes(ev.status)) {
+  if (build.status !== 'applied' || !BUILDABLE.includes(ev.status) || !(await buildIsCurrent(ctx, ev, build))) {
     await staleJob(ctx, 'verify', ev, { buildId: build.id, buildVersion: build.version, buildStatus: build.status })
     return
   }
   const problems = await verifyBuild(ctx, ev, build)
   let backend = 'n/a'
+  let liquidsoapLog = 'n/a'
   if (ev.status === 'live') {
     try {
       const st = await ctx.az.getStatus()
@@ -458,8 +600,15 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
     } catch {
       backend = 'unknown'
     }
+    // After a kick: the regenerated config must have loaded cleanly.
+    const since = await ctx.store.lastStartKickMs(ev.id)
+    if (since !== null) {
+      const log = await liquidsoapLogCheck(ctx, since)
+      liquidsoapLog = log.state
+      for (const e of log.errors) problems.push(`liquidsoap: ${e}`)
+    }
   }
-  await ctx.store.audit('events.build.verified', 'event', ev.id, { buildId: build.id, problems, backend })
+  await ctx.store.audit('events.build.verified', 'event', ev.id, { buildId: build.id, problems, backend, liquidsoapLog })
   if (problems.length > 0) {
     await ctx.store.setBuild(build.id, { status: 'failed', lastError: `verify: ${problems.slice(0, 5).join('; ')}` })
     await ctx.alert(`events build #${build.id} (event #${ev.id}) failed verification`, { problems: problems.slice(0, 20) })
@@ -497,7 +646,7 @@ export async function recheckJob(ctx: EventsCtx, p: EventJobPayload<'recheck'>):
   }
   const build = await ctx.store.latestAppliedBuild(ev.id)
   const plan = planOf(build)
-  if (!build || !plan || build.version !== ev.version) {
+  if (!build || !plan || !(await buildIsCurrent(ctx, ev, build))) {
     await staleJob(ctx, 'recheck', ev, { buildVersion: build?.version ?? null })
     return
   }
