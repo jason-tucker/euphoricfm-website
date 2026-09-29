@@ -3,6 +3,7 @@
 // and the ticket copy. No DB (see events-api-db.test.ts for the flows).
 import { describe, expect, it } from 'vitest'
 import { EVENTS_SETTING_DEFAULTS, type EventsSettings } from '@/events/contract/settings'
+import { AUDIO_USABLE_STATUSES } from '@/events/contract/rules'
 import type { EventAnnouncement, EventStatus, EventTrack } from '@/events/contract/types'
 import { EventMutationResponse, EventViewSchema, FullEventViewSchema, PutPlaylistRequest } from '@/events/contract/api'
 import { probeRequestIdForUpload } from '@/events/contract/paths'
@@ -82,6 +83,9 @@ function lookup(over: { library?: LibraryInfo[]; audio?: AudioInfo[]; stingers?:
     { id: 502, ownerUserId: OWNER.userId, kind: 'announcement', status: 'ready', deletedAt: null, title: 'Welcome', artist: null, durationS: 20 },
     { id: 601, ownerUserId: OTHER.userId, kind: 'song', status: 'live', deletedAt: null, title: 'Not yours', artist: 'X', durationS: 300 },
     { id: 503, ownerUserId: OWNER.userId, kind: 'song', status: 'probing', deletedAt: null, title: 'Probing', artist: 'Me', durationS: null },
+    { id: 505, ownerUserId: OWNER.userId, kind: 'song', status: 'ingesting', deletedAt: null, title: 'Ingesting', artist: 'Me', durationS: 200 },
+    { id: 506, ownerUserId: OWNER.userId, kind: 'announcement', status: 'ingesting', deletedAt: null, title: 'Hello', artist: null, durationS: 15 },
+    { id: 507, ownerUserId: OWNER.userId, kind: 'song', status: 'failed', deletedAt: null, title: 'Broken', artist: 'Me', durationS: null },
     { id: 504, ownerUserId: OWNER.userId, kind: 'song', status: 'live', deletedAt: new Date(), title: 'Deleted', artist: 'Me', durationS: 100 },
   ]
   const st = over.stingers ?? [{ mediaId: 900, title: 'EFM ID', lengthS: 12 }]
@@ -244,6 +248,11 @@ describe('validatePlaylist', () => {
     expect(ok([up(0, 77777)])).toBe('media_not_allowed')
     expect(ok([up(0, 504)])).toBe('media_not_allowed') // deleted
     expect(ok([up(0, 503)])).toBe('audio_not_ready') // probing
+    expect(ok([up(0, 507)])).toBe('audio_not_ready') // failed
+  })
+  it("an upload being ingested into AzuraCast (ready's next state) is accepted at submit, as a song and as an announcement", () => {
+    expect(AUDIO_USABLE_STATUSES).toEqual(['ready', 'ingesting', 'live'])
+    expect(ok([lib(0, 101), up(1, 505)], [{ ...at(et(5, 21)), source: 'upload', mediaId: null, audioId: 506 }])).toBe('ok')
   })
   it('stingers must be in event_stingers', () => {
     expect(ok([lib(0, 101)], [at(et(5, 21), { mediaId: 12345 })])).toBe('media_not_allowed')
@@ -327,6 +336,10 @@ describe('validatePlaylist', () => {
     expect(draft([lib(0, 999)])).toBe('media_not_allowed')
     expect(draft([up(0, 601)])).toBe('media_not_allowed')
     expect(draft([up(0, 503)])).toBe('audio_not_ready')
+    expect(draft([up(0, 507)])).toBe('audio_not_ready')
+    // ingesting (the worker moves ready → ingesting within seconds and holds
+    // it there for minutes): a draft save accepts it
+    expect(draft([up(0, 505)], [{ ...at(et(5, 21)), source: 'upload', mediaId: null, audioId: 506 }])).toBe('ok')
     expect(draft([lib(0, 101)], [at(et(5, 21), { mediaId: 12345 })])).toBe('media_not_allowed')
     // timing problems are stored for a draft (the full check still refuses them)
     const offGridPin = [lib(0, 101), lib(1, 102, iso(et(5, 22, 50)))]

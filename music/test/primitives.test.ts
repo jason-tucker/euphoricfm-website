@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { decryptField, deriveSubkey, encryptField, parseEncKey } from '@/server/crypto'
 import { checkCsrf } from '@/server/http/csrf'
 import { buildCsp } from '@/server/http/csp'
-import { clientKey, LIMITS, RateLimiter } from '@/server/http/ratelimit'
+import { clientKey, LIMITS, limitFor, RateLimiter } from '@/server/http/ratelimit'
 import { checkBodyLimited, readBodyLimited } from '@/server/http/body'
 import { computePerms } from '@/server/authz/permissions'
 import { canComment, canSeeComment, canViewOwned, type Viewer } from '@/server/authz/predicates'
@@ -57,6 +57,34 @@ describe('rate limiter', () => {
     rl.hit(LIMITS.auth, 'c', 0)
     rl.hit(LIMITS.auth, 'd', 0)
     expect((rl as unknown as { buckets: Map<string, unknown> }).buckets.size).toBe(3)
+  })
+  it('draft autosave edits (event PATCH, playlist PUT) get their own 120/min bucket; every other mutation stays at 30', () => {
+    expect(LIMITS.eventEdit.max).toBe(120)
+    expect(LIMITS.mutation.max).toBe(30)
+    expect(limitFor('/api/ev/events/13', 'PATCH', true, false)).toBe(LIMITS.eventEdit)
+    expect(limitFor('/api/ev/events/13/playlist', 'PUT', true, false)).toBe(LIMITS.eventEdit)
+    // everything else on the same resources stays on the mutation bucket
+    for (const [path, method] of [
+      ['/api/ev/events', 'POST'],
+      ['/api/ev/events/13', 'DELETE'],
+      ['/api/ev/events/13/playlist', 'PATCH'],
+      ['/api/ev/events/13/submit', 'POST'],
+      ['/api/ev/events/13/withdraw', 'POST'],
+      ['/api/ev/events/13/approve', 'POST'],
+      ['/api/ev/events/13x', 'PATCH'],
+      ['/api/ev/events/13/playlist/x', 'PUT'],
+      ['/api/submissions', 'POST'],
+    ] as const)
+      expect(limitFor(path, method, true, false), `${method} ${path}`).toBe(LIMITS.mutation)
+    expect(limitFor('/api/auth/signin', 'POST', true, false)).toBe(LIMITS.auth)
+    expect(limitFor('/api/ev/events/13', 'GET', false, false)).toBeNull()
+    expect(limitFor('/api/hooks/tickets', 'POST', true, true)).toBeNull()
+    // the buckets are separate: 30 mutations do not use up the edit budget
+    const rl = new RateLimiter()
+    for (let i = 0; i < 30; i++) rl.hit(LIMITS.mutation, 'k', 0)
+    expect(rl.hit(LIMITS.mutation, 'k', 0).ok).toBe(false)
+    for (let i = 0; i < 120; i++) expect(rl.hit(LIMITS.eventEdit, 'k', 0).ok).toBe(true)
+    expect(rl.hit(LIMITS.eventEdit, 'k', 0).ok).toBe(false)
   })
   it('keys on cf-connecting-ip only when it looks like an IP', () => {
     expect(clientKey(H({ 'cf-connecting-ip': '203.0.113.9', 'x-forwarded-for': '1.1.1.1' }))).toBe('203.0.113.9')

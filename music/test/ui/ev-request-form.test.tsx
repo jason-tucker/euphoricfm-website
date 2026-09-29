@@ -124,6 +124,12 @@ function Form(p: { initial?: FullView; debounceMs?: number; staff?: boolean }) {
 }
 
 const status = () => screen.getByTestId('rf-status-top').textContent ?? ''
+/** The device copies of a draft (one per tab). */
+const draftBackupKeys = (id = 42) => Object.keys(window.localStorage).filter((k) => k.startsWith(`efm_ev_form:${USER}:${id}~`))
+const draftBackup = (id = 42) => {
+  const k = draftBackupKeys(id)
+  return k.length ? JSON.parse(window.localStorage.getItem(k[0]!)!) : null
+}
 const sleep = (ms: number) => act(() => new Promise((r) => setTimeout(r, ms)))
 
 async function fillMinimum() {
@@ -192,7 +198,7 @@ describe('one-page request form', () => {
     expect(window.location.pathname).toBe('/my/events/42')
     // the backup moved off the "new" key once the draft existed and was saved
     expect(window.localStorage.getItem(`efm_ev_form:${USER}:new`)).toBeNull()
-    expect(window.localStorage.getItem(`efm_ev_form:${USER}:42`)).toBeNull()
+    expect(draftBackupKeys()).toEqual([])
   })
 
   it('songs added and then a reload (unmount + remount) are still there, and are then saved', async () => {
@@ -212,7 +218,7 @@ describe('one-page request form', () => {
     await waitFor(() => expect(api.writes().filter((c) => c.method === 'PUT')).toHaveLength(1))
     expect(api.writes()[0]!.body).toMatchObject({ version: 3, tracks: [{ position: 0, source: 'library', mediaId: 601, pinAt: null }] })
     await waitFor(() => expect(status()).toContain('All changes saved ✓'))
-    expect(window.localStorage.getItem(`efm_ev_form:${USER}:42`)).toBeNull()
+    expect(draftBackupKeys()).toEqual([])
   })
 
   it('a restored new request can be started over (the device copy is dropped)', async () => {
@@ -345,7 +351,7 @@ describe('one-page request form', () => {
     expect(await screen.findByRole('heading', { name: 'Request sent' })).toBeTruthy()
     expect(api.writes().map((c) => `${c.method} ${c.url}`)).toEqual(['PATCH /api/ev/events/42', 'POST /api/ev/events/42/submit'])
     expect(api.writes()[0]!.body).toEqual({ title: 'Final name', version: 3 })
-    expect(window.localStorage.getItem(`efm_ev_form:${USER}:42`)).toBeNull()
+    expect(draftBackupKeys()).toEqual([])
   })
 
   it('Submit with missing fields shows readable messages and sends nothing', async () => {
@@ -367,7 +373,9 @@ describe('one-page request form', () => {
       render(<Form initial={v} />)
       fireEvent.change(await screen.findByLabelText(/Event title/), { target: { value: 'No signal' } })
       await waitFor(() => expect(status()).toContain('Offline — saved on this device'))
-      expect(JSON.parse(window.localStorage.getItem(`efm_ev_form:${USER}:42`)!).data.draft.title).toBe('No signal')
+      expect(draftBackup().data.draft.title).toBe('No signal')
+      // the copy records the server version it was made against (for the merge on restore)
+      expect(draftBackup()).toMatchObject({ v: 2, eventId: 42, baseVersion: 3, base: { version: 3 } })
     } finally {
       online.mockRestore()
     }
@@ -482,5 +490,272 @@ describe('inline upload in the form', () => {
     render(<Form initial={view()} />)
     expect((await screen.findAllByText(/Your My audio is full \(20 files\)/)).length).toBe(2)
     expect(screen.queryByRole('button', { name: 'Upload a new announcement' })).toBeNull()
+  })
+})
+
+// ------------------------------------------------------------ two tabs ----
+// A fake server for one draft: version-checked PATCH / PUT like the real API
+// (409 version_conflict on a stale version, +1 per accepted edit).
+const SONGS: Record<number, { title: string; artist: string; lengthS: number }> = {
+  701: { title: 'Alpha', artist: 'A', lengthS: 200 },
+  702: { title: 'Bravo', artist: 'B', lengthS: 210 },
+  703: { title: 'Charlie', artist: 'C', lengthS: 220 },
+}
+const lib = (mediaId: number, position: number, pinAt: string | null = null) => ({
+  position,
+  source: 'library' as const,
+  mediaId,
+  audioId: null,
+  pinAt,
+  label: SONGS[mediaId],
+})
+
+function fakeServer(start: FullView) {
+  const srv = { state: start }
+  const routes: Record<string, Handler> = {
+    ...base(),
+    'GET /api/ev/library': (_b, url) => {
+      const q = decodeURIComponent(url.split('q=')[1] ?? '').toLowerCase()
+      return { status: 200, body: Object.entries(SONGS).filter(([, s]) => s.title.toLowerCase().includes(q)).map(([id, s]) => ({ mediaId: Number(id), ...s, artUrl: null })) }
+    },
+    'GET /api/ev/events/42': () => ({ status: 200, body: srv.state }),
+    'PATCH /api/ev/events/42': (b) => {
+      const { version, ...fields } = b as { version: number } & Record<string, unknown>
+      if (version !== srv.state.version) return { status: 409, body: { error: 'version_conflict' } }
+      srv.state = { ...srv.state, ...(fields as Partial<FullView>), version: srv.state.version + 1 }
+      return { status: 200, body: { event: srv.state } }
+    },
+    'PUT /api/ev/events/42/playlist': (b) => {
+      const p = b as { version: number; tracks: FullView['tracks']; announcements: FullView['announcements']; playlistOrder: FullView['playlistOrder'] }
+      if (p.version !== srv.state.version) return { status: 409, body: { error: 'version_conflict' } }
+      srv.state = {
+        ...srv.state,
+        tracks: p.tracks.map((t) => ({ ...t, label: t.mediaId ? SONGS[t.mediaId] : undefined })),
+        announcements: p.announcements,
+        playlistOrder: p.playlistOrder,
+        version: srv.state.version + 1,
+      }
+      return { status: 200, body: { event: srv.state } }
+    },
+  }
+  return { srv, routes }
+}
+
+async function addSong(title: string) {
+  fireEvent.change(screen.getByLabelText('Search the EuphoricFM library'), { target: { value: title.toLowerCase() } })
+  fireEvent.click(await screen.findByRole('button', { name: `Add ${title}` }, { timeout: 2000 }))
+}
+const trackTitles = () => screen.getAllByTestId('pb-track').map((li) => (['Alpha', 'Bravo', 'Charlie', 'Neon Skyline', 'Midnight Drive'].find((t) => li.textContent?.includes(t)) ?? '?'))
+
+describe('two tabs on one draft', () => {
+  const v2 = () => view({ version: 2, tracks: [lib(701, 0)] })
+
+  it('a stale tab merges the other tab\'s saved work instead of writing over it (host + Bravo from A, location + Charlie from B)', async () => {
+    const { srv, routes } = fakeServer(v2())
+    const api = mockApi(routes)
+    // Tab A: sets the host and adds Bravo; both save.
+    const a = render(<Form initial={v2()} />)
+    fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'Host From A' } })
+    await addSong('Bravo')
+    await waitFor(() => expect(srv.state.version).toBe(4))
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+    expect(srv.state.hostName).toBe('Host From A')
+    a.unmount()
+    // Tab B was opened before A saved (still holds version 2) and never refreshed.
+    const before = api.writes().length
+    render(<Form initial={v2()} />)
+    fireEvent.change(await screen.findByLabelText(/Where/), { target: { value: 'The Pier' } })
+    await addSong('Charlie')
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'), { timeout: 3000 })
+    await sleep(150)
+    // the server has everything: A's host and Bravo, B's location and Charlie
+    expect(srv.state).toMatchObject({ hostName: 'Host From A', location: 'The Pier' })
+    expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha', 'Bravo', 'Charlie'])
+    // B's first save hit the 409; after the merge it sent only its own fields
+    const bWrites = api.writes().slice(before)
+    expect(bWrites[0]).toMatchObject({ method: 'PATCH', body: { location: 'The Pier', version: 2 } })
+    const patches = bWrites.filter((c) => c.method === 'PATCH')
+    expect(patches.at(-1)!.body).toEqual({ location: 'The Pier', version: 4 })
+    for (const c of patches) expect(c.body).not.toHaveProperty('hostName')
+    // B's form shows the merged state, with a short note
+    expect((screen.getByLabelText(/Hosted by/) as HTMLInputElement).value).toBe('Host From A')
+    expect(trackTitles()).toEqual(['Alpha', 'Bravo', 'Charlie'])
+    expect(screen.getByTestId('rf-merge-note').textContent).toBe('Merged changes made in another tab.')
+  })
+
+  it('a field both tabs changed keeps this tab\'s value and says so', async () => {
+    const { srv, routes } = fakeServer(view({ version: 2 }))
+    mockApi(routes)
+    srv.state = { ...srv.state, hostName: 'Other tab host', description: 'Other tab text', version: 3 }
+    render(<Form initial={view({ version: 2 })} />)
+    fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'My host' } })
+    await waitFor(() => expect(srv.state.version).toBe(4))
+    expect(srv.state).toMatchObject({ hostName: 'My host', description: 'Other tab text' })
+    expect((screen.getByLabelText(/Description/) as HTMLTextAreaElement).value).toBe('Other tab text')
+    expect(screen.getByTestId('rf-merge-note').textContent).toBe("Merged changes made in another tab. Kept this tab's host name.")
+  })
+
+  it('a stale tab catches up when it comes back into view (no request of its own), and later edits go on top', async () => {
+    const { srv, routes } = fakeServer(v2())
+    const api = mockApi(routes)
+    render(<Form initial={v2()} />)
+    await screen.findAllByTestId('pb-track')
+    // meanwhile another tab saved a host and a second song
+    srv.state = { ...srv.state, hostName: 'Host From A', tracks: [lib(701, 0), lib(702, 1)], version: 4 }
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    await waitFor(() => expect((screen.getByLabelText(/Hosted by/) as HTMLInputElement).value).toBe('Host From A'))
+    expect(trackTitles()).toEqual(['Alpha', 'Bravo'])
+    await sleep(200)
+    expect(api.writes()).toHaveLength(0) // nothing of its own to send
+    expect(draftBackupKeys()).toEqual([])
+    // an edit now goes on top of version 4 and sends only that field
+    fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'The Pier' } })
+    await waitFor(() => expect(api.writes()).toHaveLength(1))
+    expect(api.writes()[0]!.body).toEqual({ location: 'The Pier', version: 4 })
+    expect(srv.state).toMatchObject({ hostName: 'Host From A', location: 'The Pier', version: 5 })
+    expect(srv.state.tracks).toHaveLength(2)
+  })
+
+  it("another tab's device copy changing (it saved) makes this tab re-read the draft", async () => {
+    const { srv, routes } = fakeServer(v2())
+    const api = mockApi(routes)
+    render(<Form initial={v2()} />)
+    await screen.findAllByTestId('pb-track')
+    srv.state = { ...srv.state, title: 'Renamed elsewhere', version: 3 }
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: `efm_ev_form:${USER}:42~othertab`, newValue: null }))
+    })
+    await waitFor(() => expect((screen.getByLabelText(/Event title/) as HTMLInputElement).value).toBe('Renamed elsewhere'), { timeout: 3000 })
+    // an unrelated key does nothing
+    const gets = api.calls.filter((c) => c.method === 'GET' && c.url === '/api/ev/events/42').length
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: 'efm_tz', newValue: 'local' }))
+    })
+    await sleep(1000)
+    expect(api.calls.filter((c) => c.method === 'GET' && c.url === '/api/ev/events/42')).toHaveLength(gets)
+    expect(api.writes()).toHaveLength(0)
+  })
+
+  it('submitted in another tab: this tab stops autosaving instead of editing the pending request', async () => {
+    const { srv, routes } = fakeServer(v2())
+    const api = mockApi(routes)
+    render(<Form initial={v2()} />)
+    srv.state = { ...srv.state, status: 'pending', version: 3 }
+    fireEvent.change(await screen.findByLabelText(/Where/), { target: { value: 'Late change' } })
+    await waitFor(() => expect(status()).toContain('submitted or withdrawn in another tab'))
+    expect(api.writes()).toHaveLength(1) // the refused PATCH only
+    expect(srv.state.location).toBeNull()
+  })
+
+  it('a device copy made against an older version is merged into the newer server copy on load, never written over it', async () => {
+    const v3 = view({ version: 3, tracks: [lib(701, 0)] })
+    // this device: location + Charlie against version 3, never sent (the page was closed)
+    const first = render(<Form initial={v3} debounceMs={60_000} />)
+    mockApi(fakeServer(v3).routes)
+    fireEvent.change(await screen.findByLabelText(/Where/), { target: { value: 'The Pier' } })
+    await addSong('Charlie')
+    await waitFor(() => expect(draftBackup()?.data.builder.tracks).toHaveLength(2))
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {}))) // the keepalive never arrives
+    first.unmount()
+    expect(draftBackupKeys()).toHaveLength(1)
+    // meanwhile another tab saved a host and Bravo (version 5)
+    const v5 = view({ version: 5, hostName: 'Host From A', tracks: [lib(701, 0), lib(702, 1)] })
+    const { srv, routes } = fakeServer(v5)
+    const api = mockApi(routes)
+    render(<Form initial={v5} />)
+    expect(await screen.findByText(/We restored changes you made on this device/)).toBeTruthy()
+    expect((screen.getByLabelText(/Hosted by/) as HTMLInputElement).value).toBe('Host From A')
+    expect((screen.getByLabelText(/Where/) as HTMLInputElement).value).toBe('The Pier')
+    expect(trackTitles()).toEqual(['Alpha', 'Bravo', 'Charlie'])
+    await waitFor(() => expect(srv.state.version).toBe(7))
+    expect(api.writes()[0]!.body).toEqual({ location: 'The Pier', version: 5 })
+    expect(srv.state).toMatchObject({ hostName: 'Host From A', location: 'The Pier' })
+    expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha', 'Bravo', 'Charlie'])
+    // saved: the device copy is gone
+    await waitFor(() => expect(draftBackupKeys()).toEqual([]))
+  })
+
+  it('a device copy whose changes already reached the server (the keepalive arrived) restores nothing and is dropped', async () => {
+    const v3 = view({ version: 3, tracks: [lib(701, 0)] })
+    const first = render(<Form initial={v3} debounceMs={60_000} />)
+    mockApi(fakeServer(v3).routes)
+    await addSong('Charlie')
+    await waitFor(() => expect(draftBackup()?.data.builder.tracks).toHaveLength(2))
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+    first.unmount()
+    const v4 = view({ version: 4, tracks: [lib(701, 0), lib(703, 1)] })
+    const api = mockApi(fakeServer(v4).routes)
+    render(<Form initial={v4} />)
+    await screen.findAllByTestId('pb-track')
+    await sleep(200)
+    expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
+    expect(screen.queryByText(/We restored changes/)).toBeNull()
+    expect(api.writes()).toHaveLength(0)
+    expect(draftBackupKeys()).toEqual([])
+  })
+
+  it('the keepalive on leaving sends only this tab\'s changed fields, against its base version', async () => {
+    const { srv, routes } = fakeServer(v2())
+    const api = mockApi(routes)
+    render(<Form initial={v2()} debounceMs={60_000} />)
+    srv.state = { ...srv.state, hostName: 'Host From A', version: 3 }
+    fireEvent.change(await screen.findByLabelText(/Where/), { target: { value: 'The Pier' } })
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    const k = api.calls.filter((c) => c.keepalive)
+    expect(k).toEqual([expect.objectContaining({ method: 'PATCH', body: { location: 'The Pier', version: 2 } })])
+    // the stale version is refused (409) and the device copy keeps the change for the next load's merge
+    expect(srv.state.location).toBeNull()
+    expect(draftBackup().data.draft.location).toBe('The Pier')
+  })
+})
+
+describe('uploads being ingested', () => {
+  const item = { id: 91, kind: 'song', title: 'Fresh mix', artist: 'Me', durationS: 200, status: 'ingesting', lastError: null, usedAt: null, expiresAt: null, createdAt: new Date().toISOString() }
+
+  it('an upload in ingesting is usable at once: added and saved', async () => {
+    let attached = false
+    const api = mockApi({
+      ...base(),
+      'GET /api/ev/audio': () => ({ status: 200, body: attached ? [item] : [] }),
+      'POST /api/ev/audio': () => {
+        attached = true
+        return { status: 201, body: { audio: { ...item, status: 'probing', durationS: null } } }
+      },
+      'PUT /api/ev/events/42/playlist': (b) => ({ status: 200, body: { event: { ...view(), tracks: (b as FullView).tracks, version: 4 } } }),
+    })
+    render(<Form initial={view()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload a song' }))
+    fireEvent.change(screen.getByLabelText('File'), { target: { files: [new File(['id3'], 'mix.mp3', { type: 'audio/mpeg' })] } })
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Fresh mix' } })
+    fireEvent.change(screen.getByLabelText('Artist'), { target: { value: 'Me' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: /I made this audio/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Upload' }))
+    expect(await screen.findByText(/"Fresh mix" is ready and added to your songs/)).toBeTruthy()
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+    expect(api.writes().find((c) => c.method === 'PUT')!.body).toMatchObject({ tracks: [{ mediaId: 501 }, { source: 'upload', audioId: 91 }] })
+  })
+
+  it('a save refused as audio_not_ready keeps the pick and retries by itself until the upload is usable', async () => {
+    let puts = 0
+    const api = mockApi({
+      ...base(),
+      'GET /api/ev/audio': { status: 200, body: [item] },
+      'PUT /api/ev/events/42/playlist': (b) =>
+        ++puts <= 2 ? { status: 400, body: { error: 'audio_not_ready' } } : { status: 200, body: { event: { ...view(), tracks: (b as FullView).tracks, version: 4 } } },
+    })
+    render(<Form initial={view()} />)
+    // an ingesting upload is listed under My audio (selectable) like a ready one
+    const row = (await screen.findByText(/Fresh mix/)).closest('li')!
+    fireEvent.click(within(row).getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(status()).toContain('One of your uploads is still being checked'))
+    expect(status()).toContain('retrying')
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'), { timeout: 3000 })
+    expect(puts).toBe(3)
+    expect(api.writes().every((c) => (c.body as { tracks: unknown[] }).tracks.length === 2)).toBe(true)
+    expect(screen.getAllByTestId('pb-track')).toHaveLength(2)
   })
 })

@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDebounced, useJson } from '@/components/hooks'
-import { EVERY_MIN_OPTIONS } from '@/events/contract/rules'
+import { AUDIO_USABLE_STATUSES, EVERY_MIN_OPTIONS } from '@/events/contract/rules'
 import { api } from './ev-api'
 import { InlineUpload } from './InlineUpload'
 import type { EveryMin } from '@/events/contract/types'
@@ -95,7 +95,7 @@ export function useAudioSources() {
   }, [n])
   const stingersRes = useJson<unknown>('/api/ev/stingers')
   const stingers = useMemo(() => listOf<Stinger>(stingersRes.data), [stingersRes.data])
-  const usable = useMemo(() => audio.filter((a) => a.status === 'ready' || a.status === 'ingesting' || a.status === 'live'), [audio])
+  const usable = useMemo(() => audio.filter((a) => AUDIO_USABLE_STATUSES.includes(a.status)), [audio])
   const counted = audio.filter((a) => a.status !== 'rejected' && a.status !== 'failed').length
   const add = useCallback((a: AudioItem) => setAudio((l) => [a, ...l.filter((x) => x.id !== a.id)]), [])
   const reload = useCallback(() => setN((x) => x + 1), [])

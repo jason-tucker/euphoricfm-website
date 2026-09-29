@@ -9,14 +9,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { ACCEPT } from '@/components/submit/types'
 import { Notice } from '@/components/ui'
-import { AUDIO_ARTIST_MAX, AUDIO_TITLE_MAX } from '@/events/contract/rules'
+import { AUDIO_ARTIST_MAX, AUDIO_TITLE_MAX, AUDIO_USABLE_STATUSES } from '@/events/contract/rules'
 import { api } from './ev-api'
 import { useEvConfig } from './hooks'
 import { type AudioItem, listOf } from './types'
 import { audioProblemText, mb, uploadFormProblem, useAudioUpload } from './upload'
 
 export const POLL_MS = 3000
-const READY = new Set<AudioItem['status']>(['ready', 'ingesting', 'live'])
+/** Selectable = what the server accepts in a playlist (probing is not). */
+const READY = new Set<AudioItem['status']>(AUDIO_USABLE_STATUSES)
 const BAD = new Set<AudioItem['status']>(['rejected', 'failed'])
 
 export function InlineUpload({

@@ -151,7 +151,7 @@ export function announcementLabel(a: Pick<EventAnnouncement, 'source' | 'mediaId
   return u ? { title: u.title, artist: u.artist, lengthS: u.durationS } : undefined
 }
 
-/** Custom audio usable in `owner`'s event: theirs, ready|live, not deleted. */
+/** Custom audio usable in `owner`'s event: theirs, ready|ingesting|live, not deleted. */
 function usableAudio(id: number, ownerUserId: string, lk: Lookup): AudioInfo {
   const a = lk.audio.get(id)
   // Someone else's audio answers exactly like a missing id (no probing).

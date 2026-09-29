@@ -166,6 +166,25 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
     await svc.transition(db(), owner, d.id, 'withdraw')
   })
 
+  it('0.5.3: an upload that is being ingested (ready → ingesting) is accepted by a draft save and by submit; a probing one is not', async () => {
+    const [ing] = await ownerSql()`INSERT INTO event_audio (owner_user_id, owner_discord_id, kind, title, artist, status, duration_s)
+      VALUES (${owner.userId}, ${owner.discordId}, 'song', 'Fresh Upload', 'Me', 'ingesting', 240) RETURNING id`
+    const [prb] = await ownerSql()`INSERT INTO event_audio (owner_user_id, owner_discord_id, kind, title, artist, status, duration_s)
+      VALUES (${owner.userId}, ${owner.discordId}, 'song', 'Still Checking', 'Me', 'probing', NULL) RETURNING id`
+    const late = base + 7 * 24 * H
+    let d = await svc.createEvent(db(), owner, { ...draft, title: 'Ingesting upload', startsAt: iso(late), endsAt: iso(late + 2 * H) })
+    const withUp = (audioId: number): EventTrack[] => [
+      { position: 0, source: 'library', mediaId: lib1, audioId: null, pinAt: null },
+      { position: 1, source: 'upload', mediaId: null, audioId, pinAt: null },
+    ]
+    expect(await codeOf(svc.putPlaylist(db(), owner, d.id, { tracks: withUp(Number(prb!.id)), announcements: [], playlistOrder: 'shuffle', version: d.version }))).toBe('audio_not_ready')
+    d = await svc.putPlaylist(db(), owner, d.id, { tracks: withUp(Number(ing!.id)), announcements: [], playlistOrder: 'shuffle', version: d.version })
+    expect(d.tracks.map((t) => t.label?.title)).toEqual(['Song One', 'Fresh Upload'])
+    d = await svc.transition(db(), owner, d.id, 'submit')
+    expect(d.status).toBe('pending')
+    await svc.transition(db(), owner, d.id, 'withdraw')
+  })
+
   it('a stranger cannot read, edit or act on the draft', async () => {
     expect(await codeOf(svc.getEventView(db(), other, ev.id))).toBe('not_found')
     expect(await codeOf(svc.getEventView(db(), null, ev.id))).toBe('not_found')

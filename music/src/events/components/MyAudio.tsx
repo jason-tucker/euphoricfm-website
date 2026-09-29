@@ -9,7 +9,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ACCEPT } from '@/components/submit/types'
 import { Chip, Notice } from '@/components/ui'
-import { AUDIO_ARTIST_MAX, AUDIO_TITLE_MAX } from '@/events/contract/rules'
+import { AUDIO_ARTIST_MAX, AUDIO_TITLE_MAX, AUDIO_USABLE_STATUSES } from '@/events/contract/rules'
 import { api, evMessage } from './ev-api'
 import { useEvConfig } from './hooks'
 import { formatLength } from './time'
@@ -245,7 +245,7 @@ function AudioRowView({ a, onDelete }: { a: AudioItem; onDelete: () => void }) {
         </p>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
-        {a.status === 'ready' || a.status === 'ingesting' || a.status === 'live' ? (
+        {AUDIO_USABLE_STATUSES.includes(a.status) ? (
           url ? (
             <audio controls preload="none" src={url} className="w-full min-w-[12rem] flex-1">
               Your browser cannot play this preview.

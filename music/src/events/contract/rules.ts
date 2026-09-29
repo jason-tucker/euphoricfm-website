@@ -40,8 +40,14 @@ export const PRIVATE_PLAYLIST_NAME = 'Private event' as const
 
 /** Count toward the per-user in-flight cap (uploads/caps.ts). */
 export const AUDIO_INFLIGHT_STATUSES: readonly AudioStatus[] = ['probing', 'ready', 'ingesting']
-/** May be attached to an event. */
-export const AUDIO_USABLE_STATUSES: readonly AudioStatus[] = ['ready', 'live']
+/**
+ * May be attached to an event (draft save and submit). `ingesting` is ready's
+ * forward state (the worker moves an upload ready → ingesting within seconds
+ * and holds it there until AzuraCast has it, often 7+ minutes); the build
+ * waits for `live` and fails as audio_not_ready if it is still not there.
+ * The client picks from the same list (components/PlaylistBuilder etc.).
+ */
+export const AUDIO_USABLE_STATUSES: readonly AudioStatus[] = ['ready', 'ingesting', 'live']
 
 // ---- playlist builder / compile ----
 

@@ -30,7 +30,7 @@ import { checkCsrf, SAFE_METHODS } from './server/http/csrf'
 import { buildCsp, MEDIA_CSP } from './server/http/csp'
 import { NOT_FOUND_PATH, siteGate } from './server/http/site-gate'
 import { portalSite } from './server/env'
-import { clientKey, LIMITS, RateLimiter } from './server/http/ratelimit'
+import { clientKey, limitFor, RateLimiter } from './server/http/ratelimit'
 
 const limiter = new RateLimiter()
 
@@ -67,7 +67,7 @@ export async function middleware(req: NextRequest) {
   }
 
   const key = clientKey(req.headers)
-  const limit = pathname.startsWith('/api/auth/') ? LIMITS.auth : unsafe && !isHook ? LIMITS.mutation : null
+  const limit = limitFor(pathname, method, unsafe, isHook)
   if (limit) {
     const r = limiter.hit(limit, key)
     if (!r.ok) return json(429, 'rate_limited', { 'Retry-After': String(r.retryAfterS) })

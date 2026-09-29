@@ -12,7 +12,23 @@ export const LIMITS = {
   // tus PATCH chunks are data transfer, not state changes; they get their own
   // bucket (a 35 MB file is 5 chunks) bounded by the per-user upload caps.
   uploadChunk: { name: 'upload-chunk', max: 240, windowMs: 60_000 },
+  // v0.5.3: the events request form autosaves a draft (PATCH details + PUT
+  // playlist, debounced), which under steady editing is more than 30/min.
+  // Only those two edits use this bucket; each is still authenticated,
+  // CSRF-checked and version-checked by its route.
+  eventEdit: { name: 'event-edit', max: 120, windowMs: 60_000 },
 } as const satisfies Record<string, Limit>
+
+const EVENT_EDIT = /^\/api\/ev\/events\/\d+(\/playlist)?$/
+
+/** The bucket for a request (null = not limited here). */
+export function limitFor(pathname: string, method: string, unsafe: boolean, isHook: boolean): Limit | null {
+  if (pathname.startsWith('/api/auth/')) return LIMITS.auth
+  if (!unsafe || isHook) return null
+  const edit = EVENT_EDIT.exec(pathname)
+  if (edit && (edit[1] ? method === 'PUT' : method === 'PATCH')) return LIMITS.eventEdit
+  return LIMITS.mutation
+}
 
 type Bucket = { windowStart: number; count: number }
 

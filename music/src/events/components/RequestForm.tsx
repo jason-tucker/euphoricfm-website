@@ -7,14 +7,31 @@
 // the server as soon as its minimum is valid, then debounced PATCH/PUT saves.
 // Playlist rule problems never block a draft save (the API stores any
 // structurally valid draft playlist); they are shown live and block Submit.
+// Two tabs on one draft: each keeps its own device copy, and a newer server
+// copy (a 409, the tab coming back into view, the other tab saving) is merged
+// into the form (merge.ts) instead of being written over.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Notice } from '@/components/ui'
-import { type Backup, backupKey, clearBackup, DraftSaver, payloadKey, readBackup, type SavePlan, type SaveStatus, writeBackup } from './autosave'
+import {
+  type Backup,
+  backupKey,
+  clearBackup,
+  DraftSaver,
+  isDraftBackupKey,
+  payloadKey,
+  readBackup,
+  readDraftBackups,
+  type SavePlan,
+  type SaveStatus,
+  tabBackupKey,
+  writeBackup,
+} from './autosave'
 import { api, evMessage } from './ev-api'
 import { builderFromView, draftFromView, patchFor } from './fromView'
 import { rulesList } from './HomeParts'
+import { type FormState, listWords, mergeForm, mergeNote } from './merge'
 import { useEvConfig, useNow } from './hooks'
 import { EVENT_TYPE_LABEL } from './labels'
 import { AnnouncementsEditor, RowsNote, SongsEditor, useAudioSources } from './PlaylistBuilder'
@@ -51,6 +68,16 @@ export function detailsBody(d: Draft, startsAt: string, endsAt: string, mode: 'e
 type FormData = { draft: Draft; builder: Builder; startsAt: string | null; key: string }
 
 const EMPTY_BUILDER: Builder = { tracks: [], anns: [], order: 'shuffle' }
+
+/** A backup's form, with the date/time inputs re-split in the viewer's zone. */
+function backupForm(data: FormData, zone: string | undefined): FormState {
+  const d = data.startsAt ? { ...data.draft, ...toInputs(data.startsAt, zone) } : data.draft
+  return { draft: { ...EMPTY_DRAFT, ...d }, builder: { ...EMPTY_BUILDER, ...data.builder } }
+}
+
+const newTabId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+/** How long after another tab's device copy changes this tab re-reads the draft. */
+const STORAGE_REFRESH_MS = 800
 
 type Props = {
   staff: boolean
@@ -93,6 +120,8 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   const [submitErr, setSubmitErr] = useState<string | null>(null)
   const [done, setDone] = useState<FullView | null>(null)
   const [discard, setDiscard] = useState<'ask' | 'busy' | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const [tab] = useState(newTabId)
   const sources = useAudioSources()
 
   const avail = useAvailability(draft.date, true)
@@ -154,6 +183,26 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   const synced = useRef<string>(formKey)
   const viewRef = useRef(view)
   viewRef.current = view
+  // The latest form and what merging needs (read by adopt, outside render).
+  const live = useRef({ draft, builder, zone, audio: sources.audio.length ? sources.audio : audio, stingers: sources.stingers.length ? sources.stingers : stingers })
+  live.current = { draft, builder, zone, audio: sources.audio.length ? sources.audio : audio, stingers: sources.stingers.length ? sources.stingers : stingers }
+  /** The server copy the form is relative to (saved in the device copy). */
+  const baseRef = useRef<FullView | null>(initial ?? null)
+  /** Other tabs' device copies merged into this form at load (dropped once saved). */
+  const absorbed = useRef<string[]>([])
+  const adopted = useRef<(() => void) | null>(null)
+  const [adoptN, setAdoptN] = useState(0)
+  useEffect(() => {
+    adopted.current?.()
+    adopted.current = null
+  }, [adoptN])
+  useEffect(
+    () => () => {
+      adopted.current?.()
+      adopted.current = null
+    },
+    [],
+  )
 
   const saver = useMemo(
     () =>
@@ -163,6 +212,7 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
         onView: (v) => {
           const first = !viewRef.current
           viewRef.current = v
+          baseRef.current = v
           setView(v)
           if (first) {
             // The new draft now has a home: move the backup, and make a
@@ -175,10 +225,25 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
             }
           }
         },
+        adopt: (b, fresh) =>
+          new Promise<void>((resolve) => {
+            const { draft: d, builder: bl, zone: z, audio: au, stingers: st } = live.current
+            const r = mergeForm({ draft: draftFromView(b, z), builder: builderFromView(b, au, st) }, { draft: d, builder: bl }, { draft: draftFromView(fresh, z), builder: builderFromView(fresh, au, st) })
+            baseRef.current = fresh
+            adopted.current?.()
+            adopted.current = resolve
+            setDraft(r.draft)
+            setBuilder(r.builder)
+            if (r.merged) setNote(mergeNote(r))
+            setAdoptN((n) => n + 1)
+          }),
         onStatus: setStatus,
         onSynced: (key) => {
           synced.current = key
-          if (key === formKeyRef.current && viewRef.current) clearBackup(backupKey(userKey, viewRef.current.id))
+          if (key === formKeyRef.current && viewRef.current) {
+            clearBackup(tabBackupKey(userKey, viewRef.current.id, tab))
+            for (const k of absorbed.current.splice(0)) clearBackup(k)
+          }
         },
         debounceMs,
         retryBaseMs,
@@ -200,13 +265,43 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetN])
   useEffect(() => {
-    const b = readBackup<FormData>(backupKey(userKey, initial?.id ?? 'new'))
-    if (b && (!initial || b.eventId === initial.id) && b.data.key !== synced.current) {
-      const d = b.data.startsAt ? { ...b.data.draft, ...toInputs(b.data.startsAt, zone) } : b.data.draft
-      setDraft({ ...EMPTY_DRAFT, ...d })
-      setBuilder({ ...EMPTY_BUILDER, ...b.data.builder })
-      setRestored(true)
+    if (!initial) {
+      const b = readBackup<FormData>(backupKey(userKey, 'new'))
+      if (b && b.eventId === null && b.data.key !== synced.current) {
+        const f = backupForm(b.data, zone)
+        setDraft(f.draft)
+        setBuilder(f.builder)
+        setRestored(true)
+      }
+      return
     }
+    // A draft: every tab's device copy is merged, oldest first, into the
+    // server copy this page loaded (never written over it): a field changed
+    // on the server since the copy was made stays unless the copy changed it.
+    const found = readDraftBackups<FormData>(userKey, initial.id)
+    if (!found.length) return
+    let cur: FormState = { draft: draftFromView(initial, zone), builder: builderFromView(initial, audio, stingers) }
+    let changed = false
+    const kept: string[] = []
+    for (const { key, backup } of found) {
+      const base = backup.base!
+      const r = mergeForm({ draft: draftFromView(base, zone), builder: builderFromView(base, audio, stingers) }, backupForm(backup.data, zone), cur)
+      if (r.local) {
+        changed = true
+        for (const k of r.kept) if (!kept.includes(k)) kept.push(k)
+      }
+      cur = r
+      absorbed.current.push(key)
+    }
+    if (!changed) {
+      // everything in them is already saved
+      for (const k of absorbed.current.splice(0)) clearBackup(k)
+      return
+    }
+    setDraft(cur.draft)
+    setBuilder(cur.builder)
+    setRestored(true)
+    if (kept.length) setNote(`The saved copy had also changed since; this device's ${listWords(kept)} ${kept.length > 1 ? 'were' : 'was'} kept.`)
     // mount only
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -217,41 +312,68 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       mounted.current = true
       return
     }
-    const k = backupKey(userKey, view?.id ?? 'new')
+    const k = view ? tabBackupKey(userKey, view.id, tab) : backupKey(userKey, 'new')
     if (formKey === synced.current) {
       clearBackup(k)
+      for (const a of absorbed.current.splice(0)) clearBackup(a)
       return
     }
-    const b: Backup<FormData> = { v: 1, savedAt: Date.now(), eventId: view?.id ?? null, baseVersion: view?.version ?? null, data: { draft, builder, startsAt: time.startsAt, key: formKey } }
+    const base = view ? baseRef.current : null
+    const b: Backup<FormData> = { v: 2, savedAt: Date.now(), eventId: view?.id ?? null, baseVersion: base?.version ?? null, base, data: { draft, builder, startsAt: time.startsAt, key: formKey } }
     setStorageOk(writeBackup(k, b))
     saver.touch()
-    // formKey covers draft + builder
+    // formKey covers draft + builder; a new base (a save, a merge) is re-recorded
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formKey, view?.id])
+  }, [formKey, view?.id, view?.version])
 
   // Leaving or hiding the page: send the last changes with keepalive.
   const dirtyRef = useRef(false)
   dirtyRef.current = formKey !== synced.current
+  // Back in view, or another tab saved (its device copy changed): catch up
+  // with the server so this tab shows the other tab's work and never later
+  // sends an old copy over it.
   useEffect(() => {
     saver.revive()
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null
+    const refreshSoon = (ms: number) => {
+      if (refreshTimer) clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null
+        void saver.refresh()
+      }, ms)
+    }
     const flush = () => {
       if (dirtyRef.current) saver.flushKeepalive()
     }
     const onVis = () => {
       if (document.visibilityState === 'hidden') flush()
+      else refreshSoon(50)
+    }
+    const onFocus = () => refreshSoon(50)
+    const onStorage = (e: StorageEvent) => {
+      const v = viewRef.current
+      if (v && e.key && isDraftBackupKey(e.key, userKey, v.id) && e.key !== tabBackupKey(userKey, v.id, tab)) refreshSoon(STORAGE_REFRESH_MS)
     }
     const onOnline = () => void saver.kick()
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('pagehide', flush)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('storage', onStorage)
     window.addEventListener('online', onOnline)
     return () => {
+      if (refreshTimer) clearTimeout(refreshTimer)
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('pagehide', flush)
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('storage', onStorage)
       window.removeEventListener('online', onOnline)
       flush()
       saver.stop()
     }
-  }, [saver])
+  }, [saver, userKey, tab])
+
+  // An upload the form waits for may have become usable: retry now.
+  useEffect(() => saver.nudge(), [saver, sources.audio])
 
   // Flipping ET ⇄ Local keeps the chosen instant: re-split the date and time
   // inputs from the start computed in the previous zone.
@@ -267,6 +389,13 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
     lastStart.current = { zone, startsAt: time.startsAt }
   })
 
+  /** Every tab's device copy of the draft (it was sent, discarded or reset). */
+  const clearDraftBackups = (id: number) => {
+    for (const { key } of readDraftBackups(userKey, id)) clearBackup(key)
+    clearBackup(tabBackupKey(userKey, id, tab))
+    absorbed.current = []
+  }
+
   const revertToSaved = () => {
     if (!initial) {
       // a new request: start over with an empty form
@@ -278,8 +407,9 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       return
     }
     const v = viewRef.current ?? initial
-    clearBackup(backupKey(userKey, v.id))
+    clearDraftBackups(v.id)
     setResetN((n) => n + 1)
+    setNote(null)
     setDraft(draftFromView(v, zone))
     setBuilder(builderFromView(v, sources.audio.length ? sources.audio : audio, sources.stingers.length ? sources.stingers : stingers))
     setRestored(false)
@@ -307,7 +437,7 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       }
       const r = await api<{ event: FullView }>(`/api/ev/events/${v.id}/submit`, { json: {} })
       saver.stop()
-      clearBackup(backupKey(userKey, v.id))
+      clearDraftBackups(v.id)
       clearBackup(backupKey(userKey, 'new'))
       setDone(r.event)
       window.scrollTo?.({ top: 0 })
@@ -325,7 +455,7 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
     try {
       saver.stop()
       await api(`/api/ev/events/${v.id}/withdraw`, { json: {} })
-      clearBackup(backupKey(userKey, v.id))
+      clearDraftBackups(v.id)
       window.location.assign('/my')
     } catch (e) {
       saver.revive()
@@ -368,6 +498,11 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       <div className="ev-savebar card" data-testid="rf-status-top">
         <p className="text-sm" aria-live="polite" role="status">
           {statusView}
+          {note ? (
+            <span className="block text-xs text-cream/75" data-testid="rf-merge-note">
+              {note}
+            </span>
+          ) : null}
         </p>
         <nav aria-label="Form sections">
           <ol className="ev-steps">

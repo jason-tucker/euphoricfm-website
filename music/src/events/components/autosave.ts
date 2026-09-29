@@ -3,10 +3,17 @@
 //     holds the same data (RequestForm owns that part);
 //   - DraftSaver creates the draft once the minimum is valid, then debounces
 //     and saves: PATCH details, PUT playlist, both with the loaded version.
-//     Saves are serialised (never two in flight) and coalesced; a 409
-//     version_conflict re-fetches the event and re-applies the local form on
-//     top; transient failures retry with backoff; flushKeepalive() sends the
-//     last changes with fetch keepalive when the page is hidden or left.
+//     Saves are serialised (never two in flight) and coalesced; transient
+//     failures retry with backoff; flushKeepalive() sends the last changes
+//     with fetch keepalive when the page is hidden or left.
+//   - `view` is the form's base: the server copy the form last loaded, saved
+//     or merged. Every field of the form that this tab did not change equals
+//     it, so `plan(view)` (a plain diff) sends only this tab's changes.
+//   - A newer server copy (a 409 version_conflict, or refresh() when the tab
+//     comes back into view / another tab saved) is never written over: the
+//     form merges it (`adopt`, merge.ts: three-way against the old base) and
+//     only then becomes the new base, so the next plan sends only what this
+//     tab changed, on top of the other tab's work.
 // The form supplies `plan(view)`: what the server is missing, computed from
 // its latest state every time (so a retry always sends the newest data).
 
@@ -45,12 +52,21 @@ type Outcome = 'synced' | 'blocked' | 'retry' | 'failed' | 'stopped'
 const TRANSIENT = (e: unknown) =>
   e instanceof ApiError && e.code !== 'daily_cap' && (e.status === 0 || e.status === 408 || e.status === 425 || e.status === 429 || e.status >= 500)
 /** The event can no longer be edited here (submitted/withdrawn elsewhere, frozen, gone). */
-const TERMINAL = new Set(['not_editable', 'frozen', 'not_found', 'forbidden', 'unauthorized'])
+const TERMINAL = new Set(['not_editable', 'frozen', 'not_found', 'forbidden', 'unauthorized', 'changed_elsewhere'])
+/** A save waiting for an upload that is still being checked (it becomes usable by itself). */
+const MAX_UPLOAD_WAITS = 20
+export const WAITING_FOR_UPLOAD = "One of your uploads is still being checked. It's added to the draft by itself once it's ready."
 
 export type SaverOptions = {
   initial: FullView | null
   plan: (view: FullView | null) => SavePlan
   onView: (v: FullView) => void
+  /**
+   * A newer server copy than `base` (the current view): merge it into the
+   * form (this tab's changes against `base` stay) and resolve once the form
+   * shows the merge, so the next plan() diffs the merged form against it.
+   */
+  adopt: (base: FullView, fresh: FullView) => Promise<void>
   onStatus: (s: SaveStatus) => void
   /** The server now holds exactly the form with this key. */
   onSynced: (key: string) => void
@@ -65,6 +81,7 @@ export class DraftSaver {
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private running: Promise<Outcome> | null = null
   private again = false
+  private refreshWanted = false
   private failures = 0
   private stopped = false
   /** Stopped because the event can no longer be edited (never revived). */
@@ -75,7 +92,7 @@ export class DraftSaver {
 
   constructor(private readonly o: SaverOptions) {
     this.view = o.initial
-    this.debounceMs = o.debounceMs ?? 1200
+    this.debounceMs = o.debounceMs ?? 1500
     this.retryBaseMs = o.retryBaseMs ?? 2000
     this.retryMaxMs = o.retryMaxMs ?? 30_000
   }
@@ -126,6 +143,22 @@ export class DraftSaver {
     this.retryTimer = null
   }
 
+  /**
+   * Catch up with the server (the tab is visible again, another tab saved):
+   * fetch the event and merge it when it is newer. Nothing is sent unless
+   * this tab has changes of its own. Serialised with the saves.
+   */
+  refresh(): Promise<Outcome> {
+    if (this.stopped || !this.view) return Promise.resolve('stopped')
+    this.refreshWanted = true
+    return this.kick()
+  }
+
+  /** A retry is waiting (an upload being checked, a network blip): try now. */
+  nudge(): void {
+    if (this.retryTimer && !this.stopped) void this.kick()
+  }
+
   /** Undo stop() (a remount, a failed discard) unless the event is no longer editable. */
   revive(): void {
     if (!this.terminal) this.stopped = false
@@ -166,20 +199,45 @@ export class DraftSaver {
     this.o.onView(v)
   }
 
+  /** Merge a server copy into the form when it is newer than the base. */
+  private async catchUp(fresh: FullView): Promise<void> {
+    const base = this.view
+    if (!base || fresh.id !== base.id || fresh.version <= base.version) return
+    if (fresh.status !== 'draft') {
+      // submitted, withdrawn or discarded in another tab: no more autosaves
+      throw new ApiError(409, 'changed_elsewhere')
+    }
+    await this.o.adopt(base, fresh)
+    this.setView(fresh)
+  }
+
   private async loop(): Promise<Outcome> {
     let out: Outcome
     let conflicts = 0
     for (;;) {
       this.again = false
+      if (this.refreshWanted && this.view) {
+        this.refreshWanted = false
+        try {
+          await this.catchUp(await api<FullView>(`/api/ev/events/${this.view.id}`))
+        } catch (e) {
+          // only a terminal answer matters here; a blip is retried by the next save or focus
+          if (e instanceof ApiError && TERMINAL.has(e.code)) {
+            out = this.fail(e)
+            break
+          }
+        }
+      }
       try {
         out = await this.saveOnce()
         this.failures = 0
       } catch (e) {
         if (e instanceof ApiError && e.code === 'version_conflict' && this.view && conflicts < 3) {
-          // Someone (another tab) saved first: load theirs, re-apply ours.
+          // Another tab saved first: merge theirs into the form (this tab's
+          // changes stay), then send only this tab's changes on top.
           conflicts++
           try {
-            this.setView(await api<FullView>(`/api/ev/events/${this.view.id}`))
+            await this.catchUp(await api<FullView>(`/api/ev/events/${this.view.id}`))
           } catch (e2) {
             out = this.fail(e2)
             break
@@ -201,10 +259,16 @@ export class DraftSaver {
       this.o.onStatus({ kind: 'stopped', reason: evMessage(e) })
       return 'stopped'
     }
-    if (TRANSIENT(e) || !(e instanceof ApiError)) {
+    // (bounded: an upload that failed its check never becomes usable, and
+    // then the refusal below asks for it to be removed)
+    const waiting = e instanceof ApiError && e.code === 'audio_not_ready' && this.failures < MAX_UPLOAD_WAITS
+    if (TRANSIENT(e) || waiting || !(e instanceof ApiError)) {
+      // An upload still being checked becomes usable by itself: keep the
+      // pick (the form and the device backup hold it) and try again, sooner
+      // when the upload list shows it ready (nudge()).
       this.failures++
       const offline = typeof navigator !== 'undefined' && navigator.onLine === false
-      this.o.onStatus(offline ? { kind: 'offline' } : { kind: 'error', reason: evMessage(e), retrying: true })
+      this.o.onStatus(offline ? { kind: 'offline' } : { kind: 'error', reason: waiting ? WAITING_FOR_UPLOAD : evMessage(e), retrying: true })
       const wait = Math.min(this.retryBaseMs * 2 ** (this.failures - 1), this.retryMaxMs)
       this.retryTimer = setTimeout(() => {
         this.retryTimer = null
@@ -250,16 +314,43 @@ export class DraftSaver {
 
 // ------------------------------------------------------------ backup ----
 
-export type Backup<T> = { v: 1; savedAt: number; eventId: number | null; baseVersion: number | null; data: T }
+/**
+ * The device copy of a form with unsaved changes. `base` is the server copy
+ * those changes were made against: a restore merges them (three-way) into
+ * the server copy of that moment, so it never writes over newer work.
+ * A new request (no draft yet) has one copy per user; a draft has one per
+ * tab (`tabBackupKey`), so two tabs never overwrite or clear each other's.
+ */
+export type Backup<T> = { v: 2; savedAt: number; eventId: number | null; baseVersion: number | null; base: FullView | null; data: T }
 
 export const backupKey = (user: string, id: number | 'new') => `efm_ev_form:${user}:${id}`
+export const tabBackupKey = (user: string, id: number, tab: string) => `${backupKey(user, id)}~${tab}`
+/** Is `key` a tab copy of this draft (any tab)? */
+export const isDraftBackupKey = (key: string | null, user: string, id: number) => !!key && key.startsWith(`${backupKey(user, id)}~`)
+
+/** Every tab's copy of a draft, oldest first. */
+export function readDraftBackups<T>(user: string, id: number): { key: string; backup: Backup<T> }[] {
+  const out: { key: string; backup: Backup<T> }[] = []
+  try {
+    const ls = window.localStorage
+    for (let i = 0; i < ls.length; i++) {
+      const key = ls.key(i)
+      if (!key || !isDraftBackupKey(key, user, id)) continue
+      const b = readBackup<T>(key)
+      if (b && b.eventId === id && b.base) out.push({ key, backup: b })
+    }
+  } catch {
+    // storage blocked
+  }
+  return out.sort((a, b) => a.backup.savedAt - b.backup.savedAt)
+}
 
 export function readBackup<T>(key: string): Backup<T> | null {
   try {
     const raw = window.localStorage.getItem(key)
     if (!raw) return null
     const b = JSON.parse(raw) as Backup<T>
-    return b && b.v === 1 && b.data ? b : null
+    return b && b.v === 2 && b.data ? b : null
   } catch {
     return null
   }
