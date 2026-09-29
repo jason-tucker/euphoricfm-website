@@ -25,8 +25,9 @@ ENV NODE_ENV=production \
     STATS_STORE_PATH=/data/stats.json \
     STATS_TZ=America/New_York \
     STATS_BACKFILL_START=2023-01-01
-# AZURACAST_API_KEY / STATS_BACKFILL_RESET are runtime-only, set from .env —
-# never baked into the image (see the /stats.mjs header + CLAUDE.md Rule 7).
+# AZURACAST_API_KEY / STATS_BACKFILL_RESET / DISCORD_CONTACT_WEBHOOK are
+# runtime-only, set from .env — never baked into the image (see the stats.mjs
+# header, the contact relay notes in index.mjs + CLAUDE.md Rule 7).
 
 EXPOSE 3000
 
