@@ -2,8 +2,9 @@
 // comment / decision messages, and the daily contract probe. Ingest, moves,
 // archive/restore and recovery (P3/P4) plug into the same runner.
 
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
 import { transcodeLabel } from '../lib/fit'
+import { CANONICAL_URL_RE, soundcloudLabel } from '../lib/soundcloud'
 import type { AzuraCastClient } from '../server/azuracast/client'
 import { checkContract } from '../server/azuracast/contract'
 import { audit } from '../server/audit'
@@ -11,6 +12,7 @@ import type { DB } from '../server/db/client'
 import { batches, comments, items, memberCache, roleBindings, uploads, users } from '../server/db/schema'
 import { enqueue } from '../server/jobs'
 import { getQueuesPaused, pauseQueues, resumeQueuesIf } from '../server/pause'
+import { writeFetchRelease } from '../server/spool/fetch'
 import { MAX_UPLOAD_BYTES, readSpoolResult } from '../server/spool/protocol'
 import { TicketsApiError, type TicketsClient } from '../server/tickets/client'
 
@@ -73,15 +75,20 @@ function fromTickets(e: unknown): never {
 
 // Items in 'probing' get their result from /spool/probe/out (read-only
 // mount). Only a result that the probe stamped as coming from the in-web
-// inbox with type 'probe' is accepted for an upload item.
+// inbox with type 'probe' is accepted for an upload item; a SoundCloud item
+// (v0.4.0) accepts only an in-worker 'probe_fetch' result (the worker wrote
+// that request; the web cannot write in-worker). Its tags are music-fetch's
+// metadata, set by collectFetchResults, and stay; once the result is in, the
+// worker asks music-fetch to delete the raw download (a release marker).
 //
 // Staging accounting (v0.3.0): a WAV the probe converted (or, v0.3.5, an MP3
 // it re-encoded to fit) was replaced by its MP3, so the upload row's `length` (what the per-user and global staging
 // caps sum) becomes the MP3's size; a rejection whose bytes the probe deleted
 // (`released`) marks the upload expired. Both only in the same transaction
 // as the item's own probing → pending/rejected transition.
-export async function collectProbeResults(ctx: WorkerCtx): Promise<number> {
-  const probing = await ctx.db.query.items.findMany({ where: eq(items.status, 'probing'), limit: 50 })
+export async function collectProbeResults(ctx: WorkerCtx & { fetchInDir?: string }): Promise<number> {
+  // (A SoundCloud item still being fetched has no probe request yet.)
+  const probing = await ctx.db.query.items.findMany({ where: and(eq(items.status, 'probing'), isNotNull(items.probeRequestId)), limit: 50 })
   let n = 0
   for (const it of probing) {
     if (!it.probeRequestId) continue
@@ -90,13 +97,24 @@ export async function collectProbeResults(ctx: WorkerCtx): Promise<number> {
       r = await readSpoolResult(ctx.spoolOutDir, it.probeRequestId)
     } catch {
       r = null
-      await ctx.db
+      const moved = await ctx.db
         .update(items)
-        .set({ status: 'rejected', probeError: 'bad_probe_result', updatedAt: new Date() })
+        .set({ status: 'rejected', probeError: 'bad_probe_result', fetchStage: null, updatedAt: new Date() })
         .where(and(eq(items.id, it.id), eq(items.status, 'probing')))
+        .returning({ id: items.id })
+      // A SoundCloud item's upload row is only a reservation: release it.
+      if (moved.length === 1 && it.source === 'soundcloud') {
+        if (it.uploadId) await ctx.db.update(uploads).set({ status: 'expired' }).where(and(eq(uploads.id, it.uploadId), eq(uploads.status, 'attached')))
+        if (ctx.fetchInDir && it.fetchRequestId) await writeFetchRelease(ctx.fetchInDir, it.fetchRequestId)
+      }
       continue
     }
     if (!r) continue
+    if (it.source === 'soundcloud') {
+      await collectFetchedProbe(ctx, it, r)
+      n++
+      continue
+    }
     if (r.source !== 'in-web' || r.type !== 'probe') {
       await ctx.db
         .update(items)
@@ -151,16 +169,70 @@ export async function collectProbeResults(ctx: WorkerCtx): Promise<number> {
   return n
 }
 
+async function collectFetchedProbe(ctx: WorkerCtx & { fetchInDir?: string }, it: typeof items.$inferSelect, r: NonNullable<Awaited<ReturnType<typeof readSpoolResult>>>) {
+  const fromProbe = r.source === 'in-worker' && r.type === 'probe_fetch'
+  if (fromProbe && r.ok && 'sha256' in r && r.type === 'probe_fetch') {
+    const ok = r
+    await ctx.db.transaction(async (tx) => {
+      const moved = await tx
+        .update(items)
+        .set({
+          status: 'pending',
+          fetchStage: null,
+          probeSha256: ok.sha256,
+          durationS: Math.round(ok.durationS),
+          bitrate: ok.bitrate,
+          inputFormat: ok.inputFormat,
+          transcodeKbps: ok.transcodeKbps ?? null,
+          coverFile: ok.cover?.file ?? null,
+          coverSha256: ok.cover?.sha256 ?? null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(items.id, it.id), eq(items.status, 'probing'), eq(items.fetchStage, 'converting')))
+        .returning({ id: items.id })
+      // The staging charge becomes the MP3's size (it was music-fetch's cap).
+      if (moved.length === 1 && it.uploadId && ok.size >= 1 && ok.size <= MAX_UPLOAD_BYTES) {
+        await tx.update(uploads).set({ length: ok.size }).where(and(eq(uploads.id, it.uploadId), eq(uploads.status, 'attached')))
+      }
+    })
+  } else {
+    const error = !fromProbe ? 'wrong_result_source' : 'error' in r ? r.error : 'probe_failed'
+    await ctx.db.transaction(async (tx) => {
+      const moved = await tx
+        .update(items)
+        .set({ status: 'rejected', probeError: error, fetchStage: null, updatedAt: new Date() })
+        .where(and(eq(items.id, it.id), eq(items.status, 'probing')))
+        .returning({ id: items.id })
+      // The probe removes whatever a failed conversion published.
+      if (moved.length === 1 && it.uploadId) await tx.update(uploads).set({ status: 'expired' }).where(and(eq(uploads.id, it.uploadId), eq(uploads.status, 'attached')))
+    })
+  }
+  if (ctx.fetchInDir && it.fetchRequestId) await writeFetchRelease(ctx.fetchInDir, it.fetchRequestId)
+}
+
 // ------------------------------------------------------------- tickets ---
 
 // One card line per pending item (≤ 200 chars). A song the probe encoded (a
 // WAV, or an MP3 re-encoded to fit, v0.3.5) says so, so the managers know
 // before they listen; the note is kept whole and the name is cut instead.
-export function ticketLine(i: Pick<typeof items.$inferSelect, 'id' | 'kind' | 'newArtistName' | 'artist' | 'title' | 'inputFormat' | 'transcodeKbps'>): string {
+export function ticketLine(
+  i: Pick<typeof items.$inferSelect, 'id' | 'kind' | 'newArtistName' | 'artist' | 'title' | 'inputFormat' | 'transcodeKbps'> &
+    Partial<Pick<typeof items.$inferSelect, 'source' | 'fetchLicense'>>,
+): string {
   if (i.kind === 'new_artist') return `#${i.id} New artist: ${i.newArtistName ?? '?'}`.slice(0, 200)
-  const note = transcodeLabel(i.inputFormat, i.transcodeKbps)
-  const suffix = note ? ` (${note})` : ''
+  // v0.4.0: a SoundCloud link says so, with its license; its URL gets a
+  // line of its own (ticketSourceLine).
+  const notes = [i.source === 'soundcloud' ? soundcloudLabel(i.fetchLicense) : null, transcodeLabel(i.inputFormat, i.transcodeKbps)].filter(Boolean)
+  const suffix = notes.length ? ` (${notes.join('; ')})` : ''
   return `#${i.id} ${i.artist ?? '?'} - ${i.title ?? '?'}`.slice(0, 200 - suffix.length) + suffix
+}
+
+// v0.4.0: the source URL of a SoundCloud song, for the reviewers (always a
+// canonical https://soundcloud.com/<user>/<track>, re-checked here).
+export function ticketSourceLine(i: Pick<typeof items.$inferSelect, 'id' | 'source' | 'sourceUrl'>): string | null {
+  if (i.source !== 'soundcloud' || !i.sourceUrl || !CANONICAL_URL_RE.test(i.sourceUrl)) return null
+  const line = `#${i.id} source: ${i.sourceUrl}`
+  return line.length <= 200 ? line : `#${i.id} source: SoundCloud (link in the portal)`
 }
 
 export async function ticketOpen(ctx: WorkerCtx, payload: { batchId: number }) {
@@ -170,17 +242,19 @@ export async function ticketOpen(ctx: WorkerCtx, payload: { batchId: number }) {
   const owner = await ctx.db.query.users.findFirst({ where: eq(users.id, b.ownerUserId) })
   if (!owner) throw new Permanent('owner missing')
   const its = await ctx.db.query.items.findMany({ where: eq(items.batchId, b.id) })
-  const lines = its
-    .filter((i) => i.status === 'pending')
-    .slice(0, 24)
-    .map(ticketLine)
+  const pending = its.filter((i) => i.status === 'pending').slice(0, 24)
+  const songLines = pending.map(ticketLine)
+  // Source lines fill what is left of the card's 25 lines (the portal link
+  // shows every one).
+  const sources = pending.map(ticketSourceLine).filter((l): l is string => l !== null)
+  const lines = [...songLines, ...sources.slice(0, Math.max(0, 25 - songLines.length))]
   let res
   try {
     res = await ctx.tickets.openTicket({
       categoryKey: 'newsong',
       openerDiscordId: owner.discordId,
       subject: `Music submission #${b.id}`,
-      card: { title: `Batch #${b.id}: ${lines.length} song(s)`, lines, link: { label: 'Open in portal', url: `${ctx.portalOrigin}/batches/${b.id}` } },
+      card: { title: `Batch #${b.id}: ${songLines.length} song(s)`, lines, link: { label: 'Open in portal', url: `${ctx.portalOrigin}/batches/${b.id}` } },
       externalRef: `batch:${b.id}`,
     })
   } catch (e) {

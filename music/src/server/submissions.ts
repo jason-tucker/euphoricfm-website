@@ -58,6 +58,12 @@ function itemView(v: Viewer, it: typeof items.$inferSelect) {
     denyReason: it.denyReason,
     inputFormat: it.inputFormat,
     transcodeKbps: it.transcodeKbps,
+    // v0.4.0: a SoundCloud link (source 'soundcloud'): where it is while
+    // 'probing' (fetch_stage), the track's license and its canonical URL.
+    source: it.source,
+    fetchStage: it.fetchStage,
+    fetchLicense: it.fetchLicense,
+    sourceUrl: it.sourceUrl,
     hasCover: Boolean(it.coverFile),
     customArtId: it.customArtId,
     playlistIds: it.playlistIds,

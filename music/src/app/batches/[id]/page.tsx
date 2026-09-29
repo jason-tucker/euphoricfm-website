@@ -1,7 +1,8 @@
 import Link from 'next/link'
 import { AudioPreview } from '@/components/AudioPreview'
 import { CommentThread, type UiComment } from '@/components/CommentThread'
-import { duration, playlistLabel, songName, when } from '@/components/format'
+import { convertedLabel, duration, playlistLabel, songName, when } from '@/components/format'
+import { soundcloudLabel } from '@/lib/soundcloud'
 import { probeErrorText } from '@/components/messages'
 import { BatchStatusChip, ItemStatusChip, NewArtistBadge, Notice, PageTitle, TicketLink } from '@/components/ui'
 import { WithdrawButton } from '@/components/WithdrawButton'
@@ -82,7 +83,8 @@ export default async function BatchPage({
                   </h2>
                   <p className="text-xs text-cream/55">
                     {[it.album, it.genre, duration(it.durationS)].filter(Boolean).join(' · ')}
-                    {it.source === 'soundcloud' ? ' · SoundCloud import' : ''}
+                    {it.source === 'soundcloud' ? ` · ${soundcloudLabel(it.fetchLicense)}` : ''}
+                    {convertedLabel(it.inputFormat, it.transcodeKbps) ? ` · ${convertedLabel(it.inputFormat, it.transcodeKbps)}` : ''}
                   </p>
                   {it.playlistIds?.length && (reviewer || it.status !== 'pending') ? (
                     <p className="text-xs text-cream/55">Playlists: {it.playlistIds.map((p) => playlistLabel(s.playlistNames, p)).join(', ')}</p>

@@ -19,3 +19,18 @@ updates:
     groups:
       actions-all:
         patterns: ['*']
+
+  # music-fetch (music/fetch, v0.4.0): the hash-locked yt-dlp and the
+  # digest-pinned python base image. Review on the monthly bump
+  # (music/fetch/README.md "Version pins and the monthly bump").
+  - package-ecosystem: pip
+    directory: '/music/fetch'
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+
+  - package-ecosystem: docker
+    directory: '/music/fetch'
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2

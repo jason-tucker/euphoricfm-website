@@ -37,11 +37,12 @@ export const MIN_DURATION_S = 30
 export { MAX_DURATION_S }
 export const MIN_BITRATE = 128_000
 
-export function ffprobeArgs(file: string): string[] {
+// `whitelist`: 'file' for music-fetch's output (v0.4.0: never pipe there).
+export function ffprobeArgs(file: string, whitelist: 'file,pipe' | 'file' = 'file,pipe'): string[] {
   return [
     '-hide_banner',
     '-v', 'error',
-    '-protocol_whitelist', 'file,pipe',
+    '-protocol_whitelist', whitelist,
     '-f', 'mp3',
     '-threads', '1',
     '-print_format', 'json',
@@ -102,11 +103,11 @@ export function judgeFfprobe(json: unknown, maxDurationS: number = MAX_DURATION_
 // ffprobe's -show_format duration comes from the upload's own Xing / Info
 // header when it has one, and a forged frame count there makes a long file
 // look short; a file without one gets an estimate that trailing data inflates.
-export function countFramesArgs(file: string): string[] {
+export function countFramesArgs(file: string, whitelist: 'file,pipe' | 'file' = 'file,pipe'): string[] {
   return [
     '-hide_banner',
     '-v', 'error',
-    '-protocol_whitelist', 'file,pipe',
+    '-protocol_whitelist', whitelist,
     '-f', 'mp3',
     '-threads', '1',
     '-count_packets',
@@ -125,8 +126,8 @@ const countOut = z.object({
 // Layer III, 576 for MPEG-2 / 2.5) / rate. The rate must be the one ffprobe
 // reported for the stream. ~1.3 s for 62 MB on the test host.
 export const COUNT_TIMEOUT_S = 60
-export async function countedDurationS(file: string, work: string, sampleRate: number): Promise<number> {
-  const fp = await runLimited('ffprobe', countFramesArgs(file), { timeoutS: COUNT_TIMEOUT_S, vmemKb: 524288, cwd: work, nice: CONVERT_NICE })
+export async function countedDurationS(file: string, work: string, sampleRate: number, whitelist: 'file,pipe' | 'file' = 'file,pipe'): Promise<number> {
+  const fp = await runLimited('ffprobe', countFramesArgs(file, whitelist), { timeoutS: COUNT_TIMEOUT_S, vmemKb: 524288, cwd: work, nice: CONVERT_NICE })
   if (fp.timedOut) throw new ProbeReject('ffprobe_timeout')
   if (fp.code !== 0) throw new ProbeReject('not_mp3')
   let parsed: unknown
@@ -145,8 +146,8 @@ export async function countedDurationS(file: string, work: string, sampleRate: n
 
 // ffprobe, forced mp3 demuxer, file/pipe protocols only, 1 thread, timeout
 // 20 s, address-space limit; stdin is empty.
-async function ffprobeMp3(file: string, work: string, maxDurationS: number = MAX_DURATION_S): Promise<Mp3Info> {
-  const fp = await runLimited('ffprobe', ffprobeArgs(file), { timeoutS: 20, vmemKb: 524288, cwd: work })
+export async function ffprobeMp3(file: string, work: string, maxDurationS: number = MAX_DURATION_S, whitelist: 'file,pipe' | 'file' = 'file,pipe'): Promise<Mp3Info> {
+  const fp = await runLimited('ffprobe', ffprobeArgs(file, whitelist), { timeoutS: 20, vmemKb: 524288, cwd: work })
   if (fp.timedOut) throw new ProbeReject('ffprobe_timeout')
   if (fp.code !== 0) throw new ProbeReject('not_mp3')
   let parsed: unknown
@@ -212,7 +213,7 @@ async function publishCover(job: Job, tags: MmOut, flags: string[]): Promise<Cov
 const tagsOf = (t: MmOut) => ({ title: t.title, artist: t.artist, album: t.album, genre: t.genre, year: t.year ?? null })
 
 // The MPEG sample rates an MP3 may have (MPEG-1, -2, -2.5).
-const MP3_RATES = new Set([48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000])
+export const MP3_RATES = new Set([48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000])
 
 async function probeMp3(job: Job, copy: string, sha256: string, size: number): Promise<SpoolResult> {
   const read = reader(copy)
@@ -300,11 +301,16 @@ async function probeMp3(job: Job, copy: string, sha256: string, size: number): P
   }
 }
 
-// The probe's own encoder output (WAV conversion or MP3 re-encode) must fit
-// the audio budget and pass every check an uploaded MP3 passes, at exactly
-// the chosen CBR rate, and last as long as its source (± toleranceS).
-async function checkEncoded(
-  job: Job,
+// What checkEncoded / publishEncoded need of a job (a 'probe' job here, or a
+// 'probe_fetch' job in fetched.ts).
+export type EncodeJob = { work: string; dirs: { uploads: string }; req: { upload: string } }
+
+// The probe's own encoder output (WAV conversion, MP3 re-encode, or a
+// SoundCloud conversion) must fit the audio budget and pass every check an
+// uploaded MP3 passes, at exactly the chosen CBR rate, and last as long as
+// its source (± toleranceS).
+export async function checkEncoded(
+  job: EncodeJob,
   out: string,
   bitrate: number,
   sourceDurationS: number,
@@ -328,7 +334,7 @@ async function checkEncoded(
 // The encoded MP3 replaces the upload under the same id (tmp + rename), so
 // preview, finalize and retention need no change; the original's bytes are
 // freed here and released from the quota by the worker.
-async function publishEncoded(job: Job, out: string): Promise<string> {
+export async function publishEncoded(job: EncodeJob, out: string): Promise<string> {
   const sha256 = await sha256File(out)
   await publishFile(out, job.dirs.uploads, job.req.upload)
   if ((await sha256File(join(job.dirs.uploads, job.req.upload))) !== sha256) throw new ProbeReject('publish_mismatch')

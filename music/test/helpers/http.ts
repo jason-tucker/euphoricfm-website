@@ -57,13 +57,29 @@ export async function req(jar: Jar | null, path: string, o: ReqOpts = {}): Promi
     headers['content-type'] ??= 'application/json'
   }
   const url = path.startsWith('http') ? path : `${WEB()}${path}`
-  const res = await fetch(url, { method, headers, body, redirect: 'manual', ...(body instanceof ReadableStream ? { duplex: 'half' } : {}) } as RequestInit)
+  const init = { method, headers, body, redirect: 'manual', ...(body instanceof ReadableStream ? { duplex: 'half' } : {}) } as RequestInit
+  const res = await fetchRetrySocket(url, init, !(body instanceof ReadableStream))
   jar?.store(res)
   return res
 }
 
+// undici reuses pooled keep-alive sockets; during the long e2e waits the
+// server can close an idle one just as a request is written to it ("other
+// side closed", UND_ERR_SOCKET, before any response). That request never
+// reached the handler, so one retry on a fresh socket is safe. Streamed bodies
+// cannot be replayed and are never retried.
+export async function fetchRetrySocket(url: string, init: RequestInit, replayable = true): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch (e) {
+    const code = (e as { cause?: { code?: string } }).cause?.code
+    if (!replayable || (code !== 'UND_ERR_SOCKET' && code !== 'ECONNRESET')) throw e
+    return fetch(url, init)
+  }
+}
+
 export async function control(path: string, body?: unknown) {
-  const r = await fetch(`${process.env.MOCKS_CONTROL}${path}`, {
+  const r = await fetchRetrySocket(`${process.env.MOCKS_CONTROL}${path}`, {
     method: body === undefined ? 'GET' : 'POST',
     headers: { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),

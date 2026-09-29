@@ -236,6 +236,23 @@ export const items = pgTable(
     // cap). Null = the member's own MP3, untouched (or a WAV probed before
     // v0.3.5, which was always 320).
     transcodeKbps: integer('transcode_kbps'),
+    // v0.4.0, source 'soundcloud' only (src/server/soundcloud.ts, worker
+    // soundcloud/*). The item stays 'probing' while it is fetched and then
+    // converted; fetch_stage says which:
+    //   'queued'     the web recorded the link and queued a soundcloud_fetch job
+    //   'fetching'   the worker wrote /spool/fetch/in/<fetch_request_id>.json
+    //                (fetch_requested_at = then)
+    //   'converting' music-fetch answered ok; the worker wrote the probe_fetch
+    //                request (probe_request_id = fetch_request_id)
+    // source_url: the link as validated and rebuilt by the web, replaced by
+    // music-fetch's canonicalUrl once it answered (always
+    // https://soundcloud.com/<user>/<track>). fetch_license: the track's
+    // SoundCloud license id, shown next to the rights attestation.
+    fetchRequestId: uuid('fetch_request_id'),
+    fetchStage: text('fetch_stage'),
+    fetchRequestedAt: ts('fetch_requested_at'),
+    sourceUrl: text('source_url'),
+    fetchLicense: text('fetch_license'),
     prefill: jsonb('prefill'),
     title: text('title'),
     artist: text('artist'),
@@ -260,6 +277,9 @@ export const items = pgTable(
     index('items_status_idx').on(t.status),
     uniqueIndex('items_upload_uq').on(t.uploadId),
     uniqueIndex('items_probe_req_uq').on(t.probeRequestId),
+    uniqueIndex('items_fetch_req_uq').on(t.fetchRequestId),
+    index('items_owner_source_idx').on(t.ownerUserId, t.source, t.createdAt),
+    check('items_fetch_stage', sql`${t.fetchStage} IS NULL OR ${t.fetchStage} IN ('queued', 'fetching', 'converting')`),
   ],
 )
 

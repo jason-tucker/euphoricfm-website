@@ -103,7 +103,7 @@ describe('WAV → 320 kbps MP3 (accepted inputs)', () => {
       frameV3('APIC', apicV3('image/png', PNG())),
     ])
     const { r, upload } = await probeBuf(simpleWav({ after: [chunk('id3 ', id3)] }))
-    if (!r.ok || !('cover' in r)) throw new Error(JSON.stringify(r))
+    if (!r.ok || r.type !== 'probe') throw new Error(JSON.stringify(r))
     expect(r.tags).toMatchObject({ title: 'Id3 Title  bell', artist: 'Id3 Artist', album: 'Id3 Album', genre: 'Techno' })
     expect(r.cover).not.toBeNull()
     const jpg = readFileSync(join(dirs.uploads, r.cover!.file))

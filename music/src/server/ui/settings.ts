@@ -3,7 +3,7 @@
 
 import { z } from 'zod'
 import type { DB } from '../db/client'
-import { getIntList, getSetting, loadCaps } from '../settings'
+import { getIntList, getSetting, loadCaps, soundcloudEnabled } from '../settings'
 import type { Caps } from '../settings-defaults'
 
 // Keys the UI reads that the foundation seed does not create yet. Admins
@@ -44,6 +44,8 @@ export type UiSettings = {
   defaultPlaylistIds: number[]
   autoCloseDays: number
   caps: Caps
+  // v0.4.0: the "Add from a SoundCloud link" kill switch
+  soundcloudEnabled: boolean
 }
 
 export async function rightsText(db: DB) {
@@ -59,7 +61,7 @@ export async function inviteUrl(db: DB): Promise<string | null> {
 const idsOf = (v: unknown): number[] => (Array.isArray(v) ? v.filter((x): x is number => Number.isSafeInteger(x) && x > 0).slice(0, 512) : [])
 
 export async function uiSettings(db: DB): Promise<UiSettings> {
-  const [rights, invite, namesRaw, assignable, defaults, autoClose, caps, station, foreign, unconfirmed] = await Promise.all([
+  const [rights, invite, namesRaw, assignable, defaults, autoClose, caps, station, foreign, unconfirmed, sc] = await Promise.all([
     rightsText(db),
     inviteUrl(db),
     getSetting(db, UI_SETTING_KEYS.playlistNames),
@@ -73,6 +75,7 @@ export async function uiSettings(db: DB): Promise<UiSettings> {
     getSetting(db, 'station_playlist_ids').then(idsOf),
     getIntList(db, 'foreign_playlist_ids'),
     getSetting(db, 'unconfirmed_playlist_ids').then(idsOf),
+    soundcloudEnabled(db),
   ])
   const names = namesSchema.safeParse(namesRaw)
   return {
@@ -86,5 +89,6 @@ export async function uiSettings(db: DB): Promise<UiSettings> {
     defaultPlaylistIds: defaults,
     autoCloseDays: typeof autoClose === 'number' && Number.isInteger(autoClose) ? autoClose : 7,
     caps,
+    soundcloudEnabled: sc,
   }
 }

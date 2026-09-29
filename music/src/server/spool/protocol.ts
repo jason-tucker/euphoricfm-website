@@ -90,14 +90,41 @@ export const finalizeRequest = z
   })
   .strict()
 
-// P5 (SoundCloud) request types: accepted by the schema so the inbox rules
-// are complete, answered 'not_implemented' by the probe until P5.
+// 'cover' is reserved in the in-worker inbox rules (plan §3); the probe
+// answers it 'not_implemented'. SoundCloud artwork goes through probe_fetch.
 export const coverRequest = z
   .object({ v: z.literal(1), id: z.string().regex(UUID_RE), type: z.literal('cover'), input: z.string().max(200) })
   .strict()
+
+// v0.4.0 (P5): convert what music-fetch downloaded. The request names the
+// fetch job and the file's extension only; the probe builds the path itself
+// (/staging/fetch/<fetchId>/audio.<ext>, and artwork.raw next to it), copies
+// it without following links, and requires the sha256 / size music-fetch
+// reported. `format` is the demuxer the probe forces (music-fetch's magic
+// check, mapped through the portal's allowlist: AAC in MP4, Opus in Ogg, MP3);
+// the probe checks it against the extension and the bytes again. The MP3 it
+// makes is published as /staging/uploads/<upload>, so preview, finalize and
+// retention treat it like an uploaded song.
+export const FETCH_PROBE_FORMATS = { m4a: 'mp4', mp4: 'mp4', opus: 'ogg', ogg: 'ogg', oga: 'ogg', mp3: 'mp3' } as const
+export const MAX_FETCH_INPUT_BYTES = 60 * 1024 * 1024
 export const probeFetchRequest = z
-  .object({ v: z.literal(1), id: z.string().regex(UUID_RE), type: z.literal('probe_fetch'), input: z.string().max(200) })
+  .object({
+    v: z.literal(1),
+    id: z.string().regex(UUID_RE),
+    type: z.literal('probe_fetch'),
+    fetchId: z.string().regex(UUID_RE),
+    upload: z.string().regex(UPLOAD_ID_RE),
+    ext: z.enum(['m4a', 'mp4', 'opus', 'ogg', 'oga', 'mp3']),
+    format: z.enum(['mp4', 'ogg', 'mp3']),
+    sha256: z.string().regex(SHA256_RE),
+    size: z.number().int().min(1).max(MAX_FETCH_INPUT_BYTES),
+    artworkSha256: z.string().regex(SHA256_RE).nullable(),
+    // music-fetch's duration from SoundCloud's own metadata; the probe picks
+    // the ladder rate from the larger of it and what ffprobe reads.
+    declaredDurationS: z.number().finite().nonnegative().max(86_400),
+  })
   .strict()
+export type ProbeFetchRequest = z.infer<typeof probeFetchRequest>
 
 // A standalone album-art upload to re-encode (JPEG/PNG/WebP only).
 export const artRequest = z
@@ -156,6 +183,25 @@ export const probeOk = z.object({
   transcodeKbps: z.number().int().min(8).max(320).optional(),
 })
 
+// v0.4.0: a SoundCloud song converted (or, an MP3 that already fits, kept
+// untouched) and published as /staging/uploads/<upload>. `inputFormat` is
+// the codec music-fetch delivered; transcodeKbps is absent only for that
+// untouched MP3. Tags come from music-fetch's metadata (the worker), never
+// from the downloaded file.
+export const probeFetchOk = z.object({
+  ...resultBase,
+  type: z.literal('probe_fetch'),
+  ok: z.literal(true),
+  sha256: z.string().regex(SHA256_RE),
+  size: z.number().int(),
+  durationS: z.number(),
+  bitrate: z.number().int(),
+  cover: z.object({ file: z.string().regex(COVER_FILE_RE), sha256: z.string().regex(SHA256_RE), width: z.number().int(), height: z.number().int() }).nullable(),
+  flags: z.array(z.string().max(64)).max(16),
+  inputFormat: z.enum(['aac', 'opus', 'mp3']),
+  transcodeKbps: z.number().int().min(8).max(320).optional(),
+})
+
 export const finalizeOk = z.object({
   ...resultBase,
   type: z.literal('finalize'),
@@ -195,7 +241,7 @@ export const cleanupOk = z.object({
   removed: z.boolean(),
 })
 
-export const spoolResult = z.union([probeOk, finalizeOk, artOk, artReleaseOk, cleanupOk, spoolFailure])
+export const spoolResult = z.union([probeOk, probeFetchOk, finalizeOk, artOk, artReleaseOk, cleanupOk, spoolFailure])
 export type SpoolResult = z.infer<typeof spoolResult>
 
 // Exclusive-create a tmp file (O_CREAT|O_EXCL never follows a symlink), then

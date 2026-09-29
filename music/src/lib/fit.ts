@@ -78,8 +78,10 @@ export function mp3FitsUntouched(size: number, id3Size: number): boolean {
 
 // What the member and the reviewers see about a converted song. `kbps` null
 // on a WAV item probed before v0.3.5 means 320 (the only rate then).
+// v0.4.0: a SoundCloud song delivered as AAC or Opus is always converted.
 export function transcodeLabel(inputFormat: string | null | undefined, kbps: number | null | undefined): string | null {
   if (inputFormat === 'wav') return `Converted from WAV (${kbps ?? 320} kbps MP3)`
+  if (inputFormat === 'aac' || inputFormat === 'opus') return `Converted from ${inputFormat === 'aac' ? 'AAC' : 'Opus'} (${kbps ?? '?'} kbps MP3)`
   if (kbps) return `Re-encoded to ${kbps} kbps to fit`
   return null
 }

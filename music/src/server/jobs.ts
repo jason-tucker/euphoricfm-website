@@ -37,6 +37,9 @@ export const JOB_KINDS = [
   // import_legacy_archive job per file then archives it (mutating).
   'legacy_import_plan',
   'import_legacy_archive',
+  // v0.4.0 (worker/soundcloud.ts): send a SoundCloud link to music-fetch.
+  // Not mutating (nothing is written to AzuraCast).
+  'soundcloud_fetch',
 ] as const
 export type JobKind = (typeof JOB_KINDS)[number]
 

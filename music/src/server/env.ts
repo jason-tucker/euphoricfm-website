@@ -149,6 +149,9 @@ const workerSchema = z.object({
   SPOOL_PROBE_IN_DIR: z.string().default('/spool/probe/in-worker'),
   SPOOL_PROBE_OUT_DIR: z.string().default('/spool/probe/out'),
   STAGING_FINAL_DIR: z.string().default('/staging/final'),
+  // v0.4.0: the music-fetch spool (in rw: requests + release markers; out ro).
+  SPOOL_FETCH_IN_DIR: z.string().default('/spool/fetch/in'),
+  SPOOL_FETCH_OUT_DIR: z.string().default('/spool/fetch/out'),
   // The probe's album-art JPEGs (read-only mount); uploadArt reads only here.
   STAGING_ART_DIR: z.string().default('/staging/art'),
   ALLOW_TEST_ENDPOINTS: boolFlag,

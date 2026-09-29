@@ -9,7 +9,7 @@ for d in \
   /data/staging/uploads /data/staging/final /data/staging/work /data/staging/fetch \
   /data/staging/art /data/staging/art-in \
   /data/spool/probe/in-web /data/spool/probe/in-worker /data/spool/probe/out /data/spool/probe/claimed \
-  /data/spool/fetch/in /data/spool/fetch/out; do
+  /data/spool/fetch/in /data/spool/fetch/out /data/spool/fetch/claimed; do
   mkdir -p "$d"
 done
 chown -R 1000:1000 /data/staging /data/spool

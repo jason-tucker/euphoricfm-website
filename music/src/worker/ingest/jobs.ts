@@ -3,6 +3,7 @@
 
 import { z } from 'zod'
 import { Permanent } from '../handlers'
+import { isFetchCtx, runSoundcloudFetch } from '../soundcloud'
 import { syncLibrary } from '../library/sync'
 import { batchSummary, ticketAutoclose, ticketItemEvent } from '../scheduler/tickets'
 import type { P3Ctx } from './context'
@@ -25,4 +26,9 @@ export const P3_JOBS: Record<string, (ctx: P3Ctx, payload: unknown) => Promise<u
   ticket_item_event: (ctx, p) => ticketItemEvent(ctx, parse(eventPayload, p)),
   batch_summary: (ctx, p) => batchSummary(ctx, parse(batchPayload, p)),
   ticket_autoclose: (ctx, p) => ticketAutoclose(ctx, parse(batchPayload, p)),
+  // v0.4.0 (worker/soundcloud.ts)
+  soundcloud_fetch: (ctx, p) => {
+    if (!isFetchCtx(ctx)) throw new Permanent('soundcloud_fetch needs the fetch spool dirs')
+    return runSoundcloudFetch(ctx, parse(itemPayload, p))
+  },
 }

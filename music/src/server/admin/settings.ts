@@ -56,6 +56,8 @@ const capsSchema = z
     maxWavUploadBytes: z.number().int().min(1).max(DEFAULT_CAPS.maxWavUploadBytes).optional(),
     // v0.3.5 (optional for the same reason): MP3 uploads, ≤ 100 MB.
     maxMp3UploadBytes: z.number().int().min(1).max(DEFAULT_CAPS.maxMp3UploadBytes).optional(),
+    // v0.4.0 (optional for the same reason): SoundCloud links per member per day.
+    fetchesPerUserPerDay: z.number().int().min(1).max(DEFAULT_CAPS.fetchesPerUserPerDay).optional(),
   })
   .strict()
 
@@ -84,6 +86,8 @@ export const SETTING_SCHEMAS: Record<string, z.ZodType<unknown>> = {
     .url()
     .refine((u) => /^https:\/\/(discord\.gg|discord\.com)\/[A-Za-z0-9/_-]+$/.test(u), 'discord invite link')
     .nullable(),
+  // v0.4.0: the SoundCloud kill switch.
+  soundcloud_fetch_enabled: z.boolean(),
 }
 
 const putSchema = z.object({ key: z.string().max(64), value: z.unknown() }).strict()

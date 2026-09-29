@@ -104,6 +104,16 @@ export const ERROR_TEXT: Record<string, string> = {
   staging_full: 'Uploads are paused because the server is low on space. Try again later.',
   too_many_concurrent_uploads: 'You can upload 3 files at a time. The rest will start when these finish.',
   inflight_quota: 'You have too much uploading at once. Wait for some uploads to finish.',
+
+  // SoundCloud links (v0.4.0): POST /api/batches/:id/soundcloud refusals
+  sc_bad_url:
+    'That is not a SoundCloud track link. Paste the link of one public track, like https://soundcloud.com/artist/track-name (on.soundcloud.com share links work too).',
+  sc_not_a_track:
+    'That link is a playlist, album, set or profile page, not a single track. Open the track itself on SoundCloud and paste its link.',
+  sc_disabled: 'Adding songs from SoundCloud is switched off right now. Upload the MP3 or WAV file instead.',
+  sc_daily_cap: "You've reached today's limit for SoundCloud links. Try again tomorrow, or upload the file instead.",
+  sc_busy: 'A few of your SoundCloud links are still being fetched. Wait until they finish, then add more.',
+  sc_rate_limited: "You're adding links a little fast. Wait a moment and try again.",
 }
 
 // Per-action wording for a 409 race.
@@ -175,6 +185,36 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   wrong_result_source: 'The file check failed. Upload the file again.',
   probe_failed: 'The file check failed. Upload the file again.',
   interrupted: 'The file check was interrupted by a server restart. Upload the file again.',
+
+  // SoundCloud links (v0.4.0). music-fetch's codes (fetch/README.md), as sc_<code>:
+  sc_bad_url: 'That is not a SoundCloud track link.',
+  sc_not_a_track: 'That link is not a single track (a playlist, set, album, profile or private link). Paste the link of one public track.',
+  sc_redirect_host: 'That short link does not lead to a SoundCloud track.',
+  sc_too_large: 'The track SoundCloud sent is larger than 60 MB. Upload the file instead.',
+  sc_too_long: `The track is longer than ${MAX_DURATION_MIN} minutes, the most that fits even when converted down to ${MIN_LADDER_BITRATE / 1000} kbps.`,
+  sc_timeout: 'SoundCloud took too long to send this track. Try again later, or upload the file instead.',
+  sc_extractor_failed:
+    "SoundCloud wouldn't give us this track. It may be private, removed, blocked in the server's country, or only for SoundCloud Go subscribers. Check that the track plays when you're logged out, or upload the file instead.",
+  sc_artwork_host: "SoundCloud's answer for this track looked wrong (its artwork came from an unexpected address), so it was not used. Upload the file instead.",
+  sc_bad_request: 'The SoundCloud request could not be processed. Add the link again.',
+  sc_bad_media: 'SoundCloud sent a file that is not a supported audio format. Upload the file instead.',
+  sc_interrupted: 'Fetching from SoundCloud was interrupted by a server restart. Add the link again.',
+  sc_internal: 'Something went wrong while fetching from SoundCloud. Add the link again, or upload the file instead.',
+  // ...the worker's own checks of music-fetch's answer
+  sc_disabled: 'Adding songs from SoundCloud was switched off before this link was fetched. Upload the file instead.',
+  sc_queue_timeout: 'This link waited too long for its turn. Add it again later.',
+  sc_fetch_unanswered: "The SoundCloud downloader didn't answer in time. Add the link again later.",
+  sc_bad_result: 'The SoundCloud download could not be checked. Add the link again, or upload the file instead.',
+  sc_codec_unsupported:
+    'SoundCloud sent this track in a format the portal does not convert (only AAC, Opus and MP3 are). This happens with some "original file" downloads. Upload the file instead.',
+  // ...and the probe's conversion
+  sc_hash_mismatch: 'The downloaded file changed before it could be checked. Add the link again.',
+  sc_format_mismatch: 'The downloaded file is not what SoundCloud said it was. Upload the file instead.',
+  sc_unexpected_streams: 'The downloaded file contains more than one stream. Upload the file instead.',
+  sc_decode_failed: "The track from SoundCloud couldn't be converted to MP3. Upload the file instead.",
+  sc_convert_timeout: 'Converting the SoundCloud track took too long. Try again later.',
+  sc_convert_invalid: "The track from SoundCloud couldn't be converted to a valid MP3. Upload the file instead.",
+  sc_converted_too_large: `The converted MP3 would be larger than ${mibOf(MAX_UPLOAD_BYTES)} MB. Upload a shorter song.`,
 }
 
 export function probeErrorText(code: string | null | undefined): string {

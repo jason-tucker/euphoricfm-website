@@ -23,6 +23,7 @@ import {
 import { findStraysAfterGrace, killAll, snapshotBaseline, type ProcInfo } from './containment'
 import { runArt, runArtRelease } from './art'
 import { runFinalize } from './finalize'
+import { runProbeFetch } from './fetched'
 import { releaseUpload, runProbe } from './probe'
 
 export const DIRS = {
@@ -32,6 +33,8 @@ export const DIRS = {
   work: '/staging/work',
   artIn: '/staging/art-in',
   art: '/staging/art',
+  // v0.4.0: music-fetch's downloads (READ-ONLY here)
+  fetch: '/staging/fetch',
   mmChild: new URL('./mm-child.mjs', import.meta.url).pathname,
 }
 
@@ -66,6 +69,8 @@ export async function handleClaimed(inbox: Inbox, id: string, claimedPath: strin
       return runProbe(req, { uploads: dirs.uploads, work: dirs.work, mmChild: dirs.mmChild })
     case 'finalize':
       return runFinalize(req, { uploads: dirs.uploads, work: dirs.work, final: dirs.final, art: dirs.art })
+    case 'probe_fetch':
+      return runProbeFetch(req, { fetch: dirs.fetch, uploads: dirs.uploads, work: dirs.work })
     case 'art':
       return runArt(req, { artIn: dirs.artIn, art: dirs.art, work: dirs.work })
     case 'art_release':
@@ -83,7 +88,7 @@ export async function handleClaimed(inbox: Inbox, id: string, claimedPath: strin
       return { v: 1, id, source: inbox, type: 'cleanup_final', ok: true, removed }
     }
     default:
-      return fail(id, inbox, req.type, 'not_implemented') // P5 SoundCloud types
+      return fail(id, inbox, req.type, 'not_implemented') // 'cover' (reserved)
   }
 }
 
@@ -145,12 +150,19 @@ export async function recoverInterrupted(dirs: Pick<typeof DIRS, 'spool' | 'uplo
       )
       if (!answered) {
         let result: SpoolResult = fail(id, inbox, 'unknown', 'interrupted')
-        const req = inbox === 'in-web' ? await readClaimedRequest(path) : null
-        if (req?.type === 'probe' && req.id === id) {
+        const req = await readClaimedRequest(path)
+        if (inbox === 'in-web' && req?.type === 'probe' && req.id === id) {
           // runProbe publishes the cover last, just before its result
           await unlink(join(dirs.uploads, `cover-${id}.jpg`)).catch(() => {})
           const released = await releaseUpload(dirs.uploads, req.upload)
           result = { v: 1, id, source: inbox, type: 'probe', ok: false, error: 'interrupted', released }
+        } else if (inbox === 'in-worker' && req?.type === 'probe_fetch' && req.id === id) {
+          // v0.4.0: whatever the interrupted conversion published (it
+          // publishes the MP3, then the cover) is removed; the worker rejects
+          // the item and releases its quota.
+          await unlink(join(dirs.uploads, `cover-${id}.jpg`)).catch(() => {})
+          await releaseUpload(dirs.uploads, req.upload)
+          result = { v: 1, id, source: inbox, type: 'probe_fetch', ok: false, error: 'interrupted' }
         }
         await writeSpoolResultNoClobber(outDir, result).catch(() => {})
       }
@@ -168,12 +180,12 @@ async function readClaimedRequest(path: string) {
   }
 }
 
-// Per-job work dirs (runProbe p-, runFinalize f-, runArt a-) left behind by a
+// Per-job work dirs (runProbe p-, runFinalize f-, runArt a-, runProbeFetch s-) left behind by a
 // restart mid-job hold a private copy of the input (a WAV: up to 250 MB, plus
 // its MP3) on the persistent staging disk, outside the staging quota. Only
 // the probe writes /staging/work and no job runs at start-up, so every job
 // dir there is stale. rm removes a symlink itself, never its target.
-const WORK_DIR_RE = /^[pfa]-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[A-Za-z0-9]{6}$/
+const WORK_DIR_RE = /^[pfas]-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[A-Za-z0-9]{6}$/
 
 export async function clearStaleWork(work = DIRS.work): Promise<number> {
   let n = 0

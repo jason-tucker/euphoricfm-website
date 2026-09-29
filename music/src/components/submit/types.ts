@@ -16,6 +16,8 @@ export type Phase =
 
 export type Entry = {
   key: string
+  // v0.4.0: 'soundcloud' = added from a SoundCloud link (fileName is the link)
+  source?: 'upload' | 'soundcloud'
   fileName: string
   size: number
   phase: Phase

@@ -65,6 +65,7 @@ export default async function AdminPage() {
             caps: s.caps as unknown as { maxItemsPerBatch: number; ingestPerHour: number; ingestSpacingS: number } & Record<string, number>,
             rights: s.rights,
             inviteUrl: s.inviteUrl,
+            soundcloudEnabled: s.soundcloudEnabled,
           }}
         />
         <details className="text-xs text-cream/60">
