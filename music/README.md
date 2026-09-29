@@ -248,3 +248,10 @@ The mocks in `test/mocks/server.mjs` stand in for Discord OAuth and the member A
 - Preview audio and cover URLs come from `GET /api/items/:id/preview`: signed, 5 minutes, bound to the viewer. The cover is the effective one.
 - **tus client:** `endpoint: '/api/uploads'`, `chunkSize: 8 * 1024 * 1024`, `metadata: { filetype: 'audio/wav' | 'audio/mpeg' }` (the declared type the server caps by), and **no** `uploadDataDuringCreation`. Then `POST /api/batches/:id/items {uploadId}`.
 - **Album art:** `POST /api/uploads/art` with a `FormData` holding one file field `art`; poll `GET /api/uploads/art/:artId` until it leaves `processing` (`ready` → `previewUrl`; `rejected` or `expired` → `reason`), then attach the id.
+
+### Host firewall on botvps (efm-music-egress.service)
+
+`/usr/local/sbin/efm-music-egress.sh` (run by `efm-music-egress.service` after docker) keeps two chains:
+- `EFM-MUSIC-EGRESS` (from `DOCKER-USER`): drops RFC1918, 169.254.0.0/16 and 100.64.0.0/10 from worker-egress (172.31.252.0/24), fetch-egress (172.31.251.0/24) and music-web (pinned **172.31.250.10** on `efm-music-hooks`; its own /24 — tickets-web — stays reachable).
+- `EFM-MUSIC-INPUT` (from `INPUT`): drops NEW connections from `br-efm-fetch` to the host itself.
+Keep the compose pins (`worker-egress`/`fetch-egress` subnets, `br-efm-fetch` bridge name, music-web `ipv4_address`) in sync with that script.

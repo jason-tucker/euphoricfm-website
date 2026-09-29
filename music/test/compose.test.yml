@@ -72,6 +72,11 @@ services:
     # (test/run.sh adds test/compose.webport.yml when MUSIC_TEST_WEB_PORT
     # is set, to publish 127.0.0.1:<port> for a browser.)
     ports: !reset []
+    # Drop the production address pin (172.31.250.10): the test hooks network
+    # gets a free subnet per project, so parallel stacks never collide.
+    networks: !override
+      - music-int
+      - efm-music-hooks
     environment: *web-env
     depends_on:
       mocks:

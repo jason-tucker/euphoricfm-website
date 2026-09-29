@@ -165,8 +165,11 @@ services:
       - ${MUSIC_DATA_DIR:-./data}/spool/probe/in-web:/spool/probe/in-web:rw
       - ${MUSIC_DATA_DIR:-./data}/spool/probe/out:/spool/probe/out:ro
     networks:
-      - music-int
-      - efm-music-hooks
+      music-int: {}
+      # Pinned so botvps's efm-music-egress.service can confine exactly this
+      # container (tickets-web shares the /24 at .2). Keep this address.
+      efm-music-hooks:
+        ipv4_address: 172.31.250.10
     depends_on:
       music-init:
         condition: service_completed_successfully
