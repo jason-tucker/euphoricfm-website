@@ -227,9 +227,11 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     },
   },
 
-  // Music submission portal (music.euphoric.fm) — the homepage "Submit
-  // music" button links here, and info.euphoric.fm/music(/…) 302s here (see
+  // Music submission portal (music.euphoric.fm) — the portal's home (FAQ
+  // link, #music library links); info.euphoric.fm/music(/…) 302s here (see
   // the Caddyfile's "Music portal entry" block). No in-game special-casing.
+  // Every "Submit music" button goes to the upload page instead:
+  // shared/nav.json origins.portal + musicMenu.submit.path.
   music: {
     portalUrl: 'https://music.euphoric.fm/',
     button: 'Submit music',
