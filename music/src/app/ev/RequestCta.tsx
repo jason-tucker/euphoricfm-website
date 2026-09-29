@@ -9,7 +9,7 @@ export function RequestCta({ signedIn, label = EV_COPY.hero.ctaRequest }: { sign
   ) : (
     <form action={evSignInToRequest}>
       <button type="submit" className="btn btn-discord">
-        {label}: sign in with Discord
+        {label === "Sign in with Discord" ? label : `${label}: sign in with Discord`}
       </button>
     </form>
   )
