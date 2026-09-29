@@ -19,6 +19,18 @@ import type { FullView, StaffQueue } from './types'
 import { useTz, When } from './tz'
 import { checkDetails, checkTime, type Draft, EMPTY_DRAFT, enteredTz } from './wizard'
 
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+
+/** "user0001 (Discord 7000…)" — the name when the view carries one, the snowflake as secondary text. */
+function Requester({ v }: { v: FullView }) {
+  if (!v.ownerName) return <>Discord user {v.ownerDiscordId}</>
+  return (
+    <>
+      {v.ownerName} <span className="text-cream/45">(Discord {v.ownerDiscordId})</span>
+    </>
+  )
+}
+
 function QueueRow({ v }: { v: FullView }) {
   return (
     <a href={`/staff/events/${v.id}`} className="row-link">
@@ -33,7 +45,7 @@ function QueueRow({ v }: { v: FullView }) {
           <When at={v.startsAt} end={v.endsAt} />
         </span>
         <span className="block text-xs text-cream/55">
-          Requested by Discord user {v.ownerDiscordId} · {v.tracks.length} songs · {v.announcements.length} announcements
+          Requested by <Requester v={v} /> · {count(v.tracks.length, 'song', 'songs')} · {count(v.announcements.length, 'announcement', 'announcements')}
         </span>
       </span>
     </a>
@@ -153,7 +165,9 @@ export function StaffDecision({ id, manage }: { id: number; manage: boolean }) {
           <StatusChip status={view.status} />
         </dd>
         <dt>Requested by</dt>
-        <dd>Discord user {view.ownerDiscordId}</dd>
+        <dd>
+          <Requester v={view} />
+        </dd>
         <dt>Build</dt>
         <dd>{view.buildStatus ?? 'Not built'}</dd>
         <dt>Autobuild</dt>

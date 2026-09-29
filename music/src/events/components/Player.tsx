@@ -99,8 +99,11 @@ export function Player({ streamUrl, nowPlayingUrl, compact = false }: { streamUr
     if (playing) setMediaSession(line.title, line.artist, art)
   }, [playing, line.title, line.artist, art])
 
-  const online = data ? data.is_online !== false : true
-  const offline = failures >= (data ? 2 : 1)
+  // Now-playing unreachable (network, CORS) says nothing about the stream,
+  // which may well be playing the Events loop: stay neutral. OFF AIR only
+  // when the station itself reports is_online === false.
+  const unavailable = failures >= (data ? 2 : 1)
+  const offAir = !unavailable && data?.is_online === false
   const { elapsed, duration } = elapsedNow(data, loadedAt, now)
   const history = (data?.song_history ?? []).slice(0, compact ? 0 : 5)
   const next = data?.playing_next ? songLine(data.playing_next) : null
@@ -127,16 +130,18 @@ export function Player({ streamUrl, nowPlayingUrl, compact = false }: { streamUr
         )}
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="ev-onair" data-on={online && !offline ? 'true' : 'false'}>
-              {online && !offline ? 'ON AIR' : 'OFF AIR'}
-            </span>
+            {unavailable ? null : (
+              <span className="ev-onair" data-on={offAir ? 'false' : 'true'}>
+                {offAir ? 'OFF AIR' : 'ON AIR'}
+              </span>
+            )}
             <span className="text-xs text-cream/60">EuphoricFM Event Radio</span>
           </div>
           <p className="truncate text-lg font-bold text-cream" data-testid="np-title">
-            {offline ? 'Station unavailable — retrying' : line.title || (data ? 'EuphoricFM Events' : 'Loading…')}
+            {unavailable ? 'Now playing unavailable' : line.title || (data ? 'EuphoricFM Events' : 'Loading…')}
           </p>
-          {line.artist && !offline ? <p className="truncate text-sm text-cream/75">{line.artist}</p> : null}
-          {duration > 0 && !offline ? (
+          {line.artist && !unavailable ? <p className="truncate text-sm text-cream/75">{line.artist}</p> : null}
+          {duration > 0 && !unavailable ? (
             <div className="flex items-center gap-2 text-xs text-cream/60">
               <span>{formatLength(elapsed)}</span>
               <progress className="progress" max={duration} value={Math.min(elapsed, duration)} aria-label="Song progress" />
@@ -146,7 +151,7 @@ export function Player({ streamUrl, nowPlayingUrl, compact = false }: { streamUr
         </div>
       </div>
 
-      {data && !online ? (
+      {offAir ? (
         <p className="notice notice-info" role="status">
           {EV_COPY.offAir}
         </p>

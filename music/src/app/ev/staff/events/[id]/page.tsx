@@ -12,7 +12,7 @@ export default async function StaffEventPage({ params }: { params: Promise<{ id:
   const v = await pageViewer('review')
   return (
     <div className="space-y-6">
-      <a className="link text-sm" href="/staff">
+      <a className="link ev-back text-sm" href="/staff">
         ‹ Event requests
       </a>
       <StaffDecision id={Number(id)} manage={v.perms.has('manage')} />

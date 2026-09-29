@@ -9,7 +9,7 @@ export default async function StaffSettingsPage() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <header className="space-y-1">
-        <a className="link text-sm" href="/staff">
+        <a className="link ev-back text-sm" href="/staff">
           ‹ Event requests
         </a>
         <p className="eyebrow">Staff · Managers</p>

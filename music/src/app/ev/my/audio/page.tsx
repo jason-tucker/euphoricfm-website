@@ -25,7 +25,7 @@ export default async function MyAudioPage() {
   return (
     <div className="space-y-6">
       <header className="space-y-1">
-        <a className="link text-sm" href="/my">
+        <a className="link ev-back text-sm" href="/my">
           ‹ My events
         </a>
         <p className="eyebrow">My audio</p>

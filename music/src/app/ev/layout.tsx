@@ -25,7 +25,7 @@ export default async function EventsLayout({ children }: { children: React.React
         <main id="main" className="mx-auto max-w-frame px-4 py-6 sm:py-8 md:px-6">
           {children}
         </main>
-        <footer className="mx-auto flex max-w-frame flex-wrap gap-x-4 gap-y-2 px-4 pb-8 text-xs text-cream/50 md:px-6">
+        <footer className="ev-foot mx-auto flex max-w-frame flex-wrap gap-x-4 gap-y-2 px-4 pb-8 text-xs text-cream/50 md:px-6">
           <span>EuphoricFM Events · v{process.env.NEXT_PUBLIC_APP_VERSION}</span>
           <a className="link" href="/how-it-works">
             How it works

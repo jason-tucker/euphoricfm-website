@@ -1,9 +1,9 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { resetConfigCache } from '@/events/components/hooks'
 import { RequestWizard } from '@/events/components/RequestWizard'
-import { HOUR, MIN, dateKey, timeKey } from '@/events/components/time'
-import { TzProvider } from '@/events/components/tz'
+import { HOUR, MIN, dateKey, timeKey, zonedToUtc } from '@/events/components/time'
+import { TzProvider, TzToggle } from '@/events/components/tz'
 import { DEFAULT_CONFIG, type Busy } from '@/events/components/types'
 import { checkDetails, checkTime, withoutSelf } from '@/events/components/wizard'
 import { stubFetch } from './fetch'
@@ -92,6 +92,39 @@ describe('request wizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(screen.getByTestId('ev-time-errors').textContent).toMatch(/Pick a date and a start time/)
     expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(0)
+  })
+
+  it('flipping ET ⇄ Local re-splits the date and time so the start instant stays put', async () => {
+    window.localStorage.clear()
+    document.cookie = 'efm_tz=; Max-Age=0; Path=/'
+    stubFetch({ 'GET /api/ev/config': { status: 200, body: cfg }, 'GET /api/ev/availability': { status: 200, body: [] } })
+    render(
+      <TzProvider>
+        <TzToggle />
+        <RequestWizard staff={false} />
+      </TzProvider>,
+    )
+    fireEvent.change(await screen.findByLabelText(/Event title/), { target: { value: 'Club night' } })
+    fireEvent.change(screen.getByLabelText(/Kind of event/), { target: { value: 'club_night' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await screen.findByRole('heading', { name: '2. Time' })
+    const day = dateKey(Date.now() + 10 * 24 * HOUR, 'America/New_York')
+    const start = zonedToUtc(day, '20:00', 'America/New_York')!.toISOString()
+    // the test only means something when the local zone is not Eastern (it is UTC in CI)
+    expect(timeKey(start, undefined)).not.toBe('20:00')
+    const date = screen.getByLabelText(/^Date/) as HTMLInputElement
+    const time = screen.getByLabelText(/^Start time/) as HTMLInputElement
+    fireEvent.change(date, { target: { value: day } })
+    fireEvent.change(time, { target: { value: '20:00' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Local' }))
+    await waitFor(() => expect(time.value).toBe(timeKey(start, undefined)))
+    expect(date.value).toBe(dateKey(start, undefined))
+    expect(screen.getByTestId('ev-time-summary').textContent).toContain('8:00 PM ET')
+
+    fireEvent.click(screen.getByRole('button', { name: 'ET' }))
+    await waitFor(() => expect(time.value).toBe('20:00'))
+    expect(date.value).toBe(day)
   })
 
   it('tells members requests are not open yet while events are disabled', async () => {

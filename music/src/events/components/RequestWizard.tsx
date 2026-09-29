@@ -5,14 +5,14 @@
 // visibility step, the playlist saved (PUT …/playlist) when leaving the
 // playlist step, and submit (POST …/submit) opens the Discord ticket.
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Notice } from '@/components/ui'
 import { api, evMessage } from './ev-api'
 import { useEvConfig, useNow } from './hooks'
 import { EVENT_TYPE_LABEL } from './labels'
 import { PlaylistBuilder } from './PlaylistBuilder'
 import { type Builder, builderProblems, runningLength, toPayload } from './playlist'
-import { DetailsFields, TimeFields, useAvailability, VisibilityFields } from './RequestParts'
+import { DetailsFields, TimeFields, toInputs, useAvailability, VisibilityFields } from './RequestParts'
 import { formatDuration, formatIn, zoneLabel } from './time'
 import type { FullView } from './types'
 import { useTz, When } from './tz'
@@ -50,7 +50,7 @@ export function StepBar({ step, onGo, maxReached }: { step: number; onGo: (i: nu
 
 export function RequestWizard({ staff }: { staff: boolean }) {
   const { config, loaded } = useEvConfig()
-  const { mode } = useTz()
+  const { mode, zone } = useTz()
   const now = useNow(30_000)
   const [step, setStep] = useState(0)
   const [maxReached, setMaxReached] = useState(0)
@@ -66,6 +66,21 @@ export function RequestWizard({ staff }: { staff: boolean }) {
   const detailErrors = checkDetails(draft)
   const time = checkTime({ when: draft, mode, now, config, staff, busy: withoutSelf(avail.busy, saved) })
   const problems = useMemo(() => (time.startsAt && time.endsAt ? builderProblems(builder, time.startsAt, time.endsAt, config.maxRows) : []), [builder, time.startsAt, time.endsAt, config.maxRows])
+
+  // Flipping ET ⇄ Local keeps the chosen instant: re-split the date and time
+  // inputs from the start computed in the previous zone (as the editor does).
+  // Declared before the effect that records it, so it still sees the old one.
+  const lastStart = useRef<{ zone: string | undefined; startsAt: string | null }>({ zone, startsAt: null })
+  useEffect(() => {
+    const prev = lastStart.current
+    if (prev.zone !== zone && prev.startsAt) {
+      const startsAt = prev.startsAt
+      setDraft((d) => ({ ...d, ...toInputs(startsAt, zone) }))
+    }
+  }, [zone])
+  useEffect(() => {
+    lastStart.current = { zone, startsAt: time.startsAt }
+  })
 
   if (loaded && !config.eventsEnabled && !staff) {
     return (

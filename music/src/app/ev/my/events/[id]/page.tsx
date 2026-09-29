@@ -13,7 +13,7 @@ export default async function MyEventPage({ params }: { params: Promise<{ id: st
   if (!v.member) redirect('/denied?reason=not_member')
   return (
     <div className="space-y-4">
-      <a className="link text-sm" href="/my">
+      <a className="link ev-back text-sm" href="/my">
         ‹ My events
       </a>
       <EventEditor id={Number(id)} staff={v.review} viewerDiscordId={v.discordId} />
