@@ -5,16 +5,18 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, sql } from 'drizzle-orm'
 import { audit as auditRow } from '../../server/audit'
 import type { DB } from '../../server/db/client'
-import { eventAnnouncements, eventAudio, eventBuilds, eventJobs, eventRegistry, events, eventStingers, eventTracks, libraryCache, settings as settingsTable, uploads } from '../../server/db/schema'
+import { loadEventsSettings } from '../../server/admin/events-settings'
+import { eventAnnouncements, eventAudio, eventBuilds, eventJobs, eventRegistry, events, eventStingers, eventTracks, libraryCache, uploads } from '../../server/db/schema'
 import { PAUSED_SQL } from '../../server/pause'
 import { scanOffsetS } from '../../worker/ingest/window'
 import { eventJobDedupeKey, parseEventJobPayload, PERIODIC_EVENT_JOB_KINDS, type EventJobKind, type EventJobPayload } from '../contract/jobs'
-import { resolveEventsSettings, type EventsSettings } from '../contract/settings'
+import type { EventsSettings } from '../contract/settings'
 import type { AudioStatus, BuildStatus, EventStatus, RegistryRole } from '../contract/types'
 import type { AnnouncementRow, AudioPatch, AudioRow, BuildRow, ClaimedJob, EnqueueOpts, EventRow, EventsStore, JobOutcome, RegistryRow, StingerRow, TrackRow } from './store'
 
 const ACTIVE: readonly EventStatus[] = ['approved', 'built', 'live']
 export const UPLOAD_ATTEMPT_ACTION = 'events.audio.upload_attempted'
+export const START_KICK_ACTION = 'events.kick.start'
 
 type EventSel = typeof events.$inferSelect
 
@@ -112,8 +114,7 @@ export class PgEventsStore implements EventsStore {
   // -------------------------------------------------- settings / pause ---
 
   async settings(): Promise<EventsSettings> {
-    const rows = await this.db.select({ key: settingsTable.key, value: settingsTable.value }).from(settingsTable).where(sql`${settingsTable.key} LIKE 'events\\_%'`)
-    return resolveEventsSettings(rows)
+    return loadEventsSettings(this.db)
   }
 
   async queuesPaused(): Promise<boolean> {
@@ -376,5 +377,13 @@ export class PgEventsStore implements EventsStore {
 
   async audit(action: string, targetType: string, targetId: number, detail: Record<string, unknown> = {}): Promise<void> {
     await auditRow(this.db, { action, targetType, targetId, detail })
+  }
+
+  async lastStartKickMs(eventId: number): Promise<number | null> {
+    const rows = await this.db.execute<{ t: Date | string | null }>(
+      sql`SELECT max(at) AS t FROM audit_log WHERE action = ${START_KICK_ACTION} AND target_type = 'event' AND target_id = ${String(eventId)}`,
+    )
+    const t = (rows as unknown as { t: Date | string | null }[])[0]?.t
+    return t ? new Date(t).getTime() : null
   }
 }

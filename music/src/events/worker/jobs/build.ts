@@ -419,7 +419,7 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
   if (!ev) throw new Permanent('event missing')
   const build = await ctx.store.getBuild(p.buildId)
   if (!build || build.eventId !== ev.id) throw new Permanent('build missing')
-  if (build.status !== 'applied' || !BUILDABLE.includes(ev.status)) return
+  if (build.status !== 'applied' || build.version !== ev.version || !BUILDABLE.includes(ev.status)) return
   const problems = await verifyBuild(ctx, ev, build)
   let backend = 'n/a'
   if (ev.status === 'live') {

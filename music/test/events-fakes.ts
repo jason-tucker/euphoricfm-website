@@ -253,7 +253,7 @@ export class MemStore implements EventsStore {
   reg: RegistryRow[] = []
   stingers: StingerRow[] = []
   jobs: MJob[] = []
-  audits: { action: string; targetId: number; detail: Record<string, unknown> }[] = []
+  audits: { action: string; targetId: number; detail: Record<string, unknown>; at: number }[] = []
   settingRows: Record<string, unknown> = {}
   paused = false
   scanOffset = 10
@@ -414,6 +414,7 @@ export class MemStore implements EventsStore {
   }
   async setBuild(id: number, patch: { status?: BuildStatus; lastError?: string | null; plan?: unknown }) {
     const b = this.buildRows.find((x) => x.id === id)!
+    b.updatedAt = new Date(this.now())
     if (patch.status) b.status = patch.status
     if (patch.lastError !== undefined) b.lastError = patch.lastError
     if (patch.plan !== undefined) b.plan = structuredClone(patch.plan)
@@ -462,7 +463,11 @@ export class MemStore implements EventsStore {
     }
   }
   async audit(action: string, _t: string, targetId: number, detail: Record<string, unknown> = {}) {
-    this.audits.push({ action, targetId, detail })
+    this.audits.push({ action, targetId, detail, at: this.now() })
+  }
+  async lastStartKickMs(eventId: number) {
+    const t = this.audits.filter((a) => a.action === 'events.kick.start' && a.targetId === eventId).map((a) => a.at)
+    return t.length ? Math.max(...t) : null
   }
 
   // ---- helpers for tests

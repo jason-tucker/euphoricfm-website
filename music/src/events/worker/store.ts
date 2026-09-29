@@ -161,4 +161,6 @@ export interface EventsStore {
   withMembershipLock<T>(fn: () => Promise<T>): Promise<T>
 
   audit(action: string, targetType: string, targetId: number, detail?: Record<string, unknown>): Promise<void>
+  // When the last successful start kick of this event happened (audit log).
+  lastStartKickMs(eventId: number): Promise<number | null>
 }

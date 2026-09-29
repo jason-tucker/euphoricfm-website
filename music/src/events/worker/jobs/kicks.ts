@@ -80,6 +80,16 @@ export async function startKick(ctx: EventsCtx, p: EventJobPayload<'start_kick'>
   const now = ctx.now()
   const at = ev.startsAt.getTime() + START_KICK_DELAY_S * 1000
   if (now < at) throw waitUntil(now, at, 'start kick')
+  // Already live: restart only for a build applied after the last kick (a
+  // staff-confirmed live schedule change). A second kick for the same build
+  // (the kick of an earlier version, which waited for the same start) skips.
+  if (ev.status === 'live') {
+    const last = await ctx.store.lastStartKickMs(ev.id)
+    if (last !== null && last >= build.updatedAt.getTime()) {
+      await ctx.store.audit('events.kick.skipped', 'event', ev.id, { kind: 'start', reason: 'already kicked for this build' })
+      return
+    }
+  }
   if (now >= ev.endsAt.getTime()) {
     await ctx.store.audit('events.kick.missed', 'event', ev.id, { kind: 'start' })
     return
