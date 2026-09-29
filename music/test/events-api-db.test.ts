@@ -60,7 +60,11 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
   let ownAudio: number
   let otherAudio: number
   // A private window far enough ahead for member notice, unique per run.
-  const base = Math.floor((Date.now() + (20 + rnd(140)) * 24 * H) / H) * H + rnd(12) * H
+  // A random day 20–160 days out, starting 16:00–18:00 UTC (12–2 PM ET), so the
+  // test's windows never touch the 01:55–02:05 ET nightly-restart band (a
+  // random hour used to land there now and then → nightly_restart instead of
+  // the expected error).
+  const base = Math.floor((Date.now() + (20 + rnd(140)) * 24 * H) / (24 * H)) * (24 * H) + (16 + rnd(3)) * H
   const start = new Date(base)
   const end = new Date(base + 3 * H)
   const iso = (t: number) => new Date(t).toISOString()
