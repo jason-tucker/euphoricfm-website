@@ -209,8 +209,12 @@ services:
       # v0.4.0: where the tests write the fake yt-dlp's fixtures
       # (/data/fetch-fixtures, mounted read-only into music-fetch as /fixtures)
       FETCH_FIXTURES_DIR: /data/fetch-fixtures
+      # audio fixtures cached by content hash (test/setup/global.ts); kept
+      # across runs, unlike /data
+      FIXTURE_CACHE_DIR: /fixture-cache
     volumes:
       - ${MUSIC_DATA_DIR:-./data}:/data
+      - ./test/.out/fixture-cache:/fixture-cache
     networks:
       - music-int
       - efm-music-hooks

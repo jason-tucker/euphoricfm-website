@@ -1,10 +1,16 @@
 // Generates audio / hostile fixtures with ffmpeg (test image only), and under
-// REQUIRE_ALL waits for the running stack.
+// REQUIRE_ALL waits for the running stack, then sets the test stack's ingest
+// pacing and records the per-file settings baseline (setup/per-file.ts).
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import postgres from 'postgres'
 import { apicV3, frameV3, tag, textV3, zlibBombFrame } from '../helpers/id3'
+import { buildScFixtures } from '../helpers/soundcloud'
+import { RESET_SETTING_KEYS, TEST_PACING } from './baseline'
 
 // A private, per-run directory (mkdtemp, mode 0700) rather than a fixed /tmp
 // path another user could pre-create or symlink. Test files find it through
@@ -85,50 +91,100 @@ function fitFixtures() {
   loop('clip-128k-44k.mp3', 26 * 60, 'fit-26m-128k.mp3')
 }
 
+// Every fixture into DIR (~55 ffmpeg runs): the base MP3 / tag / art set, the
+// WAV and fit-to-size inputs, and the SoundCloud media (encoded concurrently,
+// alongside the rest).
+async function buildAll() {
+  const sc = buildScFixtures(DIR)
+  sc.catch(() => {}) // (rejections surface at the await below)
+  rawMp3('raw35.mp3', 35, 128)
+  rawMp3('raw35b.mp3', 35, 128, 660)
+  rawMp3('raw35c.mp3', 35, 128, 880)
+  rawMp3('lowbr.mp3', 35, 64)
+  rawMp3('short.mp3', 10, 128)
+  ff(['-f', 'lavfi', '-i', 'color=c=red:s=1200x900', '-frames:v', '1', join(DIR, 'cover.png')])
+  const raw = readFileSync(join(DIR, 'raw35.mp3'))
+  const png = readFileSync(join(DIR, 'cover.png'))
+  const basic = [frameV3('TIT2', textV3('Test Title')), frameV3('TPE1', textV3('Test Artist')), frameV3('TALB', textV3('Test Album')), frameV3('TCON', textV3('Pop'))]
+  writeFileSync(join(DIR, 'tagged-png.mp3'), Buffer.concat([tag(3, [...basic, frameV3('APIC', apicV3('image/png', png))]), raw]))
+  writeFileSync(join(DIR, 'tagged-png-b.mp3'), Buffer.concat([tag(3, [...basic, frameV3('APIC', apicV3('image/png', png))]), readFileSync(join(DIR, 'raw35b.mp3'))]))
+  const svg = Buffer.from(
+    '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="48">' +
+      '<script>alert(document.cookie)</script><rect width="64" height="48" fill="#feb139"/>' +
+      '<image href="http://mocks:4104/svg-egress.png" width="10" height="10"/></svg>',
+  )
+  writeFileSync(join(DIR, 'svg-cover.mp3'), Buffer.concat([tag(3, [...basic, frameV3('APIC', apicV3('image/svg+xml', svg))]), readFileSync(join(DIR, 'raw35c.mp3'))]))
+  // 6 MB APIC → tag > 5 MB
+  writeFileSync(join(DIR, 'huge-apic.mp3'), Buffer.concat([tag(3, [frameV3('APIC', apicV3('image/png', Buffer.concat([png, Buffer.alloc(6 * 1024 * 1024)])))]), raw]))
+  // 64 MB of zeros deflated into one compressed ID3v2.4 frame
+  writeFileSync(join(DIR, 'zlib-bomb.mp3'), Buffer.concat([tag(4, [zlibBombFrame(64 * 1024 * 1024)]), raw]))
+  // PNG header claiming 60000x60000 (decompression-bomb dimensions)
+  const bombPng = Buffer.from(png)
+  bombPng.writeUInt32BE(60000, 16)
+  bombPng.writeUInt32BE(60000, 20)
+  writeFileSync(join(DIR, 'dimbomb-cover.mp3'), Buffer.concat([tag(3, [...basic, frameV3('APIC', apicV3('image/png', bombPng))]), raw]))
+  const m3u8 = '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nhttp://mocks:4104/hls-egress/seg0.ts\n#EXT-X-ENDLIST\n'
+  writeFileSync(join(DIR, 'hls.mp3'), Buffer.from(m3u8))
+  writeFileSync(join(DIR, 'hls-id3.mp3'), Buffer.concat([tag(3, [frameV3('TIT2', textV3('x'))]), Buffer.from(m3u8)]))
+  // a single valid-looking MPEG frame header in front of the playlist
+  writeFileSync(join(DIR, 'hls-fakeframe.mp3'), Buffer.concat([Buffer.from([0xff, 0xfb, 0x90, 0x64]), Buffer.from(m3u8)]))
+  writeFileSync(join(DIR, 'html.mp3'), Buffer.from('<html><script>alert(1)</script></html>'))
+  // album-art fixtures (standalone uploads)
+  ff(['-f', 'lavfi', '-i', 'testsrc2=s=1600x1200', '-frames:v', '1', join(DIR, 'art.png')])
+  ff(['-f', 'lavfi', '-i', 'testsrc2=s=800x800', '-frames:v', '1', '-q:v', '3', join(DIR, 'art.jpg')])
+  ff(['-f', 'lavfi', '-i', 'testsrc2=s=640x480', '-frames:v', '1', '-c:v', 'libwebp', join(DIR, 'art.webp')])
+  ff(['-f', 'lavfi', '-i', 'testsrc2=s=64x64', '-frames:v', '1', join(DIR, 'art.gif')])
+  wavFixtures()
+  fitFixtures()
+  await sc
+}
+
+// The fixtures are deterministic for a given generator + ffmpeg build, so
+// they are cached by a content hash of both under FIXTURE_CACHE_DIR
+// (test/.out/fixture-cache, mounted by test/compose.test.yml; CI restores it
+// with actions/cache). A hit is copied into the private per-run DIR; a miss
+// builds, then replaces the cache (one key kept).
+const TEST_DIR = fileURLToPath(new URL('..', import.meta.url))
+function fixtureKey(): string {
+  const h = createHash('sha256')
+  for (const f of ['setup/global.ts', 'helpers/id3.ts', 'helpers/soundcloud.ts']) h.update(readFileSync(join(TEST_DIR, f)))
+  h.update(execFileSync('ffmpeg', ['-hide_banner', '-version']))
+  return h.digest('hex').slice(0, 24)
+}
+
+function openForCache(p: string) {
+  // readable by the (non-root) CI runner that saves the cache afterwards
+  chmodSync(p, statSync(p).isDirectory() ? 0o755 : 0o644)
+  if (statSync(p).isDirectory()) for (const e of readdirSync(p)) openForCache(join(p, e))
+}
+
+async function fixtures() {
+  const cache = process.env.FIXTURE_CACHE_DIR
+  if (!cache) return buildAll()
+  const key = fixtureKey()
+  const hit = join(cache, key)
+  if (existsSync(join(hit, '.complete'))) {
+    cpSync(hit, DIR, { recursive: true })
+    rmSync(join(DIR, '.complete'))
+    console.log(`[fixtures] cache hit ${key}`)
+    return
+  }
+  const t0 = Date.now()
+  await buildAll()
+  mkdirSync(cache, { recursive: true })
+  const tmp = join(cache, `.tmp-${key}-${process.pid}`)
+  cpSync(DIR, tmp, { recursive: true })
+  writeFileSync(join(tmp, '.complete'), '')
+  openForCache(tmp)
+  for (const e of readdirSync(cache)) if (join(cache, e) !== tmp) rmSync(join(cache, e), { recursive: true, force: true })
+  renameSync(tmp, hit)
+  console.log(`[fixtures] built in ${Math.round((Date.now() - t0) / 1000)} s, cached as ${key}`)
+}
+
 export default async function setup() {
   DIR = mkdtempSync(join(tmpdir(), 'efm-fixtures-'))
   process.env.EFM_FX_DIR = DIR
-  {
-    rawMp3('raw35.mp3', 35, 128)
-    rawMp3('raw35b.mp3', 35, 128, 660)
-    rawMp3('raw35c.mp3', 35, 128, 880)
-    rawMp3('lowbr.mp3', 35, 64)
-    rawMp3('short.mp3', 10, 128)
-    ff(['-f', 'lavfi', '-i', 'color=c=red:s=1200x900', '-frames:v', '1', join(DIR, 'cover.png')])
-    const raw = readFileSync(join(DIR, 'raw35.mp3'))
-    const png = readFileSync(join(DIR, 'cover.png'))
-    const basic = [frameV3('TIT2', textV3('Test Title')), frameV3('TPE1', textV3('Test Artist')), frameV3('TALB', textV3('Test Album')), frameV3('TCON', textV3('Pop'))]
-    writeFileSync(join(DIR, 'tagged-png.mp3'), Buffer.concat([tag(3, [...basic, frameV3('APIC', apicV3('image/png', png))]), raw]))
-    writeFileSync(join(DIR, 'tagged-png-b.mp3'), Buffer.concat([tag(3, [...basic, frameV3('APIC', apicV3('image/png', png))]), readFileSync(join(DIR, 'raw35b.mp3'))]))
-    const svg = Buffer.from(
-      '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="48">' +
-        '<script>alert(document.cookie)</script><rect width="64" height="48" fill="#feb139"/>' +
-        '<image href="http://mocks:4104/svg-egress.png" width="10" height="10"/></svg>',
-    )
-    writeFileSync(join(DIR, 'svg-cover.mp3'), Buffer.concat([tag(3, [...basic, frameV3('APIC', apicV3('image/svg+xml', svg))]), readFileSync(join(DIR, 'raw35c.mp3'))]))
-    // 6 MB APIC → tag > 5 MB
-    writeFileSync(join(DIR, 'huge-apic.mp3'), Buffer.concat([tag(3, [frameV3('APIC', apicV3('image/png', Buffer.concat([png, Buffer.alloc(6 * 1024 * 1024)])))]), raw]))
-    // 64 MB of zeros deflated into one compressed ID3v2.4 frame
-    writeFileSync(join(DIR, 'zlib-bomb.mp3'), Buffer.concat([tag(4, [zlibBombFrame(64 * 1024 * 1024)]), raw]))
-    // PNG header claiming 60000x60000 (decompression-bomb dimensions)
-    const bombPng = Buffer.from(png)
-    bombPng.writeUInt32BE(60000, 16)
-    bombPng.writeUInt32BE(60000, 20)
-    writeFileSync(join(DIR, 'dimbomb-cover.mp3'), Buffer.concat([tag(3, [...basic, frameV3('APIC', apicV3('image/png', bombPng))]), raw]))
-    const m3u8 = '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nhttp://mocks:4104/hls-egress/seg0.ts\n#EXT-X-ENDLIST\n'
-    writeFileSync(join(DIR, 'hls.mp3'), Buffer.from(m3u8))
-    writeFileSync(join(DIR, 'hls-id3.mp3'), Buffer.concat([tag(3, [frameV3('TIT2', textV3('x'))]), Buffer.from(m3u8)]))
-    // a single valid-looking MPEG frame header in front of the playlist
-    writeFileSync(join(DIR, 'hls-fakeframe.mp3'), Buffer.concat([Buffer.from([0xff, 0xfb, 0x90, 0x64]), Buffer.from(m3u8)]))
-    writeFileSync(join(DIR, 'html.mp3'), Buffer.from('<html><script>alert(1)</script></html>'))
-    // album-art fixtures (standalone uploads)
-    ff(['-f', 'lavfi', '-i', 'testsrc2=s=1600x1200', '-frames:v', '1', join(DIR, 'art.png')])
-    ff(['-f', 'lavfi', '-i', 'testsrc2=s=800x800', '-frames:v', '1', '-q:v', '3', join(DIR, 'art.jpg')])
-    ff(['-f', 'lavfi', '-i', 'testsrc2=s=640x480', '-frames:v', '1', '-c:v', 'libwebp', join(DIR, 'art.webp')])
-    ff(['-f', 'lavfi', '-i', 'testsrc2=s=64x64', '-frames:v', '1', join(DIR, 'art.gif')])
-  }
-  wavFixtures()
-  fitFixtures()
+  await fixtures()
 
   if (process.env.REQUIRE_ALL === '1' && process.env.E2E_WEB_URL) {
     const deadline = Date.now() + 120_000
@@ -140,6 +196,25 @@ export default async function setup() {
       } catch {}
       if (Date.now() > deadline) throw new Error('stack not ready')
       await new Promise((r) => setTimeout(r, 1000))
+    }
+  }
+
+  if (process.env.REQUIRE_ALL === '1' && process.env.TEST_OWNER_DATABASE_URL) {
+    const sql = postgres(process.env.TEST_OWNER_DATABASE_URL, { max: 1, onnotice: () => {} })
+    try {
+      // Test-stack ingest pacing: production's 90 s spacing and 6/hour made
+      // the e2e uploads queue behind each other, and a 7th real upload in one
+      // run would wait ~50 min for the hourly cap. The worker reads caps from
+      // this row on every ingest (no product override); the pacing rules
+      // themselves are unit-tested with pinned clocks (ingest.test.ts).
+      await sql`INSERT INTO settings (key, value, updated_by) VALUES ('caps', ${sql.json(TEST_PACING)}, 'test-setup')
+                ON CONFLICT (key) DO UPDATE SET value = settings.value || EXCLUDED.value`
+      // The per-file reset (setup/per-file.ts) puts these rows back to this
+      // state before every test file.
+      const rows = await sql<{ key: string; value: unknown }[]>`SELECT key, value FROM settings WHERE key IN ${sql(RESET_SETTING_KEYS as unknown as string[])}`
+      process.env.EFM_SETTINGS_BASELINE = JSON.stringify(Object.fromEntries(rows.map((r) => [r.key, r.value])))
+    } finally {
+      await sql.end()
     }
   }
 }

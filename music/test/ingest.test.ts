@@ -19,6 +19,7 @@ import { clearItemArt, decideItem, editItemMetadata, setItemArt, submitBatch } f
 import { Defer } from '@/worker/handlers'
 import { FINALIZE_TIMEOUT_MS, runIngest, runIngestVerify } from '@/worker/ingest/pipeline'
 import { afterScans, pacingWaitMs, scanWindow, WindowConfigError } from '@/worker/ingest/window'
+import { TEST_PACING } from './setup/baseline'
 import { artUrlFor, isLibraryPath, stationSet, syncLibrary } from '@/worker/library/sync'
 import { runJob } from '@/worker/main'
 import { setPlaylistsJob, type RequestsCtx } from '@/worker/requests/jobs'
@@ -103,6 +104,16 @@ describe('scan window and pacing (clock only)', () => {
     expect(pacingWaitMs(six, t, caps)).toBe(10 * 60_000) // the 50-min-old one ages out in 10 min
     expect(pacingWaitMs(six.slice(1), t, caps)).toBe(0)
     expect(pacingWaitMs([t + 60_000], t, caps)).toBe(0) // future rows never block
+  })
+
+  it('pacing with the test stack\'s small values (setup/baseline.ts TEST_PACING: 2 s, 1000/hour); the hourly cap still counts', () => {
+    const t = slot(0)
+    expect(pacingWaitMs([t - 500], t, TEST_PACING)).toBe(1500)
+    expect(pacingWaitMs([t - 2000], t, TEST_PACING)).toBe(0)
+    // A run's handful of real uploads never reaches the hourly cap...
+    expect(pacingWaitMs([50, 40, 30, 20, 10, 5, 3].map((s) => t - s * 1000), t, TEST_PACING)).toBe(0)
+    // ...and the cap is the same rule at any size (3 per hour here).
+    expect(pacingWaitMs([t - 59 * 60_000, t - 30_000, t - 10_000], t, { ingestSpacingS: 2, ingestPerHour: 3 })).toBe(60_000)
   })
 
   it('main artist is the first-listed one', () => {
@@ -299,7 +310,19 @@ describe.skipIf(!DBENV() || !MOCKS())('ingest pipeline (station 1, Portal-Test/ 
     ctx.cleanup()
   })
 
-  it('serial pacing: a second song waits ≥ 90 s after the previous upload', async () => {
+  // The harness lowers the stack's pacing (setup/global.ts, TEST_PACING); the
+  // two pipeline pacing tests pin production's values for their own run.
+  const withProdPacing = async (fn: () => Promise<void>) => {
+    const prev = (await ownerSql()`SELECT value FROM settings WHERE key = 'caps'`)[0]?.value
+    await ownerSql()`UPDATE settings SET value = value || ${ownerSql().json({ ingestSpacingS: 90, ingestPerHour: 6 })} WHERE key = 'caps'`
+    try {
+      await fn()
+    } finally {
+      if (prev !== undefined) await ownerSql()`UPDATE settings SET value = ${ownerSql().json(prev as never)} WHERE key = 'caps'`
+    }
+  }
+
+  it('serial pacing: a second song waits ≥ 90 s after the previous upload', () => withProdPacing(async () => {
     const ctx = makeCtx(slot(4, 1, 40))
     const a = await ingestToVerifying(ctx)
     const owner = await mkUser()
@@ -318,9 +341,9 @@ describe.skipIf(!DBENV() || !MOCKS())('ingest pipeline (station 1, Portal-Test/ 
     const [ra, rb] = [await run(a.id), await run(id)]
     expect(new Date(rb!.uploaded_at as string).getTime() - new Date(ra!.uploaded_at as string).getTime()).toBeGreaterThanOrEqual(90_000)
     ctx.cleanup()
-  })
+  }))
 
-  it('hourly cap: the 7th upload inside an hour waits', async () => {
+  it('hourly cap: the 7th upload inside an hour waits', () => withProdPacing(async () => {
     const ctx = makeCtx(slot(5, 51, 40))
     const owner = await mkUser()
     const b = await mkBatch(owner.id)
@@ -339,7 +362,7 @@ describe.skipIf(!DBENV() || !MOCKS())('ingest pipeline (station 1, Portal-Test/ 
     expect(d!.delayS).toBe(3600 - 51 * 60 - 40) // until the :00 upload ages out
     expect(await uploadsTo(folder)).toHaveLength(0)
     ctx.cleanup()
-  })
+  }))
 
   it('sha mismatch blocks the upload: probe-side (approved sha) and worker-side (final sha)', async () => {
     const ctx = makeCtx(slot(6))

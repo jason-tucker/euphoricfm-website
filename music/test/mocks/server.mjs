@@ -1011,6 +1011,15 @@ async function handleControl(req, res, url) {
     reset()
     return send(res, 200, { ok: true })
   }
+  // Request histories only (test/setup/per-file.ts, before every file): the
+  // stateful parts (users, members, library, tickets) stay.
+  if (p === '/__mock/reset-history' && req.method === 'POST') {
+    state.discord.log.length = 0
+    state.tickets.calls.length = 0
+    state.az.calls.length = 0
+    state.canary.length = 0
+    return send(res, 200, { ok: true })
+  }
   if (p === '/__mock/discord/user' && req.method === 'POST') {
     const prev = state.discord.users.get(body.id) ?? {}
     state.discord.users.set(body.id, { username: `user${body.id.slice(-4)}`, member: true, pending: false, roles: [], ...prev, ...body })
