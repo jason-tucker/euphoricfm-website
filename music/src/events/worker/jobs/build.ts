@@ -27,7 +27,7 @@
 
 import { compile, CompileError, type CompileAnnouncement, type CompiledPlan, type CompiledPlaylist, type CompileTrack } from '../../azuracast/compiler'
 import { ARCHIVED_FILE_RE, eventUploadPathFor, LEGACY_PLAYLIST_IDS, LIBRARY_FILE_RE, PLAYLIST_ID_FLOOR, STINGER_FILE_RE, type ScheduleItem } from '../../azuracast/allowlist'
-import { backendOptionsOf, EventsAzuraCastError, type MediaRead, type PlaylistRead, type PlaylistScope } from '../../azuracast/client'
+import { backendOptionsOf, EventsAzuraCastError, type MediaRead, type PlaylistRead } from '../../azuracast/client'
 import { applyFileMembership } from '../../azuracast/membership'
 import { buildInputKey } from '../../contract/build-key'
 import type { EventJobPayload } from '../../contract/jobs'
@@ -37,7 +37,11 @@ import type { EventStatus } from '../../contract/types'
 import type { EventsCtx } from '../ctx'
 import { Permanent, Wait } from '../errors'
 import type { AnnouncementRow, BuildRow, EventRow, RegistryRow, TrackRow } from '../store'
+import { isRolledBackBuild, lastLiquidsoapBanner, liquidsoapConfigErrors, playlistScope, readLiquidsoapLog, rollbackEvent } from './station'
 import { postToTicket, whenLine } from './tickets'
+
+// Moved to station.ts (shared with kicks.ts); re-exported for callers.
+export { lastLiquidsoapBanner, LIQUIDSOAP_BANNER_RE, LIQUIDSOAP_CONFIG_ERROR_RE, liquidsoapConfigErrors, playlistScope, readLiquidsoapLog } from './station'
 
 const BUILDABLE: readonly EventStatus[] = ['approved', 'built', 'live']
 export const START_KICK_MAX_ATTEMPTS = 2
@@ -167,14 +171,6 @@ export async function resolveEvent(ctx: EventsCtx, ev: EventRow): Promise<Resolv
   return out
 }
 
-// ------------------------------------------------------------- scopes ---
-
-export function playlistScope(ev: EventRow, rows: readonly RegistryRow[]): PlaylistScope {
-  const registry = new Map<number, string>()
-  for (const r of rows) if (r.playlistId !== null && r.deletedAt === null) registry.set(r.playlistId, r.intentName)
-  return { eventId: ev.id, window: { startsAt: ev.startsAt.getTime(), endsAt: ev.endsAt.getTime() }, registry, intentNames: new Set(rows.filter((r) => r.deletedAt === null).map((r) => r.intentName)) }
-}
-
 function scheduleIdsOf(p: PlaylistRead): number[] {
   return (p.schedule_items ?? []).map((s) => s.id).filter((x): x is number => typeof x === 'number')
 }
@@ -257,6 +253,10 @@ export async function applyBuild(ctx: EventsCtx, ev: EventRow, opts: { force: bo
   // the old registry playlists once the new ones are in place).
   if (build && build.status === 'applied' && !opts.force && !planHasLegacyNames(planOf(build))) return
   const previous = await ctx.store.builds(ev.id)
+  // A kick rolled this event back (this build or an earlier one; read before
+  // this build's status changes): the kick that ran is done, so this build
+  // needs a fresh one of its own.
+  const rearm = previous.some(isRolledBackBuild)
   if (build) await ctx.store.setBuild(build.id, { status: 'applying', plan, lastError: null })
   else build = await ctx.store.createBuild(ev.id, ev.version, plan)
   const prevApplied = previous.filter((b) => b.id !== build!.id && b.status === 'applied').at(-1) ?? null
@@ -286,7 +286,7 @@ export async function applyBuild(ctx: EventsCtx, ev: EventRow, opts: { force: bo
   }
   await ctx.store.setEventStatus(ev.id, ['approved'], 'built')
   await ctx.store.audit('events.build.applied', 'event', ev.id, { buildId: build.id, version: ev.version })
-  await scheduleKicks(ctx, ev, build, plan, planOf(prevApplied))
+  await scheduleKicks(ctx, ev, build, plan, planOf(prevApplied), rearm)
   if (resolved.dropped.length > 0) {
     await postToTicket(
       ctx,
@@ -303,7 +303,7 @@ function rowsKey(plan: CompiledPlan | null): string {
   return JSON.stringify(plan.playlists.map((p) => [p.name, p.body.schedule_items.map((r) => [r.start_date, r.start_time, r.end_time])]).sort())
 }
 
-async function scheduleKicks(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: CompiledPlan, prev: CompiledPlan | null): Promise<void> {
+async function scheduleKicks(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: CompiledPlan, prev: CompiledPlan | null, rearm = false): Promise<void> {
   const v = `v${ev.version}`
   const now = ctx.now()
   await ctx.store.enqueue('verify', { eventId: ev.id, buildId: build.id })
@@ -315,6 +315,15 @@ async function scheduleKicks(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan
   // on a restart (plan §3 "While live").
   if (ev.status === 'live' && prev && rowsKey(prev) !== rowsKey(plan)) {
     await ctx.store.enqueue('start_kick', { eventId: ev.id }, { dedupeExtra: `${v}:live`, maxAttempts: START_KICK_MAX_ATTEMPTS })
+  }
+  // Rebuilt after a rollback (Build now): the kicks keyed on this version
+  // already ran, so the playlists would sit enabled without a confirmed
+  // restart. A fresh kick (its own key) loads them — at once inside the
+  // window, at the start otherwise.
+  if (rearm && now < ev.endsAt.getTime()) {
+    const at = Math.max(now, ev.startsAt.getTime() + START_KICK_DELAY_S * 1000)
+    await ctx.store.enqueue('start_kick', { eventId: ev.id }, { dedupeExtra: `${v}:rearm:b${build.id}:${now}`, runAfter: new Date(at), maxAttempts: START_KICK_MAX_ATTEMPTS })
+    await ctx.store.audit('events.kick.rearmed', 'event', ev.id, { buildId: build.id, at: new Date(at).toISOString() })
   }
 }
 
@@ -573,57 +582,6 @@ export async function verifyBuild(ctx: EventsCtx, ev: EventRow, build: BuildRow)
 
 // ------------------------------------------------ liquidsoap log check ---
 
-// Only the part of the log written by the most recent Liquidsoap start is
-// judged: everything after the last start banner ("[main:3] Liquidsoap
-// 2.2.5", "Liquidsoap version …", "Liquidsoap … starting"). Timestamps are not
-// used — Liquidsoap writes them in the container's local time, which may be
-// UTC or the station's zone. A log with no banner is judged on its last
-// LOG_FALLBACK_LINES lines.
-export const LIQUIDSOAP_BANNER_RE = /\bLiquidsoap (?:v?\d+\.\d+|.*\b(?:start|version))/i
-// What a config that did not load cleanly leaves in the log: Liquidsoap
-// 2.x reports a script it cannot load as a position line ("At line 12, char
-// 4-5:" or "Unknown position:") followed by "Error <n>: <kind>" — e.g. the
-// 2026-09-29 outage's "Error 2: Parse error" for `playlist_~evt1_s1`.
-export const LIQUIDSOAP_CONFIG_ERROR_RE = /Error while loading|Parse error|Script error|\bError \d+:|At line \d+, char|Unknown position/i
-const LOG_FALLBACK_LINES = 200
-
-/** The most recent Liquidsoap start banner line (with its timestamp), or null. */
-export function lastLiquidsoapBanner(contents: string): string | null {
-  const lines = contents.split(/\r?\n/)
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (LIQUIDSOAP_BANNER_RE.test(lines[i]!) && !LIQUIDSOAP_CONFIG_ERROR_RE.test(lines[i]!)) return lines[i]!.trim()
-  }
-  return null
-}
-
-/** Config-load errors logged after the most recent Liquidsoap start banner. */
-export function liquidsoapConfigErrors(contents: string): string[] {
-  const lines = contents.split(/\r?\n/)
-  let from = -1
-  for (let i = lines.length - 1; i >= 0; i--) {
-    // an error line that happens to mention Liquidsoap is never the banner
-    if (LIQUIDSOAP_BANNER_RE.test(lines[i]!) && !LIQUIDSOAP_CONFIG_ERROR_RE.test(lines[i]!)) {
-      from = i + 1
-      break
-    }
-  }
-  if (from < 0) from = Math.max(0, lines.length - LOG_FALLBACK_LINES)
-  const out: string[] = []
-  for (const line of lines.slice(from)) {
-    if (LIQUIDSOAP_CONFIG_ERROR_RE.test(line)) out.push(line.trim().slice(0, 200))
-    if (out.length >= 10) break
-  }
-  return out
-}
-
-/** Station 14's liquidsoap log contents through the wrapper's read routes (null: no such log). */
-export async function readLiquidsoapLog(ctx: EventsCtx): Promise<string | null> {
-  const keys = (await ctx.az.listLogs()).map((l) => l.key)
-  const key = keys.includes('liquidsoap_log') ? 'liquidsoap_log' : keys.find((k) => /^liquidsoap[a-z0-9_]*log$/.test(k))
-  if (!key) return null
-  return (await ctx.az.getLog(key)).contents
-}
-
 // Reads station 14's liquidsoap log. A log that cannot be read is recorded,
 // not a verify failure. `banner`: whether any start banner is in the log.
 async function liquidsoapLogCheck(ctx: EventsCtx): Promise<{ state: string; errors: string[]; banner: boolean | null }> {
@@ -651,7 +609,7 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
   let liquidsoapLog = 'n/a'
   if (ev.status === 'live') {
     try {
-      const st = await ctx.az.getStatus()
+      const st = await ctx.az.getStatus(5_000)
       backend = st.backend_running ? 'running' : 'not running'
       if (!st.backend_running) problems.push('backend not running after the kick')
     } catch {
@@ -667,6 +625,13 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
     }
   }
   await ctx.store.audit('events.build.verified', 'event', ev.id, { buildId: build.id, problems, backend, liquidsoapLog })
+  // The station died after a confirmed start (Liquidsoap failing later on):
+  // not just a failed check — take the event off and bring the station back
+  // (rollbackEvent pages EVENT STATION DOWN if that does not work either).
+  if (ev.status === 'live' && backend === 'not running') {
+    await rollbackEvent(ctx, ev, build, { ok: false, stage: 'after_start', error: `backend not running at verify (${problems.slice(0, 3).join('; ')})`.slice(0, 200), backend }, undefined)
+    return
+  }
   if (problems.length > 0) {
     await ctx.store.setBuild(build.id, { status: 'failed', lastError: `verify: ${problems.slice(0, 5).join('; ')}` })
     await ctx.alert(`events build #${build.id} (event #${ev.id}) failed verification`, { problems: problems.slice(0, 20) })

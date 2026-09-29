@@ -36,99 +36,20 @@
 
 import { EventsAzuraCastError, type NowPlaying, type PlaylistScope } from '../../azuracast/client'
 import type { EventJobPayload } from '../../contract/jobs'
-import { PLAYLIST_DELETE_AFTER_H, RESTART_CONFIRM_MAX_S, RESTART_CONFIRM_POLL_S, RESTART_CONFIRM_STABLE_READS, START_KICK_DELAY_S, START_KICK_RETRY_S } from '../../contract/rules'
+import { PLAYLIST_DELETE_AFTER_H, START_KICK_DELAY_S, START_KICK_RETRY_S } from '../../contract/rules'
 import type { EventStatus } from '../../contract/types'
 import type { EventsCtx } from '../ctx'
 import { Permanent, Retry, Wait, waitUntil } from '../errors'
-import type { BuildRow, EventRow, RegistryRow } from '../store'
-import { buildIsCurrent, lastLiquidsoapBanner, liquidsoapConfigErrors, playlistScope, readLiquidsoapLog, staleJob } from './build'
+import type { EventRow, RegistryRow } from '../store'
+import { buildIsCurrent, staleJob } from './build'
+import { bannerNow, eventRolledBack, playlistScope, restartAndConfirm, rollbackEvent } from './station'
 import { postToTicket, whenLine } from './tickets'
+
+export { confirmBackendRunning, restartAndConfirm, type RestartOutcome } from './station'
 
 const KICKABLE: readonly EventStatus[] = ['built', 'live']
 const GONE: readonly EventStatus[] = ['cancelled', 'withdrawn', 'denied', 'expired', 'failed']
 const SONG_END_SLACK_MS = 2000
-
-const errText = (e: unknown) => (e instanceof EventsAzuraCastError ? `${e.code}${e.detail ? ` ${JSON.stringify(e.detail).slice(0, 200)}` : ''}` : e instanceof Error ? e.message : 'error')
-
-// ------------------------------------------------ restart + confirmation --
-
-export type RestartOutcome =
-  | { ok: true; reads: number }
-  // stage 'restart': POST /backend/restart failed; 'not_running': it
-  // answered, but GET /status never showed the backend running (stably).
-  | { ok: false; stage: 'restart' | 'not_running'; error: string; backend: string }
-
-const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
-
-/**
- * GET /status until the backend reports running on RESTART_CONFIRM_STABLE_READS
- * reads in a row: one read every RESTART_CONFIRM_POLL_S, at most
- * RESTART_CONFIRM_MAX_S (a bounded number of reads, whatever the clock does).
- * A read that fails counts as "not running".
- */
-export async function confirmBackendRunning(ctx: EventsCtx): Promise<RestartOutcome> {
-  const sleep = ctx.sleep ?? defaultSleep
-  const maxReads = Math.max(RESTART_CONFIRM_STABLE_READS, Math.ceil(RESTART_CONFIRM_MAX_S / RESTART_CONFIRM_POLL_S))
-  let streak = 0
-  let backend = 'unknown'
-  for (let i = 1; i <= maxReads; i++) {
-    await sleep(RESTART_CONFIRM_POLL_S * 1000)
-    try {
-      const st = await ctx.az.getStatus()
-      backend = st.backend_running ? 'running' : 'not running'
-      streak = st.backend_running ? streak + 1 : 0
-    } catch (e) {
-      backend = `unknown (${errText(e)})`
-      streak = 0
-    }
-    if (streak >= RESTART_CONFIRM_STABLE_READS) return { ok: true, reads: i }
-  }
-  return { ok: false, stage: 'not_running', error: `backend ${backend} ${RESTART_CONFIRM_MAX_S} s after the restart`, backend }
-}
-
-/**
- * POST /backend/restart, then confirmBackendRunning. A refusal by the
- * wrapper (refused_*: nothing was sent — e.g. queues paused) is thrown; any
- * other failure is returned, never retried here.
- */
-export async function restartAndConfirm(ctx: EventsCtx): Promise<RestartOutcome> {
-  try {
-    await ctx.az.restartBackend()
-  } catch (e) {
-    if (e instanceof EventsAzuraCastError && e.code.startsWith('refused_')) throw e
-    let backend = 'unknown'
-    try {
-      backend = (await ctx.az.getStatus()).backend_running ? 'running' : 'not running'
-    } catch {
-      // stays unknown
-    }
-    return { ok: false, stage: 'restart', error: `restart failed (${errText(e)})`, backend }
-  }
-  return confirmBackendRunning(ctx)
-}
-
-// What the liquidsoap log says about the restart (alert detail only; the
-// decision is backend_running). `newStart`: a start banner newer than the
-// one logged before the restart (false: Liquidsoap never got going).
-async function liquidsoapDiagnostics(ctx: EventsCtx, bannerBefore: string | null | undefined): Promise<Record<string, unknown>> {
-  try {
-    const contents = await readLiquidsoapLog(ctx)
-    if (contents === null) return { liquidsoapLog: 'none' }
-    const banner = lastLiquidsoapBanner(contents)
-    return { liquidsoapErrors: liquidsoapConfigErrors(contents), newStart: bannerBefore === undefined ? null : banner !== null && banner !== bannerBefore }
-  } catch (e) {
-    return { liquidsoapLog: `unreadable (${errText(e)})` }
-  }
-}
-
-async function bannerNow(ctx: EventsCtx): Promise<string | null | undefined> {
-  try {
-    const contents = await readLiquidsoapLog(ctx)
-    return contents === null ? undefined : lastLiquidsoapBanner(contents)
-  } catch {
-    return undefined
-  }
-}
 
 async function clearQueueQuietly(ctx: EventsCtx, eventId: number): Promise<void> {
   try {
@@ -161,6 +82,13 @@ export async function startKick(ctx: EventsCtx, p: EventJobPayload<'start_kick'>
     await staleJob(ctx, 'start_kick', ev, {})
     return
   }
+  // Rolled back by an earlier kick (of this or another version) and not
+  // rebuilt since: never restart into it again, and no "press Build now"
+  // page on top of the rollback's own. Build now re-arms a fresh kick.
+  if (await eventRolledBack(ctx, ev.id)) {
+    await ctx.store.audit('events.kick.skipped', 'event', ev.id, { kind: 'start', reason: 'rolled back; Build now re-arms' })
+    return
+  }
   const build = await ctx.store.latestAppliedBuild(ev.id)
   if (!build || !(await buildIsCurrent(ctx, ev, build))) {
     // Never restart into a build compiled from other inputs than the event
@@ -189,68 +117,13 @@ export async function startKick(ctx: EventsCtx, p: EventJobPayload<'start_kick'>
   const bannerBefore = await bannerNow(ctx)
   const outcome = await restartAndConfirm(ctx)
   if (!outcome.ok) {
-    await rollbackStart(ctx, ev, build, outcome, bannerBefore)
+    await rollbackEvent(ctx, ev, build, outcome, bannerBefore)
     return
   }
   const first = await ctx.store.setEventStatus(ev.id, ['built'], 'live')
   await ctx.store.audit('events.kick.start', 'event', ev.id, { buildId: build.id, first })
   await ctx.store.enqueue('verify', { eventId: ev.id, buildId: build.id }, { dedupeKey: `verify:${ev.id}:b${build.id}:kick:${now}`, runAfter: new Date(now + 60_000) })
   if (first) await postToTicket(ctx, ev.id, 'on_air', 'On air now on the Events station.', `on_air:${ev.id}:v${ev.version}`)
-}
-
-/**
- * The start kick's restart failed or the backend did not come up: take the
- * event's playlists out and bring the station back as it was. In this
- * order: every registry playlist of the event is disabled (each tried,
- * failures noted), station 14's queue is purged (a song the AutoDJ already
- * queued from an event playlist would otherwise still play), the backend
- * restarted ONCE more and confirmed, the build marked failed, staff alerted
- * and the ticket told. If that restart does not bring the
- * backend back, a distinct "EVENT STATION DOWN" page goes out and nothing
- * else is tried.
- */
-async function rollbackStart(ctx: EventsCtx, ev: EventRow, build: BuildRow, failure: Extract<RestartOutcome, { ok: false }>, bannerBefore: string | null | undefined): Promise<void> {
-  const diag = await liquidsoapDiagnostics(ctx, bannerBefore)
-  await ctx.store.audit('events.kick.start_failed', 'event', ev.id, { buildId: build.id, stage: failure.stage, error: failure.error, backend: failure.backend, ...diag })
-  const rows = await ctx.store.registry(ev.id)
-  const scope = playlistScope(ev, rows)
-  const disabled: number[] = []
-  const disableErrors: string[] = []
-  for (const r of rows) {
-    if (r.playlistId === null) continue
-    try {
-      await ctx.az.disablePlaylist(r.playlistId, scope)
-      disabled.push(r.playlistId)
-    } catch (e) {
-      if (e instanceof EventsAzuraCastError && e.code === 'not_found') continue
-      disableErrors.push(`${r.playlistId}: ${errText(e)}`.slice(0, 200))
-    }
-  }
-  await ctx.store.audit('events.playlists.disabled', 'event', ev.id, { playlists: disabled, errors: disableErrors, reason: 'start rollback' })
-  let queueError: string | null = null
-  try {
-    await ctx.az.clearQueue()
-  } catch (e) {
-    queueError = errText(e).slice(0, 200)
-    await ctx.store.audit('events.kick.queue_clear_failed', 'event', ev.id, { error: queueError, reason: 'start rollback' })
-  }
-  let restored: RestartOutcome
-  try {
-    restored = await restartAndConfirm(ctx)
-  } catch (e) {
-    restored = { ok: false, stage: 'restart', error: `rollback restart refused (${errText(e)})`, backend: 'unknown' }
-  }
-  await ctx.store.setBuild(build.id, { status: 'failed', lastError: `start kick: ${failure.error}; rolled back${restored.ok ? '' : ' — station still down'}`.slice(0, 300) })
-  const detail = { eventId: ev.id, buildId: build.id, when: whenLine(ev), stage: failure.stage, error: failure.error, disabled, disableErrors, queueError, ...diag }
-  if (restored.ok) {
-    await ctx.store.audit('events.kick.rolled_back', 'event', ev.id, { buildId: build.id, restored: true })
-    await ctx.alert(`start of event ${ev.id} failed — rolled back, Event station restored`, detail)
-    await postToTicket(ctx, ev.id, 'failed', 'The Events station could not start this event, so its playlists were switched off and the station was put back as it was. Staff have been alerted and will look at it.', `start_rolled_back:${ev.id}:b${build.id}`)
-    return
-  }
-  await ctx.store.audit('events.kick.rolled_back', 'event', ev.id, { buildId: build.id, restored: false, rollbackError: restored.error })
-  await ctx.alert(`EVENT STATION DOWN — manual action needed: start of event ${ev.id} failed and the rollback restart did not bring station 14 back (${restored.error}; backend ${restored.backend})`, { ...detail, rollbackError: restored.error, backend: restored.backend })
-  await postToTicket(ctx, ev.id, 'failed', 'The Events station could not start this event and is off the air. Staff have been alerted.', `start_down:${ev.id}:b${build.id}`)
 }
 
 // A start kick that ran out of attempts (loop.ts failure hook).
@@ -297,6 +170,17 @@ export async function endKick(ctx: EventsCtx, p: EventJobPayload<'end_kick'>): P
   const s = await ctx.store.settings()
   const rows = await ctx.store.registry(ev.id)
   const scope = playlistScope(ev, rows)
+  // Rolled back: its playlists were switched off and the station restarted
+  // without them, the ticket was told. Make sure they stay off, end it
+  // quietly (no restart — another event may be on air by now — and no
+  // "ended" post after "could not start").
+  if (await eventRolledBack(ctx, ev.id)) {
+    await disableAll(ctx, ev, rows, scope)
+    await ctx.store.setEventStatus(ev.id, ['built', 'live'], 'ended')
+    await ctx.store.audit('events.kick.end', 'event', ev.id, { rolledBack: true })
+    await ctx.store.enqueue('teardown', { eventId: ev.id }, { dedupeExtra: `v${ev.version}:end`, runAfter: new Date(ev.endsAt.getTime() + PLAYLIST_DELETE_AFTER_H * 3600_000) })
+    return
+  }
   const next = await ctx.store.eventStartingBetween(ev.id, end, end + s.events_gap_min * 60_000)
   if (next) {
     // Adjacent staff pair: B's start kick purges and restarts once.
@@ -411,6 +295,15 @@ export async function offAirRestart(ctx: EventsCtx, p: EventJobPayload<'off_air_
     if (r.playlistId === null) continue
     const pl = await ctx.az.getPlaylistOrNull(r.playlistId)
     if (pl && pl.is_enabled !== false) throw new Wait(OFF_AIR_WAIT_S, `playlist ${r.playlistId} of event ${ev.id} still enabled`, { maxAgeS: OFF_AIR_MAX_WAIT_S })
+  }
+  // Another event is on air (or inside its window): a restart now would cut
+  // it. This event's playlists are off and outside their rows, so they do
+  // not air; the next restart (that event's end, or its own start kick)
+  // drops them from the config.
+  const other = await ctx.store.eventOnAirAt(ev.id, ctx.now())
+  if (other) {
+    await ctx.store.audit('events.kick.off_air_deferred', 'event', ev.id, { reason: p.reason, onAir: other.id })
+    return
   }
   await clearQueueQuietly(ctx, ev.id)
   const outcome = await restartAndConfirm(ctx)

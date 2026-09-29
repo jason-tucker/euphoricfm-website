@@ -443,6 +443,10 @@ export class MemStore implements EventsStore {
     const e = this.events.filter((x) => x.id !== eventId && ['built', 'live'].includes(x.status) && x.startsAt.getTime() >= fromMs && x.startsAt.getTime() < toMs).sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())[0]
     return e ? { ...e } : null
   }
+  async eventOnAirAt(eventId: number, atMs: number) {
+    const e = this.events.find((x) => x.id !== eventId && ['built', 'live'].includes(x.status) && x.startsAt.getTime() <= atMs && x.endsAt.getTime() > atMs)
+    return e ? { ...e } : null
+  }
   async eventsByStatus(status: EventStatus, limit: number) {
     return this.events.filter((e) => e.status === status).slice(0, limit).map((e) => ({ ...e }))
   }

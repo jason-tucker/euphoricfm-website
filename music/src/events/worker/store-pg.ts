@@ -2,7 +2,7 @@
 // migration 0010). Jobs: event_jobs only; the music `jobs` table is never
 // read or written here.
 
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, sql } from 'drizzle-orm'
 import { audit as auditRow } from '../../server/audit'
 import type { DB } from '../../server/db/client'
 import { loadEventsSettings } from '../../server/admin/events-settings'
@@ -173,6 +173,15 @@ export class PgEventsStore implements EventsStore {
   async eventStartingBetween(eventId: number, fromMs: number, toMs: number): Promise<EventRow | null> {
     const r = await this.db.query.events.findFirst({
       where: and(ne(events.id, eventId), inArray(events.status, ['built', 'live']), gte(events.startsAt, new Date(fromMs)), lt(events.startsAt, new Date(toMs))),
+      orderBy: asc(events.startsAt),
+    })
+    return r ? toEvent(r) : null
+  }
+
+  async eventOnAirAt(eventId: number, atMs: number): Promise<EventRow | null> {
+    const at = new Date(atMs)
+    const r = await this.db.query.events.findFirst({
+      where: and(ne(events.id, eventId), inArray(events.status, ['built', 'live']), lte(events.startsAt, at), gt(events.endsAt, at)),
       orderBy: asc(events.startsAt),
     })
     return r ? toEvent(r) : null

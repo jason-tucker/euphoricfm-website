@@ -201,6 +201,24 @@ describe.skipIf(!DBENV())('events: create-attempt marker (worker store, orphan a
   })
 })
 
+describe.skipIf(!DBENV())('events: another event on air (worker store, off-air restart deferral)', () => {
+  it('finds a built/live event whose window contains the instant, never the asking event or one outside its window', async () => {
+    const u = await mkUser()
+    const ins = async (status: string, from: string, to: string) =>
+      (await ownerSql()`INSERT INTO events (owner_user_id, owner_discord_id, title, event_type, starts_at, ends_at, entered_tz, visibility, status)
+        VALUES (${u.id}, ${u.discordId}, 'T', 'other', now() + ${from}::interval, now() + ${to}::interval, 'UTC', 'public', ${status}) RETURNING id`)[0]!.id as number
+    const onAir = Number(await ins('live', '300 days', '300 days 2 hours'))
+    const asking = Number(await ins('ended', '299 days 23 hours', '300 days 1 hour'))
+    await ins('approved', '300 days', '300 days 2 hours') // not built: never counts
+    const store = new PgEventsStore(db())
+    const [{ t }] = (await ownerSql()`SELECT extract(epoch FROM now() + interval '300 days 1 hour') * 1000 AS t`) as unknown as { t: string }[]
+    const at = Number(t)
+    expect((await store.eventOnAirAt(asking, at))?.id).toBe(onAir)
+    expect(await store.eventOnAirAt(onAir, at)).toBeNull()
+    expect(await store.eventOnAirAt(asking, at + 2 * 3600_000)).toBeNull()
+  })
+})
+
 describe.skipIf(!DBENV())('events: settings module (manage only)', () => {
   const viewer = (perms: string[]): Viewer => ({ userId: randomUUID(), discordId: '123456789012345678', name: null, perms: new Set(perms) as Viewer['perms'] })
 

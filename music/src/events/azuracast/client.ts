@@ -612,8 +612,10 @@ export class EventsAzuraCastClient {
     return this.parse(status, text, z.array(queueEntry), 'queue')
   }
 
-  async getStatus(): Promise<z.infer<typeof statusRead>> {
-    const { status, text } = await this.#send('GET', this.sid('/status'))
+  // `timeoutMs`: the restart confirmation reads with a short timeout, so a
+  // hanging status endpoint cannot hold the kick (kicks.ts).
+  async getStatus(timeoutMs?: number): Promise<z.infer<typeof statusRead>> {
+    const { status, text } = await this.#send('GET', this.sid('/status'), timeoutMs ? { timeoutMs } : {})
     return this.parse(status, text, statusRead, 'status')
   }
 
@@ -739,15 +741,30 @@ export class EventsAzuraCastClient {
 
   // The queue-clear route: AzuraCast has no bulk clear on the station API
   // (only the admin debug route), so each queued row is deleted by id, each
-  // re-checked against a fresh queue read.
+  // re-checked against a fresh queue read. EVERY row is tried: one that
+  // fails does not keep the others in the queue; the failures are thrown
+  // together at the end (queue_delete_failed). A row that left the queue
+  // meanwhile (404, or gone from the fresh read) counts as cleared. The
+  // write gate (queues paused) still stops it at once.
   async clearQueue(): Promise<number> {
     const q = await this.getQueue()
     let n = 0
+    const failed: { id: number; error: string }[] = []
     for (const item of q) {
-      const { status } = await this.#send('DELETE', this.sid(`/queue/${item.id}`))
-      if (status === 200 || status === 404) n++
-      else throw new EventsAzuraCastError('queue_delete_failed', { id: item.id, status })
+      try {
+        const { status } = await this.#send('DELETE', this.sid(`/queue/${item.id}`))
+        if (status === 200 || status === 404) n++
+        else failed.push({ id: item.id, error: `http ${status}` })
+      } catch (e) {
+        if (e instanceof EventsAzuraCastError && e.code === 'refused_queues_paused') throw e
+        if (e instanceof EventsAzuraCastError && e.code === 'refused_queue_id') {
+          n++
+          continue
+        }
+        failed.push({ id: item.id, error: e instanceof EventsAzuraCastError ? e.code : e instanceof Error ? e.message : 'error' })
+      }
     }
+    if (failed.length > 0) throw new EventsAzuraCastError('queue_delete_failed', { failed: failed.slice(0, 20), cleared: n })
     return n
   }
 

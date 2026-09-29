@@ -18,7 +18,7 @@
 export type LiqPortOptions = {
   // mb_ereg's \w under PHP's default UTF-8 regex encoding is Unicode-aware
   // (Oniguruma "Word": Alphabetic, marks, decimal digits, connector
-  // punctuation, join controls). `asciiWord` runs the same pipeline with an
+  // punctuation — NOT the join controls: PHP 8.3 strips ZWJ/ZWNJ). `asciiWord` runs the same pipeline with an
   // ASCII-only \w, so the tests hold for either Oniguruma build.
   asciiWord?: boolean
 }
@@ -32,7 +32,7 @@ export const LIQUIDSOAP_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 //   str_replace(' ', '_', $result)
 //   mb_strtolower($result)
 // Oniguruma (UTF-8): \s = White_Space, \d = Nd (a subset of Word).
-const PROGRAMMATIC_STRIP_UNICODE = /[^\p{Alphabetic}\p{M}\p{Nd}\p{Pc}\p{Join_Control}\p{White_Space}\-_~,;[\]().]/gu
+const PROGRAMMATIC_STRIP_UNICODE = /[^\p{Alphabetic}\p{M}\p{Nd}\p{Pc}\p{White_Space}\-_~,;[\]().]/gu
 const PROGRAMMATIC_STRIP_ASCII = /[^A-Za-z0-9_\p{White_Space}\-~,;[\]().]/gu
 
 export function getProgrammaticString(str: string, opts: LiqPortOptions = {}): string {

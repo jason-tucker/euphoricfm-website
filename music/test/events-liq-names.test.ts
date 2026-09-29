@@ -141,6 +141,8 @@ describe('AzuraCast name → Liquidsoap variable (port)', () => {
     expect(cleanUpVarName('playlist_~')).toBe('playlist_~')
     expect(playlistShortName('1234')).toBe('station_1234')
     expect(getProgrammaticString('a..b...c')).toBe('a.b.c')
+    // PHP 8.3 mb_ereg's \w does not keep the join controls (verifier re-run)
+    expect(getProgrammaticString('a\u200db\u200cc')).toBe('abc')
     expect(getProgrammaticString('Ünï 🎉 x')).toBe('ünï__x')
     expect(getProgrammaticString('Ünï 🎉 x', { asciiWord: true })).toBe('n__x')
   })
