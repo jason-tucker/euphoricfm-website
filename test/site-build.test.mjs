@@ -220,11 +220,12 @@ test('pop-ups sit above the sticky top bar: outside <main> (a z-[1] stacking con
 test('the contact forms post to the same-origin relay; no page loads a runtime config or a delivery URL', () => {
   for (const page of ['index.html', 'events/index.html', 'player/index.html']) {
     const html = read(page);
-    // Substring checks on purpose: any occurrence anywhere is a failure
-    // (an unanchored host regex here trips CodeQL's missing-anchor rule).
+    // House rule: the info site never mentions Discord at all (the word, not
+    // just the host), and nothing delivery-related leaks into the page.
     const lower = html.toLowerCase();
-    assert.ok(!lower.includes('discord.com'), `${page} mentions discord.com`);
-    assert.ok(!lower.includes('api/webhooks'), `${page} mentions api/webhooks`);
+    for (const banned of ['discord', 'api/webhooks']) {
+      assert.equal(lower.indexOf(banned), -1, `${page} contains "${banned}"`);
+    }
     assert.doesNotMatch(html, /efm-runtime-config/, page);
     assert.doesNotMatch(html, /__EFM_CONFIG__\.contact|getWebhook/, page);
   }
