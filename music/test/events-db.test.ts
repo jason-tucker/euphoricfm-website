@@ -17,6 +17,7 @@ import { closeDb, getDb } from '@/server/db/client'
 import { DEFAULT_CAPS, MB } from '@/server/settings-defaults'
 import { admitUpload, siteStagedBytes } from '@/server/uploads/caps'
 import { sweepStaging } from '@/server/uploads/retention'
+import { addUploadToBatch, createBatch } from '@/server/submissions'
 import { eventRegistryPlaylistIds } from '@/worker/library/sync'
 import { PgEventsStore } from '@/events/worker/store-pg'
 import { ownerSql } from './helpers/db'
@@ -113,6 +114,48 @@ describe.skipIf(!DBENV())('events: per-site sweepers', () => {
     s = await st()
     expect(s[staleMusic]).toBe('expired')
     expect(s[attReady]).toBe('attached')
+  })
+
+  it('a music batch cannot attach an events upload (409, untouched); a music upload still attaches', async () => {
+    const u = await mkUser()
+    const v: Viewer = { userId: u.id, discordId: u.discordId, name: null, perms: new Set(['submit']) as Viewer['perms'] }
+    const spool = mkdtempSync(join(tmpdir(), 'ev-attach-'))
+    const ev = hex()
+    const mu = hex()
+    await ownerSql()`INSERT INTO uploads (id, owner_user_id, length, status, site) VALUES (${ev}, ${u.id}, ${50 * MB}, 'complete', 'events'), (${mu}, ${u.id}, ${1 * MB}, 'complete', 'music')`
+    const b = await createBatch(db(), v)
+    const eventsBefore = await siteStagedBytes(db(), 'events')
+    await expect(addUploadToBatch(db(), v, b.id, ev, spool)).rejects.toMatchObject({ status: 409, code: 'upload_not_available' })
+    const [row] = await ownerSql()`SELECT status, site FROM uploads WHERE id = ${ev}`
+    expect(row).toMatchObject({ status: 'complete', site: 'events' })
+    expect((await ownerSql()`SELECT count(*)::int AS n FROM items WHERE batch_id = ${b.id}`)[0]!.n).toBe(0)
+    expect(await siteStagedBytes(db(), 'events')).toBe(eventsBefore)
+    await expect(addUploadToBatch(db(), v, b.id, mu, spool)).resolves.toMatchObject({ status: 'probing' })
+    await ownerSql()`UPDATE uploads SET status = 'expired' WHERE owner_user_id = ${u.id}`
+  })
+
+  it('the events sweep expires and unlinks an events upload attached to anything but an event_audio row', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ev-sweep-foreign-'))
+    const u = await mkUser()
+    const foreign = hex()
+    const own = hex()
+    const musicAttached = hex()
+    for (const id of [foreign, own, musicAttached]) writeFileSync(join(dir, id), 'x')
+    // foreign: an events upload a music batch attached before the site check
+    await ownerSql()`INSERT INTO uploads (id, owner_user_id, length, status, site) VALUES
+      (${foreign}, ${u.id}, ${50 * MB}, 'attached', 'events'), (${own}, ${u.id}, ${1 * MB}, 'attached', 'events'), (${musicAttached}, ${u.id}, ${1 * MB}, 'attached', 'music')`
+    await mkAudio(u, own, 'probing')
+    const before = await siteStagedBytes(db(), 'events')
+    await sweepStaging(db(), dir, Date.now(), 'events')
+    const st = Object.fromEntries((await ownerSql()`SELECT id, status FROM uploads WHERE owner_user_id = ${u.id}`).map((r) => [r.id, r.status]))
+    expect(st[foreign]).toBe('expired')
+    expect(st[own]).toBe('attached')
+    expect(st[musicAttached]).toBe('attached')
+    expect(existsSync(join(dir, foreign))).toBe(false)
+    expect(existsSync(join(dir, own))).toBe(true)
+    expect(existsSync(join(dir, musicAttached))).toBe(true)
+    expect(await siteStagedBytes(db(), 'events')).toBe(before - 50 * MB)
+    await ownerSql()`UPDATE uploads SET status = 'expired' WHERE owner_user_id = ${u.id}`
   })
 
   it('the art sweep only touches this site\'s rows', async () => {
