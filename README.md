@@ -152,9 +152,10 @@ pnpm preview      # serve the built ./dist locally
 
 > Note: now-playing, the stream, song requests, and album art all call the live
 > AzuraCast instance at `euphoric.fm` directly in `pnpm dev`. The same-origin
-> `/api/*`, `/efm-art/*`, `/static/*`, and `/requests/*` proxies only exist in
-> the Caddy layer, so request submission and album-art colour theming behave
-> fully only against a Caddy/Docker build, not the bare dev server.
+> `/api/*`, `/efm-art/*`, `/static/*`, `/requests/*` and `/contact/*` proxies
+> only exist in the Caddy layer, so request submission, the contact forms and
+> album-art colour theming behave fully only against a Caddy/Docker build, not
+> the bare dev server.
 
 ## Configuration
 
@@ -284,7 +285,8 @@ removes that layer. Notable consequences baked into the config:
   Root X1, and **HTTP/3 is disabled** — some CEF builds hung negotiating QUIC.
 - Caddy also reverse-proxies the requests API (`/requests/*` →
   `efm-requests:3000`), the station stats API (`/stats/*`, same target — see
-  `server/stats.mjs`), the request-submit + library (`/api/*`), and album art
+  `server/stats.mjs`), the contact-form relay (`/contact/*`, same target), the
+  request-submit + library (`/api/*`), and album art
   (`/efm-art/*`, `/static/*`) — all same-origin workarounds for CORS.
 - A second host block serves `tickets.euphoric.gg` → `tickets-web:3000` over the
   shared external `efm-public-net` bridge.
