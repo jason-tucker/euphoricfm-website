@@ -8,7 +8,7 @@ import { E2E } from './helpers/env'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
 import { fxBuf } from './helpers/fixtures'
-import { control, Jar, req } from './helpers/http'
+import { control, fetchRetrySocket, Jar, req } from './helpers/http'
 import { tusUpload } from './helpers/tus'
 import { waitFor } from './helpers/wait'
 
@@ -46,7 +46,9 @@ function sign(body: string, deliveryId: string, t = Math.floor(Date.now() / 1000
 async function hook(body: unknown, opts: { deliveryId?: string; t?: number; sig?: string; headers?: Record<string, string> } = {}) {
   const raw = JSON.stringify(body)
   const deliveryId = opts.deliveryId ?? randomUUID()
-  const res = await fetch(`${process.env.E2E_WEB_URL}/api/hooks/tickets`, {
+  // fetchRetrySocket: the pooled keep-alive race (see helpers/http.ts). The
+  // body is a string (replayable) and the handler dedupes by delivery id.
+  const res = await fetchRetrySocket(`${process.env.E2E_WEB_URL}/api/hooks/tickets`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',

@@ -1,52 +1,69 @@
 // v0.4.0 SoundCloud-like media (what yt-dlp hands music-fetch for SoundCloud):
 // AAC in fragmented MP4 (hls_aac_160k), Opus in Ogg (hls_opus_64k), MP3
 // (http_mp3_128), plus hostile look-alikes. Made with ffmpeg (test image
-// only), once per run, in the fixture dir. Nothing here touches a network.
-import { execFileSync } from 'node:child_process'
+// only) by the global setup, in the fixture dir. Nothing here touches a network.
+import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { fxDir } from './fixtures'
 
-function ff(args: string[]) {
-  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args])
-}
+const FF = ['-hide_banner', '-loglevel', 'error', '-y']
 
 const noise = (d: number, r = 44100) => ['-f', 'lavfi', '-i', `anoisesrc=color=pink:amplitude=0.3:duration=${d}:sample_rate=${r}`]
 const FMP4 = ['-f', 'mp4', '-movflags', '+frag_keyframe+empty_moov+default_base_moof']
 
-const MAKERS: Record<string, (out: string) => void> = {
+// ffmpeg arguments per fixture (output path last)
+const MAKERS: Record<string, (out: string) => string[]> = {
   // SoundCloud's hls_aac_160k shape: fragmented MP4, AAC-LC 160 kbps, 44.1 kHz stereo
-  'sc-aac-40s.m4a': (o) => ff([...noise(40), '-ac', '2', '-c:a', 'aac', '-b:a', '160k', ...FMP4, o]),
-  'sc-aac-10m.m4a': (o) => ff([...noise(600), '-ac', '2', '-c:a', 'aac', '-b:a', '160k', ...FMP4, o]),
-  'sc-aac-16m.m4a': (o) => ff(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=960:sample_rate=44100', '-ac', '2', '-c:a', 'aac', '-b:a', '96k', ...FMP4, o]),
-  'sc-aac-25m.m4a': (o) => ff(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1500:sample_rate=22050', '-ac', '1', '-c:a', 'aac', '-b:a', '24k', ...FMP4, o]),
-  'sc-aac-10s.m4a': (o) => ff([...noise(10), '-ac', '2', '-c:a', 'aac', '-b:a', '160k', ...FMP4, o]),
+  'sc-aac-40s.m4a': (o) => [...noise(40), '-ac', '2', '-c:a', 'aac', '-b:a', '160k', ...FMP4, o],
+  'sc-aac-10m.m4a': (o) => [...noise(600), '-ac', '2', '-c:a', 'aac', '-b:a', '160k', ...FMP4, o],
+  'sc-aac-16m.m4a': (o) => ['-f', 'lavfi', '-i', 'sine=frequency=440:duration=960:sample_rate=44100', '-ac', '2', '-c:a', 'aac', '-b:a', '96k', ...FMP4, o],
+  'sc-aac-25m.m4a': (o) => ['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1500:sample_rate=22050', '-ac', '1', '-c:a', 'aac', '-b:a', '24k', ...FMP4, o],
+  'sc-aac-10s.m4a': (o) => [...noise(10), '-ac', '2', '-c:a', 'aac', '-b:a', '160k', ...FMP4, o],
   // v0.4.1: what a Go+ track gives a logged-out client: a 30 s preview (AAC and MP3)
-  'sc-aac-30s.m4a': (o) => ff([...noise(30), '-ac', '2', '-c:a', 'aac', '-b:a', '160k', ...FMP4, o]),
-  'sc-mp3-30s.mp3': (o) => ff([...noise(30), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '128k', '-id3v2_version', '0', '-write_id3v1', '0', o]),
+  'sc-aac-30s.m4a': (o) => [...noise(30), '-ac', '2', '-c:a', 'aac', '-b:a', '160k', ...FMP4, o],
+  'sc-mp3-30s.mp3': (o) => [...noise(30), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '128k', '-id3v2_version', '0', '-write_id3v1', '0', o],
   // v0.4.1: 860 s, just under the 320k limit (864 s), for the ladder's "longer of the two"
-  'sc-aac-860s.m4a': (o) => ff(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=860:sample_rate=44100', '-ac', '2', '-c:a', 'aac', '-b:a', '96k', ...FMP4, o]),
+  'sc-aac-860s.m4a': (o) => ['-f', 'lavfi', '-i', 'sine=frequency=440:duration=860:sample_rate=44100', '-ac', '2', '-c:a', 'aac', '-b:a', '96k', ...FMP4, o],
   // hls_opus_64k: Opus in Ogg, 48 kHz
-  'sc-opus-40s.opus': (o) => ff([...noise(40, 48000), '-ac', '2', '-c:a', 'libopus', '-b:a', '64k', '-f', 'ogg', o]),
+  'sc-opus-40s.opus': (o) => [...noise(40, 48000), '-ac', '2', '-c:a', 'libopus', '-b:a', '64k', '-f', 'ogg', o],
   // http_mp3_128
-  'sc-mp3-40s.mp3': (o) => ff([...noise(40), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '128k', '-id3v2_version', '0', '-write_id3v1', '0', o]),
+  'sc-mp3-40s.mp3': (o) => [...noise(40), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '128k', '-id3v2_version', '0', '-write_id3v1', '0', o],
   // refused: Vorbis in Ogg, MP3 inside MP4, AAC with a video stream
-  'sc-vorbis-40s.ogg': (o) => ff([...noise(40), '-ac', '2', '-c:a', 'libvorbis', '-f', 'ogg', o]),
-  'sc-mp3-in-mp4.m4a': (o) => ff([...noise(40), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '128k', ...FMP4, o]),
+  'sc-vorbis-40s.ogg': (o) => [...noise(40), '-ac', '2', '-c:a', 'libvorbis', '-f', 'ogg', o],
+  'sc-mp3-in-mp4.m4a': (o) => [...noise(40), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '128k', ...FMP4, o],
   'sc-aac-video.mp4': (o) =>
-    ff(['-f', 'lavfi', '-i', 'testsrc2=s=64x64:d=40', ...noise(40), '-map', '0:v', '-map', '1:a', '-c:v', 'mpeg4', '-c:a', 'aac', '-b:a', '128k', ...FMP4, o]),
+    ['-f', 'lavfi', '-i', 'testsrc2=s=64x64:d=40', ...noise(40), '-map', '0:v', '-map', '1:a', '-c:v', 'mpeg4', '-c:a', 'aac', '-b:a', '128k', ...FMP4, o],
   // artwork
-  'sc-art.jpg': (o) => ff(['-f', 'lavfi', '-i', 'testsrc2=s=500x500', '-frames:v', '1', '-q:v', '3', o]),
-  'sc-art.png': (o) => ff(['-f', 'lavfi', '-i', 'testsrc2=s=1200x1200', '-frames:v', '1', o]),
+  'sc-art.jpg': (o) => ['-f', 'lavfi', '-i', 'testsrc2=s=500x500', '-frames:v', '1', '-q:v', '3', o],
+  'sc-art.png': (o) => ['-f', 'lavfi', '-i', 'testsrc2=s=1200x1200', '-frames:v', '1', o],
 }
 
-// Path of a generated fixture (made on first use).
+// Every SoundCloud fixture, made once by the global setup (test/setup/
+// global.ts), so no test body runs a synchronous ffmpeg encode: a multi-second
+// execFileSync blocks the event loop, undici cannot expire its pooled
+// keep-alive sockets meanwhile, and the next request lands on one the server
+// already closed ("other side closed": the CI flake of runs 36502501091 and
+// 36507666514, in the 10-min AAC test). The encodes run concurrently
+// (independent ffmpeg processes; the caller's own synchronous work overlaps).
+export async function buildScFixtures(dir: string): Promise<void> {
+  const run = promisify(execFile)
+  await Promise.all(
+    Object.entries(MAKERS)
+      .filter(([name]) => !existsSync(join(dir, name)))
+      .map(([name, args]) => run('ffmpeg', [...FF, ...args(join(dir, name))])),
+  )
+}
+
+// Path of a fixture: made by the global setup; made here on first use only
+// when a file runs without it (a new maker, or a run outside test/run.sh).
 export function scFx(name: string): string {
   const out = join(fxDir(), name)
   if (!existsSync(out)) {
     const make = MAKERS[name]
     if (!make) throw new Error(`no SoundCloud fixture ${name}`)
-    make(out)
+    execFileSync('ffmpeg', [...FF, ...make(out)])
   }
   return out
 }
