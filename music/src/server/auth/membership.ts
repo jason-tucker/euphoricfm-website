@@ -10,7 +10,7 @@
 // * If Discord and the fallback are both unavailable: member-level actions may
 //   use a cache entry younger than 60 min; review+ actions fail closed (503).
 
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { DB } from '../db/client'
 import { memberCache, sessions } from '../db/schema'
 import { audit } from '../audit'
@@ -93,6 +93,39 @@ export async function revokeAllSessions(db: DB, userId: string, discordId: strin
 
 const inflight = new Map<string, Promise<Membership>>()
 
+const expiring = (t: { expiresAt: number | null }, nowMs: number) => t.expiresAt !== null && t.expiresAt * 1000 < nowMs + 60_000
+
+// v0.5.0: music-web and events-web share the `account` rows, and Discord
+// rotates the refresh token on every use, so two webs refreshing at once
+// would revoke each other. The refresh runs under a per-user advisory lock;
+// the tokens are re-read AFTER taking it (the other web may have refreshed
+// meanwhile), and a failed refresh re-reads once more before revoking (a
+// sign-in may have stored new tokens without the lock).
+async function refreshLocked(deps: MembershipDeps, userId: string, nowMs: number): Promise<{ accessToken: string } | { revoke: string }> {
+  return deps.db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${userId}))`)
+    const db = tx as unknown as DB // same query/update surface, inside the lock
+    const cur = await loadDiscordTokens(db, userId)
+    if (!cur) return { revoke: 'no_tokens' }
+    if (!expiring(cur, nowMs)) return { accessToken: cur.accessToken }
+    if (!cur.refreshToken) return { revoke: 'refresh_failed' }
+    const fresh = await refreshDiscordToken({
+      tokenUrl: deps.tokenUrl,
+      clientId: deps.clientId,
+      clientSecret: deps.clientSecret,
+      refreshToken: cur.refreshToken,
+      fetchImpl: deps.fetchImpl,
+    })
+    if (!fresh) {
+      const again = await loadDiscordTokens(db, userId)
+      if (again && again.refreshToken !== cur.refreshToken && !expiring(again, nowMs)) return { accessToken: again.accessToken }
+      return { revoke: 'refresh_failed' }
+    }
+    await storeDiscordTokens(db, cur.providerAccountId, { ...fresh, refreshToken: fresh.refreshToken ?? cur.refreshToken })
+    return { accessToken: fresh.accessToken }
+  })
+}
+
 export async function ensureFreshMembership(deps: MembershipDeps, user: { id: string; discordId: string }, level: Level): Promise<Membership> {
   const now = deps.now?.() ?? Date.now()
   const cached = await deps.db.query.memberCache.findFirst({ where: eq(memberCache.discordId, user.discordId) })
@@ -125,21 +158,10 @@ async function recheck(
   if (!tokens) return revoke('no_tokens')
 
   let accessToken = tokens.accessToken
-  if (tokens.expiresAt !== null && tokens.expiresAt * 1000 < nowMs + 60_000) {
-    if (!tokens.refreshToken) return revoke('refresh_failed')
-    const fresh = await refreshDiscordToken({
-      tokenUrl: deps.tokenUrl,
-      clientId: deps.clientId,
-      clientSecret: deps.clientSecret,
-      refreshToken: tokens.refreshToken,
-      fetchImpl: deps.fetchImpl,
-    })
-    if (!fresh) return revoke('refresh_failed')
-    await storeDiscordTokens(deps.db, tokens.providerAccountId, {
-      ...fresh,
-      refreshToken: fresh.refreshToken ?? tokens.refreshToken,
-    })
-    accessToken = fresh.accessToken
+  if (expiring(tokens, nowMs)) {
+    const r = await refreshLocked(deps, user.id, nowMs)
+    if ('revoke' in r) return revoke(r.revoke)
+    accessToken = r.accessToken
   }
 
   const r: DiscordMemberResult = await fetchGuildMember({
