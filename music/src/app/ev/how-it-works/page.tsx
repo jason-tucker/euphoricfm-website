@@ -128,7 +128,7 @@ const STEPS: Step[] = [
   },
   {
     title: 'Staff approve it',
-    body: 'The team approves (or explains why not) in the ticket. Once approved, your event is set up on EuphoricFM Event Radio before it starts. If you change songs, announcements, the time or the visibility after approval, it goes back for a quick re-approval; your slot stays held.',
+    body: 'The team approves (or explains why not) in the ticket. Once approved, your event is set up on EuphoricFM Event Radio before it starts. If you change the title, songs, announcements, the time or the visibility after approval, it goes back for a quick re-approval; your slot stays held.',
     mock: (
       <Mock title="My events">
         <div className="ev-mock-row">
@@ -179,7 +179,7 @@ const FAQ: { q: string; a: string }[] = [
   },
   {
     q: 'Can I change my event after submitting?',
-    a: 'Yes, from My events, until 30 minutes before it starts. Changing the description or host is instant; changing songs, announcements, the time or the visibility of an approved event sends it back for a quick re-approval.',
+    a: 'Yes, from My events, until 30 minutes before it starts. Changing the description or host is instant; changing the title, songs, announcements, the time or the visibility of an approved event sends it back for a quick re-approval.',
   },
 ]
 

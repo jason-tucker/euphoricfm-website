@@ -40,6 +40,7 @@ function QueueRow({ v }: { v: FullView }) {
           <StatusChip status={v.status} />
           {v.visibility === 'private' ? <span className="ev-tag">Private</span> : null}
           {v.shortNotice ? <span className="chip chip-pending">Short notice</span> : null}
+          {v.needsRebuild ? <span className="chip chip-bad">Needs rebuild</span> : null}
         </span>
         <span className="block text-sm text-cream/75">
           <When at={v.startsAt} end={v.endsAt} />
@@ -169,7 +170,10 @@ export function StaffDecision({ id, manage }: { id: number; manage: boolean }) {
           <Requester v={view} />
         </dd>
         <dt>Build</dt>
-        <dd>{view.buildStatus ?? 'Not built'}</dd>
+        <dd className="flex flex-wrap items-center gap-2">
+          {view.buildStatus ?? 'Not built'}
+          {view.needsRebuild ? <span className="chip chip-bad">Needs rebuild</span> : null}
+        </dd>
         <dt>Autobuild</dt>
         <dd>{config.autobuildEnabled ? 'On: approving queues the build' : 'Off: build by hand with "Build now"'}</dd>
       </dl>
@@ -177,6 +181,12 @@ export function StaffDecision({ id, manage }: { id: number; manage: boolean }) {
         <a className="btn btn-discord" href={view.ticketUrl} target="_blank" rel="noopener noreferrer">
           Open the ticket ↗
         </a>
+      ) : null}
+      {view.needsRebuild ? (
+        <Notice tone="warn">
+          Needs rebuild — press Build now. The event changed since its last build, so the station is still set up with the old songs, announcements or time.
+          {manage ? null : ' Ask a manager to press it.'}
+        </Notice>
       ) : null}
       {msg ? <Notice tone={msg.tone}>{msg.text}</Notice> : null}
       <div className="flex flex-wrap gap-3">

@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { resetConfigCache } from '@/events/components/hooks'
-import { StaffQueueView } from '@/events/components/Staff'
+import { StaffDecision, StaffQueueView } from '@/events/components/Staff'
 import { TzProvider } from '@/events/components/tz'
 import { DEFAULT_CONFIG, type FullView } from '@/events/components/types'
 import { stubFetch } from './fetch'
@@ -34,6 +34,7 @@ function view(over: Partial<FullView>): FullView {
     freezeAt: new Date(start - 30 * 60_000).toISOString(),
     canEdit: true,
     buildStatus: null,
+    needsRebuild: false,
     version: 1,
     denyReason: null,
     ownerName: null,
@@ -67,5 +68,40 @@ describe('staff queue rows', () => {
     expect(one.textContent).toContain('Requested by user0001 (Discord 700000000000000001) · 1 song · 0 announcements')
     const two = screen.getByText('Nameless').closest('a')!
     expect(two.textContent).toContain('Requested by Discord user 700000000000000001 · 2 songs · 0 announcements')
+  })
+})
+
+describe('staff: needs rebuild', () => {
+  beforeEach(() => resetConfigCache())
+
+  it('the queue row carries a Needs rebuild badge only when the build is stale', async () => {
+    stubFetch({
+      'GET /api/ev/config': { status: 200, body: { ...DEFAULT_CONFIG, eventsEnabled: true } },
+      'GET /api/ev/staff/queue': {
+        status: 200,
+        body: { pending: [], upcoming: [view({ id: 3, title: 'Stale', status: 'built', needsRebuild: true }), view({ id: 4, title: 'Fresh', status: 'built' })] },
+      },
+    })
+    render(
+      <TzProvider>
+        <StaffQueueView manage={true} />
+      </TzProvider>,
+    )
+    expect((await screen.findByText('Stale')).closest('a')!.textContent).toContain('Needs rebuild')
+    expect(screen.getByText('Fresh').closest('a')!.textContent).not.toContain('Needs rebuild')
+  })
+
+  it('the staff event page says to press Build now', async () => {
+    stubFetch({
+      'GET /api/ev/config': { status: 200, body: { ...DEFAULT_CONFIG, eventsEnabled: true } },
+      'GET /api/ev/events/5': { status: 200, body: view({ id: 5, status: 'built', needsRebuild: true }) },
+    })
+    render(
+      <TzProvider>
+        <StaffDecision id={5} manage={true} />
+      </TzProvider>,
+    )
+    expect(await screen.findByText(/Needs rebuild — press Build now/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Build now' })).toBeTruthy()
   })
 })

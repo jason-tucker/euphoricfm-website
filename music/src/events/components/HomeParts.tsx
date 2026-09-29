@@ -21,7 +21,7 @@ export function rulesList(c: EvConfig): string[] {
     `Changes lock ${c.freezeMin} minutes before your event starts. After that, ask in your ticket.`,
     `Songs are never cut off: a pinned song waits for the song before it to end. The last song may run up to ${c.endWaitS} seconds past the end of your event.`,
     'Announcements cut in at their time, then the music carries on.',
-    'Changing an approved event (songs, announcements, time or visibility) sends it back for a quick re-approval. Your slot stays held.',
+    'Changing an approved event (title, songs, announcements, time or visibility) sends it back for a quick re-approval. Your slot stays held.',
   ]
 }
 

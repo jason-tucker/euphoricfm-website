@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { EventEditor } from '@/events/components/EventEditor'
+import { EventEditor, patchNeedsReapproval } from '@/events/components/EventEditor'
 import { resetConfigCache } from '@/events/components/hooks'
 import { TzProvider } from '@/events/components/tz'
 import { DEFAULT_CONFIG, type FullView } from '@/events/components/types'
@@ -147,5 +147,55 @@ describe('event editor: saved playlist titles come from the server labels', () =
     expect(screen.queryByText(/Library song #/)).toBeNull()
     expect(screen.queryByText(/Upload #/)).toBeNull()
     expect(screen.getByTestId('pb-length').textContent).toBe('Songs: 2 h · Event: 2 h')
+  })
+})
+
+describe('event editor: re-approval and rebuild notes', () => {
+  beforeEach(() => resetConfigCache())
+
+  it('title, time and visibility patches need re-approval; details do not', () => {
+    expect(patchNeedsReapproval({ title: 'New name' })).toBe(true)
+    expect(patchNeedsReapproval({ startsAt: 'x', endsAt: 'y' })).toBe(true)
+    expect(patchNeedsReapproval({ visibility: 'private' })).toBe(true)
+    expect(patchNeedsReapproval({ description: 'x', hostName: 'y', location: 'z', eventType: 'party' })).toBe(false)
+  })
+
+  it('a member renaming an approved event is asked to confirm re-approval first', async () => {
+    const v = view({ status: 'approved' })
+    const calls = stubFetch({ ...base(v), 'PATCH /api/ev/events/42': { status: 200, body: { event: { ...v, status: 'pending', title: 'Renamed', version: 4 } } } })
+    render(
+      <TzProvider>
+        <EventEditor id={42} staff={false} viewerDiscordId={OWNER} />
+      </TzProvider>,
+    )
+    expect(await screen.findByText(/Changing its title, songs, announcements, time or visibility/)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText(/Event title/), { target: { value: 'Renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    const confirm = await screen.findByRole('button', { name: 'Save and send for re-approval', hidden: true })
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(0)
+    fireEvent.click(confirm)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(1))
+    expect(calls.find((c) => c.method === 'PATCH')!.body).toMatchObject({ title: 'Renamed', version: 3 })
+  })
+
+  it('the owner is told staff will reload changes when the build is stale', async () => {
+    stubFetch(base(view({ status: 'built', needsRebuild: true })))
+    render(
+      <TzProvider>
+        <EventEditor id={42} staff={false} viewerDiscordId={OWNER} />
+      </TzProvider>,
+    )
+    expect(await screen.findByText(/Staff will reload your changes into the station/)).toBeTruthy()
+  })
+
+  it('no rebuild note when the build is current', async () => {
+    stubFetch(base(view({ status: 'built', needsRebuild: false })))
+    render(
+      <TzProvider>
+        <EventEditor id={42} staff={false} viewerDiscordId={OWNER} />
+      </TzProvider>,
+    )
+    await screen.findByRole('button', { name: 'Save playlist' })
+    expect(screen.queryByText(/Staff will reload your changes/)).toBeNull()
   })
 })

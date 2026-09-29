@@ -100,8 +100,8 @@ export function patchFor(v: FullView, d: Draft, startsAt: string | null, endsAt:
   return p
 }
 
-/** Does a patch touch anything that needs re-approval (time, visibility)? */
-export const patchNeedsReapproval = (p: Record<string, unknown>) => 'startsAt' in p || 'visibility' in p
+/** Does a patch touch anything that needs re-approval (title, time, visibility)? */
+export const patchNeedsReapproval = (p: Record<string, unknown>) => 'title' in p || 'startsAt' in p || 'visibility' in p
 
 export function EventEditor({ id, staff, viewerDiscordId }: { id: number; staff: boolean; viewerDiscordId: string }) {
   const [reload, setReload] = useState(0)
@@ -262,9 +262,12 @@ function EditorBody({
           </Notice>
         ) : reapproval ? (
           <Notice tone="warn">
-            This event is approved. Changing its songs, announcements, time or visibility sends it back to Pending for a quick re-approval (your slot stays held, and the
+            This event is approved. Changing its title, songs, announcements, time or visibility sends it back to Pending for a quick re-approval (your slot stays held, and the
             ticket gets the list of changes). Changing only the description or host does not.
           </Notice>
+        ) : null}
+        {view.needsRebuild && own && !staff ? (
+          <Notice tone="info">Your latest changes are saved. Staff will reload your changes into the station before the event.</Notice>
         ) : null}
         {msg ? <Notice tone={msg.tone}>{msg.text}</Notice> : null}
       </section>
