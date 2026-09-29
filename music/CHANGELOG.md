@@ -1,5 +1,25 @@
 # Changelog — EFM Music Portal (`music/`)
 
+## [0.5.0] — 2026-09-29 — EFM Events Portal foundation (events.euphoric.fm)
+
+The same app, run a second time with `PORTAL_SITE=events`, becomes the Events portal (plan: vault *EFM Events Portal — Plan* v2.1). This entry is the contract commit the events workstreams build on; the music site (`PORTAL_SITE` unset or `music`) behaves as before.
+
+### Added
+- **Events contract** `src/events/contract/`: shared types (`EventView` projections, statuses, tracks, announcements), zod schemas for every `/api/ev` request and response, event job kinds and strict payloads with dedupe keys, `events_*` settings keys + defaults + `resolveEventsSettings`, the custom-audio path builder (`Events/Uploads/<snowflake>/evt-a<id>.mp3`), the library / stinger path regexes and the strict public playlist-name sanitizer (`mainName`, `~EVT<id> s<n>` / `a<n>`), and the plan's fixed rules as constants. `src/events/enqueue.ts` validates a payload before writing `event_jobs`.
+- Migration `0010_v050_events` (drizzle-kit, additive): `events`, `event_tracks`, `event_announcements`, `event_audio`, `event_builds`, `event_registry` (unique non-null `playlist_id`), `event_stingers`, `event_jobs` (same shape as `jobs`), and `uploads.site` / `art_uploads.site` (`music` default, checked `music` | `events`).
+- **`PORTAL_SITE`** (web env, `music` default | `events`) and **`loadEventsWorkerEnv`** for the events worker: `EVENTS_AZURACAST_API_KEY`, `EVENTS_STATION_ID` (must be 14), `AZURACAST_BASE_URL` (bare origin, https), `EVENTS_TICKETS_WRITE_KEY`, `TICKETS_API_BASE`, `PORTAL_ORIGIN` (default `https://events.euphoric.fm`), `EVENTS_CANARY_STATION_IDS` (default `1,7`, never 14).
+- **Site gate** (`src/server/http/site-gate.ts`, first thing in `middleware()`): on events, page paths are rewritten into `app/ev` (so Auth.js's `/denied` lands on `/ev/denied`), only `/api/ev/**`, `/api/auth/**`, `/api/health` and the tus routes are served, and everything else is a 404 (`/api/uploads/art/**` refuses in its own route, since the middleware skips `/api/uploads`); on music, `/ev/**` and `/api/ev/**` are a 404. Paths are checked percent-decoded; decoded dot segments, backslashes and NUL are refused.
+- **Events settings module** (`src/server/admin/events-settings.ts`): `loadEventsSettings`, and `manage`-only `getEventsSettings` / `putEventsSettings` (strict partial patch, audited `events.settings.update`) for `GET/PUT /api/ev/admin/settings`. The music admin form is unchanged.
+- Tests: `test/events-contract.test.ts` (pure) and `test/events-db.test.ts` (Postgres).
+
+### Changed
+- **Env isolation both ways:** music web and music worker refuse any `EVENTS_*` key; the events web refuses every AzuraCast and tickets write key (music's and events'); the events worker refuses `AZURACAST_API_KEY`, `TICKETS_WRITE_KEY` and the web secrets.
+- **CSP:** the events site adds `https://euphoric.fm` to `media-src` and `connect-src` (the Event station stream and now-playing); music's policy is unchanged.
+- **Uploads:** the tus route stamps `uploads.site`; on events it refuses a create unless `events_uploads_enabled` (`403 uploads_disabled`) and the upload must also fit `events_staging_budget_bytes` (events' own uploading / complete / attached bytes, under the same staging lock; `503 staging_full`). The per-user in-flight cap also counts attached uploads whose `event_audio` is probing, ready or ingesting.
+- **Sweepers:** the staging and album-art sweeps only touch rows of their own site; the item passes run on music only, and events expires an attached upload once its audio is live, rejected, failed or deleted.
+- **Discord token refresh** (`auth/membership.ts`): music-web and events-web share the `account` rows, so a refresh runs under `pg_advisory_xact_lock(hashtext(userId))`, re-reads the tokens after the lock (uses the other web's refresh), and after a failed refresh re-reads once more before revoking.
+- **Library sync:** the foreign playlist set is `foreign_playlist_ids` ∪ every `event_registry.playlist_id`, so event playlists are never absorbed into the station set or alerted on.
+
 ## [0.4.0] — 2026-09-28 — Add songs from a SoundCloud link (P5)
 
 Owner request (Jason): "Direct SoundCloud links auto-download the MP3 plus info, which the user can edit." Decisions: any **public** SoundCloud track link, with the existing rights attestation; in the browser only.
