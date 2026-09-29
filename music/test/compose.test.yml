@@ -75,7 +75,8 @@ x-events-web-env: &events-web-env
 x-events-worker-env: &events-worker-env
   DATABASE_URL: postgres://music_app:test-only-app-password-000000@music-db:5432/music
   EVENTS_STATION_ID: "14"
-  EVENTS_CANARY_STATION_IDS: "1,7"
+  # As in production (one AzuraCast account since 2026-09-29): 7 only.
+  EVENTS_CANARY_STATION_IDS: "7"
   AZURACAST_BASE_URL: http://mocks:4103
   EVENTS_AZURACAST_API_KEY: test-events-azuracast-key-0000
   PORTAL_ORIGIN: https://events.euphoric.fm

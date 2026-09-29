@@ -141,6 +141,18 @@ guard "web secret in worker env refuses"   "another service" -e AUTH_SECRET=x
 GUARD_SVC=events-worker
 guard "events-worker: music AzuraCast key refuses" "AZURACAST_API_KEY" -e AZURACAST_API_KEY=test-azuracast-key-0000
 guard "events-worker: station 1 refuses" "EVENTS_STATION_ID must be 14" -e EVENTS_STATION_ID=1
+# The key self-check with the default canary (7; one AzuraCast account since
+# 2026-09-29, so station 1 is no canary): a key that can read station 7 (the
+# mock's events key switched to superadmin-like reads) must refuse to start.
+mockmode() { # superadmin true|false, via the mock control API from inside the stack
+  $DC run --rm --no-deps -T --entrypoint node events-worker -e "fetch('http://mocks:4100/__mock/az/events-mode',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({superadmin:$1})}).then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))" >/dev/null 2>&1
+}
+if mockmode true; then
+  guard "events-worker: a key that reads canary station 7 refuses" "self_check_canary_not_403"
+  mockmode false || { echo "  FAIL could not reset the mock events key"; gc=1; }
+else
+  echo "  FAIL could not switch the mock events key to superadmin"; gc=1
+fi
 GUARD_SVC=music-worker
 guard "music worker: an EVENTS_* key refuses" "EVENTS_AZURACAST_API_KEY" -e EVENTS_AZURACAST_API_KEY=test-events-azuracast-key-0000
 out=$($DC run --rm --no-deps -T -e AUTH_SECRET=x --entrypoint python music-fetch -I -B -m fetchsvc --once 2>&1) && rc=0 || rc=$?
