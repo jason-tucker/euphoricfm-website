@@ -112,3 +112,39 @@ describe('event editor: version guard and restart confirmation', () => {
     expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(1)
   })
 })
+
+describe('event editor: saved playlist titles come from the server labels', () => {
+  beforeEach(() => {
+    resetConfigCache()
+    window.localStorage.clear() // fresh session: no library-search memory
+  })
+
+  it("staff opening another member's event see real titles, artists and the length estimate", async () => {
+    const v = view({
+      tracks: [
+        { position: 0, source: 'library', mediaId: 501, audioId: null, pinAt: null, label: { title: 'Midnight Drive', artist: 'Nova', lengthS: 3600 } },
+        { position: 1, source: 'upload', mediaId: null, audioId: 77, pinAt: null, label: { title: 'Member mix', artist: null, lengthS: 3600 } },
+      ],
+      announcements: [
+        { id: 9, source: 'upload', mediaId: null, audioId: 78, mode: 'every', at: null, everyMin: 30, from: null, until: null, label: { title: 'Welcome drop', artist: null, lengthS: 8 } },
+      ],
+    })
+    const a = v.announcements[0]!
+    a.from = v.startsAt
+    a.until = v.endsAt
+    // staff's own audio list does not hold the member's uploads
+    stubFetch(base(v))
+    render(
+      <TzProvider>
+        <EventEditor id={42} staff={true} viewerDiscordId="999999999999999999" />
+      </TzProvider>,
+    )
+    expect(await screen.findByText('Midnight Drive')).toBeTruthy()
+    expect(screen.getByText(/Nova · 1:00:00/)).toBeTruthy()
+    expect(screen.getByText('Member mix')).toBeTruthy()
+    expect(screen.getByText('Welcome drop')).toBeTruthy()
+    expect(screen.queryByText(/Library song #/)).toBeNull()
+    expect(screen.queryByText(/Upload #/)).toBeNull()
+    expect(screen.getByTestId('pb-length').textContent).toBe('Songs: 2 h · Event: 2 h')
+  })
+})

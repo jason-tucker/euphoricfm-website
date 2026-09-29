@@ -28,27 +28,35 @@ import { checkDetails, checkTime, type Draft, enteredTz, withoutSelf } from './w
 const RE_APPROVAL_STATUSES = new Set(['approved', 'built'])
 const WITHDRAWABLE = new Set(['draft', 'pending', 'approved', 'built'])
 
+/**
+ * Rebuild the playlist builder from a saved event. The server resolves a
+ * display `label` (title, artist, length) on every track and announcement, so
+ * staff and fresh sessions see real names; the viewer's own audio list, the
+ * stinger list and this browser's library-search memory are only fallbacks.
+ */
 export function builderFromView(v: FullView, audio: AudioItem[], stingers: Stinger[]): Builder {
   const tracks: BTrack[] = [...v.tracks]
     .sort((a: EventTrack, b: EventTrack) => a.position - b.position)
     .map((t) => {
+      const l = t.label
       if (t.source === 'upload') {
-        const a = audio.find((x) => x.id === t.audioId)
-        return { key: newKey(), source: 'upload', mediaId: null, audioId: t.audioId, title: a?.title ?? `Upload #${t.audioId}`, artist: a?.artist ?? null, lengthS: a?.durationS ?? null, pinAt: t.pinAt }
+        const a = l ? null : audio.find((x) => x.id === t.audioId)
+        return { key: newKey(), source: 'upload', mediaId: null, audioId: t.audioId, title: l?.title ?? a?.title ?? `Upload #${t.audioId}`, artist: l ? l.artist : (a?.artist ?? null), lengthS: l ? l.lengthS : (a?.durationS ?? null), pinAt: t.pinAt }
       }
-      const r = t.mediaId ? recallTitle(t.mediaId) : null
-      return { key: newKey(), source: 'library', mediaId: t.mediaId, audioId: null, title: r?.title ?? `Library song #${t.mediaId}`, artist: r?.artist ?? null, lengthS: r?.lengthS ?? null, pinAt: t.pinAt }
+      const r = !l && t.mediaId ? recallTitle(t.mediaId) : null
+      return { key: newKey(), source: 'library', mediaId: t.mediaId, audioId: null, title: l?.title ?? r?.title ?? `Library song #${t.mediaId}`, artist: l ? l.artist : (r?.artist ?? null), lengthS: l ? l.lengthS : (r?.lengthS ?? null), pinAt: t.pinAt }
     })
   const anns: BAnn[] = v.announcements.map((a) => {
-    const st = a.source === 'stinger' ? stingers.find((s) => s.mediaId === a.mediaId) : null
-    const up = a.source === 'upload' ? audio.find((x) => x.id === a.audioId) : null
+    const l = a.label
+    const st = !l && a.source === 'stinger' ? stingers.find((s) => s.mediaId === a.mediaId) : null
+    const up = !l && a.source === 'upload' ? audio.find((x) => x.id === a.audioId) : null
     return {
       key: newKey(),
       source: a.source,
       mediaId: a.mediaId,
       audioId: a.audioId,
-      title: st?.title ?? up?.title ?? (a.source === 'stinger' ? `Announcement #${a.mediaId}` : `Upload #${a.audioId}`),
-      lengthS: st?.lengthS ?? up?.durationS ?? null,
+      title: l?.title ?? st?.title ?? up?.title ?? (a.source === 'stinger' ? `Announcement #${a.mediaId}` : `Upload #${a.audioId}`),
+      lengthS: l ? l.lengthS : (st?.lengthS ?? up?.durationS ?? null),
       mode: a.mode,
       at: a.at,
       everyMin: a.everyMin,

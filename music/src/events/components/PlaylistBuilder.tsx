@@ -31,8 +31,8 @@ import { useTz } from './tz'
 let keySeq = 0
 export const newKey = () => `k${++keySeq}-${Date.now().toString(36)}`
 
-// Library titles for ids the event view does not name (FullView tracks carry
-// ids only): remembered from search results in this browser.
+// Library titles remembered from search results in this browser: a fallback
+// for a saved track whose view carries no server-resolved `label`.
 const TITLE_KEY = 'efm_ev_titles'
 export function rememberTitles(rows: LibrarySong[]) {
   try {
