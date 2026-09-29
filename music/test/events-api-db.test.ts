@@ -222,6 +222,11 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
       expect(builds.at(-1)!.payload).toEqual({ eventId: ev.id, version: ev.version })
       expect(await codeOf(svc.buildNow(db(), owner, ev.id))).toBe('forbidden')
       expect(await svc.buildNow(db(), staff, ev.id)).toEqual({ queued: true })
+      // 0.5.2: a start kick that rolled the event back leaves it `failed`;
+      // Build now stays allowed (it is how staff put it back on air)
+      await ownerSql()`UPDATE events SET status = 'failed' WHERE id = ${ev.id}`
+      expect(await svc.buildNow(db(), staff, ev.id, { now: () => Date.now() + 61_000 })).toEqual({ queued: true })
+      await ownerSql()`UPDATE events SET status = 'approved' WHERE id = ${ev.id}`
     } finally {
       await setSetting('events_autobuild_enabled', false)
     }

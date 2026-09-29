@@ -7,11 +7,12 @@
 //     reads in a row). A restart that fails or a backend that does not come
 //     up (Liquidsoap refusing the regenerated config — the 2026-09-29
 //     station-14 outage) is ROLLED BACK at once, never retried into the
-//     same config: every playlist of the event is disabled, the queue is
-//     purged (the AutoDJ may already have queued a song from the event's
-//     playlists — seen in the outage: it kept playing after the manual
-//     disable + restart), the backend is restarted once more and confirmed,
-//     the build is marked failed, staff are alerted and the ticket is told. A rollback restart that does not
+//     same config (station.ts rollbackEvent): every playlist of the event is
+//     disabled, the queue is purged (the AutoDJ may already have queued a
+//     song from the event's playlists — seen in the outage), the backend is
+//     restarted once more and confirmed, and the EVENT becomes `failed` —
+//     the one record of it: later start / end kicks skip it, only a staff
+//     Build now re-arms it. Staff are alerted and the ticket is told. A rollback restart that does not
 //     bring the station back pages "EVENT STATION DOWN" and stops. Never a
 //     restart loop (the efm watchdog has its own 10-min cooldown);
 //   * end kick at the end: wait for the song that was playing at the end to
@@ -42,7 +43,7 @@ import type { EventsCtx } from '../ctx'
 import { Permanent, Retry, Wait, waitUntil } from '../errors'
 import type { EventRow, RegistryRow } from '../store'
 import { buildIsCurrent, staleJob } from './build'
-import { bannerNow, eventRolledBack, playlistScope, restartAndConfirm, rollbackEvent } from './station'
+import { bannerNow, playlistScope, restartAndConfirm, rollbackEvent } from './station'
 import { postToTicket, whenLine } from './tickets'
 
 export { confirmBackendRunning, restartAndConfirm, type RestartOutcome } from './station'
@@ -78,15 +79,12 @@ async function disableAll(ctx: EventsCtx, ev: EventRow, rows: readonly RegistryR
 export async function startKick(ctx: EventsCtx, p: EventJobPayload<'start_kick'>): Promise<void> {
   const ev = await ctx.store.getEvent(p.eventId)
   if (!ev) throw new Permanent('event missing')
+  // Only built / live events are kicked. A `failed` event was rolled back by
+  // an earlier kick (of this or another version): never restart into it
+  // again, and no "press Build now" page on top of the rollback's own. Only
+  // a staff Build now re-arms it (build.ts).
   if (!KICKABLE.includes(ev.status)) {
     await staleJob(ctx, 'start_kick', ev, {})
-    return
-  }
-  // Rolled back by an earlier kick (of this or another version) and not
-  // rebuilt since: never restart into it again, and no "press Build now"
-  // page on top of the rollback's own. Build now re-arms a fresh kick.
-  if (await eventRolledBack(ctx, ev.id)) {
-    await ctx.store.audit('events.kick.skipped', 'event', ev.id, { kind: 'start', reason: 'rolled back; Build now re-arms' })
     return
   }
   const build = await ctx.store.latestAppliedBuild(ev.id)
@@ -160,7 +158,7 @@ export async function endKick(ctx: EventsCtx, p: EventJobPayload<'end_kick'>): P
   // off the station, so an edit that bumped the version without a rebuild
   // (autobuild off) must not strand it. A rebuilt version's own end kick
   // then finds the event ended and skips.
-  if (!KICKABLE.includes(ev.status)) {
+  if (!KICKABLE.includes(ev.status) && ev.status !== 'failed') {
     await staleJob(ctx, 'end_kick', ev, {})
     return
   }
@@ -170,14 +168,13 @@ export async function endKick(ctx: EventsCtx, p: EventJobPayload<'end_kick'>): P
   const s = await ctx.store.settings()
   const rows = await ctx.store.registry(ev.id)
   const scope = playlistScope(ev, rows)
-  // Rolled back: its playlists were switched off and the station restarted
-  // without them, the ticket was told. Make sure they stay off, end it
-  // quietly (no restart — another event may be on air by now — and no
-  // "ended" post after "could not start").
-  if (await eventRolledBack(ctx, ev.id)) {
+  // Rolled back (`failed`): its playlists were switched off and the station
+  // restarted without them, the ticket was told. Make sure they stay off and
+  // schedule the teardown — no restart (another event may be on air by now)
+  // and no "ended" post after "could not start". It stays `failed`.
+  if (ev.status === 'failed') {
     await disableAll(ctx, ev, rows, scope)
-    await ctx.store.setEventStatus(ev.id, ['built', 'live'], 'ended')
-    await ctx.store.audit('events.kick.end', 'event', ev.id, { rolledBack: true })
+    await ctx.store.audit('events.kick.end', 'event', ev.id, { failed: true })
     await ctx.store.enqueue('teardown', { eventId: ev.id }, { dedupeExtra: `v${ev.version}:end`, runAfter: new Date(ev.endsAt.getTime() + PLAYLIST_DELETE_AFTER_H * 3600_000) })
     return
   }
@@ -238,7 +235,10 @@ export async function teardown(ctx: EventsCtx, p: EventJobPayload<'teardown'>): 
   const s = await ctx.store.settings()
   const onAirWindow = now >= ev.startsAt.getTime() && now < ev.endsAt.getTime() + s.events_end_wait_s * 1000
   if (KICKABLE.includes(ev.status)) return
-  if (ev.status === 'ended') {
+  // Ended, or `failed` (rolled back: its playlists are already off and the
+  // station was restarted without them — no off-air restart): deleted 24 h
+  // after the end.
+  if (ev.status === 'ended' || ev.status === 'failed') {
     const due = ev.endsAt.getTime() + PLAYLIST_DELETE_AFTER_H * 3600_000
     if (now < due) throw waitUntil(now, due, 'teardown after the end')
     await deleteAll(ctx, ev, rows, scope)
@@ -259,6 +259,10 @@ export async function teardown(ctx: EventsCtx, p: EventJobPayload<'teardown'>): 
 // ----------------------------------------------------- off-air restart --
 
 const OFF_AIR_WAIT_S = 15
+// Deferred behind another event on air: until its end + 2 min, and never
+// for more than 2 days in all.
+const OFF_AIR_DEFER_AFTER_S = 120
+const OFF_AIR_DEFER_MAX_AGE_S = 2 * 24 * 3600
 const OFF_AIR_MAX_WAIT_S = 3600
 
 // Like the start kick: one retry after START_KICK_RETRY_S, then the job is
@@ -298,12 +302,13 @@ export async function offAirRestart(ctx: EventsCtx, p: EventJobPayload<'off_air_
   }
   // Another event is on air (or inside its window): a restart now would cut
   // it. This event's playlists are off and outside their rows, so they do
-  // not air; the next restart (that event's end, or its own start kick)
-  // drops them from the config.
-  const other = await ctx.store.eventOnAirAt(ev.id, ctx.now())
+  // not air meanwhile; the restart runs 2 min after that event's end (a
+  // wait, bounded by the job's age — then it is dead and staff are paged).
+  const nowMs = ctx.now()
+  const other = await ctx.store.eventOnAirAt(ev.id, nowMs)
   if (other) {
     await ctx.store.audit('events.kick.off_air_deferred', 'event', ev.id, { reason: p.reason, onAir: other.id })
-    return
+    throw waitUntil(nowMs, other.endsAt.getTime() + OFF_AIR_DEFER_AFTER_S * 1000, `event ${other.id} on air`, OFF_AIR_DEFER_MAX_AGE_S)
   }
   await clearQueueQuietly(ctx, ev.id)
   const outcome = await restartAndConfirm(ctx)

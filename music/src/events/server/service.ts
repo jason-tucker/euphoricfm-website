@@ -486,7 +486,9 @@ export async function buildNow(db: DB, actor: Actor, id: number, clock?: Clock):
   const now = nowOf(clock)
   return db.transaction(async (tx) => {
     const ev = await loadOwned(tx, actor, id, true)
-    if (!MAY_BE_BUILT.includes(ev.status as EventStatus) || ev.endsAt.getTime() <= now) throw clash('not_editable')
+    // `failed` = rolled back by a start kick (0.5.2): Build now is how staff
+    // put it back on air (the worker re-arms exactly one start kick).
+    if (!(MAY_BE_BUILT.includes(ev.status as EventStatus) || ev.status === 'failed') || ev.endsAt.getTime() <= now) throw clash('not_editable')
     // Permanent dedupe keys: one per version per minute (a second press in
     // the same minute is a no-op; a later press can retry).
     await enqueueEventJob(tx, 'build_now', { eventId: ev.id }, { dedupeExtra: `v${ev.version}:${Math.floor(now / MIN)}` })

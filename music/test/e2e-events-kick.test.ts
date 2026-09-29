@@ -132,7 +132,7 @@ describe.skipIf(!EVENTS_E2E())('events start kick: restart confirmation + rollba
     const failed = (await audits('events.kick.start_failed', 'event', String(id)))[0]!
     expect(failed.detail).toMatchObject({ stage: 'not_running', backend: 'not running' })
     const [ev] = (await ownerSql()`SELECT status FROM events WHERE id = ${id}`) as unknown as { status: string }[]
-    expect(ev!.status).toBe('built')
+    expect(ev!.status).toBe('failed') // the one record of the rollback (hidden publicly; Build now re-arms)
     const [build] = (await ownerSql()`SELECT status, last_error FROM event_builds WHERE event_id = ${id} ORDER BY id DESC LIMIT 1`) as unknown as { status: string; last_error: string }[]
     expect(build!.status).toBe('failed')
     expect(build!.last_error).toContain('rolled back')

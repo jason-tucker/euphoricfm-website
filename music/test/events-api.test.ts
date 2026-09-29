@@ -31,6 +31,7 @@ import { diffLines, editedBody, type DiffSide } from '@/events/server/tickets-ou
 import { etDatesSpanned, onGrid, overlapsNightlyRestart } from '@/events/server/time'
 import { fullView, publicView, viewEvent, type EventRecord, type FullExtras } from '@/events/server/view'
 import * as svc from '@/events/server/service'
+import { EVENT_STATUS } from '@/events/components/labels'
 
 const H = 3600_000
 const M = 60_000
@@ -439,6 +440,15 @@ describe('viewEvent privacy (every surface uses this projection)', () => {
         expect(viewEvent(record({ status }), viewer, extras)).toBeNull()
       }
     }
+  })
+  it('a rolled-back event (status failed) is hidden publicly; staff still see it, labelled', () => {
+    for (const visibility of ['public', 'private'] as const) {
+      for (const viewer of [OTHER, null]) expect(viewEvent(record({ status: 'failed', visibility }), viewer, extras)).toBeNull()
+      const full = viewEvent(record({ status: 'failed', visibility }), STAFF, extras)!
+      expect(full.kind).toBe('full')
+      expect(full.status).toBe('failed')
+    }
+    expect(EVENT_STATUS.failed.label).toBe('Failed — rolled back')
   })
   it('the full projection is never computed for a stranger', () => {
     let called = 0

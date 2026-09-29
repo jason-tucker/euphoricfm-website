@@ -188,6 +188,12 @@ export function StaffDecision({ id, manage }: { id: number; manage: boolean }) {
           {manage ? null : ' Ask a manager to press it.'}
         </Notice>
       ) : null}
+      {view.status === 'failed' ? (
+        <Notice tone="warn">
+          Failed — rolled back. The Event station could not play this event, so its playlists were switched off and the station was restarted without it.
+          {manage ? ' Build now puts it back: it rebuilds the playlists and restarts the Event station once (before the event ends).' : ' Ask a manager to press Build now.'}
+        </Notice>
+      ) : null}
       {msg ? <Notice tone={msg.tone}>{msg.text}</Notice> : null}
       <div className="flex flex-wrap gap-3">
         {canDecide ? (
@@ -260,6 +266,7 @@ export function StaffDecision({ id, manage }: { id: number; manage: boolean }) {
       </ConfirmDialog>
       <ConfirmDialog open={open === 'build-now'} title="Build this event now?" confirmLabel="Build now" busy={busy} onConfirm={() => void act('build-now')} onCancel={() => setOpen(null)}>
         <p>This writes the event&apos;s playlists and schedule to the Event station now, even while autobuild is off.</p>
+        {view.status === 'failed' ? <p>This event was rolled back: building it again restarts the Event station once to put it back on air.</p> : null}
       </ConfirmDialog>
     </section>
   )

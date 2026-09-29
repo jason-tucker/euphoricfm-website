@@ -37,7 +37,7 @@ import type { EventStatus } from '../../contract/types'
 import type { EventsCtx } from '../ctx'
 import { Permanent, Wait } from '../errors'
 import type { AnnouncementRow, BuildRow, EventRow, RegistryRow, TrackRow } from '../store'
-import { isRolledBackBuild, lastLiquidsoapBanner, liquidsoapConfigErrors, playlistScope, readLiquidsoapLog, rollbackEvent } from './station'
+import { confirmBackendRunning, lastLiquidsoapBanner, liquidsoapConfigErrors, playlistScope, readLiquidsoapLog } from './station'
 import { postToTicket, whenLine } from './tickets'
 
 // Moved to station.ts (shared with kicks.ts); re-exported for callers.
@@ -253,10 +253,10 @@ export async function applyBuild(ctx: EventsCtx, ev: EventRow, opts: { force: bo
   // the old registry playlists once the new ones are in place).
   if (build && build.status === 'applied' && !opts.force && !planHasLegacyNames(planOf(build))) return
   const previous = await ctx.store.builds(ev.id)
-  // A kick rolled this event back (this build or an earlier one; read before
-  // this build's status changes): the kick that ran is done, so this build
-  // needs a fresh one of its own.
-  const rearm = previous.some(isRolledBackBuild)
+  // The ONE re-arm path: staff Build now on an event a start kick rolled back
+  // (status `failed`). It goes back to `built` with exactly one fresh start
+  // kick of its own. No other build ever restarts on its own.
+  const rearm = ev.status === 'failed'
   if (build) await ctx.store.setBuild(build.id, { status: 'applying', plan, lastError: null })
   else build = await ctx.store.createBuild(ev.id, ev.version, plan)
   const prevApplied = previous.filter((b) => b.id !== build!.id && b.status === 'applied').at(-1) ?? null
@@ -280,13 +280,15 @@ export async function applyBuild(ctx: EventsCtx, ev: EventRow, opts: { force: bo
   // its teardown or rebuild, which runs next.
   // A details-only edit meanwhile (same build inputs) does not make it stale.
   const fresh = await ctx.store.getEvent(ev.id)
-  if (!fresh || !BUILDABLE.includes(fresh.status) || (fresh.version !== ev.version && (await currentInputKey(ctx, fresh)) !== resolved.inputKey)) {
+  const allowed = rearm ? [...BUILDABLE, 'failed' as const] : BUILDABLE
+  if (!fresh || !allowed.includes(fresh.status) || (fresh.version !== ev.version && (await currentInputKey(ctx, fresh)) !== resolved.inputKey)) {
     await staleJob(ctx, 'build', fresh ?? ev, { buildId: build.id, buildVersion: ev.version, reason: 'event changed during the build' })
     return
   }
-  await ctx.store.setEventStatus(ev.id, ['approved'], 'built')
-  await ctx.store.audit('events.build.applied', 'event', ev.id, { buildId: build.id, version: ev.version })
-  await scheduleKicks(ctx, ev, build, plan, planOf(prevApplied), rearm)
+  const rearmed = rearm && (await ctx.store.setEventStatus(ev.id, ['failed'], 'built'))
+  if (!rearm) await ctx.store.setEventStatus(ev.id, ['approved'], 'built')
+  await ctx.store.audit('events.build.applied', 'event', ev.id, { buildId: build.id, version: ev.version, rearmed })
+  await scheduleKicks(ctx, ev, build, plan, planOf(prevApplied), rearmed)
   if (resolved.dropped.length > 0) {
     await postToTicket(
       ctx,
@@ -316,10 +318,10 @@ async function scheduleKicks(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan
   if (ev.status === 'live' && prev && rowsKey(prev) !== rowsKey(plan)) {
     await ctx.store.enqueue('start_kick', { eventId: ev.id }, { dedupeExtra: `${v}:live`, maxAttempts: START_KICK_MAX_ATTEMPTS })
   }
-  // Rebuilt after a rollback (Build now): the kicks keyed on this version
-  // already ran, so the playlists would sit enabled without a confirmed
-  // restart. A fresh kick (its own key) loads them — at once inside the
-  // window, at the start otherwise.
+  // Staff Build now after a rollback (`failed` → `built`): the kicks keyed on
+  // this version already ran, so the playlists would sit enabled without a
+  // confirmed restart. Exactly one fresh kick (its own key) loads them — at
+  // once inside the window, at the start otherwise.
   if (rearm && now < ev.endsAt.getTime()) {
     const at = Math.max(now, ev.startsAt.getTime() + START_KICK_DELAY_S * 1000)
     await ctx.store.enqueue('start_kick', { eventId: ev.id }, { dedupeExtra: `${v}:rearm:b${build.id}:${now}`, runAfter: new Date(at), maxAttempts: START_KICK_MAX_ATTEMPTS })
@@ -480,7 +482,9 @@ export async function buildJob(ctx: EventsCtx, p: EventJobPayload<'build'>): Pro
 export async function buildNowJob(ctx: EventsCtx, p: EventJobPayload<'build_now'>): Promise<void> {
   const ev = await ctx.store.getEvent(p.eventId)
   if (!ev) throw new Permanent('event missing')
-  if (!BUILDABLE.includes(ev.status)) {
+  // `failed` (rolled back by a start kick): staff Build now is how it goes
+  // back on air (applyBuild re-arms one start kick).
+  if (!BUILDABLE.includes(ev.status) && ev.status !== 'failed') {
     await staleJob(ctx, 'build_now', ev, {})
     return
   }
@@ -607,31 +611,36 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
   const problems = await verifyBuild(ctx, ev, build)
   let backend = 'n/a'
   let liquidsoapLog = 'n/a'
+  let logErrors: string[] = []
+  // verify NEVER rolls back or disables anything: it reads, and pages.
   if (ev.status === 'live') {
     try {
       const st = await ctx.az.getStatus(5_000)
       backend = st.backend_running ? 'running' : 'not running'
-      if (!st.backend_running) problems.push('backend not running after the kick')
     } catch {
       backend = 'unknown'
     }
-    // After a kick: the regenerated config must have loaded cleanly.
+    // One "not running" read is not proof: re-check with the kick's own
+    // confirmation (same span and bounds). Still down → page once and stop.
+    if (backend === 'not running') {
+      const again = await confirmBackendRunning(ctx)
+      if (again.ok) backend = 'running (after a re-check)'
+      else {
+        await ctx.store.audit('events.verify.station_down', 'event', ev.id, { buildId: build.id, error: again.error })
+        await ctx.alert(`EVENT STATION DOWN — manual action needed: station 14's backend is not running during live event ${ev.id} (verify of build #${build.id}: ${again.error})`, { eventId: ev.id, buildId: build.id, when: whenLine(ev) })
+        return
+      }
+    }
+    // After a kick: config errors in the log are reported (alert only).
     const since = await ctx.store.lastStartKickMs(ev.id)
     if (since !== null) {
       const log = await liquidsoapLogCheck(ctx)
       liquidsoapLog = log.state
-      for (const e of log.errors) problems.push(`liquidsoap: ${e}`)
-      if (log.banner === false && backend === 'not running') problems.push('liquidsoap: did not start (no start banner, backend not running)')
+      logErrors = log.errors
     }
   }
-  await ctx.store.audit('events.build.verified', 'event', ev.id, { buildId: build.id, problems, backend, liquidsoapLog })
-  // The station died after a confirmed start (Liquidsoap failing later on):
-  // not just a failed check — take the event off and bring the station back
-  // (rollbackEvent pages EVENT STATION DOWN if that does not work either).
-  if (ev.status === 'live' && backend === 'not running') {
-    await rollbackEvent(ctx, ev, build, { ok: false, stage: 'after_start', error: `backend not running at verify (${problems.slice(0, 3).join('; ')})`.slice(0, 200), backend }, undefined)
-    return
-  }
+  await ctx.store.audit('events.build.verified', 'event', ev.id, { buildId: build.id, problems, backend, liquidsoapLog, liquidsoapErrors: logErrors })
+  if (logErrors.length > 0) await ctx.alert(`events: station 14's liquidsoap log shows config errors after event ${ev.id}'s kick (the backend is running)`, { eventId: ev.id, buildId: build.id, errors: logErrors })
   if (problems.length > 0) {
     await ctx.store.setBuild(build.id, { status: 'failed', lastError: `verify: ${problems.slice(0, 5).join('; ')}` })
     await ctx.alert(`events build #${build.id} (event #${ev.id}) failed verification`, { problems: problems.slice(0, 20) })

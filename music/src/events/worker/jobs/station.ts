@@ -1,18 +1,17 @@
 // Station-14 backend restarts, their confirmation, and the rollback of an
-// event whose restart did not bring the station back (0.5.2; the 2026-09-29
-// outage). Shared by the kicks (kicks.ts) and verify (build.ts), so it
-// imports neither.
+// event whose start kick did not bring the station back (0.5.2; the
+// 2026-09-29 outage). Shared by the kicks (kicks.ts) and verify (build.ts,
+// which only confirms and pages), so it imports neither.
 //
 //   * restartAndConfirm: POST /backend/restart, then GET /status (short
 //     timeout) every RESTART_CONFIRM_POLL_S until the backend has reported
 //     running on consecutive reads spanning RESTART_CONFIRM_SPAN_S — bounded
 //     by ELAPSED time (RESTART_CONFIRM_MAX_S) and by a read count;
-//   * rollbackEvent: disable every registry playlist of the event → purge the
+//   * rollbackEvent (start kicks only — verify never rolls back): write gate
+//     first, then disable every registry playlist of the event → purge the
 //     queue (the AutoDJ may already have queued an event song) → restart once
-//     → confirm. Every applied build of the event is marked failed with the
-//     ROLLED_BACK marker, so any later start kick of it skips until staff
-//     rebuild (Build now re-arms a fresh kick), and its end kick neither
-//     restarts nor posts "ended". Never a restart loop.
+//     → confirm, and the event becomes `failed`: later start / end kicks of
+//     it skip, only a staff Build now re-arms it. Never a restart loop.
 
 import { EventsAzuraCastError, type PlaylistScope } from '../../azuracast/client'
 import { RESTART_CONFIRM_MAX_S, RESTART_CONFIRM_POLL_S, RESTART_CONFIRM_SPAN_S, RESTART_CONFIRM_STATUS_TIMEOUT_S } from '../../contract/rules'
@@ -112,9 +111,8 @@ export async function bannerNow(ctx: EventsCtx): Promise<string | null | undefin
 export type RestartOutcome =
   | { ok: true; reads: number }
   // stage 'restart': POST /backend/restart failed; 'not_running': it
-  // answered, but GET /status never showed the backend running (stably);
-  // 'after_start': a later check (verify) found it not running.
-  | { ok: false; stage: 'restart' | 'not_running' | 'after_start'; error: string; backend: string }
+  // answered, but GET /status never showed the backend running (stably).
+  | { ok: false; stage: 'restart' | 'not_running'; error: string; backend: string }
 export type RestartFailure = Extract<RestartOutcome, { ok: false }>
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -175,39 +173,31 @@ export async function restartAndConfirm(ctx: EventsCtx): Promise<RestartOutcome>
 
 // --------------------------------------------------------------- rollback --
 
-/** The lastError prefix that marks a build a start kick rolled back. */
-export const ROLLED_BACK = 'rolled back:'
-
-export const isRolledBackBuild = (b: Pick<BuildRow, 'status' | 'lastError'>) => b.status === 'failed' && (b.lastError ?? '').startsWith(ROLLED_BACK)
-
 /**
- * Whether the event's station setup was rolled back and not rebuilt since:
- * no applied build is left and a rolled-back one exists. Start kicks skip
- * such an event (quietly: staff were paged by the rollback), its end kick
- * neither restarts nor posts "ended". Build now clears it (a new applied
- * build + a fresh start kick).
- */
-export async function eventRolledBack(ctx: EventsCtx, eventId: number): Promise<boolean> {
-  if (await ctx.store.latestAppliedBuild(eventId)) return false
-  return (await ctx.store.builds(eventId)).some(isRolledBackBuild)
-}
-
-/**
- * The event's restart failed, its backend did not come up, or it died after
- * the start: take the event's playlists out and bring the station back
- * without it. In this order: every registry playlist of the event is
- * disabled (each tried, failures noted) → station 14's queue is purged (a
- * song the AutoDJ already queued from an event playlist would otherwise
- * still play — seen in the outage) → the backend is restarted ONCE more and
- * confirmed. Then every applied build of the event is marked failed
- * (ROLLED_BACK), staff are alerted and the ticket told. A rollback restart
- * that does not bring the backend back pages "EVENT STATION DOWN" once and
- * nothing else is tried.
+ * A start kick's restart failed or its backend did not come up: take the
+ * event off and bring the station back without it. The EVENT STATUS is the
+ * one record of it: the event becomes `failed` (hidden publicly, "Failed —
+ * rolled back" for staff), so every later start or end kick of it skips
+ * (kicks.ts), and only a staff Build now re-arms it (build.ts).
+ *
+ * Order: write gate first (queues paused → page, change NOTHING) → disable
+ * every registry playlist of the event (each tried, failures noted) → purge
+ * station 14's queue (a song the AutoDJ already queued from an event
+ * playlist would otherwise still play — seen in the outage) → restart ONCE
+ * and confirm → status `failed`, the build's lastError (diagnostics only),
+ * one alert, one ticket post. A rollback restart that does not bring the
+ * backend back pages "EVENT STATION DOWN" once; nothing else is tried.
  */
 export async function rollbackEvent(ctx: EventsCtx, ev: EventRow, build: BuildRow, failure: RestartFailure, bannerBefore: string | null | undefined): Promise<void> {
   const wasLive = ev.status === 'live'
+  const what = wasLive ? `live event ${ev.id}` : `start of event ${ev.id}`
   const diag = await liquidsoapDiagnostics(ctx, bannerBefore)
   await ctx.store.audit('events.kick.start_failed', 'event', ev.id, { buildId: build.id, stage: failure.stage, error: failure.error, backend: failure.backend, live: wasLive, ...diag })
+  if (await ctx.store.queuesPaused()) {
+    await ctx.store.audit('events.kick.rollback_blocked', 'event', ev.id, { reason: 'queues paused' })
+    await ctx.alert(`EVENT STATION: rollback needed for ${what} but queues are paused — nothing was changed; station 14 may be down with the event's playlists enabled (unpause and press Build now, or disable them by hand)`, { eventId: ev.id, buildId: build.id, when: whenLine(ev), stage: failure.stage, error: failure.error, backend: failure.backend, ...diag })
+    return
+  }
   const rows = await ctx.store.registry(ev.id)
   const scope = playlistScope(ev, rows)
   const disabled: number[] = []
@@ -236,10 +226,8 @@ export async function rollbackEvent(ctx: EventsCtx, ev: EventRow, build: BuildRo
   } catch (e) {
     restored = { ok: false, stage: 'restart', error: `rollback restart refused (${errText(e)})`, backend: 'unknown' }
   }
-  // Durable: every applied build of the event (not only this one) is failed
-  // with the marker, so no other queued start kick restarts into it again.
-  const mark = `${ROLLED_BACK} ${failure.error}${restored.ok ? '' : ' — station still down'}`.slice(0, 300)
-  for (const b of await ctx.store.builds(ev.id)) if (b.status === 'applied' || b.id === build.id) await ctx.store.setBuild(b.id, { status: 'failed', lastError: mark })
+  await ctx.store.setEventStatus(ev.id, ['built', 'live'], 'failed')
+  await ctx.store.setBuild(build.id, { status: 'failed', lastError: `start kick: ${failure.error}; rolled back${restored.ok ? '' : ' — station still down'}`.slice(0, 300) })
   const detail = { eventId: ev.id, buildId: build.id, when: whenLine(ev), stage: failure.stage, error: failure.error, disabled, disableErrors, queueError, ...diag }
   await ctx.store.audit('events.kick.rolled_back', 'event', ev.id, { buildId: build.id, restored: restored.ok, live: wasLive, queueError, ...(restored.ok ? {} : { rollbackError: restored.error }) })
   const idem = `rolled_back:${ev.id}:b${build.id}`
@@ -248,8 +236,8 @@ export async function rollbackEvent(ctx: EventsCtx, ev: EventRow, build: BuildRo
     await postToTicket(ctx, ev.id, 'failed', 'The Events station could not play this event and is off the air. Staff have been alerted.', idem)
     return
   }
-  const what = wasLive ? `live event ${ev.id} taken off air — rolled back` : `start of event ${ev.id} failed — rolled back`
-  const title = queueError ? `${what}, Event station restarted but its queue could not be purged (an event song may still play) — check the station` : wasLive ? `${what}, Event station restarted without it` : `${what}, Event station restored`
+  const head = wasLive ? `live event ${ev.id} taken off air — rolled back` : `start of event ${ev.id} failed — rolled back`
+  const title = queueError ? `${head}, Event station restarted but its queue could not be purged (an event song may still play) — check the station` : wasLive ? `${head}, Event station restarted without it` : `${head}, Event station restored`
   await ctx.alert(title, detail)
   await postToTicket(
     ctx,
