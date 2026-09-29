@@ -99,14 +99,14 @@ describe('shared top bar (SiteBar)', () => {
 describe('portal second row', () => {
   it('signed out: Home tab and Sign in', () => {
     render(<PortalRow viewer={null} />)
-    const tabs = screen.getByRole('navigation', { name: 'Music portal' })
+    const tabs = screen.getByRole('navigation', { name: 'Music Portal' })
     expect(within(tabs).getAllByRole('link').map((a) => a.textContent)).toEqual(['Home'])
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy()
   })
 
   it('member: Home · My music · Submit · Library, account menu with sign out, no staff tabs', () => {
     render(<PortalRow viewer={viewer(['submit', 'request'])} />)
-    const tabs = screen.getByRole('navigation', { name: 'Music portal' })
+    const tabs = screen.getByRole('navigation', { name: 'Music Portal' })
     expect(within(tabs).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
       ['Home', '/'],
       ['My music', '/dashboard'],
@@ -121,7 +121,7 @@ describe('portal second row', () => {
 
   it('manager and admin: Review and Admin join the second row', () => {
     render(<PortalRow viewer={viewer(['submit', 'review', 'manage'])} />)
-    const tabs = within(screen.getByRole('navigation', { name: 'Music portal' }))
+    const tabs = within(screen.getByRole('navigation', { name: 'Music Portal' }))
     expect(tabs.getAllByRole('link').map((a) => a.textContent)).toEqual(['Home', 'My music', 'Submit', 'Library', 'Review'])
     expect(tabs.getByRole('link', { name: 'Review' }).className).toContain('efms-staff')
     expect(navFor(new Set(['submit', 'review', 'admin'])).map((i) => i.label)).toContain('Admin')

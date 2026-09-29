@@ -10,7 +10,7 @@
 //    song needs an ACTIVE artist; a pending new-artist item makes it wait; a
 //    denied one fails it.
 
-import { and, desc, eq, isNull, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm'
 import { audit } from '../audit'
 import type { Viewer } from '../authz/predicates'
 import type { DB } from '../db/client'
@@ -158,8 +158,13 @@ export async function resolveArtistGate(db: DB, it: Item): Promise<ArtistGate> {
 // item in the same batch (one per distinct name), with the folder the strict
 // sanitizer proposes. Known artists are linked directly.
 export async function ensureNewArtistItems(tx: Tx, batchId: number, ownerUserId: string): Promise<void> {
+  // In item order: when two songs spell the same new artist differently
+  // ("Newbie" / "newbie"), the new-artist item takes the FIRST song's
+  // spelling, exactly as typed. Without an ORDER BY, Postgres returned the
+  // rows in heap order, so which spelling won depended on earlier updates.
   const songs = await tx.query.items.findMany({
     where: and(eq(items.batchId, batchId), eq(items.kind, 'song'), eq(items.status, 'pending'), isNull(items.artistId)),
+    orderBy: asc(items.id),
   })
   for (const s of songs) {
     const main = mainArtist(s.artist)

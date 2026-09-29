@@ -37,6 +37,7 @@ import { ticketLine } from '@/worker/handlers'
 import { fx, fxBuf } from './helpers/fixtures'
 import { apicV3, frameV3, tag, textV3 } from './helpers/id3'
 import { chunk, fmtBody, riff, sinePcm16 } from './helpers/wav'
+import { forgeXingFrames } from './helpers/xing'
 
 const MIB = 1024 * 1024
 const MM = resolve('dist/probe/mm-child.mjs')
@@ -72,17 +73,8 @@ function isCbr(file: string): boolean {
   return sizes.length > 100 && max - min <= 1
 }
 
-// A copy of `data` whose Xing / Info header claims `seconds` (44.1 kHz,
-// 1152 samples per frame); the byte count stays true, so ffmpeg trusts it.
-function forgeXingFrames(data: Buffer, seconds: number): Buffer {
-  const b = Buffer.from(data)
-  const at = [b.indexOf('Xing', 0, 'latin1'), b.indexOf('Info', 0, 'latin1')].filter((i) => i >= 0 && i < 64)[0]
-  if (at === undefined) throw new Error('no Xing / Info header')
-  expect(b.readUInt32BE(at + 4) & 0x03).toBe(0x03) // frames and bytes fields present
-  b.write('Xing', at, 'latin1')
-  b.writeUInt32BE(Math.round((seconds * 44100) / 1152), at + 8)
-  return b
-}
+// forgeXingFrames (helpers/xing.ts): a copy whose Xing / Info header claims
+// another length; the byte count stays true, so ffmpeg trusts it.
 function stageTmp(data: Buffer): string {
   const f = join(mkdtempSync(join(root, 'tmp-')), 'x.mp3')
   writeFileSync(f, data)
@@ -191,6 +183,31 @@ describe('MP3 inputs', () => {
     if (!r.ok || r.type !== 'probe' || !('sha256' in r)) throw new Error(JSON.stringify(r))
     expect(r.transcodeKbps).toBeUndefined()
     expect(readFileSync(path).equals(data)).toBe(true)
+  }, 120_000)
+
+  // Second pass (security review): the kept-untouched path reported, and
+  // capped, ffprobe's duration, which the upload's own Xing header sets. Now
+  // the frames are counted there too (keptMp3DurationS).
+  it('v0.4.1: a forged Xing header on an MP3 that FITS (26 min of 128 kbps, 25 MB, claiming 10 min) → too_long from the counted frames', async () => {
+    const real = fxBuf('fit-26m-128k.mp3')
+    expect(real.length).toBeLessThanOrEqual(AUDIO_PAYLOAD_BYTES) // the untouched path, not the re-encode
+    const data = forgeXingFrames(real, 600)
+    expect(Number(ffprobeJson(stageTmp(data)).format.duration)).toBeCloseTo(600, 0) // the lie works on ffprobe's header read
+    const { r, path } = await probe(data)
+    // (before: ok, kept untouched, durationS 600 → to review, and on air, as 10 min)
+    expect(r).toMatchObject({ ok: false, error: 'too_long', released: true })
+    expect(existsSync(path)).toBe(false)
+  }, 120_000)
+
+  it('v0.4.1: a kept MP3 reports its counted length, not its header (10 min of 320 kbps claiming 20 min → 600 s)', async () => {
+    const data = forgeXingFrames(fxBuf('fit-10m-320k.mp3'), 1200)
+    expect(Number(ffprobeJson(stageTmp(data)).format.duration)).toBeCloseTo(1200, 0)
+    const { r } = await probe(data)
+    if (!r.ok || r.type !== 'probe' || !('sha256' in r)) throw new Error(JSON.stringify(r))
+    expect(r.transcodeKbps).toBeUndefined() // still kept byte for byte
+    expect(r.sha256).toBe(sha(data))
+    expect(r.durationS).toBeGreaterThanOrEqual(599)
+    expect(r.durationS).toBeLessThanOrEqual(601)
   }, 120_000)
 
   it('a 22.05 kHz MP3 (MPEG-2, at most 160 kbps) always fits and stays untouched', async () => {

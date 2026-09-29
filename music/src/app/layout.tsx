@@ -2,15 +2,20 @@ import type { Metadata, Viewport } from 'next'
 import { headers } from 'next/headers'
 import { Header } from '@/components/Header'
 import { headerViewer } from '@/server/ui/page'
+// One stylesheet (v0.4.1): globals.css @imports the shared top bar styles.
 import './globals.css'
-// The shared EuphoricFM top bar styles (copy of the repo's shared/efm-bar.css).
-import '@/shared/efm-bar.css'
+import { openGraph, SITE_NAME as SITE } from '@/components/og'
+
+const DESCRIPTION = 'Where artists send their songs to EuphoricFM and follow each one through review to the air.'
 
 const musicMetadata: Metadata = {
-  title: { default: 'EFM Music Portal', template: '%s · EFM Music Portal' },
-  description: 'Submit music to EuphoricFM',
+  metadataBase: new URL('https://music.euphoric.fm'),
+  title: { default: SITE, template: `%s · ${SITE}` },
+  description: DESCRIPTION,
   robots: { index: false, follow: false },
   icons: { icon: '/favicon.svg' },
+  openGraph: openGraph(SITE, DESCRIPTION),
+  twitter: { card: 'summary_large_image' },
 }
 
 // Per request (not a static export): one image serves both sites. On the
@@ -44,7 +49,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <main id="main" className="mx-auto max-w-frame px-4 py-6 sm:py-8 md:px-6">
           {children}
         </main>
-        <footer className="mx-auto max-w-frame px-4 pb-8 text-xs text-cream/40 md:px-6">
+        <footer className="mx-auto max-w-frame px-4 pb-8 text-xs text-cream/55 md:px-6">
           EuphoricFM · Music Portal v{process.env.NEXT_PUBLIC_APP_VERSION}
         </footer>
       </body>

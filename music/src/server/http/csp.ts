@@ -22,8 +22,5 @@ export function buildCsp(nonce: string, site: 'music' | 'events' = 'music'): str
 // Served media (audio preview, cover) is never a document.
 export const MEDIA_CSP = `sandbox; default-src 'none'`
 
-export const STATIC_SECURITY_HEADERS: Record<string, string> = {
-  'Strict-Transport-Security': 'max-age=63072000; includeSubDomains',
-  'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'same-origin',
-}
+// The static headers (HSTS, nosniff, Referrer-Policy, Permissions-Policy) live
+// in next.config.ts only.

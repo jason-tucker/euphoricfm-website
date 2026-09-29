@@ -12,7 +12,9 @@ import { escapeLike, folderOf, onLibrarySurface, surfaceSql } from './library'
 
 export { folderOf }
 
-export const PAGE_SIZE = 50
+// v0.4.1: 25 (was 50). Each row loads AzuraCast's full-size album art (it
+// has no thumbnail size) into a 48 px thumbnail; search is the main way in.
+export const PAGE_SIZE = 25
 
 
 function songView(v: Viewer, r: typeof libraryCache.$inferSelect) {

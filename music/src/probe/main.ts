@@ -6,6 +6,12 @@
 // 'probe_fetch' | 'cleanup_final'. A request of
 // the wrong type is answered {ok:false, error:'type_not_allowed_in_inbox'}
 // and never executed. Every result records its source inbox.
+//
+// Order (v0.4.1): each inbox is taken oldest first (mtime, not the random
+// UUID). An in-worker 'finalize' / 'cleanup_final' / 'cover' goes before
+// anything else, so an approved song's ingest never waits behind SoundCloud
+// conversions (probe_fetch, same inbox) or in-web WAV conversions; the rest
+// alternates between the two inboxes.
 
 import { lstat, mkdir, readdir, rename, rm, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -16,6 +22,7 @@ import {
   listSpoolIds,
   readSmallFileNoFollow,
   spoolRequest,
+  sweepSpoolDir,
   UUID_RE,
   writeSpoolResultNoClobber,
   type Inbox,
@@ -198,6 +205,58 @@ export async function clearStaleWork(work = DIRS.work): Promise<number> {
   return n
 }
 
+// The in-worker types an approved song's ingest waits on.
+const URGENT_TYPES = new Set(['finalize', 'cleanup_final', 'cover'])
+
+async function peekType(path: string): Promise<string | null> {
+  try {
+    const text = await readSmallFileNoFollow(path)
+    const t = text === null ? null : (JSON.parse(text) as { type?: unknown }).type
+    return typeof t === 'string' ? t : null
+  } catch {
+    return null
+  }
+}
+
+async function idsOf(spool: string, inbox: Inbox): Promise<string[]> {
+  try {
+    return await listSpoolIds(join(spool, inbox))
+  } catch {
+    return []
+  }
+}
+
+// The next request to run. `turn` alternates the non-urgent work between
+// the inboxes (callers flip it after each job). A request that cannot be
+// peeked (bad JSON, a symlink) counts as urgent: it is answered at once.
+export async function nextJob(spool: string, turn: Inbox): Promise<{ inbox: Inbox; id: string } | null> {
+  const worker = await idsOf(spool, 'in-worker')
+  for (const id of worker) {
+    const t = await peekType(join(spool, 'in-worker', `${id}.json`))
+    if (t === null || URGENT_TYPES.has(t)) return { inbox: 'in-worker', id }
+  }
+  const web = await idsOf(spool, 'in-web')
+  const order: Inbox[] = turn === 'in-web' ? ['in-web', 'in-worker'] : ['in-worker', 'in-web']
+  for (const inbox of order) {
+    const ids = inbox === 'in-web' ? web : worker
+    if (ids.length > 0) return { inbox, id: ids[0]! }
+  }
+  return null
+}
+
+// v0.4.1: results older than a day (the worker collects a result within its
+// poll loop; the web's art status reads one within the 24 h art retention)
+// and '.tmp-*' files a crash left between create and rename, in every spool
+// directory the probe can write.
+export const SPOOL_SWEEP_MAX_AGE_MS = 24 * 3600_000
+export const SPOOL_SWEEP_EVERY_MS = 3600_000
+
+export async function sweepSpool(spool = DIRS.spool, now = Date.now()): Promise<number> {
+  let n = await sweepSpoolDir(join(spool, 'out'), { tmpMaxAgeMs: SPOOL_SWEEP_MAX_AGE_MS, resultMaxAgeMs: SPOOL_SWEEP_MAX_AGE_MS, now })
+  for (const d of ['claimed', ...INBOXES]) n += await sweepSpoolDir(join(spool, d), { tmpMaxAgeMs: SPOOL_SWEEP_MAX_AGE_MS, now })
+  return n
+}
+
 export async function main() {
   assertProbeEnvClean()
   // Validates the optional PROBE_MIN_DURATION_S (throws on a bad value).
@@ -215,25 +274,26 @@ export async function main() {
   process.on('SIGTERM', () => (stopping = true))
   process.on('SIGINT', () => (stopping = true))
   console.log('[probe] ready')
+  let turn: Inbox = 'in-web'
+  let lastSweep = 0
   while (!stopping) {
+    if (Date.now() - lastSweep > SPOOL_SWEEP_EVERY_MS) {
+      lastSweep = Date.now()
+      const swept = await sweepSpool().catch(() => 0)
+      if (swept > 0) console.log(`[probe] swept ${swept} old spool file(s)`)
+    }
     let did = false
-    for (const inbox of INBOXES) {
-      let ids: string[] = []
+    const job = await nextJob(DIRS.spool, turn)
+    if (job) {
+      turn = job.inbox === 'in-web' ? 'in-worker' : 'in-web'
       try {
-        ids = await listSpoolIds(join(DIRS.spool, inbox))
-      } catch {
-        ids = []
-      }
-      if (ids.length > 0) {
-        try {
-          did = (await processOne(inbox, ids[0]!, DIRS, strayCheck)) || did
-        } catch (e) {
-          if (e instanceof ContainmentBreach) {
-            console.error(`[probe] SECURITY: ${e.message}; killed them, refused the result, exiting so the container restarts`)
-            process.exit(70)
-          }
-          throw e
+        did = await processOne(job.inbox, job.id, DIRS, strayCheck)
+      } catch (e) {
+        if (e instanceof ContainmentBreach) {
+          console.error(`[probe] SECURITY: ${e.message}; killed them, refused the result, exiting so the container restarts`)
+          process.exit(70)
         }
+        throw e
       }
     }
     if (!did) await new Promise((r) => setTimeout(r, 1000))

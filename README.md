@@ -22,12 +22,13 @@ leaving the phone:
 - **Submit music** — a button that opens the music portal at
   [music.euphoric.fm](https://music.euphoric.fm) in a new tab;
   `info.euphoric.fm/music` 302-redirects there too.
-- **Contact us** — a form that posts to a Discord webhook.
+- **Contact us** — a form relayed to the team's Discord channel by the
+  `efm-requests` sidecar (`POST /contact/message`).
 - **Euphoric FM Events** (`/events`) — a page for booking curated music and
   radio programming for an event, with a live on-air/"On the Calendar" status
   card driven by the Euphoric Events station's public schedule, and an inquiry
-  form that posts to Discord through the same contact webhook pipeline,
-  distinguished by its own embed styling.
+  form relayed through the same sidecar (`POST /contact/event`) to the same
+  channel, distinguished by its own embed styling.
 - **Iframe-first** — explicitly embeddable from anywhere, no framebusting, no
   PWA bits that trip up CEF, served direct (no Cloudflare proxy) so the in-game
   phone can load it.
@@ -43,8 +44,7 @@ components, hydrated by client scripts.
 ```
 src/
   layouts/BaseLayout.astro    HTML shell; injects window.__EFM_CONFIG__ +
-                              loads /efm-runtime-config.js (webhooks) + the
-                              effects backdrop + client scripts
+                              the effects backdrop + client scripts
   pages/index.astro           composes the single page top-to-bottom
   pages/events.astro          composes the Euphoric FM Events page
   site.config.ts              one source of truth for editable strings + URLs
@@ -88,7 +88,7 @@ src/
     GetInTouch.astro          #contact: contact, advertise, book an event
     Faq.astro                 #faq: six <details> (site.home.faq)
     RequestModal.astro        AzuraCast library search + same-origin POST
-    ContactModal.astro        Discord webhook — general contact form
+    ContactModal.astro        general contact form → POST /contact/message
     BusinessAdModal.astro     static pricing + perks
     EventsHero.astro          /events hero + CTAs
     EventsHowItWorks.astro    /events three-step walkthrough
@@ -96,8 +96,8 @@ src/
     EventStatus.astro         /events on-air card + "On the Calendar" list,
                                live-driven by scripts/events.ts unless
                                site.events.status.current overrides it
-    EventInquiryModal.astro   /events booking form — posts to the contact
-                               Discord webhook with a distinguished embed
+    EventInquiryModal.astro   /events booking form → POST /contact/event
+                               (same channel, distinguished embed)
     Footer.astro              link columns + Effects toggle + v<version> · <sha>
 public/fonts/                 Begaron + Cortado Script TTFs/WOFF2
 public/cef-test.html          plain-HTML no-JS diagnostic page for confirming
@@ -108,7 +108,8 @@ server/                       efm-requests — tiny zero-dep Node service holdin
                               the shared pending-requests list (own image);
                               also aggregates + serves station stats
                               (stats.mjs: /stats/* — listener sampling, play
-                              ingestion, full-history backfill)
+                              ingestion, full-history backfill) and relays
+                              the contact/event forms to Discord (/contact/*)
 Dockerfile                    node:24-alpine build → caddy:2.x-alpine serve
 Caddyfile                     static + iframe-safe CSP + Let's Encrypt + proxies
 docker-compose.yml            efm-web + efm-requests + watchtower
@@ -116,9 +117,9 @@ docker-compose.yml            efm-web + efm-requests + watchtower
 ```
 
 **How the page composes:** `index.astro` wraps everything in `BaseLayout`, which
-injects `window.__EFM_CONFIG__` (API base, station shortcode, poll interval) and
-loads `/efm-runtime-config.js` — a tiny script Caddy renders from env at request
-time so Discord webhook URLs are never baked into the bundle. `nowplaying.ts`
+injects `window.__EFM_CONFIG__` (API base, station shortcode, poll interval).
+No secret ever reaches the page: the contact forms post to the same-origin
+`/contact/*` relay, which holds the Discord webhook server-side. `nowplaying.ts`
 then polls `/api/nowplaying/<station>` on a 5s interval; between polls a
 `requestAnimationFrame` loop interpolates the progress bar from the
 server-provided `played_at` + `duration`, so the UI feels real-time without SSE.
@@ -151,9 +152,10 @@ pnpm preview      # serve the built ./dist locally
 
 > Note: now-playing, the stream, song requests, and album art all call the live
 > AzuraCast instance at `euphoric.fm` directly in `pnpm dev`. The same-origin
-> `/api/*`, `/efm-art/*`, `/static/*`, and `/requests/*` proxies only exist in
-> the Caddy layer, so request submission and album-art colour theming behave
-> fully only against a Caddy/Docker build, not the bare dev server.
+> `/api/*`, `/efm-art/*`, `/static/*`, `/requests/*` and `/contact/*` proxies
+> only exist in the Caddy layer, so request submission, the contact forms and
+> album-art colour theming behave fully only against a Caddy/Docker build, not
+> the bare dev server.
 
 ## Configuration
 
@@ -170,13 +172,14 @@ sprinkle it across components:
 - Poll mode + interval (`realtime`)
 - Discord avatar URL + NewDayRP profile validation pattern
 
-**Discord webhooks are NOT in `site.config.ts`.** They're injected at runtime by
-Caddy, which renders `/efm-runtime-config.js` from the container's env vars so no
-webhook URL is ever baked into the static bundle. Set them in `.env` on the host:
+**The Discord webhook is NOT in `site.config.ts`, the bundle or any page.**
+Only the `efm-requests` container reads it, at runtime, from its env; the
+forms post plain fields to the same-origin `/contact/*` relay. Set the runtime
+values in `.env` on the host:
 
 | Env var | Used by |
 | --- | --- |
-| `PUBLIC_DISCORD_CONTACT_WEBHOOK` | "Contact us" modal |
+| `DISCORD_CONTACT_WEBHOOK` | `efm-requests` contact relay — the Discord webhook the "Contact us" and /events inquiry forms are sent to (empty = both forms answer 503 "temporarily disabled"; never logged, never sent to visitors) |
 | `SITE_HOSTNAME` | hostname Caddy serves + provisions a Let's Encrypt cert for |
 | `AZURACAST_API_KEY` | `efm-requests`/stats.mjs — enables full-history backfill (empty = live-only accumulation, never exposed to clients) |
 | `AZURACAST_API_BASE`, `STATION_ID` | `efm-requests`/stats.mjs — AzuraCast instance + station shortcode for the history API |
@@ -186,8 +189,10 @@ webhook URL is ever baked into the static bundle. Set them in `.env` on the host
 | `STATS_EXCLUDE_PLAYLISTS` | `efm-requests`/stats.mjs — comma-separated playlist names (ads/IDs) never counted as listens (empty = default `2Ads,3EFM/Free Ads,5Local Ads,Go Vote,4EuphoricFM`) |
 | `TICKETS_GG_HOSTNAME` | second reverse-proxied host (`tickets.euphoric.gg`) |
 
-To change a webhook without rebuilding the image, edit `.env` on the host and run
-`docker compose up -d` (Compose only re-reads `.env` on `up`, not `restart`).
+To change the webhook without rebuilding an image, edit `.env` on the host and
+run `docker compose up -d efm-requests` (Compose only re-reads `.env` on `up`,
+not `restart`). `PUBLIC_DISCORD_CONTACT_WEBHOOK` (read by `efm-web` until
+v0.22.3) is gone; remove it from `.env`.
 
 ## Usage / Integrations
 
@@ -241,14 +246,22 @@ This site is embedded inside the in-game phone's CEF iframe browser, so:
 
 ### Discord webhooks
 
-The "Contact us" modal (and the /events inquiry form) POST directly to the configured
-Discord webhooks (read from `window.__EFM_CONFIG__.contact.webhook` at submit time).
-The payload matches the embed shape AzuraCast's own button uses —
-`username`, `avatar_url`, `thread_name`, and
-`embeds[{ title, description, fields, color, timestamp, footer }]` — so the
-team's existing Discord thread routing keeps working. Posting straight from the
-browser (rather than proxying through Caddy) is deliberate: Discord sees real
-user IPs for its own per-user rate limiting.
+The "Contact us" modal and the /events inquiry form POST their fields as JSON
+to the same-origin relay (`/contact/message`, `/contact/event`), served by the
+`efm-requests` sidecar (`server/index.mjs`). The sidecar validates them
+(required fields, length caps, control characters stripped, NewDayRP profile
+pattern), limits each IP to 5 sends per 10 minutes across both forms, builds
+the embed — the shape AzuraCast's own button uses, `username`, `avatar_url`,
+`thread_name` and `embeds[{ title, description, fields, color, timestamp,
+footer }]`, so the team's Discord thread routing keeps working — adds
+`allowed_mentions: {parse: []}` and forwards it to `DISCORD_CONTACT_WEBHOOK`.
+Replies: 204 sent, 400 invalid, 413 too large, 429 rate limited
+(`Retry-After`), 502 Discord failed, 503 not configured.
+
+Until v0.22.3 the browser posted straight to Discord, which meant the webhook
+URL was served to every visitor — and anyone holding it can post as the
+webhook, rename it or delete it. `/efm-runtime-config.js`, which carried it,
+now answers 410.
 
 ## Deployment
 
@@ -272,7 +285,8 @@ removes that layer. Notable consequences baked into the config:
   Root X1, and **HTTP/3 is disabled** — some CEF builds hung negotiating QUIC.
 - Caddy also reverse-proxies the requests API (`/requests/*` →
   `efm-requests:3000`), the station stats API (`/stats/*`, same target — see
-  `server/stats.mjs`), the request-submit + library (`/api/*`), and album art
+  `server/stats.mjs`), the contact-form relay (`/contact/*`, same target), the
+  request-submit + library (`/api/*`), and album art
   (`/efm-art/*`, `/static/*`) — all same-origin workarounds for CORS.
 - A second host block serves `tickets.euphoric.gg` → `tickets-web:3000` over the
   shared external `efm-public-net` bridge.

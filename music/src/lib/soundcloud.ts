@@ -99,7 +99,9 @@ export function parseSoundCloudUrl(input: unknown): ScUrl {
 export const CANONICAL_URL_RE = /^https:\/\/soundcloud\.com\/[a-z0-9_-]{1,100}\/[a-z0-9_-]{1,100}$/
 
 // music-fetch's result codes (fetch/README.md "Error codes"): the plan §3.6
-// contract codes plus its four additions.
+// contract codes plus its additions (preview_only: fetch 0.2.1 / v0.4.1).
+// artwork_host is no longer a job error since fetch 0.2.1 (a warning), and is
+// kept for results written before.
 export const FETCH_ERROR_CODES = [
   'bad_url',
   'not_a_track',
@@ -113,6 +115,7 @@ export const FETCH_ERROR_CODES = [
   'bad_media',
   'interrupted',
   'internal',
+  'preview_only',
 ] as const
 export type FetchErrorCode = (typeof FETCH_ERROR_CODES)[number]
 

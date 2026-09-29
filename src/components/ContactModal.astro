@@ -12,11 +12,11 @@ import { site } from '../site.config';
       <p class="text-xs text-cream/60 mb-3">Send a message to the EuphoricFM team.</p>
 
       <form id="contact-form" novalidate class="space-y-2.5">
-        <div><label class="label">Your Name <span class="text-ruby">*</span></label><input class="input" name="name" required placeholder="e.g., Wyatt McKenzie" /></div>
-        <div><label class="label">Phone (optional)</label><input class="input" name="phone" type="tel" placeholder="Optional" /></div>
-        <div><label class="label">NewDayRP Profile (optional)</label><input class="input" name="profile" type="url" placeholder="https://newdayrp.com/members/9631/" /></div>
-        <div><label class="label">Subject <span class="text-ruby">*</span></label><input class="input" name="subject" required placeholder="What's this about?" /></div>
-        <div><label class="label">Message <span class="text-ruby">*</span></label><textarea class="input min-h-[110px]" name="message" required placeholder="Write your message here…"></textarea></div>
+        <div><label class="label">Your Name <span class="text-ruby">*</span></label><input class="input" name="name" maxlength="100" required placeholder="e.g., Wyatt McKenzie" /></div>
+        <div><label class="label">Phone (optional)</label><input class="input" name="phone" maxlength="40" type="tel" placeholder="Optional" /></div>
+        <div><label class="label">NewDayRP Profile (optional)</label><input class="input" name="profile" maxlength="200" type="url" placeholder="https://newdayrp.com/members/9631/" /></div>
+        <div><label class="label">Subject <span class="text-ruby">*</span></label><input class="input" name="subject" maxlength="200" required placeholder="What's this about?" /></div>
+        <div><label class="label">Message <span class="text-ruby">*</span></label><textarea class="input min-h-[110px]" name="message" maxlength="4000" required placeholder="Write your message here…"></textarea></div>
 
         <div id="contact-msg" class="hidden text-xs px-3 py-2 rounded-lg"></div>
 
@@ -29,15 +29,16 @@ import { site } from '../site.config';
   </div>
 </div>
 
-<script is:inline define:vars={{ avatar: site.discord.avatarUrl, stationName: site.name, profilePattern: site.newDayRpProfilePattern }}>
+<script is:inline define:vars={{ profilePattern: site.newDayRpProfilePattern }}>
+  // Sends the form fields to the same-origin relay (/contact/message, the
+  // efm-requests sidecar), which builds the team's message and holds the
+  // delivery URL server-side — nothing secret ever reaches the page.
   (function () {
     const overlay = document.getElementById('contact-overlay');
     const form = document.getElementById('contact-form');
     const msg = document.getElementById('contact-msg');
     const go = document.getElementById('contact-go');
     if (!overlay || !form || !msg || !go) return;
-
-    const getWebhook = () => (window.__EFM_CONFIG__ && window.__EFM_CONFIG__.contact && window.__EFM_CONFIG__.contact.webhook) || '';
 
     const setMsg = (text, kind) => {
       msg.textContent = text;
@@ -47,6 +48,14 @@ import { site } from '../site.config';
     };
 
     const profileRe = new RegExp(profilePattern, 'i');
+
+    // "Please wait" copy for a 429: the relay says how long in retry_after.
+    const waitText = async (r) => {
+      const j = await r.json().catch(() => ({}));
+      const s = Number(j.retry_after) || Number(r.headers.get('retry-after')) || 0;
+      const when = s > 90 ? `about ${Math.ceil(s / 60)} minutes` : s > 0 ? `${s} seconds` : 'a few minutes';
+      return `You've sent a few messages already — please wait ${when} and try again.`;
+    };
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -65,45 +74,22 @@ import { site } from '../site.config';
 
       go.setAttribute('disabled', 'true');
 
-      const fields = [
-        { name: 'Name', value: name, inline: true },
-        { name: 'Subject', value: subject, inline: true },
-      ];
-      if (phone) fields.push({ name: 'Phone', value: phone, inline: true });
-      if (profile) fields.push({ name: 'NewDayRP Profile', value: profile });
-      fields.push({ name: 'Message', value: message.length > 1024 ? message.slice(0, 1021) + '…' : message });
-
-      const embed = {
-        title: '📨 New Contact Form Submission',
-        description: `A new contact message was submitted from **${stationName}** (info.euphoric.fm).`,
-        color: 0xd61c4e,
-        fields,
-        timestamp: new Date().toISOString(),
-        footer: { text: 'EuphoricFM Contact Form' },
-      };
-      const threadName = `Contact: ${subject}`.slice(0, 90);
-
-      const webhook = getWebhook();
-      if (!webhook) { setMsg('Messages are temporarily disabled — webhook not configured.', 'error'); go.removeAttribute('disabled'); return; }
-
       try {
-        const r = await fetch(webhook, {
+        const r = await fetch('/contact/message', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username: 'EuphoricFM Contact',
-            avatar_url: avatar,
-            thread_name: threadName,
-            embeds: [embed],
-          }),
+          body: JSON.stringify({ name, phone, profile, subject, message }),
         });
-        if (r.ok || r.status === 204) {
+        if (r.ok) {
           setMsg('Thanks! Your message was sent.', 'ok');
           form.reset();
           setTimeout(() => { overlay.classList.add('hidden'); msg.classList.add('hidden'); }, 1200);
         } else if (r.status === 429) {
-          const j = await r.json().catch(() => ({}));
-          setMsg(`Too many messages right now. Try again in ${j.retry_after ?? 'a few'}s.`, 'error');
+          setMsg(await waitText(r), 'error');
+        } else if (r.status === 503) {
+          setMsg('Messages are temporarily disabled. Please try again later.', 'error');
+        } else if (r.status === 400 || r.status === 413) {
+          setMsg('Something in the form was not accepted (too long?). Please check it and try again.', 'error');
         } else {
           setMsg(`Failed to send (HTTP ${r.status}).`, 'error');
         }

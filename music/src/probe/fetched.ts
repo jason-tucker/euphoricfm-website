@@ -21,7 +21,10 @@
 //      group, argv only (exec.ts runLimited), and ffmpeg at nice 19, exactly
 //      like the WAV conversion and the fit re-encode;
 //   4. ffprobe must see exactly ONE audio stream of the expected codec and
-//      nothing else, 30 s to 24 min (src/lib/fit.ts MAX_DURATION_S);
+//      nothing else, 30 s to 24 min (src/lib/fit.ts MAX_DURATION_S), and
+//      (v0.4.1) as long as SoundCloud says the track is, within max(2 s, 2 %)
+//      (sc_duration_mismatch: a Go+ track's 30 s preview, or a cut-off
+//      download, never goes to review under the real title);
 //   5. AAC / Opus are decoded with a forced decoder (-c:a aac | opus), every
 //      non-audio stream dropped at the demuxer, -t and -fs capped, and encoded
 //      to CBR MP3 at the highest fit-ladder rate that fits (the rate is chosen
@@ -29,8 +32,10 @@
 //      must then pass every check an uploaded MP3 passes at exactly that rate,
 //      and last as long as its source;
 //   6. an MP3 goes through the upload checks (magic, ID3 pre-scan, ffprobe -f
-//      mp3, ≥128 kbps) and, when it already fits, is kept byte for byte;
-//      otherwise it takes the fit re-encode (duration counted from frames);
+//      mp3, ≥128 kbps); its duration is counted from the frames (v0.4.1: for
+//      the kept-untouched case too, never the file's own Xing header) and
+//      checked against SoundCloud's as in 4; when it already fits, it is kept
+//      byte for byte, otherwise it takes the fit re-encode;
 //   7. artwork.raw (optional) takes the standalone album-art path: size and
 //      sha256 as reported, JPEG / PNG / WebP by magic bytes only (never SVG or
 //      GIF), header dimensions bounded and the file complete before the
@@ -51,8 +56,7 @@ import { runLimited } from './exec'
 import { copyNoFollowHashed, ProbeReject, publishFile, reader, sha256File } from './files'
 import { MAX_TAG_BYTES, scanId3 } from './id3scan'
 import { checkMp3Magic } from './magic'
-import { probeMinDurationS } from './min-duration'
-import { checkEncoded, countedDurationS, ffprobeMp3, MP3_RATES, publishEncoded } from './probe'
+import { checkEncoded, countedDurationS, ffprobeMp3, MIN_DURATION_S, MP3_RATES, publishEncoded } from './probe'
 import { mp3TargetRate, mp3TranscodeArgs } from './transcode'
 import { CONVERT_NICE, CONVERT_TIMEOUT_S, CONVERT_VMEM_KB } from './wav'
 
@@ -111,7 +115,21 @@ const ffprobeOut = z.object({
 
 export type FetchedInfo = { durationS: number; sampleRate: number; channels: number }
 
-export function judgeFetchedFfprobe(json: unknown, format: Exclude<Format, 'mp3'>): FetchedInfo {
+// v0.4.1 (second pass A2): the audio must last as long as SoundCloud's own
+// duration for the track (the info JSON's, passed on by the worker as
+// declaredDurationS), within the encode check's tolerance, max(2 s, 2 %). A
+// Go+ track logged out is a 30 s preview while its metadata says 4 min;
+// music-fetch refuses the previews it can recognise (preview_only), this is
+// the probe's own check on the bytes. Checked BEFORE the 30 s floor, so a
+// preview is reported as one and not as too_short. A missing (0) declared
+// duration never passes: music-fetch always sends one.
+export function checkDeclaredDuration(durationS: number, declaredDurationS: number): void {
+  if (!(declaredDurationS > 0) || !Number.isFinite(durationS) || Math.abs(durationS - declaredDurationS) > Math.max(2, 0.02 * declaredDurationS)) {
+    throw new ProbeReject('sc_duration_mismatch')
+  }
+}
+
+export function judgeFetchedFfprobe(json: unknown, format: Exclude<Format, 'mp3'>, declaredDurationS: number): FetchedInfo {
   const r = ffprobeOut.safeParse(json)
   if (!r.success) throw new ProbeReject('ffprobe_unparseable')
   const { streams, format: f } = r.data
@@ -126,7 +144,8 @@ export function judgeFetchedFfprobe(json: unknown, format: Exclude<Format, 'mp3'
   if (!Number.isInteger(channels) || channels < 1 || channels > 8) throw new ProbeReject('sc_bad_media')
   const durationS = Number(f.duration ?? a.duration)
   if (!Number.isFinite(durationS) || durationS <= 0) throw new ProbeReject('no_duration')
-  if (durationS < probeMinDurationS()) throw new ProbeReject('too_short')
+  checkDeclaredDuration(durationS, declaredDurationS)
+  if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
   if (durationS > MAX_DURATION_S) throw new ProbeReject('too_long')
   return { durationS, sampleRate, channels }
 }
@@ -172,7 +191,7 @@ async function encodeTo(job: Job, args: string[], bitrate: number, sourceDuratio
   if (c.code !== 0) throw new ProbeReject('sc_decode_failed')
   const tolerance = Math.max(2, sourceDurationS * 0.02)
   const enc = await checkEncoded(job, out, bitrate, sourceDurationS, tolerance, { tooLarge: 'sc_converted_too_large', invalid: 'sc_convert_invalid' })
-  if (enc.durationS < probeMinDurationS()) throw new ProbeReject('too_short')
+  if (enc.durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
   const sha256 = await publishEncoded(job, out)
   job.publishedAudio = true
   return { sha256, size: enc.size, durationS: enc.durationS, bitrate: enc.bitrate, inputFormat, transcodeKbps: bitrate / 1000 }
@@ -188,7 +207,7 @@ async function convertAacOpus(job: Job, copy: string, format: Exclude<Format, 'm
   } catch {
     throw new ProbeReject('ffprobe_unparseable')
   }
-  const info = judgeFetchedFfprobe(parsed, format)
+  const info = judgeFetchedFfprobe(parsed, format, job.req.declaredDurationS)
   const bitrate = pickBitrate(Math.max(info.durationS, job.req.declaredDurationS))
   if (bitrate === null) throw new ProbeReject('too_long')
   return encodeTo(job, fetchedTranscodeArgs(copy, join(job.work, 'out.mp3'), format, info, bitrate), bitrate, info.durationS, CODEC[format])
@@ -203,16 +222,21 @@ async function convertMp3(job: Job, copy: string, size: number): Promise<Encoded
     const v = scanId3(await read(0, magic.id3Size), magic.id3Size)
     if (!v.ok) throw new ProbeReject(v.reason)
   }
-  const info = await ffprobeMp3(copy, job.work, MAX_DURATION_S, WL)
-  if (mp3FitsUntouched(size, magic.id3Size) && info.durationS >= probeMinDurationS()) {
+  // The header's duration bounds nothing below (floor 0 here): the frames are
+  // counted first, then compared with SoundCloud's duration, then the bounds.
+  const info = await ffprobeMp3(copy, job.work, MAX_DURATION_S, WL, 0)
+  if (info.sampleRate === null || !MP3_RATES.has(info.sampleRate)) throw new ProbeReject('not_mp3')
+  const durationS = await countedDurationS(copy, job.work, info.sampleRate, WL)
+  checkDeclaredDuration(durationS, job.req.declaredDurationS)
+  if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
+  if (Math.max(durationS, info.durationS) > MAX_DURATION_S) throw new ProbeReject('too_long')
+  if (mp3FitsUntouched(size, magic.id3Size)) {
     // Kept byte for byte (finalize strips the ID3 tag and writes the portal's).
     const sha256 = await publishEncoded(job, copy)
     job.publishedAudio = true
-    return { sha256, size, durationS: info.durationS, bitrate: info.bitrate, inputFormat: 'mp3' }
+    return { sha256, size, durationS, bitrate: info.bitrate, inputFormat: 'mp3' }
   }
-  if (info.sampleRate === null || !MP3_RATES.has(info.sampleRate) || info.channels === null || info.channels > 2) throw new ProbeReject('not_mp3')
-  const durationS = await countedDurationS(copy, job.work, info.sampleRate, WL)
-  if (durationS < probeMinDurationS()) throw new ProbeReject('too_short')
+  if (info.channels === null || info.channels > 2) throw new ProbeReject('not_mp3')
   const bitrate = pickBitrate(Math.max(durationS, job.req.declaredDurationS))
   if (bitrate === null) throw new ProbeReject('too_long')
   const args = mp3TranscodeArgs(copy, join(job.work, 'out.mp3'), { sampleRate: info.sampleRate, channels: info.channels }, bitrate, WL)

@@ -223,7 +223,10 @@ describe.skipIf(!E2E() || !has('FETCH_FIXTURES_DIR'))('SoundCloud links through 
       const t0 = Date.now()
       const x = await settled(owner, await link(slug))
       expect(x).toMatchObject({ status: 'rejected', probeError: 'sc_too_long' })
-      expect(Date.now() - t0).toBeLessThan(25_000)
+      // The fake would sleep 30 s: well under that proves the early stop. The
+      // worker's idle poll (2 → 5 s, v0.4.1) can add ≤ 3 s at the job claim
+      // and at the result, hence 28 s (was 25 s at a fixed 2 s poll).
+      expect(Date.now() - t0).toBeLessThan(28_000)
     })
 
     it('a fetch that runs past music-fetch’s timeout → sc_timeout (the test stack runs it at 10 s)', async () => {

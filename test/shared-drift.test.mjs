@@ -131,7 +131,14 @@ test('the portal renders the same data (imports the shared copies, no hard-coded
   const bar = readRoot('music/src/components/SiteBar.tsx');
   assert.match(bar, /from '@\/shared\/nav\.json'/);
   for (const label of ['Listen', 'About', 'Stats', 'Contact', 'Web Player', 'Submit music']) assert.doesNotMatch(bar, new RegExp(`>${label}<`), `SiteBar.tsx hard-codes "${label}"`);
-  assert.match(readRoot('music/src/app/layout.tsx'), /@\/shared\/efm-bar\.css/);
+  // The shared bar CSS reaches the portal either from layout.tsx directly or
+  // (v0.4.1, one stylesheet) via globals.css, which the layout imports.
+  const layout = readRoot('music/src/app/layout.tsx');
+  const globals = readRoot('music/src/app/globals.css');
+  assert.ok(
+    /@\/shared\/efm-bar\.css/.test(layout) || (/globals\.css/.test(layout) && /@import\s+["']\.\.\/shared\/efm-bar\.css["']/.test(globals)),
+    'the portal must load the shared efm-bar.css (layout.tsx or globals.css @import)',
+  );
   const portalTest = readRoot('music/test/ui/site-bar.test.tsx');
   assert.match(portalTest, /expectedBar/);
 });

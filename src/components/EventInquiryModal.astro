@@ -9,10 +9,10 @@
 // black rectangle (see CLAUDE.md rule 5); this is the same fix the stats
 // detail overlay already uses.
 //
-// Submits to the EXISTING contact webhook (window.__EFM_CONFIG__.contact.
-// webhook) — no new env var, see CLAUDE.md rule 7. The username/embed
-// title/color make it instantly distinguishable from regular contact-form
-// submissions in Discord.
+// Submits the fields to the same-origin relay (POST /contact/event, served by
+// the efm-requests sidecar), which builds the message and delivers it through
+// the same channel as the contact form, with its own username/title/colour
+// so the team can tell the two apart. The delivery URL stays server-side.
 import { site } from '../site.config';
 const s = site.events.inquiry;
 ---
@@ -27,16 +27,16 @@ const s = site.events.inquiry;
       <p class="text-xs text-cream/60 mb-3">{s.intro}</p>
 
       <form id="event-form" novalidate class="space-y-2.5">
-        <div><label class="label">Your Name <span class="text-ruby">*</span></label><input class="input" name="name" required placeholder="e.g., Wyatt McKenzie" /></div>
+        <div><label class="label">Your Name <span class="text-ruby">*</span></label><input class="input" name="name" maxlength="100" required placeholder="e.g., Wyatt McKenzie" /></div>
 
         <div class="grid grid-cols-2 gap-2">
-          <div><label class="label">Organization (optional)</label><input class="input" name="org" placeholder="Optional" /></div>
-          <div><label class="label">Phone (optional)</label><input class="input" name="phone" type="tel" placeholder="Optional" /></div>
+          <div><label class="label">Organization (optional)</label><input class="input" name="org" maxlength="100" placeholder="Optional" /></div>
+          <div><label class="label">Phone (optional)</label><input class="input" name="phone" maxlength="40" type="tel" placeholder="Optional" /></div>
         </div>
 
-        <div><label class="label">NewDayRP Profile (optional)</label><input class="input" name="profile" type="url" placeholder="https://newdayrp.com/members/9631/" /></div>
+        <div><label class="label">NewDayRP Profile (optional)</label><input class="input" name="profile" maxlength="200" type="url" placeholder="https://newdayrp.com/members/9631/" /></div>
 
-        <div><label class="label">Event Name <span class="text-ruby">*</span></label><input class="input" name="eventName" required placeholder="e.g., Grand Opening Night" /></div>
+        <div><label class="label">Event Name <span class="text-ruby">*</span></label><input class="input" name="eventName" maxlength="150" required placeholder="e.g., Grand Opening Night" /></div>
 
         <div><label class="label">Event Date <span class="text-ruby">*</span></label><input class="input" name="eventDate" type="date" required /></div>
 
@@ -45,7 +45,7 @@ const s = site.events.inquiry;
           <div><label class="label">End Time (optional)</label><input class="input" name="endTime" type="time" /></div>
         </div>
 
-        <div><label class="label">Venue <span class="text-ruby">*</span></label><input class="input" name="venue" required placeholder="e.g., The Vinewood Ballroom" /></div>
+        <div><label class="label">Venue <span class="text-ruby">*</span></label><input class="input" name="venue" maxlength="150" required placeholder="e.g., The Vinewood Ballroom" /></div>
 
         <div>
           <label class="label">Event Type (optional)</label>
@@ -55,12 +55,12 @@ const s = site.events.inquiry;
           </select>
         </div>
 
-        <div><label class="label">Expected Attendance (optional)</label><input class="input" name="attendance" placeholder={s.attendancePlaceholder} /></div>
-        <div><label class="label">Music Style / Genres (optional)</label><input class="input" name="music" placeholder="e.g., pop, top 40, throwbacks" /></div>
-        <div><label class="label">Desired Atmosphere (optional)</label><input class="input" name="atmosphere" placeholder={s.atmospherePlaceholder} /></div>
-        <div><label class="label">Announcements / Promotions (optional)</label><input class="input" name="announcements" placeholder={s.announcementsPlaceholder} /></div>
+        <div><label class="label">Expected Attendance (optional)</label><input class="input" name="attendance" maxlength="100" placeholder={s.attendancePlaceholder} /></div>
+        <div><label class="label">Music Style / Genres (optional)</label><input class="input" name="music" maxlength="300" placeholder="e.g., pop, top 40, throwbacks" /></div>
+        <div><label class="label">Desired Atmosphere (optional)</label><input class="input" name="atmosphere" maxlength="300" placeholder={s.atmospherePlaceholder} /></div>
+        <div><label class="label">Announcements / Promotions (optional)</label><input class="input" name="announcements" maxlength="500" placeholder={s.announcementsPlaceholder} /></div>
 
-        <div><label class="label">Details <span class="text-ruby">*</span></label><textarea class="input min-h-[110px]" name="details" required placeholder="Tell us more about your event…"></textarea></div>
+        <div><label class="label">Details <span class="text-ruby">*</span></label><textarea class="input min-h-[110px]" name="details" maxlength="4000" required placeholder="Tell us more about your event…"></textarea></div>
 
         <div id="event-msg" class="hidden text-xs px-3 py-2 rounded-lg"></div>
 
@@ -74,7 +74,6 @@ const s = site.events.inquiry;
 </div>
 
 <script is:inline define:vars={{
-  avatar: site.discord.avatarUrl,
   profilePattern: site.newDayRpProfilePattern,
   successMsg: s.success,
   webhookMissingMsg: s.webhookMissing,
@@ -86,8 +85,6 @@ const s = site.events.inquiry;
     const go = document.getElementById('event-go');
     if (!overlay || !form || !msg || !go) return;
 
-    const getWebhook = () => (window.__EFM_CONFIG__ && window.__EFM_CONFIG__.contact && window.__EFM_CONFIG__.contact.webhook) || '';
-
     const setMsg = (text, kind) => {
       msg.textContent = text;
       msg.className = 'text-xs px-3 py-2 rounded-lg ' +
@@ -96,6 +93,14 @@ const s = site.events.inquiry;
     };
 
     const profileRe = new RegExp(profilePattern, 'i');
+
+    // "Please wait" copy for a 429: the relay says how long in retry_after.
+    const waitText = async (r) => {
+      const j = await r.json().catch(() => ({}));
+      const s = Number(j.retry_after) || Number(r.headers.get('retry-after')) || 0;
+      const when = s > 90 ? `about ${Math.ceil(s / 60)} minutes` : s > 0 ? `${s} seconds` : 'a few minutes';
+      return `You've sent a few messages already — please wait ${when} and try again.`;
+    };
 
     // Own open/close wiring — this page ships no ActionRow, so there's no
     // shared [data-close]/Escape script to lean on (see file header).
@@ -171,54 +176,25 @@ const s = site.events.inquiry;
 
       go.setAttribute('disabled', 'true');
 
-      const fields = [{ name: 'Contact', value: name, inline: true }];
-      if (phone) fields.push({ name: 'Phone', value: phone, inline: true });
-      if (org) fields.push({ name: 'Organization', value: org, inline: true });
-      if (profile) fields.push({ name: 'NewDayRP Profile', value: profile });
-      fields.push({ name: 'Event', value: eventName, inline: true });
-      fields.push({ name: 'Date', value: eventDate, inline: true });
-      if (startTime || endTime) {
-        const timeValue = startTime && endTime ? (startTime + ' → ' + endTime) : (startTime || endTime);
-        fields.push({ name: 'Time', value: timeValue, inline: true });
-      }
-      fields.push({ name: 'Venue', value: venue, inline: true });
-      if (eventType) fields.push({ name: 'Type', value: eventType, inline: true });
-      if (attendance) fields.push({ name: 'Expected Attendance', value: attendance, inline: true });
-      if (music) fields.push({ name: 'Music Style / Genres', value: music });
-      if (atmosphere) fields.push({ name: 'Desired Atmosphere', value: atmosphere });
-      if (announcements) fields.push({ name: 'Announcements / Promotions', value: announcements });
-      fields.push({ name: 'Details', value: details.length > 1024 ? details.slice(0, 1021) + '…' : details });
-
-      const embed = {
-        title: '📅 EuphoricFM Event Inquiry',
-        color: 0xfeb139,
-        fields,
-        timestamp: new Date().toISOString(),
-        footer: { text: 'EuphoricFM Events Inquiry' },
-      };
-      const threadName = ('Event Inquiry: ' + eventName).slice(0, 90);
-
-      const webhook = getWebhook();
-      if (!webhook) { setMsg(webhookMissingMsg, 'error'); go.removeAttribute('disabled'); return; }
-
       try {
-        const r = await fetch(webhook, {
+        const r = await fetch('/contact/event', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            username: 'EuphoricFM Events',
-            avatar_url: avatar,
-            thread_name: threadName,
-            embeds: [embed],
+            name, org, phone, profile, eventName, eventDate, startTime, endTime,
+            venue, eventType, attendance, music, atmosphere, announcements, details,
           }),
         });
-        if (r.ok || r.status === 204) {
+        if (r.ok) {
           setMsg(successMsg, 'ok');
           form.reset();
           setTimeout(() => { fireClose(); }, 1200);
         } else if (r.status === 429) {
-          const j = await r.json().catch(() => ({}));
-          setMsg(`Too many messages right now. Try again in ${j.retry_after ?? 'a few'}s.`, 'error');
+          setMsg(await waitText(r), 'error');
+        } else if (r.status === 503) {
+          setMsg(webhookMissingMsg, 'error');
+        } else if (r.status === 400 || r.status === 413) {
+          setMsg('Something in the form was not accepted (too long?). Please check it and try again.', 'error');
         } else {
           setMsg(`Failed to send (HTTP ${r.status}).`, 'error');
         }

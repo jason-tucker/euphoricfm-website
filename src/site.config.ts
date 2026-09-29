@@ -523,7 +523,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       atmospherePlaceholder: 'High energy, relaxed, upscale, throwback, party, background music…',
       announcementsPlaceholder: 'Anything we should announce or promote during the broadcast?',
       success: "Thanks! Your event inquiry was sent — we'll be in touch.",
-      webhookMissing: 'Inquiries are temporarily disabled — webhook not configured.',
+      webhookMissing: 'Inquiries are temporarily unavailable — please try again later.',
     },
   },
 } as const;

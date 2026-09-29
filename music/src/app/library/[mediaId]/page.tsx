@@ -1,5 +1,6 @@
 import Link from 'next/link'
-import { duration, playlistLabel, when } from '@/components/format'
+import { duration, playlistLabel } from '@/components/format'
+import { LocalTime } from '@/components/LocalTime'
 import { parseIntent } from '@/components/HomeActions'
 import { ManagerTools } from '@/components/requests/ManagerTools'
 import { RequestForms } from '@/components/requests/RequestForms'
@@ -12,7 +13,7 @@ import { orNotFound, pageViewer } from '@/server/ui/page'
 import { uiSettings } from '@/server/ui/settings'
 
 export const dynamic = 'force-dynamic'
-export const metadata = { title: 'Song' }
+export const metadata = { title: 'Song', description: 'A song on EuphoricFM: its details, and edit or removal requests.' }
 
 export default async function SongPage({
   params,
@@ -54,8 +55,12 @@ export default async function SongPage({
           <dd>{song.genre ?? '—'}</dd>
           <dt className="text-cream/55">Length</dt>
           <dd>{duration(song.lengthS) || '—'}</dd>
-          <dt className="text-cream/55">Folder</dt>
-          <dd className="break-all">Music/Artists/{song.folder}</dd>
+          {viewer.perms.has('review') ? (
+            <>
+              <dt className="text-cream/55">Folder</dt>
+              <dd className="break-all">Music/Artists/{song.folder}</dd>
+            </>
+          ) : null}
           {song.playlistIds ? (
             <>
               <dt className="text-cream/55">Playlists</dt>
@@ -72,7 +77,7 @@ export default async function SongPage({
             {r.myRequests.map((q) => (
               <li key={q.id} className="flex flex-wrap items-center gap-2">
                 <span>
-                  {q.kind === 'edit' ? 'Edit' : 'Removal'} request #{q.id} · {when(q.createdAt)}
+                  {q.kind === 'edit' ? 'Edit' : 'Removal'} request #{q.id} · <LocalTime iso={q.createdAt} />
                 </span>
                 <RequestStatusChip status={q.status} />
               </li>

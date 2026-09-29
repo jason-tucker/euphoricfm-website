@@ -41,7 +41,7 @@ export function PortalRow({ viewer }: { viewer: Viewer | null }) {
   return (
     <div className="efms">
       <div className="efms-in">
-        <span className="efms-label">Music portal</span>
+        <span className="efms-label">Music Portal</span>
         <NavLinks items={navFor(viewer?.perms ?? new Set())} />
         <div className="efms-end">
           {viewer ? (

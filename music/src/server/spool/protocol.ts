@@ -12,7 +12,7 @@
 // (exclusive tmp file + rename/link), never through a symlink.
 
 import { constants as FS } from 'node:fs'
-import { open, link, rename, unlink, readdir } from 'node:fs/promises'
+import { open, link, lstat, rename, unlink, readdir } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -306,10 +306,48 @@ export async function readSpoolResult(outDir: string, id: string): Promise<Spool
   return parsed
 }
 
+// Request ids in arrival order (oldest mtime first, then by name). v0.4.1:
+// was the random v4 UUID's sort order, so a later request could overtake a
+// waiting one (a finalize behind conversions).
 export async function listSpoolIds(dir: string): Promise<string[]> {
-  const names = await readdir(dir)
-  return names
-    .filter((n) => n.endsWith('.json') && UUID_RE.test(n.slice(0, -5)))
-    .map((n) => n.slice(0, -5))
-    .sort()
+  const names = (await readdir(dir)).filter((n) => n.endsWith('.json') && UUID_RE.test(n.slice(0, -5)))
+  const withTime: { id: string; t: number }[] = []
+  for (const n of names) {
+    try {
+      withTime.push({ id: n.slice(0, -5), t: (await lstat(join(dir, n))).mtimeMs })
+    } catch {
+      // gone meanwhile (claimed by rename, or withdrawn)
+    }
+  }
+  return withTime.sort((a, b) => a.t - b.t || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).map((x) => x.id)
+}
+
+// v0.4.1: '.tmp-*' files a crash left between create and rename (all spool
+// writers use that prefix), and results older than `resultMaxAgeMs` when it
+// is given. Only names this protocol writes; unlink removes a symlink itself,
+// never its target. Returns how many were removed.
+export async function sweepSpoolDir(dir: string, opts: { tmpMaxAgeMs: number; resultMaxAgeMs?: number; now?: number }): Promise<number> {
+  const now = opts.now ?? Date.now()
+  let names: string[]
+  try {
+    names = await readdir(dir)
+  } catch {
+    return 0
+  }
+  let n = 0
+  for (const name of names) {
+    const tmp = name.startsWith('.tmp-')
+    const result = opts.resultMaxAgeMs !== undefined && name.endsWith('.json') && UUID_RE.test(name.slice(0, -5))
+    if (!tmp && !result) continue
+    try {
+      const st = await lstat(join(dir, name))
+      if (!st.isFile() && !st.isSymbolicLink()) continue
+      if (now - st.mtimeMs <= (tmp ? opts.tmpMaxAgeMs : opts.resultMaxAgeMs!)) continue
+      await unlink(join(dir, name))
+      n++
+    } catch {
+      // raced with another cleanup, or not ours to remove
+    }
+  }
+  return n
 }

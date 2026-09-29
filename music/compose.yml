@@ -22,11 +22,18 @@
 #                    (no music-int, no database, no other container).
 #   probe            network_mode none
 #
-# DOCKER-USER egress rules are NOT applied by this repo: on botvps the
-# persistent systemd unit efm-music-egress.service drops RFC1918 /
-# 169.254.0.0/16 / 100.64.0.0/10 from 172.31.252.0/24 (worker-egress) and
-# 172.31.251.0/24 (fetch-egress). That is why the subnets are pinned here:
-# change them only together with that unit (README.md).
+# The host egress guard is NOT applied by this repo: on botvps the systemd
+# unit efm-music-egress.service (revision 3.1) keeps three chains, each rule
+# matched by ingress bridge AND source: EFM-MUSIC-EGRESS (DOCKER-USER) drops
+# RFC1918 / 169.254.0.0/16 / 100.64.0.0/10 from 172.31.251.0/24
+# (fetch-egress, br-efm-fetch), 172.31.252.0/24 (worker-egress) and music-web
+# (172.31.250.10); EFM-MUSIC-TAILNET (mangle FORWARD) drops the same sources
+# routed out tailscale+; EFM-MUSIC-INPUT (INPUT) drops NEW connections to
+# the host from the fetch, worker-egress and music-int bridges and music-web.
+# efm-music-egress-check.timer re-checks every 5 min and rebuilds on drift.
+# Accepted residual: the worker reaches the host via efm-public-net's gateway.
+# That is why the subnets, the bridge name and music-web's address are
+# pinned here: change them only together with that unit (README.md).
 #
 # Secrets: one env_file per service, mode 600, owned by botuser; templates in
 # ./env/*.env.example. The probe gets no env_file at all.

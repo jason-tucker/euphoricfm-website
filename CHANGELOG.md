@@ -5,6 +5,22 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.22.3] — 2026-09-29 — Contact forms relayed server-side
+
+### Security
+- **The contact webhook is no longer handed to every visitor.** `/efm-runtime-config.js` served the full Discord webhook URL (id + token), and anyone holding it can post as the webhook (including `@everyone`), rename it or delete it — silently breaking both forms. The "Contact us" and /events inquiry forms now POST their fields as JSON to the same-origin relay (`/contact/message`, `/contact/event`) in the `efm-requests` sidecar, which validates them (required fields, length caps, control characters stripped, the NewDayRP profile pattern), builds the same embeds the pop-ups built before, adds `allowed_mentions: {parse: []}` and forwards them to `DISCORD_CONTACT_WEBHOOK` — a runtime-only env var on `efm-requests` that is never logged and never sent to a browser. Each IP gets 5 sends per 10 minutes across both forms (Caddy's own `X-Forwarded-For`, rightmost entry). Replies: 204 sent, 400 invalid, 413 too large, 429 rate limited (`Retry-After`), 502 Discord failed or timed out (10 s), 503 not configured.
+- `/efm-runtime-config.js` answers an uncached **410**; no page loads it any more. The CSP `connect-src` drops `https://discord.com`. Caddy caps `/contact/*` bodies at 32 KB (the sidecar at 16 KiB).
+- **Deploy note:** set `DISCORD_CONTACT_WEBHOOK` in the host `.env` and give `efm-requests` the compose line **before** this version goes live (`docker compose up -d efm-requests`; a restart keeps the old env). `PUBLIC_DISCORD_CONTACT_WEBHOOK` is no longer read. Rotate the webhook afterwards — the old URL was public.
+
+### Changed
+- Both forms keep their success and error messages; a 429 now reads "You've sent a few messages already — please wait about N minutes and try again." The inputs carry `maxlength`s matching the relay's limits. Line breaks in the message / event details survive (other control characters are stripped).
+- `/contact/` (trailing slash) 301s to `/#contact` like `/contact`.
+
+### Tests
+- `server/index.test.mjs` (injected fetch only, never a real webhook): both payloads field for field incl. `allowed_mentions`, username/avatar/thread name/colour/footer, the 1024-char clip; required / too long / wrong type / bad profile / bad JSON / non-JSON content type → 400 and nothing forwarded; 413 with and without Content-Length; 5 per IP per 10 min shared by both forms, spoofed XFF prefixes don't help, the window rolls over; upstream HTTP error, network error and timeout → 502; unset or non-https webhook → 503 with a log line; no response or log line ever contains the webhook URL/token or a submitted field.
+- `test/caddy-player.sh` runs a stub `efm-requests` on a throwaway network and pins `euphoric.fm` to 127.0.0.1 (no request reaches production): `POST /contact/message` and `/contact/event` reach the sidecar with Caddy's `X-Forwarded-For` (a client-supplied one is dropped), a 40 KB body is a 413 from Caddy, `/api/station/…` still goes to the AzuraCast upstream, `/contact` and `/contact/` stay redirects, `/efm-runtime-config.js` is a `no-store` 410 with no webhook, the CSP has no discord.com.
+- `test/site-build.test.mjs`: no built page contains `discord.com`, a webhook path or the runtime-config script; the forms post to `/contact/message` / `/contact/event`; the relay's avatar URL, station name and profile pattern equal `site.config.ts`.
+
 ## [0.22.2] — 2026-09-29 — Second pass: fresh pages after a deploy, offline state, copy
 
 ### Fixed

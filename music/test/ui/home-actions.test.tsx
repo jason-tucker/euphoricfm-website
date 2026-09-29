@@ -43,6 +43,8 @@ vi.mock('@/server/ui/settings', async () => {
       inviteUrl: null,
       autoCloseDays: 7,
       caps: DEFAULT_CAPS,
+      requestCaps: { edit: 10, removal: 10 },
+      soundcloudEnabled: false,
     }),
   }
 })
@@ -68,7 +70,7 @@ describe('home page (/)', async () => {
 
   it('logged out: sign-in and the four steps, no action cards', async () => {
     state.viewer = null
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     expect(screen.getByRole('button', { name: /sign in with discord/i })).toBeTruthy()
     expect(screen.queryByTestId('action-cards')).toBeNull()
     expect(screen.queryByTestId('how-it-works')).toBeNull()
@@ -77,7 +79,7 @@ describe('home page (/)', async () => {
   })
 
   it('member: three large action cards, My music counts scoped to the viewer, no review card', async () => {
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     expect(screen.getByRole('heading', { name: 'What do you want to do?' })).toBeTruthy()
     const cards = within(screen.getByTestId('action-cards')).getAllByRole('link')
     expect(cards.map((a) => a.getAttribute('href'))).toEqual(['/submit', '/library?intent=edit', '/library?intent=remove'])
@@ -103,7 +105,7 @@ describe('home page (/)', async () => {
 
   it('reviewer: highlighted review queue card with both counts', async () => {
     state.viewer = manager
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     const card = screen.getByTestId('review-card')
     expect(card.getAttribute('href')).toBe('/review')
     expect(card.textContent).toContain('Review queue')
@@ -114,7 +116,7 @@ describe('home page (/)', async () => {
   it('reviewer: the card goes to the requests tab when only requests are waiting', async () => {
     state.viewer = manager
     q.reviewSummary.mockResolvedValueOnce({ songs: 0, requests: 1 })
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     const card = screen.getByTestId('review-card')
     expect(card.getAttribute('href')).toBe('/review/requests')
     expect(card.textContent).toContain('0 songs and 1 request waiting')

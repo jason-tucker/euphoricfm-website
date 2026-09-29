@@ -7,12 +7,14 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { AUDIO_BUDGET_BYTES } from '@/lib/fit'
+import { AUDIO_BUDGET_BYTES, pickBitrate } from '@/lib/fit'
 import { fetchedFfprobeArgs, fetchedTranscodeArgs, runProbeFetch, sniffFetched, withJobDir } from '@/probe/fetched'
 import { copyNoFollowHashed } from '@/probe/files'
 import { processOne, recoverInterrupted } from '@/probe/main'
 import { probeFetchRequest, readSpoolResult, writeSpoolRequest, type ProbeFetchRequest } from '@/server/spool/protocol'
+import { fxBuf } from './helpers/fixtures'
 import { HLS_PLAYLIST, scFx, scFxBuf, SVG_ART } from './helpers/soundcloud'
+import { forgeXingFrames } from './helpers/xing'
 
 let root: string
 let dirs: { fetch: string; uploads: string; work: string }
@@ -107,14 +109,59 @@ describe('probe_fetch: the formats yt-dlp returns for SoundCloud', () => {
     expect(r.flags).toEqual(['kept_untouched'])
   })
 
-  it('the fit ladder: the rate comes from the LONGER of the file and SoundCloud’s own duration (1000 s → 256k)', async () => {
-    const { r } = await convert('sc-aac-40s.m4a', 'm4a', { declaredDurationS: 1000 })
+  // v0.4.1: the two durations must agree within max(2 s, 2 %) (below), so
+  // "the longer" only matters at a ladder boundary.
+  it('the fit ladder: the rate comes from the LONGER of the file and SoundCloud’s own duration (860 s file, 870 s declared → 256k)', async () => {
+    expect(pickBitrate(860)).toBe(320_000) // the file alone would get 320k
+    const { r } = await convert('sc-aac-860s.m4a', 'm4a', { declaredDurationS: 870 }) // 320k fits 864 s at most
     expect(r).toMatchObject({ ok: true, transcodeKbps: 256, bitrate: 256000 })
-    const r2 = (await convert('sc-aac-40s.m4a', 'm4a', { declaredDurationS: 1200 })).r
-    expect(r2).toMatchObject({ ok: true, transcodeKbps: 192 })
-    const r3 = (await convert('sc-aac-40s.m4a', 'm4a', { declaredDurationS: 1441 })).r
-    expect(r3).toMatchObject({ ok: false, error: 'too_long' })
+  }, 300_000)
+})
+
+// Second pass A2 (CONFIRMED major): a Go+ / premium track gives a logged-out
+// client only a 30 s preview while SoundCloud's metadata says the full
+// length. music-fetch refuses the previews it recognises (preview_only); the
+// probe compares the audio's own length with SoundCloud's as well.
+describe('probe_fetch: the audio must be as long as SoundCloud says (sc_duration_mismatch, v0.4.1)', () => {
+  const run = async (name: string, ext: ProbeFetchRequest['ext'], declaredDurationS: number, audio: Buffer = scFxBuf(name)) => {
+    const fetchId = stage(audio, ext)
+    const req = request(fetchId, audio, ext, { declaredDurationS })
+    const r = await runProbeFetch(req, dirs)
+    return { req, r }
+  }
+
+  it('a 30 s preview of a 4-min track (AAC, declaredDurationS 240) → sc_duration_mismatch, nothing published', async () => {
+    const { req, r } = await run('sc-aac-30s.m4a', 'm4a', 240)
+    // (before: ok, a 30 s "Converted from AAC" MP3 pending under the real title)
+    expect(r).toMatchObject({ ok: false, error: 'sc_duration_mismatch' })
+    expect(existsSync(join(dirs.uploads, req.upload))).toBe(false)
   })
+
+  it('the same for an MP3 preview (http_mp3_128), which would otherwise be kept byte for byte', async () => {
+    const { req, r } = await run('sc-mp3-30s.mp3', 'mp3', 240)
+    expect(r).toMatchObject({ ok: false, error: 'sc_duration_mismatch' })
+    expect(existsSync(join(dirs.uploads, req.upload))).toBe(false)
+  })
+
+  it('reported before the 30 s floor: a 10 s clip of a 4-min track is a mismatch, not too_short', async () => {
+    expect((await run('sc-aac-10s.m4a', 'm4a', 240)).r).toMatchObject({ ok: false, error: 'sc_duration_mismatch' })
+  })
+
+  it('tolerance max(2 s, 2 %): 40 s declared 41.5 passes, 43 does not; a missing (0) declared duration never passes', async () => {
+    expect((await run('sc-aac-40s.m4a', 'm4a', 41.5)).r).toMatchObject({ ok: true })
+    expect((await run('sc-aac-40s.m4a', 'm4a', 43)).r).toMatchObject({ ok: false, error: 'sc_duration_mismatch' })
+    expect((await run('sc-aac-40s.m4a', 'm4a', 0)).r).toMatchObject({ ok: false, error: 'sc_duration_mismatch' })
+    expect((await run('sc-mp3-40s.mp3', 'mp3', 38.5)).r).toMatchObject({ ok: true })
+    expect((await run('sc-mp3-40s.mp3', 'mp3', 37)).r).toMatchObject({ ok: false, error: 'sc_duration_mismatch' })
+  })
+
+  it('an MP3 kept byte for byte is judged by its counted frames, not its Xing header (26 min claiming 10 min)', async () => {
+    const forged = forgeXingFrames(fxBuf('fit-26m-128k.mp3'), 600)
+    // SoundCloud's duration agrees with the lie: the counted 26 min still disagree
+    expect((await run('forged.mp3', 'mp3', 600, forged)).r).toMatchObject({ ok: false, error: 'sc_duration_mismatch' })
+    // and agrees with the truth: over the 24-min cap
+    expect((await run('forged.mp3', 'mp3', 1560, forged)).r).toMatchObject({ ok: false, error: 'too_long' })
+  }, 120_000)
 })
 
 describe('probe_fetch: refusals', () => {
@@ -151,7 +198,7 @@ describe('probe_fetch: refusals', () => {
 
   it('30 s to 24 min, from the decoded stream', async () => {
     expect(await refused(scFxBuf('sc-aac-10s.m4a'), 'm4a', { declaredDurationS: 10 })).toMatchObject({ ok: false, error: 'too_short' })
-    expect(await refused(scFxBuf('sc-aac-25m.m4a'), 'm4a', { declaredDurationS: 100 })).toMatchObject({ ok: false, error: 'too_long' })
+    expect(await refused(scFxBuf('sc-aac-25m.m4a'), 'm4a', { declaredDurationS: 1500 })).toMatchObject({ ok: false, error: 'too_long' })
   })
 
   it('a symlinked download is not followed', async () => {

@@ -1,7 +1,7 @@
 """Error codes written to /spool/fetch/out/<uuid>.json as `errorCode`.
 
 The first eight are the plan's contract (EFM Music Portal plan §3.6 / P5
-brief). The last four are fetch-internal additions, documented in README.md,
+brief). The rest are fetch-internal additions, documented in README.md,
 for failures the contract list does not name.
 """
 
@@ -19,12 +19,13 @@ BAD_REQUEST = 'bad_request'            # malformed spool request / duplicate uui
 BAD_MEDIA = 'bad_media'                # downloaded file failed the magic-byte allowlist
 INTERRUPTED = 'interrupted'            # service stopped mid-job (SIGTERM or crash recovery)
 INTERNAL = 'internal'                  # unexpected exception inside fetch
+PREVIEW_ONLY = 'preview_only'          # 0.2.1: SoundCloud offers only a 30 s preview (Go+ track)
 
 CONTRACT_CODES = frozenset({
     BAD_URL, NOT_A_TRACK, REDIRECT_HOST, TOO_LARGE, TOO_LONG, TIMEOUT,
     EXTRACTOR_FAILED, ARTWORK_HOST,
 })
-ALL_CODES = CONTRACT_CODES | {BAD_REQUEST, BAD_MEDIA, INTERRUPTED, INTERNAL}
+ALL_CODES = CONTRACT_CODES | {BAD_REQUEST, BAD_MEDIA, INTERRUPTED, INTERNAL, PREVIEW_ONLY}
 
 
 class FetchError(Exception):

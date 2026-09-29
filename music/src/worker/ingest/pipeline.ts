@@ -27,7 +27,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { constants as FS } from 'node:fs'
-import { open } from 'node:fs/promises'
+import { open, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { and, desc, eq, gt, inArray, isNotNull, ne, notInArray, sql } from 'drizzle-orm'
 import { audit } from '../../server/audit'
@@ -47,7 +47,10 @@ import { APPLIED_SNAPSHOT_REASONS } from '../requests/media'
 import type { P3Ctx } from './context'
 import { afterScans, assertMutationWindow, getCaps, MUTATION_WAIT_MAX_AGE_S, pacingWait, scanOffsetS, scanWindow } from './window'
 
-export const FINALIZE_TIMEOUT_MS = 15 * 60_000
+// v0.4.1: 30 min (was 15). The probe now runs finalize before any queued
+// conversion, but one conversion already running (up to CONVERT_TIMEOUT_S =
+// 600 s, in-web or probe_fetch) plus one of the other inbox's can come first.
+export const FINALIZE_TIMEOUT_MS = 30 * 60_000
 export const POLL_S = 5
 const MAX_FINAL_BYTES = 40 * 1024 * 1024
 const MAX_REPAIRS = 2
@@ -197,7 +200,18 @@ async function stageFinalizing(ctx: P3Ctx, it: Item, run: Run): Promise<void> {
     throw new IngestFailure('bad_finalize_result')
   }
   if (!r) {
-    if (ctx.now() - (run.finalizeRequestedAt?.getTime() ?? 0) > FINALIZE_TIMEOUT_MS) throw new IngestFailure('finalize_timeout')
+    if (ctx.now() - (run.finalizeRequestedAt?.getTime() ?? 0) > FINALIZE_TIMEOUT_MS) {
+      // v0.4.1: withdraw the request if the probe has not claimed it yet. If
+      // it has, it may still answer after we give up: the probe takes
+      // in-worker requests oldest first, so this cleanup runs after that
+      // late finalize and removes its output, and nothing is left in
+      // /staging/final that no ingest run points at.
+      await unlink(join(ctx.spoolInDir, `${run.finalizeRequestId}.json`)).catch(() => {})
+      await writeSpoolRequest(ctx.spoolInDir, { v: 1, id: randomUUID(), type: 'cleanup_final', file: `${run.finalizeRequestId}.mp3` }).catch((e) =>
+        console.error('[worker] could not queue the cleanup of a timed-out finalize', e instanceof Error ? e.message : e),
+      )
+      throw new IngestFailure('finalize_timeout')
+    }
     throw wait(POLL_S, 'finalize pending')
   }
   if (r.source !== 'in-worker' || r.type !== 'finalize') throw new IngestFailure('wrong_result_source')

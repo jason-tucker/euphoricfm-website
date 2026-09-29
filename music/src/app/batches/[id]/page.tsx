@@ -1,7 +1,8 @@
 import Link from 'next/link'
 import { AudioPreview } from '@/components/AudioPreview'
 import { CommentThread, type UiComment } from '@/components/CommentThread'
-import { convertedLabel, duration, playlistLabel, songName, when } from '@/components/format'
+import { convertedLabel, duration, playlistLabel, playlistName, songName } from '@/components/format'
+import { LocalTime } from '@/components/LocalTime'
 import { soundcloudLabel } from '@/lib/soundcloud'
 import { probeErrorText } from '@/components/messages'
 import { BatchStatusChip, ItemStatusChip, NewArtistBadge, Notice, PageTitle, TicketLink } from '@/components/ui'
@@ -15,7 +16,7 @@ import { uiSettings } from '@/server/ui/settings'
 import { listComments } from '@/server/submissions'
 
 export const dynamic = 'force-dynamic'
-export const metadata = { title: 'Batch' }
+export const metadata = { title: 'Batch', description: 'A batch of songs sent to EuphoricFM for review.' }
 
 const PREVIEWABLE = new Set(['pending', 'approved', 'applying', 'verifying', 'live', 'denied', 'failed', 'draft'])
 
@@ -45,7 +46,8 @@ export default async function BatchPage({
         title={`Batch #${batch.id}`}
         sub={
           <>
-            {batch.submittedAt ? `Submitted ${when(batch.submittedAt)}` : `Started ${when(batch.createdAt)}`}
+            {batch.submittedAt ? 'Submitted ' : 'Started '}
+            <LocalTime iso={batch.submittedAt ?? batch.createdAt} />
             {batch.ownerName && !batch.isOwn ? ` by ${batch.ownerName}` : ''}
           </>
         }
@@ -87,11 +89,11 @@ export default async function BatchPage({
                     {convertedLabel(it.inputFormat, it.transcodeKbps) ? ` · ${convertedLabel(it.inputFormat, it.transcodeKbps)}` : ''}
                   </p>
                   {it.playlistIds?.length && (reviewer || it.status !== 'pending') ? (
-                    <p className="text-xs text-cream/55">Playlists: {it.playlistIds.map((p) => playlistLabel(s.playlistNames, p)).join(', ')}</p>
+                    <p className="text-xs text-cream/55">Playlists: {it.playlistIds.map((p) => (reviewer ? playlistLabel : playlistName)(s.playlistNames, p)).join(', ')}</p>
                   ) : null}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <ItemStatusChip status={it.status} />
+                  <ItemStatusChip status={it.status} source={it.source} fetchStage={it.fetchStage} />
                   {reviewer && it.selfApproved ? <span className="chip chip-pending">self-approved</span> : null}
                 </div>
               </div>

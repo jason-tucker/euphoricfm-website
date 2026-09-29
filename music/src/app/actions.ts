@@ -3,10 +3,14 @@
 // Auth server actions (same-origin form POSTs; Next checks the action's
 // Origin, and the portal middleware applies its CSRF gate as well).
 
+import { safeNext } from '@/lib/next-path'
 import { signIn, signOut } from '@/server/auth/config'
 
-export async function signInWithDiscord() {
-  await signIn('discord', { redirectTo: '/' })
+// v0.4.1: a form may carry `next` (the page a signed-out visitor was sent
+// away from); only a same-origin relative path is honoured.
+export async function signInWithDiscord(form?: FormData) {
+  const next = form instanceof FormData ? safeNext(form.get('next')) : null
+  await signIn('discord', { redirectTo: next ?? '/' })
 }
 
 export async function signOutAction() {

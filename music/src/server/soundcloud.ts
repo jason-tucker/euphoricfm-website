@@ -65,11 +65,20 @@ export async function addSoundCloudToBatch(db: DB, v: Viewer, batchId: number, r
       .where(and(eq(items.batchId, b.id), inArray(items.status, ['probing', 'pending', 'draft'])))
     if (n >= caps.maxItemsPerBatch) throw new HttpError(409, 'batch_full')
     const since = new Date((opts.now ?? Date.now()) - 24 * 3600_000)
-    // Every link counts, whatever became of it (rejected and withdrawn too).
+    // Every link counts, whatever became of it (rejected and withdrawn too),
+    // except one that never reached SoundCloud because of the portal
+    // (v0.4.1): the kill switch, or the queue timing out.
     const [day] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(items)
-      .where(and(eq(items.ownerUserId, v.userId), eq(items.source, 'soundcloud'), gte(items.createdAt, since)))
+      .where(
+        and(
+          eq(items.ownerUserId, v.userId),
+          eq(items.source, 'soundcloud'),
+          gte(items.createdAt, since),
+          sql`${items.probeError} IS DISTINCT FROM 'sc_disabled' AND ${items.probeError} IS DISTINCT FROM 'sc_queue_timeout'`,
+        ),
+      )
     if ((day?.n ?? 0) >= caps.fetchesPerUserPerDay) throw new HttpError(429, 'sc_daily_cap', undefined, { 'Retry-After': '3600' })
     const [busy] = await tx
       .select({ n: sql<number>`count(*)::int` })

@@ -8,11 +8,13 @@
 //     an emptied old draft batch becomes 'withdrawn'); audited
 //   * denied / withdrawn / rejected items: 7 days after the decision
 //   * live items: 7 days after going live
+//   * v0.4.1: a SoundCloud link withdrawn while still probing: at every sweep
+//     (see below)
 // Only names matching the fixed id / cover patterns are ever unlinked.
 
 import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { and, eq, inArray, isNotNull, lt, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import { audit } from '../audit'
 import type { DB } from '../db/client'
 import { batches, items, uploads } from '../db/schema'
@@ -22,12 +24,20 @@ import { COVER_FILE_RE, UPLOAD_ID_RE } from '../spool/protocol'
 const H = 3600_000
 const D = 24 * H
 
-async function removeUploadFiles(dir: string, uploadId: string | null, coverFile: string | null) {
+// Returns how many files were actually there (and removed).
+async function removeUploadFiles(dir: string, uploadId: string | null, coverFile: string | null): Promise<number> {
+  const gone = (p: string) =>
+    unlink(p).then(
+      () => 1,
+      () => 0,
+    )
+  let n = 0
   if (uploadId && UPLOAD_ID_RE.test(uploadId)) {
-    await unlink(join(dir, uploadId)).catch(() => {})
-    await unlink(join(dir, `${uploadId}.json`)).catch(() => {})
+    n += await gone(join(dir, uploadId))
+    n += await gone(join(dir, `${uploadId}.json`))
   }
-  if (coverFile && COVER_FILE_RE.test(coverFile)) await unlink(join(dir, coverFile)).catch(() => {})
+  if (coverFile && COVER_FILE_RE.test(coverFile)) n += await gone(join(dir, coverFile))
+  return n
 }
 
 // v0.5.0: each web sweeps only its own site's uploads (uploads.site =
@@ -109,6 +119,24 @@ export async function sweepStaging(db: DB, dir: string, now = Date.now(), site: 
         sql`NOT EXISTS (SELECT 1 FROM items i WHERE i.batch_id = ${batches.id} AND i.status IN ('probing', 'pending', 'draft'))`,
       ),
     )
+
+  // v0.4.1 (security review of the link cancel): a SoundCloud link withdrawn
+  // while still 'probing' has its staging charge released at once, but a
+  // conversion the probe had already taken still publishes <upload> (and
+  // cover-<fetch id>.jpg) afterwards, and nothing collects it (only 'probing'
+  // items are). Unaccounted, 20 cancelled links a day could park ~700 MB in
+  // /staging/uploads for a week. So those names are unlinked at EVERY sweep
+  // (idempotent; a late publication goes at the next one) until the 7-day
+  // rule below clears the item's upload id. A link withdrawn after it became
+  // pending has its probe_sha256 and keeps the normal 7 days.
+  const cancelled = await db
+    .select({ uploadId: items.uploadId, fetchRequestId: items.fetchRequestId })
+    .from(items)
+    .where(and(eq(items.source, 'soundcloud'), eq(items.status, 'withdrawn'), isNull(items.probeSha256), isNotNull(items.uploadId)))
+    .limit(500)
+  for (const it of cancelled) {
+    if (await removeUploadFiles(dir, it.uploadId, it.fetchRequestId ? `cover-${it.fetchRequestId}.jpg` : null)) removed++
+  }
 
   const done = await db
     .select({ id: items.id, uploadId: items.uploadId, coverFile: items.coverFile })

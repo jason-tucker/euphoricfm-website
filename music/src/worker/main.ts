@@ -143,6 +143,10 @@ export async function runJob(ctx: WorkerCtx, job: JobRow): Promise<void> {
     if (e instanceof Permanent || job.attempts >= job.max_attempts) {
       await ctx.db.execute(sql`UPDATE jobs SET status = 'dead', updated_at = now(), last_error = ${msg} WHERE id = ${job.id}`)
       await ctx.alert(`job ${job.kind} #${job.id} failed permanently`, { error: msg })
+      // v0.4.1: a SoundCloud link whose job died would stay 'probing' (60 MiB
+      // charged, one of the member's in-flight slots) until the 7-day draft
+      // retention. It is rejected like any other failure instead.
+      if (job.kind === 'soundcloud_fetch') await failOwner(ctx, job, msg, 'sc_internal')
       return
     }
     const delay = Math.min(3600, 15 * 2 ** job.attempts)
@@ -155,7 +159,7 @@ export async function runJob(ctx: WorkerCtx, job: JobRow): Promise<void> {
 // A wait that aged out is a failure of the thing the job was doing: the
 // request or item reaches its terminal state (status, ticket post, alert)
 // through the domain failure path instead of staying approved/applying.
-async function failOwner(ctx: WorkerCtx, job: JobRow, wait: string): Promise<void> {
+async function failOwner(ctx: WorkerCtx, job: JobRow, wait: string, fetchCode = 'sc_queue_timeout'): Promise<void> {
   const p = job.payload
   const detail = { jobId: job.id, kind: job.kind, wait: wait.slice(0, 200) }
   if (REQUEST_JOB_KINDS.has(job.kind) && job.kind !== 'request_ticket_open' && job.kind !== 'request_ticket_post') {
@@ -164,12 +168,24 @@ async function failOwner(ctx: WorkerCtx, job: JobRow, wait: string): Promise<voi
   }
   if (job.kind === 'soundcloud_fetch' && typeof p.itemId === 'number') {
     const it = await ctx.db.query.items.findFirst({ where: eq(items.id, p.itemId) })
-    if (it && it.source === 'soundcloud') await rejectFetchItem(ctx, it, 'sc_queue_timeout')
+    // release: a request that did reach music-fetch is cancelled (queued) or
+    // its download dropped (finished).
+    if (it && it.source === 'soundcloud') await rejectFetchItem(ctx, it, fetchCode, { release: true })
     return
   }
   if ((job.kind === 'ingest' || job.kind === 'ingest_verify') && isP3Ctx(ctx) && typeof p.itemId === 'number') {
     await failIngest(ctx, p.itemId, 'wait_expired', detail)
   }
+}
+
+// v0.4.1: the idle poll backs off from 2 s to 5 s while nothing is found
+// (no job claimed, no probe or fetch result collected) and drops back to 2 s
+// as soon as anything is. A job the web enqueues waits at most one idle poll.
+export const IDLE_POLL_MS = { min: 2000, max: 5000, step: 1000 } as const
+
+export function nextIdleDelay(prevMs: number, didWork: boolean): number {
+  if (didWork) return IDLE_POLL_MS.min
+  return Math.min(IDLE_POLL_MS.max, Math.max(IDLE_POLL_MS.min, prevMs + IDLE_POLL_MS.step))
 }
 
 export async function main() {
@@ -207,10 +223,12 @@ export async function main() {
   process.on('SIGINT', () => (stopping = true))
   let lastDaily = Date.now()
   let lastReleaseReissue = 0
+  let idleMs: number = IDLE_POLL_MS.min
   while (!stopping) {
+    let found = false
     try {
-      await collectProbeResults(ctx)
-      await collectFetchResults(ctx)
+      found = (await collectProbeResults(ctx)) > 0
+      found = (await collectFetchResults(ctx)) > 0 || found
       if (Date.now() - lastReleaseReissue > FETCH_RELEASE_REISSUE_S * 1000) {
         lastReleaseReissue = Date.now()
         await reissueFetchReleases(ctx)
@@ -224,12 +242,16 @@ export async function main() {
       const job = await claimJob(db)
       if (job) {
         await runJob(ctx, job)
+        idleMs = nextIdleDelay(idleMs, true)
         continue
       }
     } catch (e) {
       console.error('[worker] loop error', e instanceof Error ? e.message : e)
     }
-    await new Promise((r) => setTimeout(r, 2000))
+    // A collected result resets the backoff: its follow-up (the next queued
+    // link, the probe_fetch answer) is likely due soon.
+    idleMs = nextIdleDelay(idleMs, found)
+    await new Promise((r) => setTimeout(r, idleMs))
   }
   await closeDb()
   process.exit(0)
