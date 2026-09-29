@@ -85,6 +85,8 @@ const store = {
 
   // ---- Stream choice (quality picker) ------------------------------------
   const quality = document.getElementById('efmp-quality') as HTMLSelectElement | null;
+  // The picker only earns its place with a real choice: one mount = no picker.
+  const qualityWrap = quality?.closest('.efmp-select') as HTMLElement | null;
   let options: StreamOption[] = [];
   let optionsKey = '';
   let streamUrl = pc.streamUrl;
@@ -195,6 +197,7 @@ const store = {
         }),
       );
       quality.title = options.find((o) => o.url === streamUrl)?.name || '';
+      if (qualityWrap) qualityWrap.hidden = options.length < 2;
     }
     const name = pc.stationName;
     for (const a of plsLinks) a.href = dataUri('audio/x-scpls', buildPls(name, options));
