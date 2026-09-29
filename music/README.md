@@ -193,9 +193,13 @@ On botvps the secrets live in **`/home/botuser/secrets/efm-events/`** (mode 700,
 | `TICKETS_GUILD_READ_KEY` | empty | sign-in relies on Discord's member lookup only |
 | `PORTAL_SITE` | set by `compose.yml` | — |
 
-`events-worker.env`: `DATABASE_URL`, `AZURACAST_BASE_URL` and `TICKETS_API_BASE` as in music's `worker.env`; `EVENTS_STATION_ID=14` (anything else refuses to start); `EVENTS_AZURACAST_API_KEY` (dedicated Events user, station 14 media + playlists + broadcasting); `EVENTS_CANARY_STATION_IDS=1,7` (each must answer 403 at start-up); `EVENTS_TICKETS_WRITE_KEY` (integration `efm-events`: `tickets:write` + `tickets:close`, category `eventrequest`, link origin `https://events.euphoric.fm`, no actor impersonation); `PORTAL_ORIGIN=https://events.euphoric.fm`.
+`events-worker.env`: `DATABASE_URL`, `AZURACAST_BASE_URL` and `TICKETS_API_BASE` as in music's `worker.env`; `EVENTS_STATION_ID=14` (anything else refuses to start); `EVENTS_AZURACAST_API_KEY` (an API key of the shared AzuraCast account, see below); `EVENTS_CANARY_STATION_IDS=7` (must answer 403 at start-up; station 1 cannot be a canary, see below); optional `ALERT_DISCORD_WEBHOOK`; `EVENTS_TICKETS_WRITE_KEY` (integration `efm-events`: `tickets:write` + `tickets:close`, category `eventrequest`, link origin `https://events.euphoric.fm`, no actor impersonation); `PORTAL_ORIGIN=https://events.euphoric.fm`.
 
-**Music's env files must hold no `EVENTS_*` variable at all** (music-web and music-worker refuse the whole prefix). Set `AZURACAST_EXTRA_CANARY_STATION_IDS=14` in music's `worker.env` (it is the default; set it explicitly), so an events key pasted into the wrong file refuses to start.
+**Music's env files must hold no `EVENTS_*` variable at all** (music-web and music-worker refuse the whole prefix).
+
+**One AzuraCast account (since 2026-09-29):** music and events use the same AzuraCast account (music-portal@euphoric.fm, role 9, which manages stations 1 and 14). Station 14 therefore answers 200 to the music key and station 1 to the events key, so neither can be the other's canary: production `worker.env` has `AZURACAST_EXTRA_CANARY_STATION_IDS=` **empty** (the code default is 14, which would refuse to start), and `events-worker.env` has `EVENTS_CANARY_STATION_IDS=7`. Station 7 still proves neither key is a superadmin key. Isolation between the two stations is in code: the music wrapper drives only station 1 and the events wrapper only station 14.
+
+**Sessions:** the two sites share the `session` and `account` rows in Postgres; what keeps the sign-ins apart is the host-only `__Host-` cookie of each site (a music session cookie is never sent to events.euphoric.fm, and the reverse).
 
 ### Deploy additions
 
@@ -214,6 +218,8 @@ On botvps the secrets live in **`/home/botuser/secrets/efm-events/`** (mode 700,
    ```
 
    **Only `discord.com` and `euphoric.fm` may print `OPEN`.** A worker port that is not listening prints `ECONNREFUSED` if the packet got through: that counts as **not** blocked (a DROP shows as a timeout). Anything else reachable → `docker compose -p efm-music stop events-web`, fix the rules, re-verify; record the result in the vault's botvps note.
+
+5. Canaries (one AzuraCast account): music's `worker.env` keeps `AZURACAST_EXTRA_CANARY_STATION_IDS=` **empty** (production has it empty since 2026-09-29; never 14), and `events-worker.env` has `EVENTS_CANARY_STATION_IDS=7`. The events-worker log line `canaries=7 self-check ok` confirms it.
 
 ### Tests
 
