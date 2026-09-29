@@ -7,9 +7,11 @@
 //     reads in a row). A restart that fails or a backend that does not come
 //     up (Liquidsoap refusing the regenerated config — the 2026-09-29
 //     station-14 outage) is ROLLED BACK at once, never retried into the
-//     same config: every playlist of the event is disabled, the backend is
-//     restarted once more and confirmed, the build is marked failed, staff
-//     are alerted and the ticket is told. A rollback restart that does not
+//     same config: every playlist of the event is disabled, the queue is
+//     purged (the AutoDJ may already have queued a song from the event's
+//     playlists — seen in the outage: it kept playing after the manual
+//     disable + restart), the backend is restarted once more and confirmed,
+//     the build is marked failed, staff are alerted and the ticket is told. A rollback restart that does not
 //     bring the station back pages "EVENT STATION DOWN" and stops. Never a
 //     restart loop (the efm watchdog has its own 10-min cooldown);
 //   * end kick at the end: wait for the song that was playing at the end to
@@ -198,10 +200,12 @@ export async function startKick(ctx: EventsCtx, p: EventJobPayload<'start_kick'>
 
 /**
  * The start kick's restart failed or the backend did not come up: take the
- * event's playlists out and bring the station back as it was. Every
- * registry playlist of the event is disabled (each tried, failures noted),
- * the backend restarted ONCE more and confirmed, the build marked failed,
- * staff alerted and the ticket told. If that restart does not bring the
+ * event's playlists out and bring the station back as it was. In this
+ * order: every registry playlist of the event is disabled (each tried,
+ * failures noted), station 14's queue is purged (a song the AutoDJ already
+ * queued from an event playlist would otherwise still play), the backend
+ * restarted ONCE more and confirmed, the build marked failed, staff alerted
+ * and the ticket told. If that restart does not bring the
  * backend back, a distinct "EVENT STATION DOWN" page goes out and nothing
  * else is tried.
  */
@@ -223,6 +227,13 @@ async function rollbackStart(ctx: EventsCtx, ev: EventRow, build: BuildRow, fail
     }
   }
   await ctx.store.audit('events.playlists.disabled', 'event', ev.id, { playlists: disabled, errors: disableErrors, reason: 'start rollback' })
+  let queueError: string | null = null
+  try {
+    await ctx.az.clearQueue()
+  } catch (e) {
+    queueError = errText(e).slice(0, 200)
+    await ctx.store.audit('events.kick.queue_clear_failed', 'event', ev.id, { error: queueError, reason: 'start rollback' })
+  }
   let restored: RestartOutcome
   try {
     restored = await restartAndConfirm(ctx)
@@ -230,7 +241,7 @@ async function rollbackStart(ctx: EventsCtx, ev: EventRow, build: BuildRow, fail
     restored = { ok: false, stage: 'restart', error: `rollback restart refused (${errText(e)})`, backend: 'unknown' }
   }
   await ctx.store.setBuild(build.id, { status: 'failed', lastError: `start kick: ${failure.error}; rolled back${restored.ok ? '' : ' — station still down'}`.slice(0, 300) })
-  const detail = { eventId: ev.id, buildId: build.id, when: whenLine(ev), stage: failure.stage, error: failure.error, disabled, disableErrors, ...diag }
+  const detail = { eventId: ev.id, buildId: build.id, when: whenLine(ev), stage: failure.stage, error: failure.error, disabled, disableErrors, queueError, ...diag }
   if (restored.ok) {
     await ctx.store.audit('events.kick.rolled_back', 'event', ev.id, { buildId: build.id, restored: true })
     await ctx.alert(`start of event ${ev.id} failed — rolled back, Event station restored`, detail)

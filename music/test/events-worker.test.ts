@@ -485,6 +485,56 @@ describe('events worker: kicks and teardown', () => {
     expect(String((failed.detail.liquidsoapErrors as string[]).join('\n'))).toContain('Error 2: Parse error')
   })
 
+  // Incident fact: after staff disabled 81–84 and restarted, the station still
+  // played a song from playlist 81 — the AutoDJ had queued it before the
+  // disable. The rollback purges the queue AFTER disabling, BEFORE restarting.
+  it('the rollback purges a song the AutoDJ queued from an event playlist: disable → purge queue → restart → confirm', async () => {
+    const { h } = await builtWithHelpers()
+    const pinRow = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!
+    pinRow.intentName = '~EVT42 s1'
+    h.az.playlists.get(pinRow.playlistId!)!.name = '~EVT42 s1'
+    h.az.queue = [7] // purged by the kick itself before its restart
+    const queueAtRestart: number[][] = []
+    h.az.onRestart = () => {
+      queueAtRestart.push([...h.az.queue])
+      // the AutoDJ queues the next song from the (still enabled) event main playlist
+      if (h.az.restarts === 1) h.az.queue.push(31)
+    }
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    // queue empty at BOTH restarts, the event's song removed by the rollback
+    expect(queueAtRestart).toEqual([[], []])
+    expect(h.az.queue).toEqual([])
+    const w = h.az.writes().map((x) => `${x.method} ${x.path}`)
+    const first = w.indexOf('POST /api/station/14/backend/restart')
+    const second = w.lastIndexOf('POST /api/station/14/backend/restart')
+    const purge = w.indexOf('DELETE /api/station/14/queue/31')
+    const lastDisable = Math.max(...eventIds(h).map((id) => w.indexOf(`PUT /api/station/14/playlist/${id}`, first)))
+    expect(first).toBeLessThan(lastDisable)
+    expect(lastDisable).toBeLessThan(purge)
+    expect(purge).toBeLessThan(second)
+    expect(h.alerts).toContain('start of event 42 failed — rolled back, Event station restored')
+  })
+
+  it('the off-air restart purges the queue after the playlists are off and before it restarts', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    const main = mainIdOf(h, 42)
+    h.az.queue = [44]
+    h.clock.t = T('2026-10-10T22:00:00-04:00') + 91_000
+    await drain(h)
+    const w = h.az.writes().map((x) => `${x.method} ${x.path}`)
+    const disable = w.lastIndexOf(`PUT /api/station/14/playlist/${main}`)
+    const purge = w.indexOf('DELETE /api/station/14/queue/44')
+    const restart = w.lastIndexOf('POST /api/station/14/backend/restart')
+    expect(disable).toBeGreaterThan(-1)
+    expect(disable).toBeLessThan(purge)
+    expect(purge).toBeLessThan(restart)
+    expect(h.az.queue).toEqual([])
+  })
+
   it('AzuraCast answering the restart with 500 ("Exited too quickly") rolls back without waiting for status polls', async () => {
     const { h } = await builtWithHelpers()
     const pinRow = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!

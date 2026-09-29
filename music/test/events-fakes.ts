@@ -64,6 +64,9 @@ export class FakeAz {
   // Append a start banner to liquidsoapLog on every good restart (off by
   // default: most tests set the log they want the verify to read).
   logRestarts = false
+  // Called on every restart (after it took effect), e.g. to model the
+  // AutoDJ queueing a song from a playlist that is enabled right now.
+  onRestart?: () => void
   np: unknown = { is_online: true, now_playing: null }
   // station 14's liquidsoap log (GET /logs, /log/liquidsoap_log)
   liquidsoapLog = ''
@@ -303,6 +306,7 @@ export class FakeAz {
         return this.json(500, { success: false })
       }
       this.restarts++
+      this.onRestart?.()
       const bad = this.invalidLiquidsoapPlaylists()
       const forced = this.forceBackendDown > 0
       if (forced) this.forceBackendDown--
