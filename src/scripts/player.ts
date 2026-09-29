@@ -271,6 +271,11 @@ const store = {
   };
   moreBtn?.addEventListener('click', () => setExpanded(!histAside?.classList.contains('is-expanded')));
   for (const a of ctl('history-link')) a.addEventListener('click', () => setExpanded(true));
+  // Arriving on /player/#history (the home card's "Song history" link, or a
+  // shared link) opens the full list, which is collapsed to 3 rows ≤ 1100 px.
+  const expandForHash = () => { if (location.hash === '#history') setExpanded(true); };
+  expandForHash();
+  window.addEventListener('hashchange', expandForHash);
 
   const renderHistory = (history: AzuraNowPlayingEntry[]) => {
     if (!histList) return;

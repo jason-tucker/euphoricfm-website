@@ -65,7 +65,9 @@ test('home keeps its bundle and links the Web Player from the hero', () => {
   const html = read('index.html');
   assert.match(html, /id="np-card"/);
   assert.match(html, /<a href="\/player\/" id="open-player" class="btn btn-ghost">/);
-  assert.match(html, /efm-runtime-config\.js/);
+  // Deferred: a no-store script must not block the first paint of the page.
+  assert.match(html, /<script defer src="\/efm-runtime-config\.js"><\/script>/);
+  assert.equal(html.match(/efm-runtime-config\.js/g)?.length, 1);
   assert.match(html, /BaseLayout\.astro_astro_type_script/);
 });
 
@@ -226,7 +228,7 @@ test('stats.ts is not in the home entry script (loaded when #stats nears the vie
   assert.match(js, /import\(["'][^"']*stats[^"']*\.js["']\)|stats\.[\w-]+\.js/, 'lazy import of the stats chunk');
 });
 
-test('share previews: og:image is a real 1200x630 PNG', () => {
+test('share previews: og:image is a real 1200x630 PNG under 100 KB', () => {
   const html = read('index.html');
   assert.match(html, /<meta property="og:image" content="https:\/\/info\.euphoric\.fm\/images\/og\.png"/);
   const f = dist('images/og.png');
@@ -234,6 +236,32 @@ test('share previews: og:image is a real 1200x630 PNG', () => {
   const b = readFileSync(f);
   assert.equal(b.subarray(1, 4).toString(), 'PNG');
   assert.deepEqual([b.readUInt32BE(16), b.readUInt32BE(20)], [1200, 630]);
+  assert.ok(b.length <= 100_000, `og.png is ${b.length} bytes (max 100 KB)`);
+});
+
+test('robots.txt is a real file, and the dead PWA bits are gone', () => {
+  assert.match(read('robots.txt'), /^User-agent/);
+  for (const f of ['manifest.webmanifest', 'icon.svg']) {
+    assert.ok(!existsSync(dist(f)), `dist/${f} must not come back (the CEF first-paint bug)`);
+  }
+  for (const page of ['index.html', 'events/index.html', 'player/index.html']) {
+    assert.doesNotMatch(read(page), /rel="manifest"/, page);
+  }
+});
+
+test('wordmark script font: a WOFF2 subset under 20 KB, listed before the TTF, preloaded', () => {
+  const woff2 = readFileSync(dist('fonts/CortadoScript-Regular.woff2'));
+  assert.equal(woff2.subarray(0, 4).toString(), 'wOF2');
+  assert.ok(woff2.length <= 20_000, `CortadoScript-Regular.woff2 is ${woff2.length} bytes (max 20 KB)`);
+  assert.ok(existsSync(dist('fonts/CortadoScript-Regular.ttf')), 'TTF kept (fallback + docs/og)');
+  const face = /@font-face\s*\{[^}]*font-family:\s*'Cortado Script'[^}]*\}/.exec(src('src/styles/global.css'))?.[0] ?? '';
+  assert.match(face, /CortadoScript-Regular\.woff2'\) format\('woff2'\),\s*url\('\/fonts\/CortadoScript-Regular\.ttf'\)/);
+  for (const page of ['index.html', 'events/index.html', 'player/index.html']) {
+    const html = read(page);
+    for (const f of ['Begaron-Regular.woff2', 'CortadoScript-Regular.woff2']) {
+      assert.match(html, new RegExp(`<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/${f}"`), `${page} preloads ${f}`);
+    }
+  }
 });
 
 // ---- Config drift -------------------------------------------------------------
@@ -392,4 +420,27 @@ test('offline copy ships with both players', () => {
   assert.match(src('src/scripts/stream-audio.ts'), /onPlayError\?\.\(err\)/);
   assert.match(src('src/components/PlayerCard.astro'), /onPlayError: \(\) => showToast\(site\.player\.playFailed\)/);
   assert.match(src('src/scripts/player.ts'), /onPlayError: \(\) => showToast\(pc\.playFailed\)/);
+});
+
+// ---- Home card parity with /player/ -------------------------------------------------
+
+test('home card + Recently played use the break filter, clamp the time, refresh pending every 30 s', () => {
+  const js = src('src/scripts/nowplaying.ts');
+  assert.match(js, /history\.filter\(\(h\) => !isBreakEntry\(h, excludePlaylists\)\)\.slice\(0, 4\)/, 'Recently played skips ads/imaging');
+  assert.match(js, /const brk = isBreakEntry\(np, excludePlaylists\)/, 'now playing shows a station break');
+  assert.match(js, /Math\.min\(duration, Math\.max\(0, \(Date\.now\(\) - playedAt\) \/ 1000\)\)/, 'elapsed clamped to the song length');
+  assert.match(js, /const PENDING_REFRESH_MS = 30_000;/);
+  // refreshPending runs on a track change / 30 s timer, not on every poll.
+  const onNp = /const onNowPlaying = [\s\S]*?\n  \};/.exec(js)?.[0] ?? '';
+  assert.equal(onNp.match(/refreshPending\(\)/g)?.length, 1, 'one call, inside the sh_id change block');
+  assert.match(onNp, /np\.sh_id !== lastShId\) \{[\s\S]*?refreshPending\(\);[\s\S]*?\n    \}/);
+  const card = /<div id="np-card"[^>]*>/.exec(read('index.html'))?.[0] ?? '';
+  assert.ok(card.includes(`data-break-title="${site.player.breakTitle}"`));
+  assert.ok(card.includes(`data-break-artist="${site.player.breakArtist}"`));
+});
+
+test('/player/#history opens the full Song history', () => {
+  assert.match(src('src/scripts/player.ts'), /location\.hash === '#history'\) setExpanded\(true\)/);
+  assert.match(src('src/scripts/player.ts'), /addEventListener\('hashchange', expandForHash\)/);
+  assert.match(read('index.html'), /href="\/player\/#history"/);
 });

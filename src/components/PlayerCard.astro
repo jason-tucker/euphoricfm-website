@@ -12,7 +12,7 @@ const un = site.home.upNext;
   <!-- No overflow-hidden here: the bass halo lives on #np-card::before and its
        box-shadow paints OUTSIDE the card box — an ancestor clip would erase it.
        Children that need clipping (#np-up-next, the progress track) clip themselves. -->
-  <div id="np-card" class="card bg-midnight/40 border-midnight/40 relative" data-offline={site.player.offline}>
+  <div id="np-card" class="card bg-midnight/40 border-midnight/40 relative" data-offline={site.player.offline} data-break-title={site.player.breakTitle} data-break-artist={site.player.breakArtist}>
 
     <!-- Special-event banner — slides open when a live DJ connects
          (data.live.is_live from AzuraCast; live sets are always special events
