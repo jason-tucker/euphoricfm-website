@@ -24,6 +24,11 @@ export const site = {
     // excluded playlists below).
     breakTitle: 'Station break',
     breakArtist: 'EuphoricFM',
+    // Shown on the home card and /player/ while the station's API cannot be
+    // reached (network error, timeout, 5xx); the poller keeps retrying.
+    offline: 'Station offline — retrying',
+    // Toast when the browser refuses to start the stream.
+    playFailed: 'Couldn’t start the stream. Try again in a moment.',
     // Mirrors DEFAULT_EXCLUDE_PLAYLISTS in server/stats.mjs (ads + imaging);
     // test/site-build.test.mjs fails if the two lists drift apart.
     excludePlaylists: ['2Ads', '3EFM/Free Ads', '5Local Ads', 'Go Vote', '4EuphoricFM'],
@@ -93,6 +98,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       requested: 'Requested',
       history: 'Song history',
       empty: 'No requests right now',
+      offline: 'Recently played is back when the station is.',
       button: 'Request a song',
     },
     // Up next row on the player card (PlayerCard.astro). The next song shows
@@ -103,6 +109,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       choosing: 'Choosing the next song…',
       stationBreak: 'Station break next',
       live: 'Back to the playlist after the live set',
+      offline: 'Back when the station is',
     },
     about: {
       eyebrow: 'About',

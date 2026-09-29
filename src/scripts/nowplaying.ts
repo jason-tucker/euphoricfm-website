@@ -18,6 +18,7 @@ import { fmtTime, fmtElapsed, fmtAgo, escapeHtml as escape, isBreakEntry } from 
 import {
   getConfig,
   subscribeNowPlaying,
+  stationUnavailable,
   toSameOriginArt,
   setMediaMetadata,
   bindMediaSessionActions,
@@ -54,6 +55,7 @@ import {
     choosing: elUpNext?.dataset.choosing || '',
     stationBreak: elUpNext?.dataset.break || '',
     live: elUpNext?.dataset.live || '',
+    offline: elUpNext?.dataset.offline || '',
   };
   let excludePlaylists: string[] = [];
   try { excludePlaylists = JSON.parse(elUpNext?.dataset.exclude || '[]'); } catch { /* keep [] */ }
@@ -73,6 +75,10 @@ import {
 
   // Mutable state for the RAF loop.
   let lastShId = 0;
+  // Offline state: set while the station's API is unreachable (np-core
+  // reports failed polls); cleared by the next successful poll.
+  let hasData = false;
+  let offline = false;
   let playedAt = 0; // ms
   let duration = 0; // seconds
   let listeners = 0;
@@ -305,6 +311,8 @@ import {
   // Runs on every now-playing poll (np-core owns the fetch, the interval and
   // the hidden-tab pause).
   const onNowPlaying = (data: AzuraNowPlayingResponse) => {
+    hasData = true;
+    offline = false;
     const np = data.now_playing;
     listeners = data.listeners?.current ?? 0;
     if (elListeners) elListeners.textContent = String(listeners);
@@ -329,6 +337,35 @@ import {
     // Don't await — pending-list latency shouldn't gate the now-playing
     // paint. The fetch races the next poll harmlessly if it's slow.
     refreshPending();
+  };
+
+  // The station's API is unreachable (network error, timeout, 5xx). Replace
+  // the live-looking "Loading…" / AUTO DJ state with an honest offline card,
+  // stop the stream (it comes from the same server) and keep retrying; the
+  // next successful poll repaints everything (lastShId = 0 forces it).
+  const onUnavailable = (failures: number) => {
+    if (offline || !stationUnavailable(failures, hasData)) return;
+    offline = true;
+    if (isLive) applyLive(undefined, false);
+    setOnline(false);
+    lastShId = 0;
+    playedAt = 0;
+    duration = 0;
+    if (elTitle) elTitle.textContent = elCard?.dataset.offline || '';
+    if (elArtist) elArtist.textContent = '—';
+    if (elAlbum) elAlbum.textContent = '';
+    if (elNpRequested) elNpRequested.classList.add('hidden');
+    if (elBar) elBar.style.width = '0%';
+    if (elTimes) elTimes.textContent = '0:00 / 0:00';
+    if (elListeners) elListeners.textContent = '0';
+    upNextShown = false;
+    elUpNext?.classList.remove('is-open');
+    setUpNextNote(upNextCopy.offline);
+    if (elRecent) {
+      const note = escape(elRecent.dataset.offline || '');
+      elRecent.innerHTML = `<li class="py-2 text-sm text-cream/50">${note}</li>`;
+    }
+    window.__efmAudio?.pause();
   };
 
   // RAF loop: paint the progress bar between polls using the server-anchored
@@ -382,6 +419,6 @@ import {
 
   // Boot.
   refreshPending();
-  subscribeNowPlaying(onNowPlaying);
+  subscribeNowPlaying(onNowPlaying, onUnavailable);
   requestAnimationFrame(tick);
 })();

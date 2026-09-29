@@ -12,7 +12,7 @@ const un = site.home.upNext;
   <!-- No overflow-hidden here: the bass halo lives on #np-card::before and its
        box-shadow paints OUTSIDE the card box — an ancestor clip would erase it.
        Children that need clipping (#np-up-next, the progress track) clip themselves. -->
-  <div id="np-card" class="card bg-midnight/40 border-midnight/40 relative">
+  <div id="np-card" class="card bg-midnight/40 border-midnight/40 relative" data-offline={site.player.offline}>
 
     <!-- Special-event banner — slides open when a live DJ connects
          (data.live.is_live from AzuraCast; live sets are always special events
@@ -122,6 +122,7 @@ const un = site.home.upNext;
       data-choosing={un.choosing}
       data-break={un.stationBreak}
       data-live={un.live}
+      data-offline={un.offline}
       data-exclude={JSON.stringify(site.player.excludePlaylists)}
     >
       <div class="np-un-wait flex items-center gap-3">
@@ -239,6 +240,7 @@ const un = site.home.upNext;
   // the Web Player at /player/.
   import { site } from '../site.config';
   import { createStreamEngine } from '../scripts/stream-audio';
+  import { showToast } from '../scripts/toast';
 
   const audio = document.getElementById('efm-audio') as HTMLAudioElement | null;
   const btn = document.getElementById('efm-play');
@@ -260,6 +262,7 @@ const un = site.home.upNext;
         icon.innerHTML = playing ? pauseIcon : playIcon;
         btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
       },
+      onPlayError: () => showToast(site.player.playFailed),
     });
 
     btn.addEventListener('click', () => { void engine.toggle(); });

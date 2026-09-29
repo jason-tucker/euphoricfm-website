@@ -27,7 +27,7 @@ const t = site.home.songs;
 
     <div class="hm-tab-body">
       <div role="tabpanel" id="songs-panel-recent" class="hm-tab-panel" aria-labelledby="songs-tab-recent" tabindex="0">
-        <ul id="recent-list" class="divide-y divide-cream/5">
+        <ul id="recent-list" class="divide-y divide-cream/5" data-offline={t.offline}>
           {[0, 1, 2, 3].map((i) => (
             <li class="flex items-center gap-3 py-2 border-t border-cream/5 first:border-t-0" aria-hidden={i > 0 ? 'true' : undefined}>
               <div class="w-10 h-10 rounded-md bg-cream/10 shrink-0"></div>

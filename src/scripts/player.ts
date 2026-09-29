@@ -27,10 +27,12 @@ import {
   bindMediaSessionActions,
   getConfig,
   setMediaMetadata,
+  stationUnavailable,
   subscribeNowPlaying,
   toSameOriginArt,
 } from './np-core';
 import { createStreamEngine } from './stream-audio';
+import { showToast } from './toast';
 
 interface PlayerPageConfig {
   streamUrl: string;
@@ -39,6 +41,8 @@ interface PlayerPageConfig {
   breakTitle: string;
   breakArtist: string;
   excludePlaylists: string[];
+  offline: string;
+  playFailed: string;
 }
 
 const VOL_KEY = 'efm-player-volume';
@@ -110,6 +114,7 @@ const store = {
       }
       paintDocTitle();
     },
+    onPlayError: () => showToast(pc.playFailed),
   });
   for (const b of playBtns) b.addEventListener('click', () => { void engine.toggle(); });
 
@@ -306,6 +311,8 @@ const store = {
   let hasNext = false;
   let lastArt = '';
   let lastMetaKey = '';
+  let hasData = false;
+  let offline = false;
 
   const statusEls = all('status');
   const setStatus = (online: boolean) => {
@@ -330,6 +337,8 @@ const store = {
   };
 
   const onNowPlaying = (data: AzuraNowPlayingResponse) => {
+    hasData = true;
+    offline = false;
     const online = data.is_online !== false;
     isLive = !!(online && data.live && data.live.is_live);
     const streamer = isLive ? (data.live.streamer_name || '').trim() || live.fallbackName : '';
@@ -395,6 +404,38 @@ const store = {
     renderHistory(data.song_history || []);
   };
 
+  // The station's API is unreachable (network error, timeout, 5xx): show the
+  // offline state instead of a live-looking "Loading…" + AUTO DJ, stop the
+  // stream (same server) and keep retrying; the next good poll repaints all.
+  const onUnavailable = (failures: number) => {
+    if (offline || !stationUnavailable(failures, hasData)) return;
+    offline = true;
+    isLive = false;
+    broadcastStartMs = 0;
+    root.classList.remove('is-live');
+    setStatus(false);
+    setText('title', pc.offline);
+    setText('artist', ' ');
+    setText('album', '');
+    setText('listeners', '0');
+    setHidden('live-line', true);
+    setHidden('requested', true);
+    hasNext = false;
+    setHidden('next', true);
+    setText('next-line', '—');
+    playedAt = 0;
+    duration = 0;
+    for (const b of bars) b.style.width = '0%';
+    setText('elapsed', '0:00');
+    setText('duration', '0:00');
+    lastMetaKey = '';
+    titleText = '';
+    // Nothing loaded yet: the history's "Loading…" placeholder goes too.
+    if (!hasData && histList) histList.innerHTML = `<li class="efmp-hist-empty">${escapeHtml(pc.offline)}</li>`;
+    if (engine.isPlaying()) engine.stop();
+    paintDocTitle();
+  };
+
   // ---- Progress (RAF, text only rewritten when it changes) ----------------
   const bars = all('bar');
   const tick = () => {
@@ -421,6 +462,6 @@ const store = {
   };
 
   bindMediaSessionActions();
-  subscribeNowPlaying(onNowPlaying);
+  subscribeNowPlaying(onNowPlaying, onUnavailable);
   requestAnimationFrame(tick);
 })();

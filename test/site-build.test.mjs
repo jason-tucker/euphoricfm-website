@@ -19,6 +19,12 @@ import {
   streamOptions,
 } from '../src/lib/player-data.ts';
 import { site } from '../src/site.config.ts';
+import {
+  createNowPlayingPoller,
+  stationUnavailable,
+  SLOW_RETRY_AFTER,
+  SLOW_RETRY_MS,
+} from '../src/scripts/np-core.ts';
 import { DEFAULT_EXCLUDE_PLAYLISTS } from '../server/stats.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -289,4 +295,101 @@ test('playlist files: .pls and .m3u list every mount, one line per title', () =>
   ].join('\n'));
   const m3u = buildM3u('EuphoricFM', opts);
   assert.equal(m3u, ['#EXTM3U', '#EXTINF:-1,EuphoricFM – Evil File2=https://x (MP3 · 128k)', MOUNT.url, ''].join('\n'));
+});
+
+// ---- Station offline (np-core poller) ----------------------------------------------
+
+test('now-playing poller: a failing API (5xx, network, timeout) is reported and turns the pages offline', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  let mode = '502';
+  let calls = 0;
+  const fetchFn = async (url, init) => {
+    calls++;
+    assert.equal(url, 'https://euphoric.fm/api/nowplaying/euphoricfm');
+    assert.ok(init.signal instanceof AbortSignal, 'every request carries a timeout signal');
+    assert.equal(init.cache, 'no-store');
+    if (mode === '502') return new Response('bad gateway', { status: 502 });
+    if (mode === 'network') throw new TypeError('fetch failed');
+    if (mode === 'hang') {
+      return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+    }
+    return Response.json({ now_playing: { sh_id: 1 } });
+  };
+  let now = 1_000_000;
+  const errors = [];
+  const data = [];
+  const poller = createNowPlayingPoller({
+    url: 'https://euphoric.fm/api/nowplaying/euphoricfm',
+    onData: (d) => data.push(d),
+    onError: (n) => errors.push(n),
+    fetchFn,
+    timeoutMs: 30,
+    now: () => now,
+  });
+
+  // First poll fails with nothing on screen yet → offline straight away.
+  await poller.poll();
+  assert.deepEqual(errors, [1]);
+  assert.equal(stationUnavailable(1, false), true, 'no data yet: first miss shows offline');
+  assert.equal(stationUnavailable(1, true), false, 'with data: one dropped poll does not flicker');
+
+  // Network error, then a hanging request that the timeout aborts.
+  mode = 'network';
+  await poller.poll();
+  mode = 'hang';
+  await poller.poll();
+  assert.deepEqual(errors, [1, 2, 3]);
+  assert.equal(stationUnavailable(2, true), true, 'with data: offline after two misses in a row');
+
+  // Slower retry after SLOW_RETRY_AFTER misses in a row.
+  assert.equal(SLOW_RETRY_AFTER, 3);
+  const before = calls;
+  now += 5000;
+  await poller.tick();
+  assert.equal(calls, before, 'no request 5 s after the third miss');
+  now += SLOW_RETRY_MS;
+  mode = 'ok';
+  await poller.tick();
+  assert.equal(calls, before + 1, 'retried after SLOW_RETRY_MS');
+
+  // Recovery: data flows again and the miss counter resets.
+  assert.equal(data.length, 1);
+  assert.equal(poller.failures(), 0);
+});
+
+test('now-playing poller: only one request in flight at a time', async () => {
+  let calls = 0;
+  let release;
+  const fetchFn = () => {
+    calls++;
+    return new Promise((resolve) => { release = () => resolve(Response.json({})); });
+  };
+  const poller = createNowPlayingPoller({ url: 'x', onData: () => {}, onError: () => {}, fetchFn });
+  const first = poller.poll();
+  await poller.poll();
+  await poller.tick();
+  assert.equal(calls, 1, 'a slow API does not stack requests');
+  release();
+  await first;
+  const second = poller.poll();
+  assert.equal(calls, 2, 'the next poll goes out once the first settled');
+  release();
+  await second;
+});
+
+test('offline copy ships with both players', () => {
+  assert.equal(site.player.offline, 'Station offline — retrying');
+  const home = read('index.html');
+  assert.ok(home.includes(`data-offline="${site.player.offline}"`), 'home card');
+  assert.ok(home.includes(`data-offline="${site.home.upNext.offline}"`), 'up next row');
+  assert.ok(home.includes(`data-offline="${site.home.songs.offline}"`), 'recently played');
+  const player = read('player/index.html');
+  const cfg = /data-player-config="([^"]*)"/.exec(player)?.[1] ?? '';
+  const parsed = JSON.parse(cfg.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+  assert.equal(parsed.offline, site.player.offline);
+  assert.equal(parsed.playFailed, site.player.playFailed);
+  // A rejected audio.play() reaches a toast instead of only console.warn.
+  assert.match(src('src/scripts/stream-audio.ts'), /onPlayError\?\.\(err\)/);
+  assert.match(src('src/components/PlayerCard.astro'), /onPlayError: \(\) => showToast\(site\.player\.playFailed\)/);
+  assert.match(src('src/scripts/player.ts'), /onPlayError: \(\) => showToast\(pc\.playFailed\)/);
 });
