@@ -109,10 +109,14 @@ export async function clearEventsSettings(keys: string[]): Promise<void> {
 // 24 h minimum notice and the 48 h warning are both behind us), at a UTC hour
 // that stays clear of the 01:55–02:05 ET nightly restart. Suites use
 // disjoint day ranges so their events never clash (10-min gap rule).
-// RUN_SHIFT moves every slot of one test process by 0–77 days, so a re-run
-// against a kept stack (KEEP=1, same database) rarely lands on the previous
-// run's events; a fresh harness run never has any.
-const RUN_SHIFT = (Math.floor(Date.now() / 60_000) % 12) * 7
+// RUN_SHIFT moves every slot by 0–77 days so a re-run against a kept stack
+// (KEEP=1, same database) on another day rarely lands on an earlier run's
+// events; a fresh harness run never has any. It must be the SAME for every
+// test file of a run: it used to change with the minute each file was
+// loaded, so two suites could shift by different multiples of 7 days and
+// their "disjoint" day ranges collided (CI main 58ec293: 409 overlap in
+// e2e-events-privacy). Day granularity keeps it constant within a run.
+const RUN_SHIFT = (Math.floor(Date.now() / 86_400_000) % 12) * 7
 export function slot(dayAhead: number, hourUtc = 20, lengthMin = 120): { startsAt: string; endsAt: string } {
   const d = new Date()
   const start = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + dayAhead + RUN_SHIFT, hourUtc, 0, 0)
