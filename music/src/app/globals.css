@@ -1,5 +1,9 @@
 @import "tailwindcss";
 @import "./tokens.css";
+/* The shared EuphoricFM top bar (copy of the repo's shared/efm-bar.css, kept
+ * byte-identical by the site's shared-drift test). Imported here, not from
+ * layout.tsx, so every page loads ONE render-blocking stylesheet (v0.4.1). */
+@import "../shared/efm-bar.css";
 
 /* Same Tailwind v4 CSS-first theme as the site (src/styles/global.css).
  * The portal CSP is `style-src 'self'`: every style lives in this file or in
@@ -29,6 +33,9 @@
   font-style: normal;
   font-display: swap;
 }
+/* v0.4.1 (A9): the subset WOFF2 (the site's file, byte-identical) goes FIRST
+ * in this src list once it is in public/fonts; the full TTF stays last as the
+ * fallback. Until then the TTF is the only source. */
 @font-face {
   font-family: 'Cortado Script';
   src: url('/fonts/CortadoScript-Regular.ttf') format('truetype');

@@ -1,5 +1,6 @@
 import Link from 'next/link'
-import { songName, when } from '@/components/format'
+import { songName } from '@/components/format'
+import { LocalTime } from '@/components/LocalTime'
 import { ActionBar, summaryText } from '@/components/HomeActions'
 import { probeErrorText } from '@/components/messages'
 import { Thumb } from '@/components/Thumb'
@@ -10,7 +11,7 @@ import { pageViewer } from '@/server/ui/page'
 import { listOwnBatches, listOwnRequests, memberSummary } from '@/server/ui/queries'
 
 export const dynamic = 'force-dynamic'
-export const metadata = { title: 'My music' }
+export const metadata = { title: 'My music', description: 'Your songs and requests on the EuphoricFM Music Portal.' }
 
 // The member's OWN batches, items and requests only (every query filters on
 // the viewer's user id).
@@ -52,7 +53,10 @@ export default async function Dashboard() {
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="font-semibold">Batch #{b.id}</h2>
                   <BatchStatusChip status={b.status} />
-                  <span className="text-xs text-cream/50">{b.submittedAt ? `Submitted ${when(b.submittedAt)}` : `Started ${when(b.createdAt)}`}</span>
+                  <span className="text-xs text-cream/55">
+                    {b.submittedAt ? 'Submitted ' : 'Started '}
+                    <LocalTime iso={b.submittedAt ?? b.createdAt} />
+                  </span>
                 </div>
                 <TicketLink ticket={b.ticket} empty={b.status === 'draft' ? 'Ticket opens when you submit' : 'Ticket is being opened…'} />
               </div>
@@ -71,7 +75,7 @@ export default async function Dashboard() {
                           songName(it)
                         )}
                       </span>
-                      <ItemStatusChip status={it.status} />
+                      <ItemStatusChip status={it.status} source={it.source} fetchStage={it.fetchStage} />
                     </div>
                     {it.status === 'denied' && it.denyReason ? <p className="mt-1 text-xs text-rose-200">Reason: {it.denyReason}</p> : null}
                     {it.status === 'rejected' ? <p className="mt-1 text-xs text-rose-200">{probeErrorText(it.probeError)}</p> : null}
@@ -133,7 +137,9 @@ export default async function Dashboard() {
                         {r.kind === 'edit' ? 'Edit' : 'Removal'} request #{r.id}
                       </Link>
                     )}{' '}
-                    <span className="text-xs font-normal text-cream/50">· {when(r.createdAt)}</span>
+                    <span className="text-xs font-normal text-cream/55">
+                      · <LocalTime iso={r.createdAt} />
+                    </span>
                   </p>
                   <p className="truncate text-xs text-cream/60">{r.targetPath.replace(/^Music\/Artists\//, '')}</p>
                   {r.proposed ? (

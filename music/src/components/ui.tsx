@@ -1,7 +1,7 @@
 // Presentational building blocks with no client state (usable from server
 // and client components alike).
 
-import { BATCH_STATUS, ITEM_STATUS, REQUEST_STATUS, type ChipTone } from './messages'
+import { BATCH_STATUS, FETCH_STAGE_STATUS, ITEM_STATUS, REQUEST_STATUS, type ChipTone } from './messages'
 
 const TONE: Record<ChipTone, string> = {
   neutral: 'chip-neutral',
@@ -20,8 +20,11 @@ export function Chip({ tone, children, title }: { tone: ChipTone; children: Reac
   )
 }
 
-export function ItemStatusChip({ status }: { status: string }) {
-  const s = ITEM_STATUS[status] ?? { label: status, tone: 'neutral' as const, help: '' }
+// v0.4.1: pass the item's source and fetch_stage and a SoundCloud link that
+// is still 'probing' shows where it is instead of "Checking file".
+export function ItemStatusChip({ status, source, fetchStage }: { status: string; source?: string | null; fetchStage?: string | null }) {
+  const stage = status === 'probing' && source === 'soundcloud' ? FETCH_STAGE_STATUS[fetchStage ?? 'queued'] : undefined
+  const s = stage ? { ...stage, tone: 'progress' as const } : (ITEM_STATUS[status] ?? { label: status, tone: 'neutral' as const, help: '' })
   return (
     <Chip tone={s.tone} title={s.help}>
       <span data-status={status}>{s.label}</span>

@@ -28,6 +28,23 @@ export type Entry = {
   itemId?: number
   item?: UiItem
   edits: Fields
+  // v0.4.1: the size of a picked MP3's leading ID3v2 tag (read from its first
+  // 10 bytes), so the "converting it down" hint matches the probe's rule
+  // (lib/fit.ts mp3FitsUntouched: the tag does not count against the budget).
+  id3Size?: number
+}
+
+// ID3v2 tag size from a file's first 10 bytes ("ID3", version, flags, a
+// syncsafe size), header and v2.4 footer included; 0 when there is none or
+// it is malformed (the probe decides then). Mirrors probe/magic.ts.
+export function id3TagBytes(head: Uint8Array): number {
+  if (head.length < 10 || head[0] !== 0x49 || head[1] !== 0x44 || head[2] !== 0x33) return 0
+  const major = head[3]!
+  if (major < 2 || major > 4 || head[4] === 0xff) return 0
+  const s = [head[6]!, head[7]!, head[8]!, head[9]!]
+  if (s.some((b) => b & 0x80)) return 0
+  const size = (s[0]! << 21) | (s[1]! << 14) | (s[2]! << 7) | s[3]!
+  return 10 + size + (major === 4 && head[5]! & 0x10 ? 10 : 0)
 }
 
 export function fieldsOf(it: Pick<UiItem, 'title' | 'artist' | 'album' | 'genre'> | undefined): Fields {

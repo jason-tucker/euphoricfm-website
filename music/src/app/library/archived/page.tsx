@@ -1,6 +1,8 @@
 import Link from 'next/link'
 import { LegacyImportPanel } from '@/components/admin/LegacyImportPanel'
-import { playlistLabel, when } from '@/components/format'
+import { playlistLabel } from '@/components/format'
+import { LocalTime } from '@/components/LocalTime'
+import { openGraph } from '@/components/og'
 import { LinkMemberControl } from '@/components/requests/LinkMemberControl'
 import { ReleaseButton } from '@/components/requests/ReleaseButton'
 import { ResolveArchiveButton } from '@/components/requests/ResolveArchiveButton'
@@ -14,7 +16,11 @@ import { pageViewer } from '@/server/ui/page'
 import { uiSettings } from '@/server/ui/settings'
 
 export const dynamic = 'force-dynamic'
-export const metadata = { title: 'Archived songs' }
+export const metadata = {
+  title: 'Archived songs',
+  description: 'Songs taken off EuphoricFM and kept in the archive.',
+  openGraph: openGraph('Archived songs · EuphoricFM Music Portal', 'Songs taken off EuphoricFM and kept in the archive.', '/library/archived'),
+}
 
 // Staff (review or manage) see every archived song; a member sees the ones
 // they uploaded through the portal or a manager linked them to, read-only
@@ -42,9 +48,11 @@ export default async function ArchivedPage({ searchParams }: { searchParams: Pro
       <PageTitle
         title="Archived songs"
         sub={
-          staff
+          manage
             ? 'Songs taken out of the library (Removed) and the songs from the old UNRELEASED folder (Unreleased). Restoring a removed song puts it back in its folder and playlists; releasing an unreleased song puts it in an artist folder you choose.'
-            : 'Your songs that are archived: songs you uploaded here, or that a manager linked to you. Ask a manager if one should come back.'
+            : staff
+              ? 'Songs taken out of the library (Removed) and the songs from the old UNRELEASED folder (Unreleased). Managers can restore a removed song or release an unreleased one.'
+              : 'Your songs that are archived: songs you uploaded here, or that a manager linked to you. If one should come back, say so in its removal ticket in Discord (or in your batch ticket) and a manager can restore it.'
         }
       />
       {r.pages > 1 ? (
@@ -67,7 +75,7 @@ export default async function ArchivedPage({ searchParams }: { searchParams: Pro
                     <span className="truncate text-sm font-medium">{name}</span>
                   </p>
                   <p className="truncate text-xs text-cream/60">
-                    Archived {when(a.archivedAt)}
+                    Archived <LocalTime iso={a.archivedAt} />
                     {a.reason ? ` · ${a.reason}` : a.label === 'Unreleased' ? ' · from the UNRELEASED folder' : staff ? '' : ' · Removed from the station'}
                   </p>
                   {st ? (

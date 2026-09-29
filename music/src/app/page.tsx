@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { ActionCards, MyMusicCard, ReviewQueueCard } from '@/components/HomeActions'
 import { SignedInInfo, SignedOutInfo, type HomeInfoData } from '@/components/home/HomeInfo'
+import { openGraph } from '@/components/og'
 import { SITE_LINKS } from '@/components/site-links'
 import { safeNext } from '@/lib/next-path'
 import { isReviewer } from '@/server/authz/predicates'
@@ -14,7 +15,7 @@ export const dynamic = 'force-dynamic'
 
 export const metadata = {
   description: 'Send your songs to EuphoricFM: sign in with Discord, upload, and follow each song through review to the air.',
-  openGraph: { title: 'EuphoricFM Music Portal', description: 'Send your songs to EuphoricFM and follow them through review to the air.', url: '/' },
+  openGraph: openGraph('EuphoricFM Music Portal', 'Send your songs to EuphoricFM and follow them through review to the air.', '/'),
 }
 
 export default async function Home({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {

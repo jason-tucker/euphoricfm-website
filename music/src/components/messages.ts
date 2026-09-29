@@ -102,7 +102,7 @@ export const ERROR_TEXT: Record<string, string> = {
   wav_upload_too_large: 'That WAV file is larger than the WAV upload limit.',
   uploads_paused: 'Uploads are paused because the server is low on space. Try again later.',
   staging_full: 'Uploads are paused because the server is low on space. Try again later.',
-  too_many_concurrent_uploads: 'You can upload 3 files at a time. The rest will start when these finish.',
+  too_many_concurrent_uploads: 'Only a few uploads can run at once. The rest start when these finish.',
   inflight_quota: 'You have too much uploading at once. Wait for some uploads to finish.',
 
   // SoundCloud links (v0.4.0): POST /api/batches/:id/soundcloud refusals
@@ -253,6 +253,14 @@ export const ITEM_STATUS: Record<string, { label: string; tone: ChipTone; help: 
   withdrawn: { label: 'Withdrawn', tone: 'muted', help: 'You withdrew this song.' },
   failed: { label: 'Failed', tone: 'bad', help: 'Adding it to the station failed; managers have been alerted.' },
   ingest_failed: { label: 'Ingest failed', tone: 'bad', help: 'Adding it to the station failed; managers have been alerted.' },
+}
+
+// v0.4.1: a SoundCloud link still 'probing' is not "Checking file": it waits
+// for its turn, is fetched, then converted (items.fetch_stage).
+export const FETCH_STAGE_STATUS: Record<string, { label: string; help: string }> = {
+  queued: { label: 'Waiting for SoundCloud', help: 'Links are fetched one at a time; this one is waiting for its turn.' },
+  fetching: { label: 'Fetching from SoundCloud', help: 'The track is being downloaded from SoundCloud.' },
+  converting: { label: 'Converting', help: 'The track is being converted to an MP3.' },
 }
 
 export const BATCH_STATUS: Record<string, { label: string; tone: ChipTone }> = {

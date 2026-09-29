@@ -4,24 +4,28 @@
 // progress, pause/resume, and resume after a reload via the tus fingerprint),
 // attach each finished upload to the draft batch, poll until the network-less
 // probe has read it, then edit the pre-filled fields and submit.
+//
+// v0.4.1 polling: ONE request per tick for the whole batch (GET
+// /api/batches/:id), every 5 s, then 15 s, then 30 s while nothing changes
+// (a change or a new item resets it), and none while the tab is hidden.
 
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as tus from 'tus-js-client'
-import { MAX_DURATION_MIN, mibOf, MIN_LADDER_BITRATE } from '@/lib/fit'
-import { parseSoundCloudUrl } from '@/lib/soundcloud'
+import { AUDIO_PAYLOAD_BYTES, MAX_DURATION_MIN, mibOf, MIN_LADDER_BITRATE } from '@/lib/fit'
+import { FETCH_INFLIGHT_PER_USER, parseSoundCloudUrl } from '@/lib/soundcloud'
 import type { UiItem } from '@/server/ui/queries'
 import { api, ApiError, messageFor } from '../api'
 import { errorText, uploadErrorText } from '../messages'
 import { Notice } from '../ui'
 import { FileCard } from './FileCard'
 import { SubmitPanel, type SummaryRow } from './SubmitPanel'
-import { ACCEPT, changedFields, declaredType, type Entry, type Fields, fieldsOf, type Limits, precheck } from './types'
+import { ACCEPT, changedFields, declaredType, type Entry, type Fields, fieldsOf, fileKind, id3TagBytes, type Limits, precheck } from './types'
 
 // The server allows 3 concurrent uploads per user; 2 leaves headroom for a
 // stale upload that has not expired yet.
 const CONCURRENCY = 2
-const POLL_MS = [1000, 1500, 2000, 3000, 4000, 5000]
+export const POLL_MS = [5000, 15000, 30000]
 
 type ItemApi = Pick<
   UiItem,
@@ -30,11 +34,18 @@ type ItemApi = Pick<
   prefill?: unknown
 }
 
+// The card heading of an item from the server: "Artist – Title" once there is
+// a title, else a SoundCloud item's link, else `fallback`.
+export function songLabel(it: Pick<UiItem, 'title' | 'artist' | 'source' | 'sourceUrl'>, fallback: string): string {
+  if (it.title) return `${it.artist ?? ''}${it.artist ? ' – ' : ''}${it.title}`
+  return it.source === 'soundcloud' && it.sourceUrl ? it.sourceUrl : fallback
+}
+
 function entryFromItem(it: UiItem): Entry {
   return {
     key: `item-${it.id}`,
     source: it.source === 'soundcloud' ? 'soundcloud' : 'upload',
-    fileName: it.title ? `${it.artist ?? ''}${it.artist ? ' – ' : ''}${it.title}` : it.source === 'soundcloud' && it.sourceUrl ? it.sourceUrl : `Upload #${it.id}`,
+    fileName: songLabel(it, `Upload #${it.id}`),
     size: 0,
     phase: it.status === 'probing' ? 'probing' : it.status === 'rejected' ? 'rejected' : 'ready',
     progress: 1,
@@ -67,6 +78,8 @@ export function SubmitFlow({
   maxWavUploadBytes,
   chunkBytes,
   maxItemsPerBatch,
+  soundcloudEnabled = true,
+  fetchesPerDay,
 }: {
   initialBatchId: number | null
   initialItems: UiItem[]
@@ -77,6 +90,10 @@ export function SubmitFlow({
   maxWavUploadBytes: number
   chunkBytes: number
   maxItemsPerBatch: number
+  // v0.4.1: the kill switch (off: the SoundCloud box is one muted line) and
+  // the loaded daily link cap (caps.fetchesPerUserPerDay) for the help text.
+  soundcloudEnabled?: boolean
+  fetchesPerDay?: number
 }) {
   const router = useRouter()
   const [entries, setEntries] = useState<Entry[]>(() =>
@@ -126,33 +143,99 @@ export function SubmitFlow({
     return batchRef.current
   }, [])
 
-  const poll = useCallback(
-    async (key: string, itemId: number) => {
-      for (let i = 0; mounted.current; i++) {
-        await new Promise((r) => setTimeout(r, POLL_MS[Math.min(i, POLL_MS.length - 1)]))
-        if (!mounted.current) return
-        let it: ItemApi
-        try {
-          it = await api<ItemApi>(`/api/items/${itemId}`)
-        } catch (e) {
-          if (e instanceof ApiError && (e.status === 0 || e.status >= 500 || e.status === 429)) continue
-          update(key, { phase: 'error', error: messageFor(e) })
-          return
-        }
+  // --- polling (one request per tick for every probing item) -------------
+  const pollTick = useRef(0)
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pollBusy = useRef(false)
+  const pollOnceRef = useRef<() => Promise<void>>(async () => {})
+
+  const schedulePoll = useCallback((reset = false) => {
+    if (reset) pollTick.current = 0
+    if (pollTimer.current) clearTimeout(pollTimer.current)
+    pollTimer.current = null
+    // A request in flight schedules the next one itself; a hidden tab
+    // resumes on visibilitychange.
+    if (!mounted.current || pollBusy.current || document.hidden) return
+    if (!entriesRef.current.some((e) => e.phase === 'probing' && e.itemId)) return
+    pollTimer.current = setTimeout(() => void pollOnceRef.current(), POLL_MS[Math.min(pollTick.current, POLL_MS.length - 1)])
+  }, [])
+
+  pollOnceRef.current = async () => {
+    pollTimer.current = null
+    const bid = batchRef.current ? await batchRef.current.catch(() => null) : null
+    if (!bid || !mounted.current || document.hidden) return
+    pollBusy.current = true
+    pollTick.current++
+    let got: { items: ItemApi[] } | null = null
+    let gaveUp = false
+    try {
+      got = await api<{ items: ItemApi[] }>(`/api/batches/${bid}`)
+    } catch (e) {
+      if (!(e instanceof ApiError && (e.status === 0 || e.status >= 500 || e.status === 429))) {
+        const msg = messageFor(e)
+        for (const x of entriesRef.current) if (x.phase === 'probing' && x.itemId) update(x.key, { phase: 'error', error: msg })
+        gaveUp = true
+      }
+    } finally {
+      pollBusy.current = false
+    }
+    if (!mounted.current) return
+    // (entriesRef lags behind the updates below until the next render.)
+    let left = gaveUp ? 0 : entriesRef.current.filter((x) => x.phase === 'probing' && x.itemId).length
+    if (got) {
+      const byId = new Map(got.items.map((it) => [it.id, it]))
+      let changed = false
+      for (const x of entriesRef.current) {
+        if (x.phase !== 'probing' || !x.itemId) continue
+        const it = byId.get(x.itemId)
+        if (!it) continue
+        if (it.status !== 'probing') left--
         if (it.status === 'probing') {
-          // A SoundCloud link reports where it is (fetch_stage) while it waits.
-          if (it.source === 'soundcloud') update(key, (x) => ({ item: { ...(x.item ?? {}), ...it } as UiItem }))
+          // A SoundCloud link reports where it is (fetch_stage) while it
+          // waits; nothing is re-rendered while that stays the same.
+          if (it.source === 'soundcloud' && it.fetchStage !== x.item?.fetchStage) {
+            changed = true
+            update(x.key, (y) => ({ item: { ...(y.item ?? {}), ...it } as UiItem }))
+          }
           continue
         }
-        const item = { ...(entriesRef.current.find((x) => x.key === key)?.item ?? {}), ...it } as UiItem
-        if (it.status === 'rejected') update(key, { phase: 'rejected', item })
-        else if (it.status === 'withdrawn') drop(key)
-        else update(key, { phase: 'ready', item, edits: fieldsOf(item) })
-        return
+        changed = true
+        const item = { ...(x.item ?? {}), ...it } as UiItem
+        if (it.status === 'rejected') update(x.key, { phase: 'rejected', item })
+        else if (it.status === 'withdrawn') drop(x.key)
+        else update(x.key, (y) => ({ phase: 'ready', item, edits: fieldsOf(item), fileName: y.source === 'soundcloud' ? songLabel(item, y.fileName) : y.fileName }))
       }
-    },
-    [update, drop],
-  )
+      if (changed) pollTick.current = 0
+    }
+    if (left > 0) schedulePoll()
+  }
+
+  // A new item to follow (an upload attached, a link added, a retry, a
+  // reload) starts the loop again at 5 s.
+  const probingIds = entries
+    .filter((e) => e.phase === 'probing' && e.itemId)
+    .map((e) => e.itemId)
+    .join(',')
+  const prevProbing = useRef('')
+  useEffect(() => {
+    const before = new Set(prevProbing.current.split(',').filter(Boolean))
+    prevProbing.current = probingIds
+    if (probingIds.split(',').some((id) => id && !before.has(id))) schedulePoll(true)
+  }, [probingIds, schedulePoll])
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        if (pollTimer.current) clearTimeout(pollTimer.current)
+        pollTimer.current = null
+      } else schedulePoll(true)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      if (pollTimer.current) clearTimeout(pollTimer.current)
+    }
+  }, [schedulePoll])
 
   const attach = useCallback(
     async (key: string, url: string | null) => {
@@ -166,12 +249,11 @@ export function SubmitFlow({
         const bid = await ensureBatch()
         const r = await api<{ id: number }>(`/api/batches/${bid}/items`, { json: { uploadId: m[1] } })
         update(key, { phase: 'probing', itemId: r.id })
-        void poll(key, r.id)
       } catch (e) {
         update(key, { phase: 'error', error: messageFor(e) })
       }
     },
-    [ensureBatch, poll, update],
+    [ensureBatch, update],
   )
 
   const pumpRef = useRef<() => void>(() => {})
@@ -243,14 +325,13 @@ export function SubmitFlow({
 
   useEffect(() => {
     mounted.current = true
-    for (const e of entriesRef.current) if (e.phase === 'probing' && e.itemId) void poll(e.key, e.itemId)
     const ups = uploads.current
     return () => {
       mounted.current = false
       // Stop without terminating: the fingerprint lets the same file resume.
       for (const u of ups.values()) void u.abort(false)
     }
-  }, [poll])
+  }, [])
 
   const addFiles = (list: FileList | File[]) => {
     setTopError(null)
@@ -260,6 +341,14 @@ export function SubmitFlow({
       const c = precheck(f, { mp3: maxMp3UploadBytes, wav: maxWavUploadBytes })
       files.current.set(key, f)
       added.push({ key, fileName: f.name, size: f.size, phase: c.block ? 'blocked' : 'queued', progress: 0, warning: c.warn, error: c.block, edits: fieldsOf(undefined) })
+      // Only an MP3 over the audio budget can still fit untouched thanks to
+      // its tag (the 34.6–35 MiB band): read the tag size for the hint.
+      if (f.size > AUDIO_PAYLOAD_BYTES && fileKind(f) === 'mp3')
+        void f
+          .slice(0, 10)
+          .arrayBuffer()
+          .then((b) => update(key, { id3Size: id3TagBytes(new Uint8Array(b)) }))
+          .catch(() => {})
     }
     setEntries((es) => [...es, ...added])
   }
@@ -281,7 +370,6 @@ export function SubmitFlow({
       const key = `sc-${r.id}`
       setEntries((es) => [...es, { key, source: 'soundcloud', fileName: r.url, size: 0, phase: 'probing', progress: 1, itemId: r.id, edits: fieldsOf(undefined) }])
       setScUrl('')
-      void poll(key, r.id)
     } catch (err) {
       setScError(messageFor(err))
     } finally {
@@ -297,7 +385,9 @@ export function SubmitFlow({
       drop(e.key)
       return
     }
-    if (e.phase === 'ready' && e.itemId) {
+    // v0.4.1: a SoundCloud link still waiting, fetching or converting can be
+    // cancelled (the server withdraws it and releases its reserve).
+    if ((e.phase === 'ready' || (e.phase === 'probing' && e.source === 'soundcloud')) && e.itemId) {
       try {
         await api(`/api/items/${e.itemId}/withdraw`, { method: 'POST' })
         drop(e.key)
@@ -324,7 +414,9 @@ export function SubmitFlow({
   }, [entries])
 
   const blockers: string[] = []
-  if (busy.length) blockers.push('Wait until every file has finished uploading and checking.')
+  if (busy.some((e) => e.source === 'soundcloud'))
+    blockers.push('Wait until every song has finished uploading, fetching and checking, or cancel the SoundCloud links you don’t want to wait for.')
+  else if (busy.length) blockers.push('Wait until every file has finished uploading and checking.')
   if (ready.length === 0) blockers.push('Add at least one song that passed the checks.')
   if (ready.some((e) => !e.edits.title.trim() || !e.edits.artist.trim())) blockers.push('Every song needs a title and an artist.')
   if (ready.length > maxItemsPerBatch) blockers.push(`A batch can hold up to ${maxItemsPerBatch} songs. Remove some and submit them in another batch.`)
@@ -423,49 +515,57 @@ export function SubmitFlow({
         />
         <p className="text-xs text-cream/50">If your connection drops or you reload the page, add the same files again and they continue where they stopped.</p>
 
-        <form
-          noValidate
-          className="space-y-2 rounded-xl border border-cream/15 p-3"
-          data-testid="sc-form"
-          onSubmit={(ev) => {
-            ev.preventDefault()
-            if (!scBusy) void addLink()
-          }}
-        >
-          <label htmlFor="sc-link" className="block font-semibold">
-            Add from a SoundCloud link
-          </label>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              id="sc-link"
-              className="input min-w-0 flex-1"
-              type="text"
-              inputMode="url"
-              autoComplete="off"
-              spellCheck={false}
-              maxLength={512}
-              placeholder="https://soundcloud.com/artist/track-name"
-              value={scUrl}
-              aria-describedby="sc-help"
-              aria-invalid={scError ? 'true' : undefined}
-              onChange={(ev) => {
-                setScUrl(ev.target.value)
-                if (scError) setScError(null)
-              }}
-            />
-            <button type="submit" className="btn btn-primary" disabled={scBusy} data-testid="sc-add">
-              <span aria-hidden="true">＋</span> {scBusy ? 'Adding…' : 'Add from SoundCloud'}
-            </button>
-          </div>
-          <p id="sc-help" className="text-xs text-cream/55">
-            One public track per link (no playlists or sets). We download it for you, convert it to an MP3 and fill in the title, artist and genre from SoundCloud; you can edit them. 30 s to {MAX_DURATION_MIN} min.
+        {!soundcloudEnabled ? (
+          <p className="rounded-xl border border-cream/10 p-3 text-sm text-cream/60" data-testid="sc-off">
+            Adding songs from a SoundCloud link is switched off right now. Upload the MP3 or WAV instead.
           </p>
-          {scError ? (
-            <p className="text-sm text-rose-200" role="alert">
-              {scError}
+        ) : (
+          <form
+            noValidate
+            className="space-y-2 rounded-xl border border-cream/15 p-3"
+            data-testid="sc-form"
+            onSubmit={(ev) => {
+              ev.preventDefault()
+              if (!scBusy) void addLink()
+            }}
+          >
+            <label htmlFor="sc-link" className="block font-semibold">
+              Add from a SoundCloud link
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                id="sc-link"
+                className="input min-w-0 flex-1"
+                type="text"
+                inputMode="url"
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={512}
+                placeholder="https://soundcloud.com/artist/track-name"
+                value={scUrl}
+                aria-describedby="sc-help"
+                aria-invalid={scError ? 'true' : undefined}
+                onChange={(ev) => {
+                  setScUrl(ev.target.value)
+                  if (scError) setScError(null)
+                }}
+              />
+              <button type="submit" className="btn btn-primary" disabled={scBusy} data-testid="sc-add">
+                <span aria-hidden="true">＋</span> {scBusy ? 'Adding…' : 'Add from SoundCloud'}
+              </button>
+            </div>
+            <p id="sc-help" className="text-xs text-cream/55">
+              One public track per link (no playlists or sets). We download it for you, convert it to an MP3 and fill in the title, artist and genre from SoundCloud; you can edit them. 30 s to{' '}
+              {MAX_DURATION_MIN} min. Links are fetched one at a time, up to {FETCH_INFLIGHT_PER_USER} of yours at once
+              {fetchesPerDay ? ` and ${fetchesPerDay} a day (a link that fails still counts)` : ''}.
             </p>
-          ) : null}
-        </form>
+            {scError ? (
+              <p className="text-sm text-rose-200" role="alert">
+                {scError}
+              </p>
+            ) : null}
+          </form>
+        )}
       </section>
 
       {topError ? <Notice tone="error">{topError}</Notice> : null}
@@ -496,10 +596,8 @@ export function SubmitFlow({
                   up.start()
                 }}
                 onRetry={() => {
-                  if (e.itemId) {
-                    update(e.key, { phase: 'probing', error: undefined })
-                    void poll(e.key, e.itemId)
-                  } else if (e.uploadUrl) void attach(e.key, e.uploadUrl)
+                  if (e.itemId) update(e.key, { phase: 'probing', error: undefined })
+                  else if (e.uploadUrl) void attach(e.key, e.uploadUrl)
                   else update(e.key, { phase: 'queued', error: undefined })
                 }}
                 onNewArtist={(v) => setFlag(e.key, 'newArtist', v)}

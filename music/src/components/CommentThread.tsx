@@ -8,7 +8,7 @@
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import { api, messageFor } from './api'
-import { when } from './format'
+import { LocalTime } from './LocalTime'
 import { Notice, StaffBadge } from './ui'
 
 export type UiComment = {
@@ -83,7 +83,7 @@ export function CommentThread({
               <span className="font-semibold text-cream/85">{c.authorName ?? 'Someone'}</span>
               {c.source === 'ticket' ? <span className="chip chip-neutral">via ticket</span> : null}
               {c.visibility === 'staff' ? <StaffBadge /> : null}
-              <span>{when(c.createdAt)}</span>
+              <LocalTime iso={c.createdAt} />
             </div>
             <p className="whitespace-pre-wrap break-words">{c.body}</p>
           </li>
