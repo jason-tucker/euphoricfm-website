@@ -103,10 +103,11 @@ echo "Headers on the redirect (framed + CitizenFX):"
 curl -s -D - -o /dev/null "http://127.0.0.1:$PORT/music/x?y=1" -H 'Host: info.euphoric.fm' -H 'Sec-Fetch-Dest: iframe' -A 'CitizenFX' \
   | grep -i -E '^(cache-control|vary|location):' | tr -d '\r'
 
-# The song-submission webhook must no longer be handed out to visitors.
+# No webhook is handed out to visitors any more: the runtime config is retired
+# (410) since the contact forms moved to the /contact/* relay.
 RC=$(curl -s "http://127.0.0.1:$PORT/efm-runtime-config.js" -H 'Host: info.euphoric.fm')
 echo "Runtime config: $RC"
-echo "$RC" | grep -q requestWebhook && { echo "FAIL runtime config still serves requestWebhook"; FAIL=1; }
+echo "$RC" | grep -qi -E 'webhook|discord' && { echo "FAIL runtime config still serves a webhook"; FAIL=1; }
 [ -e dist/music-card ] && { echo "FAIL dist/music-card still built"; FAIL=1; }
 rm -f /tmp/efm-body.$$
 [ "$FAIL" = 0 ] && echo "ALL PASS" || { echo "SOME CHECKS FAILED"; exit 1; }

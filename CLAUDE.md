@@ -63,7 +63,7 @@ hover-only affordances. Use the `.phone` container utility for max-width.
 ### 7. Editable copy stays in `src/site.config.ts`; webhook URLs are runtime env-injected
 About text, business AD info, station name, `discord.avatarUrl`, and other editable strings live in `src/site.config.ts`. Don't sprinkle copy across components.
 
-Webhook URLs (`PUBLIC_DISCORD_CONTACT_WEBHOOK` — the only one left since song submission moved to the music portal) are **never** hardcoded or build-time inlined. Caddy templates them into `/efm-runtime-config.js` at request time from the container's env vars (set in `.env` on the host). The modals read them off `window.__EFM_CONFIG__.contact.webhook` (neutral key — built info pages never contain "discord", by owner decision; test/site-build enforces it). To rotate a webhook: edit `.env` + `docker compose up -d` — no rebuild needed.
+The Discord contact webhook (`DISCORD_CONTACT_WEBHOOK`, the only one left since song submission moved to the music portal) is **never** in the browser, hardcoded or build-time inlined. It lives only in the `efm-requests` sidecar's runtime env; the contact and event-inquiry modals POST JSON to the same-origin relay `/contact/message` and `/contact/event` (`server/index.mjs`), which validates, rate-limits per IP, forwards with `allowed_mentions: {parse: []}` and never logs the URL. There is no `/efm-runtime-config.js` any more (it answers 410).
 
 ## Architecture
 
@@ -207,11 +207,10 @@ There is **no `typecheck` script** in `package.json`. Type-checking runs as `pnp
 The "contact us" form (and the /events inquiry form) POST to a Discord webhook. Song
 submission is NOT a form any more: the "Submit music" button opens the portal at
 music.euphoric.fm, and `/music` 302-redirects there (see the Caddyfile "Music portal entry"
-block). Webhook URLs are
-**runtime env-injected** (see Rule 7): Caddy serves `/efm-runtime-config.js` which templates
-`PUBLIC_DISCORD_CONTACT_WEBHOOK` from the container env into
-`window.__EFM_CONFIG__.contact`. The modals read them at submit time from that object. They are
-never baked into the static build. Match the embed shape that AzuraCast's existing button uses —
+block). The contact/event webhook is
+**server-side only** (see Rule 7): the modals POST to `/contact/*` on the same origin and the
+`efm-requests` sidecar relays to Discord from `DISCORD_CONTACT_WEBHOOK`. Nothing about Discord
+reaches the static build or the browser. Match the embed shape that AzuraCast's existing button uses —
 `username`, `avatar_url`, `thread_name`, `embeds[{ title, description, fields,
 color, timestamp, footer }]` — so the team's existing Discord thread routing
 keeps working.

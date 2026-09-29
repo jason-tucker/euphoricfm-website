@@ -122,15 +122,6 @@ const clientConfig = {
       <div class="efm-orbit efm-orbit--pink"><div class="efm-float" style="--efm-depth: 1;"><div class="efm-blob efm-blob--pink"></div></div></div>
       <div class="efm-orbit efm-orbit--gold"><div class="efm-float" style="--efm-depth: 0.8;"><div class="efm-blob efm-blob--gold"></div></div></div>
     </div>
-    {/* Caddy renders /efm-runtime-config.js from env vars at request time so
-        webhook URLs aren't baked into the static bundle. `defer`: it is no-store,
-        and a plain script here blocked the first paint of the whole page on one
-        extra round trip; the modals only read window.__EFM_CONFIG__.contact when
-        a form is sent, long after it ran. It merges into __EFM_CONFIG__, so the
-        order against the inline config below does not matter. Only the
-        full-site pages have those modals, so a page with scripts="none" (the
-        Web Player) doesn't load it at all. */}
-    {scripts === 'site' && <script is:inline defer src="/efm-runtime-config.js"></script>}
     <script is:inline define:vars={{ clientConfig }}>
       window.__EFM_CONFIG__ = Object.assign(window.__EFM_CONFIG__ || {}, clientConfig);
     </script>
