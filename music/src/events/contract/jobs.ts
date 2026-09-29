@@ -26,6 +26,9 @@ export const EVENT_JOB_KINDS = [
   // job: the decision to restart is persisted before anything is removed,
   // and the restart has its own (small) attempt budget.
   'off_air_restart',
+  // A staff edit changed what the station airs while autobuild is off: the
+  // worker alerts staff and notes the ticket if the applied build is stale.
+  'rebuild_needed',
   'recheck',
   'pending_expire',
   'pending_reminder',
@@ -85,6 +88,7 @@ export const EVENT_JOB_PAYLOADS = {
   end_kick: z.object({ eventId }).strict(),
   teardown: z.object({ eventId }).strict(),
   off_air_restart: z.object({ eventId, reason: z.enum(['end', 'teardown']) }).strict(),
+  rebuild_needed: z.object({ eventId, version }).strict(),
   recheck: z.object({ eventId }).strict(),
   pending_expire: empty,
   pending_reminder: empty,

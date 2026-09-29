@@ -11,6 +11,7 @@ import { events } from '../../server/db/schema'
 import { badRequest, forbidden, HttpError, notFound } from '../../server/http/errors'
 import { oneOrConflict } from '../../server/authz/transitions'
 import { enqueueEventJob } from '../enqueue'
+import { buildInputKey } from '../contract/build-key'
 import { CALENDAR_MAX_WINDOW_DAYS, CALENDAR_STATUSES, SLOT_HOLDING_STATUSES } from '../contract/rules'
 import type { EventsSettings } from '../contract/settings'
 import type { CreateEventRequest, PatchEventRequest, PutPlaylistRequest, StaffBookRequest } from '../contract/api'
@@ -300,12 +301,16 @@ const LIVE_OK_WITHOUT_RESTART = new Set(['title', 'hostName', 'description', 'lo
 
 /**
  * Jobs after a content edit (version already bumped): the ticket diff, and
- * a build when the edit may go straight to the station — a staff edit of an
- * approved/built/live event, or a member edit that did not need
- * re-approval (details only; the approved content is unchanged, and the
- * build of the old version would otherwise be dropped as stale).
+ * what the station needs when the edit goes straight to it (a staff edit of
+ * an approved/built/live event, or a member details-only edit):
+ *   - `buildRelevant` (the build-input key changed: contract/build-key.ts):
+ *     a build when events_autobuild_enabled, otherwise a rebuild_needed job
+ *     (the worker alerts staff + notes the ticket: "press Build now");
+ *   - details only: nothing — the applied build stays current (the kicks
+ *     compare build inputs, not versions); an approved event not built yet
+ *     re-queues its build for the new version (autobuild on).
  */
-function editJobs(before: EventRow, after: EventRow, actor: Actor, s: EventsSettings, diff: string[], reapproval: boolean, buildable: boolean): PlannedJob[] {
+function editJobs(before: EventRow, after: EventRow, actor: Actor, s: EventsSettings, diff: string[], reapproval: boolean, buildable: boolean, buildRelevant: boolean): PlannedJob[] {
   const out: PlannedJob[] = []
   if (before.status !== 'draft' && hasTicket(before) && diff.length) {
     out.push({ kind: 'ticket_post', payload: { eventId: after.id, kind: 'edited', body: editedBody(diff, { byStaff: actor.staff, reapproval }), idem: `edited:${after.id}:${after.version}` } })
@@ -313,11 +318,18 @@ function editJobs(before: EventRow, after: EventRow, actor: Actor, s: EventsSett
   // Back to review: take the approved build off the station until staff
   // approve again (its playlists would otherwise stay enabled).
   if (reapproval) out.push({ kind: 'teardown', payload: { eventId: after.id }, dedupeExtra: `v${after.version}:reapproval` })
-  if (!reapproval && buildable && s.events_autobuild_enabled && MAY_BE_BUILT.includes(after.status as EventStatus)) {
-    out.push({ kind: 'build', payload: { eventId: after.id, version: after.version } })
+  if (!reapproval && buildable && MAY_BE_BUILT.includes(after.status as EventStatus)) {
+    if (s.events_autobuild_enabled) {
+      if (buildRelevant || after.status === 'approved') out.push({ kind: 'build', payload: { eventId: after.id, version: after.version } })
+    } else if (buildRelevant) {
+      out.push({ kind: 'rebuild_needed', payload: { eventId: after.id, version: after.version } })
+    }
   }
   return out
 }
+
+type KeyEvent = Pick<EventRow, 'title' | 'visibility' | 'startsAt' | 'endsAt' | 'playlistOrder'>
+const inputKey = (ev: KeyEvent, p: { tracks: readonly EventTrack[]; announcements: readonly EventAnnouncement[] }) => buildInputKey(ev, p.tracks, p.announcements)
 
 export async function patchEvent(db: DB, actor: Actor, id: number, input: PatchEventRequest, clock?: Clock): Promise<FullEventView> {
   const now = nowOf(clock)
@@ -360,7 +372,7 @@ export async function patchEvent(db: DB, actor: Actor, id: number, input: PatchE
     })
     const p = { tracks, announcements: anns }
     const diff = diffLines(displaySide(ev, p, lookup), displaySide(after, p, lookup))
-    await enqueueAll(tx, editJobs(ev, after, actor, s, diff, reapproval, true))
+    await enqueueAll(tx, editJobs(ev, after, actor, s, diff, reapproval, true, inputKey(ev, p) !== inputKey(after, p)))
     await auditEv(tx, actor, 'events.event.edit', ev.id, { changed, reapproval, fromVersion: ev.version, adjacent, ...(ev.status === 'live' ? { liveRestart: input.confirmRestart === true } : {}) })
     return fullOf(tx, after, actor, s, now)
   })
@@ -397,7 +409,7 @@ export async function putPlaylist(db: DB, actor: Actor, id: number, input: PutPl
     const after = await writeEvent(tx, ev, { playlistOrder: input.playlistOrder, version: ev.version + 1, ...(reapproval ? { status: 'pending' } : {}) })
     const diff = diffLines(displaySide(ev, prev, lookup), displaySide(after, next, lookup))
     // A member's playlist change always needs re-approval; staff edits build.
-    await enqueueAll(tx, editJobs(ev, after, actor, s, diff, reapproval, actor.staff && next.tracks.some((t) => t.pinAt === null)))
+    await enqueueAll(tx, editJobs(ev, after, actor, s, diff, reapproval, actor.staff && next.tracks.some((t) => t.pinAt === null), inputKey(ev, prev) !== inputKey(after, next)))
     await auditEv(tx, actor, 'events.playlist.save', ev.id, {
       tracks: next.tracks.length,
       announcements: next.announcements.length,

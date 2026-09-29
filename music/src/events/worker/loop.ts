@@ -11,7 +11,7 @@ import { STINGER_SYNC_EVERY_H } from '../contract/rules'
 import type { EventsCtx } from './ctx'
 import { Permanent, Retry, Wait } from './errors'
 import { audioDelete, audioFinalize, audioIngest, collectAudio } from './jobs/audio'
-import { buildJob, buildNowJob, recheckJob, verifyJob } from './jobs/build'
+import { buildJob, buildNowJob, rebuildNeededJob, recheckJob, verifyJob } from './jobs/build'
 import { endKick, offAirRestart, offAirRestartFailed, startKick, startKickFailed, teardown } from './jobs/kicks'
 import { audioExpire, pendingExpire, pendingReminder, stingerSync } from './jobs/sweeps'
 import { ticketClose, ticketOpen, ticketPost } from './jobs/tickets'
@@ -54,6 +54,8 @@ export async function dispatch(ctx: EventsCtx, kind: EventJobKind, payload: unkn
       return teardown(ctx, parseEventJobPayload(kind, payload))
     case 'off_air_restart':
       return offAirRestart(ctx, parseEventJobPayload(kind, payload))
+    case 'rebuild_needed':
+      return rebuildNeededJob(ctx, parseEventJobPayload(kind, payload))
     case 'recheck':
       return recheckJob(ctx, parseEventJobPayload(kind, payload))
     case 'pending_expire':

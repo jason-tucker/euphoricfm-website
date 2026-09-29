@@ -281,8 +281,12 @@ export type DetailFields = {
   playlistOrder: PlaylistOrder
 }
 
-/** Fields whose change by a member sends an approved/built event back to review. */
-export const REAPPROVAL_FIELDS = ['startsAt', 'endsAt', 'visibility', 'playlistOrder'] as const
+/**
+ * Fields whose change by a member sends an approved/built event back to
+ * review. Title too: it names the public main playlist on the station (and
+ * the public calendar), so staff see it before it airs.
+ */
+export const REAPPROVAL_FIELDS = ['title', 'startsAt', 'endsAt', 'visibility', 'playlistOrder'] as const
 
 export function needsReapproval(changed: readonly string[], playlistChanged: boolean): boolean {
   return playlistChanged || changed.some((k) => (REAPPROVAL_FIELDS as readonly string[]).includes(k))

@@ -160,6 +160,7 @@ export const FullEventViewSchema = z.object({
   freezeAt: IsoInstant,
   canEdit: z.boolean(),
   buildStatus: z.string().nullable(),
+  needsRebuild: z.boolean(),
   version: z.number().int().positive(),
   denyReason: z.string().nullable(),
   ownerName: z.string().nullable(),

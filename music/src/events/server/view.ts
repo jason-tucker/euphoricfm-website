@@ -9,6 +9,7 @@
 // Nothing but the projection's own fields ever leaves: the public/private/
 // pending objects are built field by field, never by spreading the row.
 
+import { buildInputKey } from '../contract/build-key'
 import { CALENDAR_STATUSES, PENDING_LABEL, PRIVATE_LABEL, PUBLIC_STATUSES } from '../contract/rules'
 import type { EventsSettings } from '../contract/settings'
 import type { EventAnnouncement, EventStatus, EventTrack, EventType, EventView, FullEventView, PlaylistOrder, PublicStatus, Visibility } from '../contract/types'
@@ -42,9 +43,21 @@ export type FullExtras = {
   announcements: readonly EventAnnouncement[]
   lookup: Lookup
   buildStatus: string | null
+  // the latest APPLIED build: its version and the build-input key it was
+  // compiled from (null for a plan without one)
+  appliedBuild: { version: number; inputKey: string | null } | null
   ownerName: string | null
   settings: EventsSettings
   now: number
+}
+
+const REBUILDABLE: readonly string[] = ['approved', 'built', 'live']
+
+/** The applied build is compiled from other inputs than the event has now. */
+export function needsRebuild(ev: EventRecord, x: Pick<FullExtras, 'tracks' | 'announcements' | 'appliedBuild'>): boolean {
+  const b = x.appliedBuild
+  if (!b || !REBUILDABLE.includes(ev.status) || b.version === ev.version) return false
+  return b.inputKey !== buildInputKey(ev, x.tracks, x.announcements)
 }
 
 /** Owner or staff: may see everything about this event. */
@@ -102,6 +115,7 @@ export function fullView(ev: EventRecord, viewer: Actor | null, x: FullExtras): 
     freezeAt: iso(freezeAt(ev.startsAt, x.settings)),
     canEdit: canEdit({ ownerUserId: ev.ownerUserId, status: ev.status as EventStatus, startsAt: ev.startsAt, endsAt: ev.endsAt }, viewer, x.settings, x.now),
     buildStatus: x.buildStatus,
+    needsRebuild: needsRebuild(ev, x),
     version: ev.version,
     denyReason: ev.denyReason,
     ownerName: x.ownerName,

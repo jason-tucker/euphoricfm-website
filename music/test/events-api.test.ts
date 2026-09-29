@@ -292,11 +292,12 @@ describe('validatePlaylist', () => {
 // ------------------------------------------------------------ edits -----
 
 describe('re-approval and change detection', () => {
-  it('time, visibility and play order need re-approval; details do not', () => {
+  it('title, time, visibility and play order need re-approval; details do not', () => {
     expect(needsReapproval(['startsAt'], false)).toBe(true)
     expect(needsReapproval(['visibility'], false)).toBe(true)
     expect(needsReapproval(['playlistOrder'], false)).toBe(true)
-    expect(needsReapproval(['title', 'description', 'hostName', 'location', 'eventType'], false)).toBe(false)
+    expect(needsReapproval(['title'], false)).toBe(true)
+    expect(needsReapproval(['description', 'hostName', 'location', 'eventType'], false)).toBe(false)
     expect(needsReapproval([], true)).toBe(true)
   })
   it('changedFields compares dates by instant', () => {
@@ -362,6 +363,7 @@ describe('viewEvent privacy (every surface uses this projection)', () => {
     announcements: [at(et(5, 21))],
     lookup: lookup(),
     buildStatus: 'applied',
+    appliedBuild: null,
     ownerName: 'Owner',
     settings: S,
     now: NOW,

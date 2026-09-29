@@ -420,14 +420,70 @@ describe('events worker: kicks and teardown', () => {
     expect(h.az.playlists.get(mainIdOf(h, 42))!.schedule_items).toMatchObject([{ start_time: 2000, end_time: 2230 }])
   })
 
-  it('a start kick never restarts into a stale build (event edited back to approved)', async () => {
+  it('a start kick never restarts into a stale build (build inputs changed, no rebuild)', async () => {
     const { h } = await built()
     const ev = h.store.events[0]!
     ev.version = 2
+    ev.title = 'Renamed' // the public main playlist's name: a build input
     h.clock.t = T('2026-10-10T20:00:05-04:00')
     await drain(h)
     expect(h.az.restarts).toBe(0)
-    expect(h.alerts.some((a) => a.includes('no applied build for version 2'))).toBe(true)
+    expect(h.alerts.some((a) => a.includes('no applied build for version 2') && a.includes('press Build now'))).toBe(true)
+  })
+
+  it('autobuild off: a details-only edit (version bump, same build inputs) still starts on time and verifies', async () => {
+    const { h } = await built()
+    expect(typeof (h.store.buildRows[0]!.plan as { inputKey?: unknown }).inputKey).toBe('string')
+    const ev = h.store.events[0]!
+    ev.version = 2 // description / host / location / type edit: not in EventRow, not a build input
+    ev.eventType = 'car_meet'
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.az.restarts).toBe(1)
+    expect(ev.status).toBe('live')
+    expect(h.alerts).toEqual([])
+    // the post-kick verify is not dropped as stale
+    h.clock.t += 61_000
+    await drain(h)
+    expect(h.store.audits.filter((a) => a.action === 'events.build.verified')).toHaveLength(2)
+    expect(h.store.audits.some((a) => a.action === 'events.job.stale' && a.detail.kind === 'verify')).toBe(false)
+  })
+
+  it('a private event\'s title is not a build input (its playlist is "Private event")', async () => {
+    const w = world()
+    w.h.store.events[0]!.visibility = 'private'
+    await w.h.store.enqueue('build_now', { eventId: 42 })
+    await drain(w.h)
+    const ev = w.h.store.events[0]!
+    ev.version = 2
+    ev.title = 'Something else'
+    w.h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(w.h)
+    expect(w.h.az.restarts).toBe(1)
+  })
+
+  it('rebuild_needed: alerts "press Build now" and notes the ticket only while the applied build is stale', async () => {
+    const { h } = await built()
+    const ev = h.store.events[0]!
+    ev.version = 2
+    await h.store.enqueue('rebuild_needed', { eventId: 42, version: 2 })
+    await drain(h)
+    expect(h.alerts).toEqual([])
+    expect(h.store.audits.some((a) => a.action === 'events.build.rebuild_not_needed')).toBe(true)
+    ev.version = 3
+    ev.endsAt = new Date('2026-10-10T22:30:00-04:00')
+    await h.store.enqueue('rebuild_needed', { eventId: 42, version: 3 })
+    await drain(h)
+    expect(h.alerts.filter((a) => a.includes('event #42') && a.includes('needs rebuild — press Build now'))).toHaveLength(1)
+    const note = h.store.job('ticket_post', (p) => p.kind === 'note' && String(p.idem).startsWith('rebuild_needed:42:v3'))
+    expect(note).toHaveLength(1)
+    // Build now: current again, a later check stays quiet
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v3' })
+    await drain(h)
+    ev.version = 4
+    await h.store.enqueue('rebuild_needed', { eventId: 42, version: 4 })
+    await drain(h)
+    expect(h.alerts.filter((a) => a.includes('needs rebuild'))).toHaveLength(1)
   })
 
   it('cancel while live + one failed restart: the retried off-air restart still restarts (registry already empty)', async () => {
@@ -578,6 +634,18 @@ describe('events worker: stale jobs do nothing (event moved on)', () => {
     expect(h.az.writes()).toHaveLength(0)
   })
 
+  it('a details-only edit that lands DURING the build: the event is still marked built and kicks are scheduled', async () => {
+    const { h } = world()
+    const ev = h.store.events[0]!
+    h.az.onCreate = () => {
+      ev.version = 2 // description edit: same build inputs
+    }
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(ev.status).toBe('built')
+    expect(h.store.job('start_kick')).toHaveLength(1)
+  })
+
   it('an edit that lands DURING the build: the build is recorded, but the event is not marked built and no kicks are scheduled', async () => {
     const { h } = world()
     const ev = h.store.events[0]!
@@ -621,11 +689,12 @@ describe('events worker: stale jobs do nothing (event moved on)', () => {
     expect(h.store.job('ticket_post', (p) => p.kind === 'on_air' || p.kind === 'ended')).toHaveLength(0)
   })
 
-  it('recheck of a built event whose version moved on without a rebuild: done with a note', async () => {
+  it('recheck of a built event whose build inputs moved on without a rebuild: done with a note', async () => {
     const { h, s2 } = world()
     await h.store.enqueue('build_now', { eventId: 42 })
     await drain(h)
     h.store.events[0]!.version = 2
+    h.store.events[0]!.playlistOrder = 'sequential'
     s2.path = 'Removed/12/b.mp3'
     h.clock.t = T('2026-10-10T19:00:00-04:00')
     await runOne(h, 'recheck')

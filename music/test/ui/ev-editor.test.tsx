@@ -37,6 +37,7 @@ function view(over: Partial<FullView> = {}): FullView {
     freezeAt: new Date(start - 30 * 60_000).toISOString(),
     canEdit: true,
     buildStatus: null,
+    needsRebuild: false,
     version: 3,
     denyReason: null,
     ownerName: null,

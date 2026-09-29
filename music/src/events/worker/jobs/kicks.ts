@@ -31,7 +31,7 @@ import type { EventStatus } from '../../contract/types'
 import type { EventsCtx } from '../ctx'
 import { Permanent, Retry, Wait, waitUntil } from '../errors'
 import type { EventRow, RegistryRow } from '../store'
-import { playlistScope, staleJob } from './build'
+import { buildIsCurrent, playlistScope, staleJob } from './build'
 import { postToTicket, whenLine } from './tickets'
 
 const KICKABLE: readonly EventStatus[] = ['built', 'live']
@@ -79,9 +79,10 @@ export async function startKick(ctx: EventsCtx, p: EventJobPayload<'start_kick'>
     return
   }
   const build = await ctx.store.latestAppliedBuild(ev.id)
-  if (!build || build.version !== ev.version) {
-    // Never restart into a build that is not the event's current version.
-    await ctx.alert(`events start kick for event #${ev.id}: no applied build for version ${ev.version}; not restarting`, { eventId: ev.id })
+  if (!build || !(await buildIsCurrent(ctx, ev, build))) {
+    // Never restart into a build compiled from other inputs than the event
+    // has now (a details-only edit keeps the applied build current).
+    await ctx.alert(`events start kick for event #${ev.id}: no applied build for version ${ev.version} (needs rebuild — press Build now); not restarting`, { eventId: ev.id })
     return
   }
   const now = ctx.now()

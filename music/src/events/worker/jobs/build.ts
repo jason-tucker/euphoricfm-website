@@ -29,14 +29,15 @@ import { compile, CompileError, type CompileAnnouncement, type CompiledPlan, typ
 import { ARCHIVED_FILE_RE, eventUploadPathFor, LEGACY_PLAYLIST_IDS, LIBRARY_FILE_RE, PLAYLIST_ID_FLOOR, STINGER_FILE_RE, type ScheduleItem } from '../../azuracast/allowlist'
 import { backendOptionsOf, EventsAzuraCastError, type MediaRead, type PlaylistRead, type PlaylistScope } from '../../azuracast/client'
 import { applyFileMembership } from '../../azuracast/membership'
+import { buildInputKey } from '../../contract/build-key'
 import type { EventJobPayload } from '../../contract/jobs'
 import { mainName } from '../../contract/paths'
 import { RECHECK_BEFORE_MIN, START_KICK_DELAY_S } from '../../contract/rules'
 import type { EventStatus } from '../../contract/types'
 import type { EventsCtx } from '../ctx'
 import { Permanent, Wait } from '../errors'
-import type { BuildRow, EventRow, RegistryRow } from '../store'
-import { postToTicket } from './tickets'
+import type { AnnouncementRow, BuildRow, EventRow, RegistryRow, TrackRow } from '../store'
+import { postToTicket, whenLine } from './tickets'
 
 const BUILDABLE: readonly EventStatus[] = ['approved', 'built', 'live']
 export const START_KICK_MAX_ATTEMPTS = 2
@@ -69,6 +70,8 @@ export type Resolved = {
   // media id → the exact live path the wrapper will see
   paths: Map<number, string>
   dropped: { position: number; mediaId: number | null; reason: string }[]
+  // contract/build-key.ts of exactly the rows resolved here
+  inputKey: string
 }
 
 async function fileOrNull(ctx: EventsCtx, id: number): Promise<MediaRead | null> {
@@ -89,9 +92,31 @@ async function resolveUpload(ctx: EventsCtx, ev: EventRow, audioId: number): Pro
   return { mediaId: f.id, path, lengthS: typeof f.length === 'number' && f.length > 0 ? f.length : (a.durationS ?? 0) }
 }
 
+const inputKeyOf = (ev: EventRow, tracks: readonly TrackRow[], anns: readonly AnnouncementRow[]) =>
+  buildInputKey(ev, tracks, anns.map((a) => ({ ...a, from: a.fromAt, until: a.untilAt })))
+
+/** The build-input key of the event as it is now (its current rows). */
+export async function currentInputKey(ctx: EventsCtx, ev: EventRow): Promise<string> {
+  return inputKeyOf(ev, await ctx.store.tracks(ev.id), await ctx.store.announcements(ev.id))
+}
+
+/**
+ * Whether an applied build still is the event's build: same version, or
+ * compiled from the same build inputs (a details-only edit — description,
+ * host, location, type — bumps the version but changes nothing on the
+ * station).
+ */
+export async function buildIsCurrent(ctx: EventsCtx, ev: EventRow, build: BuildRow): Promise<boolean> {
+  if (build.version === ev.version) return true
+  const key = planOf(build)?.inputKey
+  return typeof key === 'string' && key === (await currentInputKey(ctx, ev))
+}
+
 export async function resolveEvent(ctx: EventsCtx, ev: EventRow): Promise<Resolved | { wait: string }> {
-  const out: Resolved = { tracks: [], announcements: [], paths: new Map(), dropped: [] }
-  for (const t of await ctx.store.tracks(ev.id)) {
+  const trackRows = await ctx.store.tracks(ev.id)
+  const annRows = await ctx.store.announcements(ev.id)
+  const out: Resolved = { tracks: [], announcements: [], paths: new Map(), dropped: [], inputKey: inputKeyOf(ev, trackRows, annRows) }
+  for (const t of trackRows) {
     if (t.source === 'library') {
       const f = t.mediaId ? await fileOrNull(ctx, t.mediaId) : null
       if (!f || !LIBRARY_FILE_RE.test(f.path)) {
@@ -112,7 +137,7 @@ export async function resolveEvent(ctx: EventsCtx, ev: EventRow): Promise<Resolv
       out.tracks.push({ position: t.position, mediaId: r.mediaId, pinAt: t.pinAt })
     }
   }
-  for (const a of await ctx.store.announcements(ev.id)) {
+  for (const a of annRows) {
     let mediaId: number
     let lengthS: number
     if (a.source === 'stinger') {
@@ -192,6 +217,7 @@ export async function applyBuild(ctx: EventsCtx, ev: EventRow, opts: { force: bo
       settings: { maxRows: settings.events_max_rows, pinStrategy: settings.events_pin_strategy, announceStrategy: settings.events_announce_strategy },
       now: new Date(ctx.now()),
     })
+    plan = { ...plan, inputKey: resolved.inputKey }
   } catch (e) {
     if (e instanceof CompileError) {
       let b = await ctx.store.buildFor(ev.id, ev.version)
@@ -226,8 +252,9 @@ export async function applyBuild(ctx: EventsCtx, ev: EventRow, opts: { force: bo
   // pending, a withdraw / cancel, a newer version). Then this build must not
   // mark it built or schedule kicks for the old version: the edit enqueued
   // its teardown or rebuild, which runs next.
+  // A details-only edit meanwhile (same build inputs) does not make it stale.
   const fresh = await ctx.store.getEvent(ev.id)
-  if (!fresh || fresh.version !== ev.version || !BUILDABLE.includes(fresh.status)) {
+  if (!fresh || !BUILDABLE.includes(fresh.status) || (fresh.version !== ev.version && (await currentInputKey(ctx, fresh)) !== resolved.inputKey)) {
     await staleJob(ctx, 'build', fresh ?? ev, { buildId: build.id, buildVersion: ev.version, reason: 'event changed during the build' })
     return
   }
@@ -410,6 +437,28 @@ export async function buildNowJob(ctx: EventsCtx, p: EventJobPayload<'build_now'
   await applyBuild(ctx, ev, { force: true })
 }
 
+// A staff edit changed build inputs while events_autobuild_enabled is off
+// (service.ts editJobs). Nothing rebuilds by itself then, and the start
+// kick refuses a stale build: page staff and note the ticket — only when
+// the applied build really is stale by now (a later edit may have reverted
+// it, or someone pressed Build now meanwhile).
+export async function rebuildNeededJob(ctx: EventsCtx, p: EventJobPayload<'rebuild_needed'>): Promise<void> {
+  const ev = await ctx.store.getEvent(p.eventId)
+  if (!ev) throw new Permanent('event missing')
+  if (!BUILDABLE.includes(ev.status)) {
+    await staleJob(ctx, 'rebuild_needed', ev, { jobVersion: p.version })
+    return
+  }
+  const build = await ctx.store.latestAppliedBuild(ev.id)
+  if (!build || (await buildIsCurrent(ctx, ev, build))) {
+    await ctx.store.audit('events.build.rebuild_not_needed', 'event', ev.id, { jobVersion: p.version, version: ev.version, buildId: build?.id ?? null })
+    return
+  }
+  await ctx.store.audit('events.build.rebuild_needed', 'event', ev.id, { jobVersion: p.version, version: ev.version, buildId: build.id, buildVersion: build.version })
+  await ctx.alert(`events event #${ev.id} (${whenLine(ev)}) needs rebuild — press Build now: a staff edit changed what the station airs and autobuild is off`, { eventId: ev.id, version: ev.version, buildVersion: build.version })
+  await postToTicket(ctx, ev.id, 'note', 'Staff changed this event. It needs a rebuild on the Events station before it airs; staff have been alerted.', `rebuild_needed:${ev.id}:v${ev.version}`)
+}
+
 // ------------------------------------------------------------- verify ---
 
 // Differences between a fresh playlist read and the compiled playlist.
@@ -480,7 +529,7 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
   if (!ev) throw new Permanent('event missing')
   const build = await ctx.store.getBuild(p.buildId)
   if (!build || build.eventId !== ev.id) throw new Permanent('build missing')
-  if (build.status !== 'applied' || build.version !== ev.version || !BUILDABLE.includes(ev.status)) {
+  if (build.status !== 'applied' || !BUILDABLE.includes(ev.status) || !(await buildIsCurrent(ctx, ev, build))) {
     await staleJob(ctx, 'verify', ev, { buildId: build.id, buildVersion: build.version, buildStatus: build.status })
     return
   }
@@ -533,7 +582,7 @@ export async function recheckJob(ctx: EventsCtx, p: EventJobPayload<'recheck'>):
   }
   const build = await ctx.store.latestAppliedBuild(ev.id)
   const plan = planOf(build)
-  if (!build || !plan || build.version !== ev.version) {
+  if (!build || !plan || !(await buildIsCurrent(ctx, ev, build))) {
     await staleJob(ctx, 'recheck', ev, { buildVersion: build?.version ?? null })
     return
   }

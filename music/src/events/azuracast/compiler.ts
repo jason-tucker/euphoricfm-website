@@ -104,6 +104,9 @@ export type CompiledPlan = {
   playlists: CompiledPlaylist[]
   rowCount: number
   warnings: string[]
+  // Set by the worker (not the compiler): contract/build-key.ts of the
+  // inputs this plan was compiled from.
+  inputKey?: string
 }
 
 
