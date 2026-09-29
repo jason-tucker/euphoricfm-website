@@ -44,6 +44,7 @@ test('dist/player/index.html is built as a real page with its own title + meta',
   assert.match(html, /id="efmp"/, 'player root');
   assert.match(html, /class="efmp-mini"/, 'pop-out strip');
   assert.match(html, /id="efmp-quality"/, 'stream picker');
+  assert.match(html, /<label class="efmp-select"[^>]*\shidden[\s>]/, 'stream picker starts hidden: it only shows with 2+ mounts');
   assert.match(html, /id="efmp-history"/, 'song history');
   assert.match(html, /id="request-overlay"/, 'request modal is reused');
   assert.match(html, /\/player\/\?popout=1/, 'pop-out link');
@@ -166,6 +167,7 @@ test('home: Up next shows for the whole song — no reveal delay, no "near the e
   assert.match(src('src/components/PlayerCard.astro'), /#np-up-next\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
   // The Web Player never had a reveal delay; keep it that way.
   assert.doesNotMatch(src('src/scripts/player.ts'), /REVEAL/);
+  assert.match(src('src/scripts/player.ts'), /qualityWrap\.hidden = options\.length < 2/, 'stream picker unhides only with 2+ mounts');
 });
 
 test('home: ONE side card with Recently played / Requested tabs (ARIA tablist), no standalone Requested card', () => {
