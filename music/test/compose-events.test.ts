@@ -78,11 +78,13 @@ describe.skipIf(!ready())('compose.yml: events services (v0.5.0)', () => {
 
   // (`config` inlines env_file contents into environment; run.sh renders
   // with empty env files, so what is left is compose.yml's own environment.)
-  it('[W0] no secrets in compose itself; the probe gets HOME only; web on 127.0.0.1:6097 only', () => {
+  it('[W0] no secrets in compose itself; the probe gets HOME and the 3 s minimum only; web on 127.0.0.1:6097 only', () => {
     const s = cfg().services
     expect(Object.keys(s['events-web']!.environment ?? {}).sort()).toEqual(['HOSTNAME', 'NODE_OPTIONS', 'PORTAL_SITE'])
     expect(Object.keys(s['events-worker']!.environment ?? {})).toEqual(['NODE_OPTIONS'])
-    expect(s['events-probe']!.environment).toEqual({ HOME: '/tmp' })
+    // PROBE_MIN_DURATION_S=3: short announcements; music-probe keeps 30 (unset).
+    expect(s['events-probe']!.environment).toEqual({ HOME: '/tmp', PROBE_MIN_DURATION_S: '3' })
+    expect(s['music-probe']!.environment ?? {}).not.toHaveProperty('PROBE_MIN_DURATION_S')
     expect(s['events-web']!.ports).toEqual([expect.objectContaining({ host_ip: '127.0.0.1', target: 3000, published: '6097' })])
     expect(s['events-worker']!.ports ?? []).toEqual([])
     expect(s['events-web']!.depends_on).toMatchObject({ 'music-init': { condition: 'service_completed_successfully' }, 'music-migrate': { condition: 'service_completed_successfully' } })

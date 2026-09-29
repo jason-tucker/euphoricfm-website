@@ -169,6 +169,9 @@ services:
 
   events-probe:
     build: { context: ., target: probe }
+    environment:
+      HOME: /tmp
+      PROBE_MIN_DURATION_S: "3" # as in compose.yml: announcements from 3 s
 
   mocks:
     image: ${MUSIC_TEST_PROJECT:-efm-music-test}/test:local

@@ -365,6 +365,10 @@ services:
     network_mode: none
     environment:
       HOME: /tmp
+      # Events accepts announcements from 3 s (songs stay at 30 s: the events
+      # worker rejects a shorter song after its probe). Probe only; music-probe
+      # keeps the default 30.
+      PROBE_MIN_DURATION_S: "3"
     # /staging/art: the probe creates it at start-up (src/probe/main.ts) and
     # would exit on the read-only rootfs. Events has no album art (no art-in
     # anywhere, the site gate 404s the art routes), so an empty tmpfs, never
