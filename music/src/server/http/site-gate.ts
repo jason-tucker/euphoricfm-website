@@ -35,7 +35,8 @@ function decodePath(pathname: string): string | null {
 
 export function siteGate(site: PortalSite, pathname: string): GateVerdict {
   const path = decodePath(pathname)
-  if (path === null || path.includes('\\')) return { kind: 'not_found', api: API.test(pathname) }
+  // A decoded backslash, NUL or dot segment never names a real route: refuse.
+  if (path === null || /[\\\0]|(?:^|\/)\.{1,2}(?:\/|$)/.test(path)) return { kind: 'not_found', api: API.test(pathname) }
   if (site === 'music') {
     if (API_EV.test(path)) return { kind: 'not_found', api: true }
     if (EV_TREE.test(path)) return { kind: 'not_found', api: false }
