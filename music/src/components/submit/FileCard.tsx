@@ -185,7 +185,14 @@ export function FileCard({
             src={cover}
             hasCustomArt={Boolean(e.item?.hasCustomArt)}
             onChange={onArt}
-            prompt="This song has no cover art yet. Add a square JPEG, PNG or WebP (up to 5 MB). It's optional: you can still submit without it."
+            prompt={
+              // v0.4.1: a SoundCloud link whose artwork could not be used (an
+              // address outside SoundCloud's image server, a failed or odd
+              // image) keeps the song; the card says why there is no cover.
+              sc
+                ? "SoundCloud's artwork for this track couldn't be used (or it has none), so the song has no cover yet. Add a square JPEG, PNG or WebP (up to 5 MB). It's optional: you can still submit without it."
+                : "This song has no cover art yet. Add a square JPEG, PNG or WebP (up to 5 MB). It's optional: you can still submit without it."
+            }
           />
           <AudioPreview itemId={e.itemId} hideCover onUrls={(u) => setCover(u.coverUrl)} />
           <div className="grid gap-3 sm:grid-cols-2">

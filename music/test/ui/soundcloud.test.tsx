@@ -247,6 +247,14 @@ describe('the submit page’s SoundCloud box', () => {
     card({ phase: 'rejected', item: { id: 7, source: 'soundcloud', status: 'rejected', probeError: 'sc_extractor_failed' } as never })
     expect(screen.getByText(/may be private, removed/)).toBeTruthy()
     expect(screen.getByText(/This song will not be submitted/)).toBeTruthy()
+    // v0.4.1: artwork that could not be used (music-fetch's artwork_host
+    // warning and the rest) drops the cover, never the song: the ready card
+    // says so next to the upload button.
+    document.body.innerHTML = ''
+    stubFetch({ 'GET /api/items/7/preview': { status: 200, body: { audioUrl: '/a', coverUrl: null } } })
+    card({ phase: 'ready', item: { id: 7, source: 'soundcloud', status: 'pending', hasCover: false, fetchLicense: 'cc-by' } as never, edits: { title: 'T', artist: 'A', album: '', genre: '' } })
+    expect(screen.getByText('No album art')).toBeTruthy()
+    expect(screen.getByText(/SoundCloud's artwork for this track couldn't be used/)).toBeTruthy()
   })
 })
 

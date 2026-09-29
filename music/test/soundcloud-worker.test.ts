@@ -396,6 +396,15 @@ describe.skipIf(!DBENV())('SoundCloud links: worker ↔ music-fetch spool (v0.4.
     expect(readdirSync(ctx.spoolInDir).filter((n) => n.startsWith(x.fetchId))).toEqual([`${x.fetchId}.json`])
   })
 
+  it('v0.4.1: music-fetch dropped the artwork (warning artwork_host) → the song goes on to the probe without a cover', async () => {
+    const x = await mkScItem({ stage: 'fetching', requestedAgoS: 5 })
+    const { artworkSha256: _drop, ...doc } = okResult(x.fetchId, { files: { audio: `/staging/fetch/${x.fetchId}/audio.m4a` }, warnings: ['artwork_host'] }, { artworkSourceHost: null })
+    writeFetchOut(x.fetchId, doc)
+    await collectFetchResults(ctx)
+    expect(await item(x.id)).toMatchObject({ status: 'probing', fetch_stage: 'converting', probe_request_id: x.fetchId })
+    expect(JSON.parse(readFileSync(join(ctx.spoolInDir, `${x.fetchId}.json`), 'utf8'))).toMatchObject({ type: 'probe_fetch', artworkSha256: null })
+  })
+
   it('a restart between the probe request and the DB update rewrites the SAME request, never a second one', async () => {
     const x = await mkScItem({ stage: 'fetching', requestedAgoS: 5 })
     writeFetchOut(x.fetchId, okResult(x.fetchId))
