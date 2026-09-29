@@ -233,3 +233,14 @@
 .ev-onair[data-on='true'] { background: rgb(var(--efm-ruby-rgb)); color: #fff; }
 .ev-onair[data-on='false'] { border: 1px solid rgb(var(--efm-cream-rgb) / 0.3); color: rgb(var(--efm-cream-rgb) / 0.7); }
 .ev-range { width: 100%; min-height: 44px; accent-color: rgb(var(--efm-sunburst-rgb)); cursor: pointer; }
+
+/* ------------------------------------------------ phones ---------------- */
+@media (max-width: 767px) {
+  /* Touch targets: 48 px tall on phones. */
+  .ev-tz { height: auto; padding: 0; gap: 2px; }
+  .ev-tz-btn { min-height: 48px; }
+  .ev-root .input, .ev-root select, .ev-select { min-height: 48px; }
+  .ev-root .btn-sm, .ev-step, .ev-seg > button, .ev-seg > a { min-height: 48px; }
+  .ev-foot { align-items: center; }
+  .ev-back, .ev-foot a { display: inline-flex; align-items: center; min-height: 48px; }
+}
