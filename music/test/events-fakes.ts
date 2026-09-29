@@ -182,7 +182,7 @@ export class FakeAz {
       }
       for (const f of this.files.values()) {
         const parent = f.path.slice(0, f.path.lastIndexOf('/'))
-        if (parent === dir) out.push({ path: f.path, type: 'file', size: f.size, media: this.mediaOut(f) })
+        if (parent === dir) out.push({ path: f.path, type: 'media', size: f.size, media: this.mediaOut(f) }) // AzuraCast's real type for audio files
       }
       return this.json(200, out)
     }

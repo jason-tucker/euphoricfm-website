@@ -1,5 +1,10 @@
 # Changelog — EFM Music Portal (`music/`)
 
+## [0.5.1] — 2026-09-29 — Events: EFM stingers show up
+
+### Fixed
+- **The announcement picker's EFM stingers were empty in production.** AzuraCast lists audio files as `type: "media"` in `files/list`; the events worker's `stinger_sync` only accepted `"file"`, so it stored none of the 12 stingers in `EFM Stingers/`. It now accepts `media` (and `file`), and the unit-test AzuraCast fake returns `media` like the real server, with a test that pins it.
+
 ## [0.5.0] — 2026-09-29 — EFM Events Portal (events.euphoric.fm)
 
 The same app, run a second time with `PORTAL_SITE=events`, is the new Events portal at `events.euphoric.fm` (plan: vault *EFM Events Portal — Plan* v2.1). Members sign in with Discord, see what is on the Event station, and request an event with its own playlist; staff approve it, and the events worker sets it up on the Event station (AzuraCast station 14) and starts and stops it on time. The music site (`PORTAL_SITE` unset or `music`) behaves as before. Launch settings keep member requests, custom uploads and automatic builds switched off until the staff smoke test and the supervised station test.

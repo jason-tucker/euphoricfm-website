@@ -991,3 +991,20 @@ describe('events worker: alerts', () => {
     expect(audits).toHaveLength(2)
   })
 })
+
+describe('events worker: stinger_sync', () => {
+  it('stores top-level EFM Stingers files that AzuraCast lists as type "media" and skips folders, subfolders and unprocessed files', async () => {
+    const h = harness('2026-10-01T12:03:00Z', dirs)
+    h.az.addFile('EFM Stingers/euphoricfm.mp3', { id: 4473, length: 10, title: 'Youre Listening to EuphoricFM' })
+    h.az.addFile('EFM Stingers/elsie.mp3', { id: 4393, length: 9.6, title: '' })
+    h.az.addFile('EFM Stingers/Staff/deep.mp3', { id: 4500, length: 8, title: 'deep' })
+    h.az.addFile('EFM Stingers/zero.mp3', { id: 4501, length: 0, title: 'zero length' })
+    await tickPeriodic(h.ctx, {})
+    const rows = [...h.store.stingers].sort((a, b) => a.mediaId - b.mediaId)
+    expect(rows.map((r) => [r.mediaId, r.path, r.lengthS])).toEqual([
+      [4393, 'EFM Stingers/elsie.mp3', 10],
+      [4473, 'EFM Stingers/euphoricfm.mp3', 10],
+    ])
+    expect(rows.find((r) => r.mediaId === 4393)!.title).toBe('elsie')
+  })
+})
