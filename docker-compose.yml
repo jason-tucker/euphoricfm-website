@@ -31,10 +31,8 @@ services:
       # Caddyfile. Either can be overridden via .env on the VPS.
       TICKETS_HOSTNAME: ${TICKETS_HOSTNAME:-tickets.euphoric.fm}
       TICKETS_GG_HOSTNAME: ${TICKETS_GG_HOSTNAME:-tickets.euphoric.gg}
-      # Webhook URLs are injected at runtime by Caddy templating
-      # /efm-runtime-config.js from these env vars. They live in .env on the
-      # host; editing them is `docker compose up -d`, no rebuild needed.
-      PUBLIC_DISCORD_CONTACT_WEBHOOK: ${PUBLIC_DISCORD_CONTACT_WEBHOOK:-}
+      # No webhook here: since v0.22.3 the contact forms post to the
+      # efm-requests relay (/contact/*), which alone holds the Discord URL.
     # PUBLIC binding: Caddy needs :80 (ACME HTTP-01 challenge + http→https
     # redirect) and :443 (TLS). HTTP/3 over UDP/443 is opt-in; we leave it
     # off because some CEF clients hang trying to negotiate QUIC.
@@ -83,8 +81,9 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # efm-requests — tiny shared pending-requests store (see server/index.mjs).
-  # Caddy reverse-proxies /requests/* on info.euphoric.fm to this container so
+  # efm-requests — tiny shared pending-requests store (see server/index.mjs),
+  # also the station stats API (/stats/*) and the contact-form relay
+  # (/contact/*). Caddy reverse-proxies /requests/* on info.euphoric.fm to this container so
   # every visitor sees every pending request (vs. the per-browser localStorage
   # state from v0.6.0). Reachable from efm-web on the default compose network
   # at `efm-requests:3000`. No host port binding — internal only.
@@ -119,6 +118,14 @@ services:
       # insensitive exact names). Empty = the built-in default list in
       # server/stats.mjs (2Ads, 3EFM/Free Ads, 5Local Ads, Go Vote, 4EuphoricFM).
       STATS_EXCLUDE_PLAYLISTS: ${STATS_EXCLUDE_PLAYLISTS:-}
+      # ---- Contact relay (server/index.mjs, /contact/*) ----------------------
+      # Discord webhook the "Contact us" and /events inquiry forms are relayed
+      # to. A credential (anyone holding it can post as, rename or delete the
+      # webhook): it lives only in .env on the host and in this container,
+      # is never logged, and never reaches visitors. Empty = the forms answer
+      # 503. Change it with `docker compose up -d efm-requests` (a plain
+      # restart keeps the old value).
+      DISCORD_CONTACT_WEBHOOK: ${DISCORD_CONTACT_WEBHOOK:-}
     volumes:
       - efm_requests_data:/data
     security_opt:
