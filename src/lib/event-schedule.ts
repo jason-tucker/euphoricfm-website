@@ -30,10 +30,18 @@ export const isValidEntry = (e: unknown): e is ScheduleEntry => {
   );
 };
 
-// Event helper playlists (pinned songs, announcements) are named with a
-// leading "~" on the station and run alongside the main event playlist.
-// They are plumbing, not events — only the main event row is shown.
-export const isHelperRow = (e: Pick<ScheduleEntry, 'name'>): boolean => e.name.trimStart().startsWith('~');
+// Event helper playlists (pinned songs, announcements) run alongside the
+// main event playlist. They are plumbing, not events — only the main event
+// row is shown. The events portal names them `EVT<id> s<n>` (pins) and
+// `EVT<id> a<n>` (announcements) since music portal 0.5.2, and refuses any
+// event title of that shape; before that they carried a leading "~" (which
+// broke AzuraCast's Liquidsoap config — 2026-09-29), so "~" rows stay hidden
+// too for any left on the station.
+export const HELPER_NAME_RE = /^EVT\d+ [sa]\d+$/i;
+export const isHelperRow = (e: Pick<ScheduleEntry, 'name'>): boolean => {
+  const name = e.name.trim();
+  return name.startsWith('~') || HELPER_NAME_RE.test(name);
+};
 
 // A booking that crosses midnight comes back from the schedule API split
 // into per-day rows (…–23:59, then 00:00–…). Rows of the SAME playlist
