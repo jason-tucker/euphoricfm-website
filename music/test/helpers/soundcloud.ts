@@ -21,6 +21,11 @@ const MAKERS: Record<string, (out: string) => void> = {
   'sc-aac-16m.m4a': (o) => ff(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=960:sample_rate=44100', '-ac', '2', '-c:a', 'aac', '-b:a', '96k', ...FMP4, o]),
   'sc-aac-25m.m4a': (o) => ff(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=1500:sample_rate=22050', '-ac', '1', '-c:a', 'aac', '-b:a', '24k', ...FMP4, o]),
   'sc-aac-10s.m4a': (o) => ff([...noise(10), '-ac', '2', '-c:a', 'aac', '-b:a', '160k', ...FMP4, o]),
+  // v0.4.1: what a Go+ track gives a logged-out client: a 30 s preview (AAC and MP3)
+  'sc-aac-30s.m4a': (o) => ff([...noise(30), '-ac', '2', '-c:a', 'aac', '-b:a', '160k', ...FMP4, o]),
+  'sc-mp3-30s.mp3': (o) => ff([...noise(30), '-ac', '2', '-c:a', 'libmp3lame', '-b:a', '128k', '-id3v2_version', '0', '-write_id3v1', '0', o]),
+  // v0.4.1: 860 s, just under the 320k limit (864 s), for the ladder's "longer of the two"
+  'sc-aac-860s.m4a': (o) => ff(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=860:sample_rate=44100', '-ac', '2', '-c:a', 'aac', '-b:a', '96k', ...FMP4, o]),
   // hls_opus_64k: Opus in Ogg, 48 kHz
   'sc-opus-40s.opus': (o) => ff([...noise(40, 48000), '-ac', '2', '-c:a', 'libopus', '-b:a', '64k', '-f', 'ogg', o]),
   // http_mp3_128
