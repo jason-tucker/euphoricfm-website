@@ -183,23 +183,16 @@ docker compose -p efm-music up -d
 
 `music-fetch` is the only container with internet egress, and yt-dlp inside it connects to whatever SoundCloud's API, a redirect or a playlist names (only shortlink resolution and the artwork request go through music-fetch's own public-address check). Two host rules keep a steered or compromised yt-dlp away from everything that is not the public internet; both are **required before music-fetch starts**, and a deploy that cannot show them stops here (leave `soundcloud_fetch_enabled` false and `music-fetch` stopped).
 
-1. **DOCKER-USER** (forwarded traffic): `efm-music-egress.service` DROPs 10/8, 172.16/12, 192.168/16, 100.64/10 and 169.254/16 from `172.31.251.0/24` (the unit already covers the subnet; check, do not assume).
-2. **INPUT** (traffic to the host itself: the bridge gateway `172.31.251.1`, the droplet's public IP, `docker0`, any host-bound service). DOCKER-USER never sees it. Add it to the same unit so it survives reboots:
-
-   ```sh
-   # as root on botvps; the interface need not exist yet
-   iptables -C INPUT -i br-efm-fetch -j DROP 2>/dev/null || iptables -I INPUT -i br-efm-fetch -j DROP
-   ```
-
-   Persist it in `efm-music-egress.service` next to the DOCKER-USER rules (ExecStart inserts it with the `-C || -I` guard above, ExecStop removes it with `iptables -D INPUT -i br-efm-fetch -j DROP`). Container DNS is unaffected: Docker's embedded resolver answers inside the container's own namespace and forwards from the host.
+1. **DOCKER-USER** (forwarded traffic): `efm-music-egress.service` runs `/usr/local/sbin/efm-music-egress.sh`, whose `EFM-MUSIC-EGRESS` chain DROPs 10/8, 172.16/12, 192.168/16, 100.64/10 and 169.254/16 from `172.31.251.0/24` (and from worker-egress and music-web; see "Host firewall on botvps" below).
+2. **INPUT** (traffic to the host itself: the bridge gateway `172.31.251.1`, the droplet's public IP, `docker0`, any host-bound service; DOCKER-USER never sees it): the same script keeps an `EFM-MUSIC-INPUT` chain, jumped from `INPUT`, with `-i br-efm-fetch -m conntrack --ctstate NEW -j DROP`. Applied on botvps 2026-09-28; the interface need not exist yet. Container DNS is unaffected: Docker's embedded resolver answers inside the container's own namespace and forwards from the host.
 
 **Verify, before `up -d`** (root on botvps):
 
 ```sh
-iptables -S DOCKER-USER | grep -c -- '-s 172.31.251.0/24 .* -j DROP'   # 5
-iptables -S INPUT | grep -- '-i br-efm-fetch -j DROP'                   # present, and above any ACCEPT that could match
-systemctl is-enabled efm-music-egress.service                           # enabled
-grep -c 'br-efm-fetch' /etc/systemd/system/efm-music-egress.service     # ≥ 1 (the INPUT rule is persisted)
+iptables -S EFM-MUSIC-EGRESS | grep -c -- '-s 172.31.251.0/24 .* -j DROP'   # 5
+iptables -S EFM-MUSIC-INPUT | grep -- '-i br-efm-fetch'                       # present
+iptables -S INPUT | grep -c -- '-j EFM-MUSIC-INPUT'                           # 1
+systemctl is-enabled efm-music-egress.service                                 # enabled
 ```
 
 **Verify, after `up -d`** (the subnet and bridge now exist): `docker network inspect efm-music_fetch-egress --format '{{(index .IPAM.Config 0).Subnet}} {{index .Options "com.docker.network.bridge.name"}}'` prints `172.31.251.0/24 br-efm-fetch`, then run the connect probe from `fetch/README.md` ("Only `1.1.1.1` may print `OPEN`"), adding the droplet's public IP (`("<public IP>",22)`) to its list. Anything else `OPEN` → `docker compose -p efm-music stop music-fetch`, set the kill switch, fix the rules, re-verify. Re-run both checks after every botvps reboot or Docker upgrade until the unit has been seen to restore them. Record the result in the vault's botvps note.
