@@ -572,7 +572,7 @@ describe('events worker: kicks and teardown', () => {
 
   it('verify after the start kick reads the liquidsoap log: a config-load error after the restart fails the build and alerts', async () => {
     const { h } = await built()
-    // 20:00:05 EDT = 00:00:05Z; the log is in UTC here, with an older error before the restart
+    // an older error before the last start banner is ignored; the one after it fails the build
     h.az.liquidsoapLog = [
       '2026/10/10 23:40:00 [lang:2] Parse error: an old run, before this restart',
       '2026/10/11 00:00:06 [main:3] Liquidsoap 2.2.5',
@@ -604,23 +604,32 @@ describe('events worker: kicks and teardown', () => {
     expect(verified.detail).toMatchObject({ problems: [], backend: 'running', liquidsoapLog: 'clean' })
   })
 
-  it('liquidsoap log scan: UTC or ET timestamps, continuation lines, nothing before the restart', () => {
-    const since = T('2026-10-10T20:00:05-04:00')
-    const now = since + 60_000
+  it('liquidsoap log scan: only lines after the last start banner count, whatever their timestamps', () => {
     const log = [
-      'Error 5: before any timestamp (not counted)',
+      'Error 5: from an older run (not counted)',
+      '2026/10/10 23:59:00 [main:3] Liquidsoap 2.2.5',
+      '2026/10/10 23:59:01 [lang:1] Parse error: the previous start (not counted)',
+      '2026/10/10 20:00:06 [main:3] Liquidsoap 2.2.5',
       '2026/10/10 20:00:06 [lang:1] At line 12, char 3-10:',
       'Error 5: this value has type string but it should be int',
-      '2026/10/10 23:59:00 [main:3] ok',
-      '2026-10-11 00:00:09 [lang:1] Script error: unknown variable',
-      '2026/10/10 15:00:00 [lang:1] Parse error: hours earlier',
+      '2026/10/10 15:00:00 [lang:1] Script error: unknown variable',
     ].join('\n')
-    expect(liquidsoapConfigErrors(log, since, now)).toEqual([
+    expect(liquidsoapConfigErrors(log)).toEqual([
       '2026/10/10 20:00:06 [lang:1] At line 12, char 3-10:',
       'Error 5: this value has type string but it should be int',
-      '2026-10-11 00:00:09 [lang:1] Script error: unknown variable',
+      '2026/10/10 15:00:00 [lang:1] Script error: unknown variable',
     ])
-    expect(liquidsoapConfigErrors('', since, now)).toEqual([])
+    // an old config error before the banner does not fail; nothing after it
+    expect(liquidsoapConfigErrors('2026/10/10 23:40:00 [lang:2] Parse error: old\n2026/10/10 00:00:01 [main:3] Liquidsoap 2.2.5\n2026/10/10 00:00:02 [clock:3] Streaming loop starts')).toEqual([])
+    // other banner spellings
+    expect(liquidsoapConfigErrors('Parse error: old\n[main:3] Liquidsoap version 2.3.0 starting\nok')).toEqual([])
+    // an error line that mentions Liquidsoap is not a banner
+    expect(liquidsoapConfigErrors('[main:3] Liquidsoap 2.2.5\nError while loading Liquidsoap script, version mismatch')).toEqual(['Error while loading Liquidsoap script, version mismatch'])
+    // no banner: the last 200 lines are judged
+    const noBanner = ['Parse error: long ago', ...Array.from({ length: 200 }, (_, i) => `line ${i}`)].join('\n')
+    expect(liquidsoapConfigErrors(noBanner)).toEqual([])
+    expect(liquidsoapConfigErrors('x\nScript error: recent')).toEqual(['Script error: recent'])
+    expect(liquidsoapConfigErrors('')).toEqual([])
   })
 
   it('teardown of an event sent back for review only disables its playlists', async () => {
