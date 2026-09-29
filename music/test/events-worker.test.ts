@@ -294,6 +294,77 @@ describe('events worker: build', () => {
     expect(build.status).toBe('failed')
     expect(build.lastError).toContain('include_in_on_demand')
   })
+
+  // Regression (0.5.1 live test 1, station 14 playlists 81/82): the order
+  // step sent a JSON list and parsed the answer as {success}; AzuraCast's
+  // GET /order is an array of entries and PUT /order takes a {entry id:
+  // weight} map and echoes it. Playlists with no backend options read back
+  // as [""].
+  it('a sequential build against the real AzuraCast shapes completes: order PUT is the entry-id → weight map, verify passes with backend_options [""]', async () => {
+    const { h } = world()
+    h.store.events[0]!.playlistOrder = 'sequential'
+    h.store.trackRows.set(42, [
+      { position: 1, source: 'library', mediaId: 502, audioId: null, pinAt: null },
+      { position: 2, source: 'library', mediaId: 503, audioId: null, pinAt: null },
+      { position: 3, source: 'library', mediaId: 501, audioId: null, pinAt: null },
+    ])
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const build = h.store.buildRows[0]!
+    expect(build.lastError).toBeNull()
+    expect(build.status).toBe('applied')
+    expect(h.store.events[0]!.status).toBe('built')
+    const main = mainIdOf(h, 42)
+    // what the station holds, as AzuraCast would answer it
+    expect(h.az.playlists.get(main)!.backend_options).toEqual([''])
+    const orderPut = h.az.writes().filter((w) => w.path === `/api/station/14/playlist/${main}/order`)
+    expect(orderPut).toHaveLength(1)
+    const entry = (mid: number) => String(main * 100000 + mid)
+    expect(orderPut[0]!.body).toEqual({ order: { [entry(502)]: 1, [entry(503)]: 2, [entry(501)]: 3 } })
+    expect((await h.ctx.az.playlistMediaOrder(main)).map((e) => e.mediaId)).toEqual([502, 503, 501])
+    // verify ran on the fresh reads and found nothing
+    expect(h.store.job('verify')[0]!.status).toBe('done')
+    expect(h.store.audits.find((a) => a.action === 'events.build.verified')!.detail.problems).toEqual([])
+    expect(h.store.job('ticket_post', (p) => p.kind === 'built')).toHaveLength(1)
+  })
+
+  it('verify flags an order that drifted on the station', async () => {
+    const { h } = world()
+    h.store.events[0]!.playlistOrder = 'sequential'
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const build = h.store.buildRows[0]!
+    expect(build.status).toBe('applied')
+    h.az.order.set(mainIdOf(h, 42), [502, 501])
+    await h.store.enqueue('verify', { eventId: 42, buildId: build.id }, { dedupeKey: 'verify:again' })
+    await drain(h)
+    expect(build.status).toBe('failed')
+    expect(build.lastError).toContain('order')
+  })
+
+  it('schedule ids: follow the rows AzuraCast holds (a full-body PUT replaces them); a create answer without ids is completed by a GET', async () => {
+    const { h } = world()
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const row = h.store.reg.find((r) => r.eventId === 42 && r.role === 'main')!
+    const onStation = (h.az.playlists.get(row.playlistId!)!.schedule_items as { id: number }[]).map((s) => s.id)
+    expect(onStation.length).toBeGreaterThan(0)
+    expect(row.scheduleIds).toEqual(onStation)
+
+    // a live event's build creates its playlists enabled (no enable PUT
+    // after): the ids can only come from the create answer or the GET
+    const w2 = world()
+    w2.h.store.events[0]!.status = 'live'
+    w2.h.az.createOmitsScheduleIds = true
+    await w2.h.store.enqueue('build_now', { eventId: 42 })
+    await drain(w2.h)
+    const row2 = w2.h.store.reg.find((r) => r.eventId === 42 && r.role === 'main')!
+    const onStation2 = (w2.h.az.playlists.get(row2.playlistId!)!.schedule_items as { id: number }[]).map((s) => s.id)
+    expect(onStation2.length).toBeGreaterThan(0)
+    expect(row2.scheduleIds).toEqual(onStation2)
+    expect(w2.h.store.buildRows[0]!.status).toBe('applied')
+    expect(w2.h.az.writes().filter((w) => w.method === 'PUT' && /\/playlist\/\d+$/.test(w.path))).toHaveLength(0)
+  })
 })
 
 describe('events worker: kicks and teardown', () => {

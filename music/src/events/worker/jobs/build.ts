@@ -174,6 +174,19 @@ function scheduleIdsOf(p: PlaylistRead): number[] {
   return (p.schedule_items ?? []).map((s) => s.id).filter((x): x is number => typeof x === 'number')
 }
 
+// event_registry.schedule_ids: AzuraCast's ids of the playlist's schedule
+// rows (station 14 answers them on GET /playlist as schedule_items[].id).
+// Taken from the create response when it carries one per row sent, else
+// from a fresh GET. A full-body PUT sends the rows without ids, which
+// AzuraCast's setScheduleItems replaces with new rows (new ids), so every
+// such PUT is followed by a fresh GET too.
+async function scheduleIdsAfterWrite(ctx: EventsCtx, playlistId: number, rowsSent: number, response: PlaylistRead | null): Promise<number[]> {
+  const fromResponse = response ? scheduleIdsOf(response) : []
+  if (response && fromResponse.length === rowsSent) return fromResponse
+  const fresh = await ctx.az.getPlaylist(playlistId)
+  return scheduleIdsOf(fresh)
+}
+
 export function planOf(b: BuildRow | null): CompiledPlan | null {
   const p = b?.plan as CompiledPlan | undefined
   return p && p.v === 1 && Array.isArray(p.playlists) ? p : null
@@ -340,7 +353,7 @@ async function applyPlan(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: Co
     if (row.playlistId === null) {
       const orphan = await adoptableOrphan(ctx, ev, row, preexisting.has(row.id), orphanCandidates(station, p.name, ever))
       let id: number
-      let scheduleIds: number[] = []
+      let made: PlaylistRead | null = null
       if (orphan) {
         id = orphan.id
         await ctx.store.audit('events.registry.adopted', 'event', ev.id, { name: p.name, playlistId: id, rowId: row.id })
@@ -351,15 +364,24 @@ async function applyPlan(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: Co
         // intent row that is already committed.
         const before = await ctx.az.listPlaylists()
         await ctx.store.markCreateAttempt(row.id, { eventId: ev.id, buildId: build.id, name: p.name, maxIdBefore: before.reduce((m, x) => Math.max(m, x.id), 0) })
-        const made = await ctx.az.createPlaylist({ ...p.body, is_enabled: live }, playlistScope(ev, rows))
+        made = await ctx.az.createPlaylist({ ...p.body, is_enabled: live }, playlistScope(ev, rows))
         id = made.id
-        scheduleIds = scheduleIdsOf(made)
       }
-      await ctx.store.setRegistryPlaylist(row.id, id, scheduleIds)
-      row = { ...row, playlistId: id, scheduleIds }
+      // The id is recorded first (crash safety: never an unrecorded
+      // playlist), with whatever schedule ids the create answered.
+      const firstIds = made ? scheduleIdsOf(made) : []
+      await ctx.store.setRegistryPlaylist(row.id, id, firstIds)
+      row = { ...row, playlistId: id, scheduleIds: firstIds }
       byName.set(p.name, row)
       rows = rows.map((r) => (r.id === row!.id ? row! : r))
       if (orphan) await ctx.az.updatePlaylist(id, { ...p.body, is_enabled: live }, playlistScope(ev, rows))
+      const scheduleIds = await scheduleIdsAfterWrite(ctx, id, p.body.schedule_items.length, made)
+      if (JSON.stringify(scheduleIds) !== JSON.stringify(firstIds)) {
+        await ctx.store.setRegistryPlaylist(row.id, id, scheduleIds)
+        row = { ...row, scheduleIds }
+        byName.set(p.name, row)
+        rows = rows.map((r) => (r.id === row!.id ? row! : r))
+      }
     } else {
       await ctx.az.updatePlaylist(row.playlistId, { ...p.body, is_enabled: live }, playlistScope(ev, rows))
       const fresh = await ctx.az.getPlaylist(row.playlistId)
@@ -397,7 +419,13 @@ async function applyPlan(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: Co
   for (const p of plan.playlists) if (p.sequential && p.mediaIds.length > 1) await ctx.az.setOrder(idOf.get(p.name)!, p.mediaIds, scope)
 
   // 5: enable, then drop superseded playlists.
-  if (!live) for (const p of plan.playlists) await ctx.az.updatePlaylist(idOf.get(p.name)!, { ...p.body, is_enabled: true }, scope)
+  if (!live) {
+    for (const p of plan.playlists) {
+      const id = idOf.get(p.name)!
+      await ctx.az.updatePlaylist(id, { ...p.body, is_enabled: true }, scope)
+      await ctx.store.setRegistryPlaylist(byName.get(p.name)!.id, id, await scheduleIdsAfterWrite(ctx, id, p.body.schedule_items.length, null))
+    }
+  }
   for (const r of superseded) {
     try {
       await ctx.az.deletePlaylist(r.playlistId!, scope)
@@ -511,8 +539,11 @@ export async function verifyBuild(ctx: EventsCtx, ev: EventRow, build: BuildRow)
       if (!f || !f.playlists.some((x) => x.id === row.playlistId)) problems.push(`${p.key}: media ${m} not in the playlist`)
     }
     if (p.sequential && p.mediaIds.length > 1) {
-      const order = (await ctx.az.getPlaylistOrder(row.playlistId)).map((e) => e.media?.id)
-      if (JSON.stringify(order) !== JSON.stringify(p.mediaIds)) problems.push(`${p.key}: order`)
+      const order = await ctx.az
+        .playlistMediaOrder(row.playlistId)
+        .then((o) => o.map((e) => e.mediaId))
+        .catch((e: unknown) => (e instanceof EventsAzuraCastError && e.code.startsWith('order_') ? null : Promise.reject(e)))
+      if (!order || JSON.stringify(order) !== JSON.stringify(p.mediaIds)) problems.push(`${p.key}: order`)
     }
   }
   // Orphans: station-14 playlists carrying this event's marker that the

@@ -53,6 +53,9 @@ export class FakeAz {
   nextScheduleId = 1000
   nextMediaId = 9000
   onCreate?: (name: string) => void
+  // AzuraCast's create answer may lack schedule row ids; the build then
+  // takes them from a GET.
+  createOmitsScheduleIds = false
 
   constructor() {
     for (const [id, name] of [
@@ -67,7 +70,19 @@ export class FakeAz {
   }
 
   private pl(id: number, name: string): FPlaylist {
-    return { id, name, is_enabled: false, source: 'songs', order: 'shuffle', weight: 3, is_jingle: false, include_in_requests: false, include_in_on_demand: false, avoid_duplicates: true, backend_options: [], remote_url: null, schedule_items: [] }
+    return { id, name, is_enabled: false, source: 'songs', order: 'shuffle', weight: 3, is_jingle: false, include_in_requests: false, include_in_on_demand: false, avoid_duplicates: true, backend_options: [''], remote_url: null, schedule_items: [] }
+  }
+
+  // Like AzuraCast: stored comma-joined, read back through explode(',') —
+  // "none" comes back as [""].
+  private storedOptions(v: unknown): string[] {
+    const list = Array.isArray(v) ? v.map(String).filter((x) => x !== '') : []
+    return list.length ? list : ['']
+  }
+
+  // Like AzuraCast's schedule rows: every field, plus its id.
+  private scheduleRows(items: Record<string, unknown>[] | undefined): Record<string, unknown>[] {
+    return (items ?? []).map((s) => ({ start_time: s.start_time, end_time: s.end_time, start_date: s.start_date ?? '', end_date: s.end_date ?? '', days: s.days ?? [], loop_once: s.loop_once ?? false, id: this.nextScheduleId++ }))
   }
 
   addFile(path: string, opts: Partial<FFile> = {}): FFile {
@@ -98,8 +113,39 @@ export class FakeAz {
     return out
   }
 
+  // GET /file/{id} as AzuraCast answers it (test/fixtures/azuracast-real/
+  // st14_file_*.json): memberships of every station on the storage, with
+  // name / short_name / count.
   private mediaOut(f: FFile) {
-    return { id: f.id, unique_id: f.unique_id, path: f.path, title: f.title, artist: f.artist, length: f.length, playlists: f.playlists.map((id) => ({ id })) }
+    const name = (id: number) => this.playlists.get(id)?.name ?? `Station 1 playlist ${id}`
+    return {
+      id: f.id,
+      unique_id: f.unique_id,
+      song_id: 'f'.repeat(32),
+      path: f.path,
+      length: f.length,
+      length_text: `${Math.floor(f.length / 60)}:${String(Math.floor(f.length % 60)).padStart(2, '0')}`,
+      custom_fields: {},
+      extra_metadata: { amplify: null, cross_start_next: null, cue_in: null, cue_out: null, fade_in: null, fade_out: null },
+      playlists: f.playlists.map((id) => ({ id, name: name(id), short_name: name(id).toLowerCase().replace(/\s+/g, '_'), count: 1 })),
+      text: `${f.artist} - ${f.title}`,
+      artist: f.artist,
+      title: f.title,
+      album: null,
+      genre: null,
+      links: { self: `https://az.invalid/api/station/14/file/${f.id}` },
+    }
+  }
+
+  // GET /playlist/{id}/order rows (GetOrderAction), in play order.
+  private orderRows(id: number) {
+    const members = [...this.files.values()].filter((f) => f.playlists.includes(id)).map((f) => f.id)
+    const cur = (this.order.get(id) ?? []).filter((mid) => members.includes(mid))
+    const ordered = [...cur, ...members.filter((mid) => !cur.includes(mid))]
+    return ordered.map((mid, i) => {
+      const f = this.files.get(mid)!
+      return { playlist_id: id, media_id: mid, weight: i + 1, is_queued: true, last_played: 0, id: id * 100000 + mid, media: { id: mid, unique_id: f.unique_id, path: f.path, length: f.length, text: `${f.artist} - ${f.title}`, artist: f.artist, title: f.title } }
+    })
   }
 
   fetch = (async (input: string | URL, init: RequestInit = {}) => {
@@ -124,9 +170,9 @@ export class FakeAz {
       const b = body as FPlaylist
       this.onCreate?.(b.name)
       const id = this.nextPlaylistId++
-      const items = (b.schedule_items ?? []).map((s) => ({ ...s, id: this.nextScheduleId++ }))
-      const pl = { ...this.pl(id, b.name), ...b, id, schedule_items: items }
+      const pl = { ...this.pl(id, b.name), ...b, id, backend_options: this.storedOptions(b.backend_options), schedule_items: this.scheduleRows(b.schedule_items) }
       this.playlists.set(id, pl)
+      if (this.createOmitsScheduleIds) return this.json(200, { ...pl, schedule_items: pl.schedule_items.map(({ id: _id, ...r }) => r) })
       return this.json(200, pl)
     }
     if ((x = /^\/playlist\/(\d+)$/.exec(rest))) {
@@ -137,8 +183,9 @@ export class FakeAz {
       if (method === 'PUT') {
         const b = body as Partial<FPlaylist>
         Object.assign(pl, b)
-        if (b.schedule_items) pl.schedule_items = b.schedule_items.map((s) => ({ ...s, id: this.nextScheduleId++ }))
-        return this.json(200, { success: true })
+        if (b.backend_options) pl.backend_options = this.storedOptions(b.backend_options)
+        if (b.schedule_items) pl.schedule_items = this.scheduleRows(b.schedule_items)
+        return this.json(200, { success: true, message: 'Record updated successfully.', formatted_message: 'Record updated successfully.' })
       }
       if (method === 'DELETE') {
         this.playlists.delete(id)
@@ -148,14 +195,22 @@ export class FakeAz {
     }
     if ((x = /^\/playlist\/(\d+)\/order$/.exec(rest))) {
       const id = Number(x[1])
-      if (!this.playlists.has(id)) return this.json(404, {})
-      const members = [...this.files.values()].filter((f) => f.playlists.includes(id)).map((f) => f.id)
-      const cur = (this.order.get(id) ?? []).filter((mid) => members.includes(mid))
-      const ordered = [...cur, ...members.filter((mid) => !cur.includes(mid))]
-      if (method === 'GET') return this.json(200, ordered.map((mid) => ({ id: id * 100000 + mid, media: { id: mid } })))
+      const pl = this.playlists.get(id)
+      if (!pl) return this.json(404, {})
+      // Get/PutOrderAction: only a sequential songs playlist has an order.
+      if (pl.order !== 'sequential' || pl.source !== 'songs') return this.json(500, { code: 500, message: 'This playlist is not a sequential playlist.' })
+      const rows = this.orderRows(id)
+      if (method === 'GET') return this.json(200, rows)
       if (method === 'PUT') {
-        this.order.set(id, (body as { order: number[] }).order.map((spm) => spm % 100000))
-        return this.json(200, { success: true })
+        // setMediaOrder: foreach ($order as $id => $weight) UPDATE … WHERE
+        // playlist_id = :p AND id = :id. A JSON list arrives as 0 => …,
+        // 1 => …: no row matches, nothing changes, and the list is echoed.
+        const sent = (body as { order: unknown }).order
+        const pairs: [number, number][] = Array.isArray(sent) ? sent.map((w, i) => [i, Number(w)]) : Object.entries((sent ?? {}) as Record<string, unknown>).map(([k, w]) => [Number(k), Number(w)])
+        const weight = new Map(rows.map((r) => [r.id, r.weight]))
+        for (const [entry, w] of pairs) if (weight.has(entry)) weight.set(entry, w)
+        this.order.set(id, [...rows].sort((a, b) => weight.get(a.id)! - weight.get(b.id)!).map((r) => r.media_id))
+        return this.json(200, sent)
       }
     }
     if ((x = /^\/file\/(\d+)$/.exec(rest))) {
@@ -204,13 +259,22 @@ export class FakeAz {
       const f = this.addFile(b.path, { size, title: '', artist: '' })
       return this.json(200, this.mediaOut(f))
     }
-    if (rest === '/queue' && method === 'GET') return this.json(200, this.queue.map((id) => ({ id })))
+    // StationQueueDetailed rows: no `id`, addressed by links.self.
+    if (rest === '/queue' && method === 'GET')
+      return this.json(
+        200,
+        this.queue.map((id) => ({ cued_at: 0, played_at: 0, duration: 180, playlist: 'Grand Opening', is_request: false, song: { id: 'x', text: 'A - T' }, sent_to_autodj: false, is_played: false, autodj_custom_uri: null, log: null, links: { self: `https://az.invalid/api/station/14/queue/${id}` } })),
+      )
     if ((x = /^\/queue\/(\d+)$/.exec(rest)) && method === 'DELETE') {
       this.queue = this.queue.filter((q) => q !== Number(x![1]))
       return this.json(200, { success: true })
     }
-    if (rest === '/status') return this.json(200, { backend_running: true, frontend_running: true })
-    if (rest === '/logs' && method === 'GET') return this.json(200, [{ key: 'liquidsoap_log', name: 'Liquidsoap Log' }, { key: 'liquidsoap_liq', name: 'Liquidsoap Configuration' }])
+    if (rest === '/status') return this.json(200, { backend_running: true, frontend_running: true, station_has_started: true, station_needs_restart: false })
+    if (rest === '/logs' && method === 'GET')
+      return this.json(200, [
+        { key: 'liquidsoap_log', name: 'Liquidsoap Log', path: '/var/azuracast/stations/media/config/liquidsoap.log', tail: true, links: { self: '/api/station/14/log/liquidsoap_log' } },
+        { key: 'liquidsoap_liq', name: 'Liquidsoap Configuration', path: '/var/azuracast/stations/media/config/liquidsoap.liq', tail: false, links: { self: '/api/station/14/log/liquidsoap_liq' } },
+      ])
     if (rest === '/log/liquidsoap_log' && method === 'GET') return this.json(200, { contents: this.liquidsoapLog, eof: true })
     if (rest === '/backend/restart' && method === 'POST') {
       if (this.failRestarts > 0) {
