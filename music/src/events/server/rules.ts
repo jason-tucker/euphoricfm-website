@@ -185,6 +185,13 @@ export function estimateRows(ev: { startsAt: Date; endsAt: Date }, p: PlaylistIn
 /**
  * Validate a playlist against its event and the resolved ids. Throws the
  * first refusal. `staff` lifts the row cap only. Returns the row estimate.
+ *
+ * `structuralOnly` (a DRAFT's autosave, 0.5.3): only what makes the rows
+ * storable — every id resolvable and allowed for the owner, no duplicate
+ * songs, a length for every announcement. The timing rules (pin and
+ * announcement windows, the nightly-restart band, the row cap) are deferred
+ * to submit, which always runs the full check, so a half-built draft playlist
+ * is never lost to a rule the member is still fixing.
  */
 export function validatePlaylist(
   ev: { startsAt: Date; endsAt: Date; ownerUserId: string },
@@ -192,7 +199,9 @@ export function validatePlaylist(
   lk: Lookup,
   s: EventsSettings,
   actor: Pick<Actor, 'staff'>,
+  opts: { structuralOnly?: boolean } = {},
 ): { rows: number } {
+  const timing = !opts.structuralOnly
   const start = ev.startsAt.getTime()
   const end = ev.endsAt.getTime()
 
@@ -208,7 +217,7 @@ export function validatePlaylist(
     } else {
       usableAudio(t.audioId!, ev.ownerUserId, lk)
     }
-    if (t.pinAt !== null) {
+    if (timing && t.pinAt !== null) {
       const at = Date.parse(t.pinAt)
       if (!onGrid(at) || at < start || at > end - PIN_WINDOW_MIN * MIN) throw bad('pin_out_of_range', { position: t.position })
       if (overlapsNightlyRestart(at, Math.min(at + PIN_WINDOW_MIN * MIN, end))) throw bad('nightly_restart', { position: t.position })
@@ -235,6 +244,7 @@ export function validatePlaylist(
       lengthS = usableAudio(a.audioId!, ev.ownerUserId, lk).durationS
     }
     if (!lengthS || lengthS <= 0) throw bad('audio_not_ready', { announcement: idx })
+    if (!timing) return
     if (a.mode === 'every') {
       const from = Date.parse(a.from!)
       const until = Date.parse(a.until!)
@@ -257,7 +267,7 @@ export function validatePlaylist(
   })
 
   const rows = estimateRows(ev, p, s)
-  if (!actor.staff && rows > s.events_max_rows) throw bad('too_many_rows', { rows, max: s.events_max_rows })
+  if (timing && !actor.staff && rows > s.events_max_rows) throw bad('too_many_rows', { rows, max: s.events_max_rows })
   return { rows }
 }
 

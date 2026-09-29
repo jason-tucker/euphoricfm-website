@@ -136,6 +136,36 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
     expect(await jobs(ev.id)).toHaveLength(0)
   })
 
+  it('0.5.3 draft autosave: a draft stores a playlist that breaks the timing rules; submit refuses it; a pending request does not store it', async () => {
+    const late = base + 5 * 24 * H
+    let d = await svc.createEvent(db(), owner, { ...draft, title: 'Autosave draft', startsAt: iso(late), endsAt: iso(late + 2 * H) })
+    // a pin 5 minutes before the end (also after the time change below) and an announcement after the end
+    const badTracks: EventTrack[] = [
+      { position: 0, source: 'library', mediaId: lib1, audioId: null, pinAt: null },
+      { position: 1, source: 'library', mediaId: lib2, audioId: null, pinAt: iso(late + 3 * H - 5 * 60_000) },
+    ]
+    const badAnns: EventAnnouncement[] = [{ source: 'stinger', mediaId: stinger, audioId: null, mode: 'at', at: iso(late + 3 * H), everyMin: null, from: null, until: null }]
+    d = await svc.putPlaylist(db(), owner, d.id, { tracks: badTracks, announcements: badAnns, playlistOrder: 'sequential', version: d.version })
+    expect(d.tracks).toHaveLength(2)
+    expect(d.announcements).toHaveLength(1)
+    expect(d.playlistOrder).toBe('sequential')
+    expect(await audits(d.id)).toContain('events.playlist.save')
+    // structural refusals still apply to drafts
+    expect(await codeOf(svc.putPlaylist(db(), owner, d.id, { tracks: [badTracks[0]!, { ...badTracks[0]!, position: 1 }], announcements: [], playlistOrder: 'shuffle' }))).toBe('duplicate_track')
+    expect(await codeOf(svc.putPlaylist(db(), owner, d.id, { tracks: [{ position: 0, source: 'upload', mediaId: null, audioId: otherAudio, pinAt: null }], announcements: [], playlistOrder: 'shuffle' }))).toBe('media_not_allowed')
+    // a draft time change is not refused because of the stored pins
+    d = await svc.patchEvent(db(), owner, d.id, { startsAt: iso(late + H), endsAt: iso(late + 3 * H), version: d.version })
+    // submit runs the full check
+    expect(await codeOf(svc.transition(db(), owner, d.id, 'submit'))).toBe('pin_out_of_range')
+    expect((await svc.getEventView(db(), owner, d.id)).status).toBe('draft')
+    // fixed → submit works; once pending, the full check applies to saves again
+    d = await svc.putPlaylist(db(), owner, d.id, { tracks: [badTracks[0]!], announcements: [], playlistOrder: 'sequential', version: d.version })
+    d = await svc.transition(db(), owner, d.id, 'submit')
+    expect(d.status).toBe('pending')
+    expect(await codeOf(svc.putPlaylist(db(), owner, d.id, { tracks: badTracks, announcements: [], playlistOrder: 'sequential', version: d.version }))).toBe('pin_out_of_range')
+    await svc.transition(db(), owner, d.id, 'withdraw')
+  })
+
   it('a stranger cannot read, edit or act on the draft', async () => {
     expect(await codeOf(svc.getEventView(db(), other, ev.id))).toBe('not_found')
     expect(await codeOf(svc.getEventView(db(), null, ev.id))).toBe('not_found')

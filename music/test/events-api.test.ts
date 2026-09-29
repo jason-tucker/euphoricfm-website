@@ -319,6 +319,27 @@ describe('validatePlaylist', () => {
     expect(code(() => validatePlaylist(EV, p, lookup(), tight, OWNER))).toBe('too_many_rows')
     expect(validatePlaylist(EV, p, lookup(), tight, STAFF)).toEqual({ rows: 13 })
   })
+  it('structuralOnly (a draft autosave): ids and duplicates still refused, timing rules deferred to submit', () => {
+    const draft = (tracks: EventTrack[], announcements: EventAnnouncement[] = [], s = S) =>
+      code(() => validatePlaylist(EV, { tracks, announcements }, lookup(), s, OWNER, { structuralOnly: true }))
+    // structural refusals are the same as the full check
+    expect(draft([lib(0, 101), lib(1, 101)])).toBe('duplicate_track')
+    expect(draft([lib(0, 999)])).toBe('media_not_allowed')
+    expect(draft([up(0, 601)])).toBe('media_not_allowed')
+    expect(draft([up(0, 503)])).toBe('audio_not_ready')
+    expect(draft([lib(0, 101)], [at(et(5, 21), { mediaId: 12345 })])).toBe('media_not_allowed')
+    // timing problems are stored for a draft (the full check still refuses them)
+    const offGridPin = [lib(0, 101), lib(1, 102, iso(et(5, 22, 50)))]
+    expect(draft(offGridPin)).toBe('ok')
+    expect(ok(offGridPin)).toBe('pin_out_of_range')
+    const outside = [at(et(5, 23)), at(et(5, 21)), at(et(5, 21))]
+    expect(draft([lib(0, 101)], outside)).toBe('ok')
+    expect(ok([lib(0, 101)], outside)).toBe('bad_announcement')
+    const tight = { ...S, events_max_rows: 5 }
+    expect(draft([lib(0, 101)], [every(et(5, 20), et(5, 23), 15)], tight)).toBe('ok')
+    // an empty playlist is a valid draft too
+    expect(draft([])).toBe('ok')
+  })
   it('estimateRows: main per ET date + pins (+split_main) + occurrences', () => {
     const overnight = { startsAt: new Date(et(5, 22)), endsAt: new Date(et(6, 1)) }
     const p = { tracks: [lib(0, 101), lib(1, 102, iso(et(5, 23)))], announcements: [every(et(5, 22), et(5, 23), 20)] }

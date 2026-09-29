@@ -1,7 +1,7 @@
 // Pure time helpers for the events site. Every time shown on the site is
 // either Eastern (America/New_York, the station's zone) or the viewer's local
 // zone; the <When> component (tz.tsx) is the only place that renders one.
-// Inputs in the request wizard are wall-clock date + time in the chosen zone
+// Inputs in the request form are wall-clock date + time in the chosen zone
 // and are converted to UTC ISO here before anything is sent.
 
 export const ET = 'America/New_York'

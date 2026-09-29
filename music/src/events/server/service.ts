@@ -372,7 +372,8 @@ export async function patchEvent(db: DB, actor: Actor, id: number, input: PatchE
       ;({ shortNotice } = checkTiming({ startsAt: startsAt.getTime(), endsAt: endsAt.getTime() }, actor, s, now))
       ;({ adjacent } = await slotCheck(tx, { id: ev.id, startsAt: startsAt.getTime(), endsAt: endsAt.getTime() }, s, actor))
       // Existing pins / announcements must still fit the new window.
-      validatePlaylist({ startsAt, endsAt, ownerUserId: ev.ownerUserId }, { tracks, announcements: anns }, lookup, s, actor)
+      // A draft's timing rules wait for submit (0.5.3 autosave).
+      validatePlaylist({ startsAt, endsAt, ownerUserId: ev.ownerUserId }, { tracks, announcements: anns }, lookup, s, actor, { structuralOnly: ev.status === 'draft' })
     }
     const reapproval = !actor.staff && (ev.status === 'approved' || ev.status === 'built') && needsReapproval(changed, false)
     const after = await writeEvent(tx, ev, {
@@ -414,7 +415,9 @@ export async function putPlaylist(db: DB, actor: Actor, id: number, input: PutPl
     if (same) return fullOf(tx, ev, actor, s, now)
     if (ev.status === 'live' && scheduleKey(prev) !== scheduleKey(next) && input.confirmRestart !== true) throw clash('restart_required')
     const lookup = await repo.loadLookup(tx, repo.lookupIds([prev, next]))
-    const { rows } = validatePlaylist({ startsAt: ev.startsAt, endsAt: ev.endsAt, ownerUserId: ev.ownerUserId }, next, lookup, s, actor)
+    // A DRAFT stores any structurally valid playlist (the autosave keeps
+    // everything the member added); submit runs the full timing check.
+    const { rows } = validatePlaylist({ startsAt: ev.startsAt, endsAt: ev.endsAt, ownerUserId: ev.ownerUserId }, next, lookup, s, actor, { structuralOnly: ev.status === 'draft' })
     await repo.replacePlaylist(tx, ev.id, next.tracks, next.announcements)
     if (ev.status !== 'draft') await repo.markAudioUsed(tx, repo.audioIdsOf(next))
     const reapproval = !actor.staff && (ev.status === 'approved' || ev.status === 'built')

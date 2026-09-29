@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation'
 import { EventEditor } from '@/events/components/EventEditor'
+import { uploadChunkBytes } from '../../../chunk'
 import { evViewer } from '../../../viewer'
 
 export const dynamic = 'force-dynamic'
@@ -16,7 +17,7 @@ export default async function MyEventPage({ params }: { params: Promise<{ id: st
       <a className="link ev-back text-sm" href="/my">
         ‹ My events
       </a>
-      <EventEditor id={Number(id)} staff={v.review} viewerDiscordId={v.discordId} />
+      <EventEditor id={Number(id)} staff={v.review} viewerDiscordId={v.discordId} chunkBytes={await uploadChunkBytes()} />
     </div>
   )
 }

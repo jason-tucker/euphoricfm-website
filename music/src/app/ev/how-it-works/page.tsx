@@ -90,7 +90,7 @@ const STEPS: Step[] = [
   },
   {
     title: 'Upload your own audio (optional)',
-    body: 'In My audio you can upload MP3 or WAV files: announcements or your own songs. We check each file, then keep it in your library so you can reuse it. You confirm you have the rights to it. Need a longer file than the limit? Ask in your ticket.',
+    body: 'Upload MP3 or WAV files right in the request form (Upload a new announcement / Upload a song), or in My audio: announcements or your own songs. We check each file, then add it to your event and keep it in My audio so you can reuse it. You confirm you have the rights to it. Need a longer file than the limit? Ask in your ticket.',
     mock: (
       <Mock title="My audio">
         <div className="ev-mock-row">
@@ -104,7 +104,7 @@ const STEPS: Step[] = [
   },
   {
     title: 'Review and submit',
-    body: 'Check the summary: the time in Eastern and in your zone, the running length of your songs against the length of the event, and your announcements. Press Submit.',
+    body: 'The request is one page and saves itself as a draft while you work on it, so nothing you add is lost. At the bottom, check the summary: the time in Eastern and in your zone, the running length of your songs against the length of the event, and your announcements. Press Submit.',
     mock: (
       <Mock title="Request · Review">
         <div className="ev-mock-line" />

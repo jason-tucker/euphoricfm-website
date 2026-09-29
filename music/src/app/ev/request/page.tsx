@@ -1,7 +1,8 @@
 import { redirect } from 'next/navigation'
 import { MemberRules } from '@/events/components/HomeParts'
-import { RequestWizard } from '@/events/components/RequestWizard'
+import { RequestForm } from '@/events/components/RequestForm'
 import { RequestCta } from '../RequestCta'
+import { uploadChunkBytes } from '../chunk'
 import { evViewer } from '../viewer'
 
 export const dynamic = 'force-dynamic'
@@ -16,11 +17,11 @@ export default async function RequestPage() {
         <p className="eyebrow">Request an event</p>
         <h1 className="text-3xl font-bold text-cream">Plan your event</h1>
         <p className="max-w-2xl text-sm text-cream/75">
-          Five short steps. Your request is saved as a draft after step 3, so you can finish the playlist later from My events.
+          One page, saved as you go: once it has a title, kind, time and visibility it is kept as a draft in My events, and every change after that saves by itself. Submit at the bottom when it&apos;s ready.
         </p>
       </header>
       {v ? (
-        <RequestWizard staff={v.review} />
+        <RequestForm staff={v.review} userKey={v.discordId} chunkBytes={await uploadChunkBytes()} />
       ) : (
         <section className="card space-y-3">
           <h2 className="text-lg font-bold text-cream">Sign in first</h2>
@@ -30,7 +31,7 @@ export default async function RequestPage() {
           <RequestCta signedIn={false} label="Sign in with Discord" />
         </section>
       )}
-      <MemberRules />
+      {v ? null : <MemberRules />}
     </div>
   )
 }

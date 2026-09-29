@@ -5,11 +5,9 @@
 // network-less probe has checked it. Hidden behind a friendly note while
 // uploads are switched off (config.uploadsEnabled=false).
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import * as tus from 'tus-js-client'
+import { useCallback, useEffect, useState } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { errorText, uploadErrorText } from '@/components/messages'
-import { ACCEPT, declaredType, precheck } from '@/components/submit/types'
+import { ACCEPT } from '@/components/submit/types'
 import { Chip, Notice } from '@/components/ui'
 import { AUDIO_ARTIST_MAX, AUDIO_TITLE_MAX } from '@/events/contract/rules'
 import { api, evMessage } from './ev-api'
@@ -17,6 +15,7 @@ import { useEvConfig } from './hooks'
 import { formatLength } from './time'
 import { type AudioItem, listOf } from './types'
 import { When } from './tz'
+import { audioProblemText, mb, uploadFormProblem, useAudioUpload } from './upload'
 
 const STATUS: Record<AudioItem['status'], { label: string; tone: 'pending' | 'progress' | 'live' | 'bad' }> = {
   probing: { label: 'Checking…', tone: 'progress' },
@@ -26,25 +25,6 @@ const STATUS: Record<AudioItem['status'], { label: string; tone: 'pending' | 'pr
   rejected: { label: 'Rejected', tone: 'bad' },
   failed: { label: 'Failed', tone: 'bad' },
 }
-
-const mb = (n: number) => Math.round(n / 1024 / 1024)
-
-function tusErrorText(err: unknown, limits: { mp3: number; wav: number }): string {
-  const e = err as { originalResponse?: { getStatus(): number; getBody(): string } | null }
-  const status = e.originalResponse?.getStatus() ?? 0
-  if (!status) return errorText('network')
-  let code = ''
-  try {
-    const j = JSON.parse(e.originalResponse?.getBody() ?? '') as { error?: string }
-    code = typeof j.error === 'string' ? j.error : ''
-  } catch {
-    code = ''
-  }
-  if (code === 'uploads_disabled') return 'Uploads are switched off right now.'
-  return code ? uploadErrorText(code, status, limits) : errorText(`http_${status}`, status)
-}
-
-type Pending = { name: string; progress: number; phase: 'uploading' | 'attaching' | 'error'; error?: string }
 
 export function MyAudio({ chunkBytes }: { chunkBytes: number }) {
   const { config, loaded } = useEvConfig()
@@ -56,12 +36,9 @@ export function MyAudio({ chunkBytes }: { chunkBytes: number }) {
   const [artist, setArtist] = useState('')
   const [rights, setRights] = useState(false)
   const [formErr, setFormErr] = useState<string | null>(null)
-  const [pending, setPending] = useState<Pending | null>(null)
   const [del, setDel] = useState<AudioItem | null>(null)
   const [delBusy, setDelBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
-  const upload = useRef<tus.Upload | null>(null)
-
   const load = useCallback(async () => {
     try {
       setItems(listOf<AudioItem>(await api<unknown>('/api/ev/audio')))
@@ -73,9 +50,6 @@ export function MyAudio({ chunkBytes }: { chunkBytes: number }) {
 
   useEffect(() => {
     void load()
-    return () => {
-      void upload.current?.abort(false)
-    }
   }, [load])
 
   // Poll while anything is still being checked.
@@ -89,61 +63,26 @@ export function MyAudio({ chunkBytes }: { chunkBytes: number }) {
   const limits = { mp3: config.caps.mp3Bytes, wav: config.caps.wavBytes }
   const count = items?.length ?? 0
   const full = count >= config.audioMaxItems
-
-  const start = () => {
-    setFormErr(null)
-    setMsg(null)
-    if (!file) return setFormErr('Choose a file first.')
-    const pre = precheck(file, limits)
-    if (pre.block) return setFormErr(pre.block)
-    if (!title.trim()) return setFormErr('Give it a title (this is what you pick it by later).')
-    if (title.trim().length > AUDIO_TITLE_MAX) return setFormErr(`Keep the title to ${AUDIO_TITLE_MAX} characters or fewer.`)
-    if (kind === 'song' && !artist.trim()) return setFormErr('Songs need an artist name.')
-    if (!rights) return setFormErr('Confirm that you have the rights to this audio.')
-    setPending({ name: file.name, progress: 0, phase: 'uploading' })
-    const up = new tus.Upload(file, {
-      endpoint: '/api/uploads',
-      chunkSize: chunkBytes,
-      metadata: { filetype: declaredType(file) },
-      retryDelays: [0, 1000, 3000, 5000, 10000],
-      storeFingerprintForResuming: true,
-      removeFingerprintOnSuccess: true,
-      onProgress: (sent, total) => setPending((p) => (p ? { ...p, progress: total ? sent / total : 0 } : p)),
-      onShouldRetry: (err) => {
-        const s = (err as { originalResponse?: { getStatus(): number } | null }).originalResponse?.getStatus() ?? 0
-        return s === 0 || s === 423 || s === 429 || s >= 500
-      },
-      onError: (err) => setPending((p) => (p ? { ...p, phase: 'error', error: tusErrorText(err, limits) } : p)),
-      onSuccess: () => void attach(up.url),
-    })
-    upload.current = up
-    up.findPreviousUploads()
-      .then((prev) => {
-        if (prev.length) up.resumeFromPreviousUpload(prev[0]!)
-      })
-      .catch(() => {})
-      .finally(() => up.start())
-  }
-
-  const attach = async (url: string | null) => {
-    const m = /([0-9a-f]{32})\/?$/.exec(url ?? '')
-    if (!m) {
-      setPending((p) => (p ? { ...p, phase: 'error', error: 'The upload finished but its id was not returned. Try again.' } : p))
-      return
-    }
-    setPending((p) => (p ? { ...p, phase: 'attaching', progress: 1 } : p))
-    try {
-      await api('/api/ev/audio', { json: { uploadId: m[1], kind, title: title.trim(), artist: kind === 'song' ? artist.trim() : null } })
+  const { pending, setPending, start: startUpload } = useAudioUpload({
+    chunkBytes,
+    limits,
+    onAttached: () => {
       setPending(null)
       setFile(null)
       setTitle('')
       setArtist('')
       setRights(false)
       setMsg("Uploaded. We're checking the file; it shows Ready when it can be used.")
-      await load()
-    } catch (e) {
-      setPending((p) => (p ? { ...p, phase: 'error', error: evMessage(e) } : p))
-    }
+      void load()
+    },
+  })
+
+  const start = () => {
+    setFormErr(null)
+    setMsg(null)
+    const problem = uploadFormProblem({ file, kind, title, artist, rights }, limits)
+    if (problem || !file) return setFormErr(problem)
+    startUpload(file, { kind, title, artist })
   }
 
   const remove = async () => {
@@ -273,16 +212,6 @@ export function MyAudio({ chunkBytes }: { chunkBytes: number }) {
       </ConfirmDialog>
     </div>
   )
-}
-
-/** Why a rejected / failed file can't be used, in words where we have them. */
-export function audioProblemText(a: Pick<AudioItem, 'kind' | 'lastError'>, minS: { song: number; announcement: number }): string {
-  if (a.lastError === 'too_short') {
-    return a.kind === 'song'
-      ? `This file can't be used: songs must be at least ${minS.song} seconds long.`
-      : `This file can't be used: announcements must be at least ${minS.announcement} seconds long.`
-  }
-  return a.lastError ? `This file can't be used (${a.lastError}).` : "This file can't be used."
 }
 
 function AudioRowView({ a, onDelete }: { a: AudioItem; onDelete: () => void }) {

@@ -58,7 +58,7 @@ describe('event editor: version guard and restart confirmation', () => {
   beforeEach(() => resetConfigCache())
 
   it('sends the loaded version; a 409 version_conflict reloads the event and says why', async () => {
-    const v = view()
+    const v = view({ status: 'pending' })
     const calls = stubFetch({ ...base(v), 'PUT /api/ev/events/42/playlist': { status: 409, body: { error: 'version_conflict' } } })
     render(
       <TzProvider>
@@ -111,6 +111,34 @@ describe('event editor: version guard and restart confirmation', () => {
     await screen.findByRole('button', { name: 'Restart and save', hidden: true })
     fireEvent.click(screen.getAllByRole('button', { name: 'Cancel', hidden: true }).at(-1)!)
     expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(1)
+  })
+})
+
+describe('event editor: an own draft opens the one-page autosaving form', () => {
+  beforeEach(() => {
+    resetConfigCache()
+    window.localStorage.clear()
+  })
+
+  it('own draft → RequestForm (no explicit save buttons); a pending request keeps explicit saves', async () => {
+    stubFetch(base(view()))
+    const r = render(
+      <TzProvider>
+        <EventEditor id={42} staff={false} viewerDiscordId={OWNER} chunkBytes={1024} />
+      </TzProvider>,
+    )
+    expect(await screen.findByRole('heading', { level: 2, name: 'Review & submit' })).toBeTruthy()
+    expect(screen.getByTestId('rf-status-top').textContent).toContain('All changes saved ✓')
+    expect(screen.queryByRole('button', { name: 'Save playlist' })).toBeNull()
+    r.unmount()
+    stubFetch(base(view({ status: 'pending' })))
+    render(
+      <TzProvider>
+        <EventEditor id={42} staff={false} viewerDiscordId={OWNER} chunkBytes={1024} />
+      </TzProvider>,
+    )
+    expect(await screen.findByRole('button', { name: 'Save playlist' })).toBeTruthy()
+    expect(screen.queryByTestId('rf-status-top')).toBeNull()
   })
 })
 
