@@ -211,8 +211,8 @@ describe.skipIf(!DBENV())('events: another event on air (worker store, off-air r
     const asking = Number(await ins('ended', '299 days 23 hours', '300 days 1 hour'))
     await ins('approved', '300 days', '300 days 2 hours') // not built: never counts
     const store = new PgEventsStore(db())
-    const [{ t }] = (await ownerSql()`SELECT extract(epoch FROM now() + interval '300 days 1 hour') * 1000 AS t`) as unknown as { t: string }[]
-    const at = Number(t)
+    const [row] = (await ownerSql()`SELECT extract(epoch FROM now() + interval '300 days 1 hour') * 1000 AS t`) as unknown as { t: string }[]
+    const at = Number(row!.t)
     expect((await store.eventOnAirAt(asking, at))?.id).toBe(onAir)
     expect(await store.eventOnAirAt(onAir, at)).toBeNull()
     expect(await store.eventOnAirAt(asking, at + 2 * 3600_000)).toBeNull()
