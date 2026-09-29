@@ -358,8 +358,13 @@ services:
     network_mode: none
     environment:
       HOME: /tmp
+    # /staging/art: the probe creates it at start-up (src/probe/main.ts) and
+    # would exit on the read-only rootfs. Events has no album art (no art-in
+    # anywhere, the site gate 404s the art routes), so an empty tmpfs, never
+    # a disk dir shared with anyone.
     tmpfs:
       - /tmp:size=32m
+      - /staging/art:size=1m,uid=1000,gid=1000,mode=0750
     mem_limit: 256m
     memswap_limit: 256m # no swap on top of the limit (2 GB botvps)
     pids_limit: 128

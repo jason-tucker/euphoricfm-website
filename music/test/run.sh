@@ -117,7 +117,8 @@ check "events-worker cannot write final"      events-worker 'touch /staging/fina
 check "events-worker cannot write out"        events-worker 'touch /spool/probe/out/x' fail
 check "events-worker cannot see uploads/art/fetch" events-worker 'test -e /staging/uploads || test -e /staging/art || test -e /spool/fetch' fail
 check "events-probe has no network"           events-probe 'wget -q -T 3 -O /dev/null http://mocks:4104/egress' fail
-check "events-probe sees no art/fetch"        events-probe 'test -e /staging/art || test -e /staging/art-in || test -e /staging/fetch' fail
+check "events-probe sees no art-in/fetch"     events-probe 'test -e /staging/art-in || test -e /staging/fetch' fail
+check "events-probe art dir is its own tmpfs" events-probe 'grep -q " /staging/art tmpfs " /proc/mounts' ok
 # The two trees are disjoint: a marker in music's in-web never shows up in
 # the events in-web (and the reverse).
 check "music in-web is not events in-web"     music-web   'touch /spool/probe/in-web/.iso-music' ok

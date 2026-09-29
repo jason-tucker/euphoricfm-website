@@ -72,6 +72,8 @@ describe.skipIf(!ready())('compose.yml: events services (v0.5.0)', () => {
     expect(s['events-worker']!.environment).toMatchObject({ NODE_OPTIONS: '--max-old-space-size=96' })
     expect(s['events-worker']!.command).toEqual(['node', '/app/events-worker.mjs'])
     expect(s['events-probe']).toMatchObject({ pids_limit: 128, cpu_shares: 256, network_mode: 'none' })
+    // the probe's start-up mkdir of /staging/art lands on a tiny tmpfs, not on disk
+    expect(s['events-probe']!.tmpfs).toEqual(expect.arrayContaining([expect.stringMatching(/^\/staging\/art:size=1m,/)]))
   })
 
   // (`config` inlines env_file contents into environment; run.sh renders

@@ -171,7 +171,7 @@ docker compose -p efm-music exec music-worker node /app/legacy-import.mjs status
 |---|---|
 | events-web | `events/staging/uploads` rw (tus), `events/spool/probe/in-web` rw, `events/spool/probe/out` **ro** |
 | events-worker | `events/staging/final` **ro**, `events/spool/probe/in-worker` rw, `events/spool/probe/out` **ro** |
-| events-probe | `events/staging/{uploads,final,work}` rw, `events/spool/probe` rw |
+| events-probe | `events/staging/{uploads,final,work}` rw, `events/spool/probe` rw; `/staging/art` is a 1 MB tmpfs (the probe creates it at start-up; events has no art) |
 
 No events service mounts anything of music's tree, and no music service mounts `events/` (`test/compose-events.test.ts`, and the mount checks in `test/run.sh`).
 
