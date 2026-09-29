@@ -51,6 +51,10 @@ const clientConfig = {
     <meta name="color-scheme" content="dark" />
     <meta name="format-detection" content="telephone=no" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Both wordmark fonts are in the shared top bar on every page; preload
+         them so they are not discovered only after the stylesheet parses. -->
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/Begaron-Regular.woff2" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/CortadoScript-Regular.woff2" />
     <!-- PWA bits (manifest, apple-touch-icon, theme-color, apple-mobile meta tags)
          were removed. The in-game phone is the primary use case, and some custom
          FiveM phone CEF builds were failing to first-paint the iframe when the

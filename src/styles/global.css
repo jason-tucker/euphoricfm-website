@@ -69,10 +69,14 @@
   font-display: swap;
 }
 
-/* Cortado Script — used for the "FM" word in the wordmark. */
+/* Cortado Script — used for the "FM" word in the wordmark. The WOFF2 is a
+   subset (space + A–Z + a–z, kern + calt kept, ~19 KB instead of the 521 KB
+   TTF; the command is in CHANGELOG 0.22.2). The TTF stays last as the fallback
+   and for docs/og/og-image.html. */
 @font-face {
   font-family: 'Cortado Script';
-  src: url('/fonts/CortadoScript-Regular.ttf') format('truetype');
+  src: url('/fonts/CortadoScript-Regular.woff2') format('woff2'),
+       url('/fonts/CortadoScript-Regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
   font-display: swap;
