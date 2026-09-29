@@ -210,17 +210,15 @@ export function SubmitFlow({
     if (left > 0) schedulePoll()
   }
 
-  // A new item to follow (an upload attached, a link added, a retry, a
-  // reload) starts the loop again at 5 s.
+  // Any change in the set of items to follow (an upload attached, a link
+  // added, a retry, a reload, one that finished) restarts the loop at 5 s;
+  // an empty set stops it.
   const probingIds = entries
     .filter((e) => e.phase === 'probing' && e.itemId)
     .map((e) => e.itemId)
     .join(',')
-  const prevProbing = useRef('')
   useEffect(() => {
-    const before = new Set(prevProbing.current.split(',').filter(Boolean))
-    prevProbing.current = probingIds
-    if (probingIds.split(',').some((id) => id && !before.has(id))) schedulePoll(true)
+    schedulePoll(true)
   }, [probingIds, schedulePoll])
 
   useEffect(() => {
