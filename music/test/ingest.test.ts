@@ -22,7 +22,7 @@ import { afterScans, pacingWaitMs, scanWindow, WindowConfigError } from '@/worke
 import { artUrlFor, isLibraryPath, stationSet, syncLibrary } from '@/worker/library/sync'
 import { runJob } from '@/worker/main'
 import { setPlaylistsJob, type RequestsCtx } from '@/worker/requests/jobs'
-import { batchContractCheck, diskPush, finalCleanup, Scheduler } from '@/worker/scheduler'
+import { batchContractCheck, diskPush, finalCleanup, pruneOld, Scheduler, TASKS } from '@/worker/scheduler'
 import { autoCloseSweep, batchSummary, summaryBody, summarySweep, ticketAutoclose, ticketItemEvent } from '@/worker/scheduler/tickets'
 import { ownerSql } from './helpers/db'
 import { DBENV, MOCKS } from './helpers/env'
@@ -924,6 +924,58 @@ describe.skipIf(!DBENV() || !MOCKS())('library sync, ticket posts, auto-close, s
     expect(alertsFor()).toHaveLength(seen)
     const pages = ((await control('/__mock/az/calls')) as { method: string; path: string; query: Record<string, string> }[]).filter((c) => c.method === 'GET' && c.path === '/api/station/1/files')
     expect(pages.at(-1)!.query).toMatchObject({ per_page: '100' })
+    ctx.cleanup()
+  })
+
+  it('v0.4.1: an unchanged listing is not rewritten (skipped); any change is synced', async () => {
+    const ctx = makeCtx(Date.now())
+    const tag = uniq()
+    const lib = `Hash ${tag}`
+    await control('/__mock/az/seed', { files: [{ path: `Music/Artists/${lib}/${lib} - One.mp3`, title: 'One', artist: lib, playlists: [2] }] })
+    await syncLibrary(ctx) // (or the harness's worker did: either way the listing is recorded)
+    const stamp = async () => (await ownerSql()`SELECT path, refreshed_at FROM library_cache WHERE path LIKE ${`%${tag}%`} ORDER BY path`).map((r) => [r.path, String(r.refreshed_at)])
+    const before = await stamp()
+    expect(before).toHaveLength(1)
+    ctx.clock.t += 60_000
+    const again = await syncLibrary(ctx)
+    expect(again.skipped).toBe(true)
+    expect(await stamp()).toEqual(before) // not rewritten
+    await control('/__mock/az/seed', { files: [{ path: `Music/Artists/${lib}/${lib} - Two.mp3`, title: 'Two', artist: lib, playlists: [2] }] })
+    await syncLibrary(ctx)
+    expect((await stamp()).map((r) => r[0])).toEqual([`Music/Artists/${lib}/${lib} - One.mp3`, `Music/Artists/${lib}/${lib} - Two.mp3`])
+    // a cache that lost a row is rebuilt even when the listing did not change
+    await ownerSql()`DELETE FROM library_cache WHERE path = ${`Music/Artists/${lib}/${lib} - One.mp3`}`
+    expect((await syncLibrary(ctx)).skipped).toBe(false)
+    expect(await stamp()).toHaveLength(2)
+    ctx.cleanup()
+  })
+
+  it('v0.4.1: prune removes done jobs and hook deliveries older than 30 days, and nothing else; it is a daily task', async () => {
+    const ctx = makeCtx(slot(40))
+    const tag = uniq()
+    const job = async (status: string, days: number) =>
+      Number(
+        (await ownerSql()`INSERT INTO jobs (kind, payload, status, dedupe_key, updated_at) VALUES ('test_prune', '{}', ${status}::job_status, ${`prune:${tag}:${status}:${days}`}, now() - make_interval(days => ${days})) RETURNING id`)[0]!.id,
+      )
+    const oldDone = await job('done', 31)
+    const newDone = await job('done', 29)
+    const oldDead = await job('dead', 90)
+    const hook = async (days: number) => {
+      const id = randomUUID()
+      await ownerSql()`INSERT INTO hook_deliveries (delivery_id, event, received_at) VALUES (${id}, 'test', now() - make_interval(days => ${days}))`
+      return id
+    }
+    const oldHook = await hook(31)
+    const newHook = await hook(1)
+    const r = await pruneOld(ctx)
+    expect(r.jobs).toBeGreaterThanOrEqual(1)
+    expect(r.deliveries).toBeGreaterThanOrEqual(1)
+    const jobs = (await ownerSql()`SELECT id FROM jobs WHERE id IN ${ownerSql()([oldDone, newDone, oldDead])}`).map((x) => Number(x.id)).sort((a, b) => a - b)
+    expect(jobs).toEqual([newDone, oldDead].sort((a, b) => a - b))
+    const hooks = (await ownerSql()`SELECT delivery_id FROM hook_deliveries WHERE delivery_id IN ${ownerSql()([oldHook, newHook])}`).map((x) => x.delivery_id)
+    expect(hooks).toEqual([newHook])
+    expect(TASKS.find((t) => t.name === 'prune')).toMatchObject({ everyMs: 86_400_000 })
+    await ownerSql()`DELETE FROM jobs WHERE id IN ${ownerSql()([newDone, oldDead])}`
     ctx.cleanup()
   })
 

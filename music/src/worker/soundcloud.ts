@@ -3,9 +3,12 @@
 //
 //   soundcloud_fetch job  (queued by the web with the item)
 //     item 'probing' / fetch_stage 'queued'
-//       → kill switch, one link at a time (music-fetch works one job at a
-//         time; keeping at most one outstanding request lets the result
-//         timeout measure the fetch itself, not the queue)
+//       → kill switch (off: the link waits, v0.4.1), one link at a time
+//         (music-fetch works one job at a time; keeping at most one
+//         outstanding request lets the result timeout measure the fetch
+//         itself, not the queue), music-fetch alive (its out/.alive
+//         heartbeat; v0.4.1): each wait is a RetryLater bounded by
+//         FETCH_QUEUE_MAX_S, then 'rejected' sc_queue_timeout
 //       → /spool/fetch/in/<fetch_request_id>.json
 //       → fetch_stage 'fetching' (fetch_requested_at = now)
 //   collectFetchResults  (every loop)
@@ -16,6 +19,7 @@
 //               request (id = fetch_request_id) to /spool/probe/in-worker
 //               → fetch_stage 'converting', probe_request_id set
 //       none after FETCH_RESULT_TIMEOUT_S → 'rejected' (sc_fetch_unanswered)
+//     an item that left 'fetching' wakes the queued links (run_after = now)
 //   collectProbeResults (handlers.ts) then takes the probe_fetch result like
 //   an upload's probe result, and asks music-fetch to delete the raw media
 //   (/spool/fetch/in/<id>.release).
@@ -38,7 +42,7 @@ import { clipTag } from '../probe/tags'
 import { audit } from '../server/audit'
 import { items, uploads } from '../server/db/schema'
 import { soundcloudEnabled } from '../server/settings'
-import { artworkPathOk, audioExtOf, canonicalUrlOk, fetchResultExists, readFetchResult, writeFetchRelease, writeFetchRequest, type FetchAudioExt, type FetchOk } from '../server/spool/fetch'
+import { artworkPathOk, audioExtOf, canonicalUrlOk, fetchAlive, fetchResultExists, readFetchResult, writeFetchRelease, writeFetchRequest, type FetchAudioExt, type FetchOk } from '../server/spool/fetch'
 import { readSmallFileNoFollow, writeSpoolRequest } from '../server/spool/protocol'
 import { RetryLater, type WorkerCtx } from './handlers'
 import type { P3Ctx } from './ingest/context'
@@ -79,14 +83,40 @@ export async function rejectFetchItem(ctx: WorkerCtx & Partial<FetchCtx>, it: It
   return moved
 }
 
-export async function runSoundcloudFetch(ctx: FetchCtx, p: { itemId: number }): Promise<void> {
-  const it = await ctx.db.query.items.findFirst({ where: eq(items.id, p.itemId) })
-  // Anything else was handled already (a repeated job after a restart).
-  if (!it || it.source !== 'soundcloud' || it.status !== 'probing' || it.fetchStage !== 'queued' || !it.fetchRequestId || !it.sourceUrl) return
-  if (!(await soundcloudEnabled(ctx.db))) {
-    await rejectFetchItem(ctx, it, 'sc_disabled')
+// v0.4.1 waits. Busy: another link is being fetched (collectFetchResults
+// wakes the queue as soon as it leaves 'fetching', so this is a backstop,
+// not the reaction time; was 10 s). Disabled: the kill switch is off (the
+// link survives a short OFF; was an immediate sc_disabled). Down: music-fetch
+// shows no heartbeat (the link waits instead of burning the 15-min result
+// timeout, and one alert per hour says so).
+export const FETCH_BUSY_RETRY_S = 30
+export const FETCH_DISABLED_RETRY_S = 60
+export const FETCH_DOWN_RETRY_S = 30
+export const FETCH_DOWN_ALERT_EVERY_MS = 3600_000
+export const fetchDownAlert = { at: 0 }
+
+async function queuedTooLong(ctx: FetchCtx, it: ItemRow): Promise<boolean> {
+  const [age] = await ctx.db.execute<{ s: number }>(sql`SELECT EXTRACT(EPOCH FROM now() - ${items.createdAt})::int AS s FROM ${items} WHERE ${items.id} = ${it.id}`)
+  return Number(age?.s ?? 0) > FETCH_QUEUE_MAX_S
+}
+
+// A link that cannot go yet: rejected once it has waited FETCH_QUEUE_MAX_S,
+// else the job is put back (no attempt spent). maxAgeS is the backstop the
+// job loop applies (failOwner → sc_queue_timeout).
+async function waitOrGiveUp(ctx: FetchCtx, it: ItemRow, delayS: number, why: string): Promise<void> {
+  if (await queuedTooLong(ctx, it)) {
+    await rejectFetchItem(ctx, it, 'sc_queue_timeout')
     return
   }
+  throw new RetryLater(delayS, why, { exact: true, maxAgeS: FETCH_QUEUE_MAX_S + 3600 })
+}
+
+export async function runSoundcloudFetch(ctx: FetchCtx, p: { itemId: number }): Promise<void> {
+  const it = await ctx.db.query.items.findFirst({ where: eq(items.id, p.itemId) })
+  // Anything else was handled already (a repeated job after a restart), or
+  // the member cancelled the link (withdrawn while queued, v0.4.1).
+  if (!it || it.source !== 'soundcloud' || it.status !== 'probing' || it.fetchStage !== 'queued' || !it.fetchRequestId || !it.sourceUrl) return
+  if (!(await soundcloudEnabled(ctx.db))) return waitOrGiveUp(ctx, it, FETCH_DISABLED_RETRY_S, 'soundcloud fetch disabled')
   // Defence in depth: the stored link is re-validated (and rebuilt) here.
   const url = parseSoundCloudUrl(it.sourceUrl)
   if (!url.ok) {
@@ -98,16 +128,16 @@ export async function runSoundcloudFetch(ctx: FetchCtx, p: { itemId: number }): 
     .from(items)
     .where(and(eq(items.source, 'soundcloud'), eq(items.status, 'probing'), eq(items.fetchStage, 'fetching'), ne(items.id, it.id)))
     .limit(1)
-  if (busy) {
-    const [age] = await ctx.db.execute<{ s: number }>(sql`SELECT EXTRACT(EPOCH FROM now() - ${items.createdAt})::int AS s FROM ${items} WHERE ${items.id} = ${it.id}`)
-    if (Number(age?.s ?? 0) > FETCH_QUEUE_MAX_S) {
-      await rejectFetchItem(ctx, it, 'sc_queue_timeout')
-      return
-    }
-    throw new RetryLater(10, 'music-fetch is busy with another link', { exact: true, maxAgeS: FETCH_QUEUE_MAX_S + 3600 })
-  }
+  if (busy) return waitOrGiveUp(ctx, it, FETCH_BUSY_RETRY_S, 'music-fetch is busy with another link')
   // A result already there means the request was written before a restart.
   if (!(await fetchResultExists(ctx.fetchOutDir, it.fetchRequestId))) {
+    if (!(await fetchAlive(ctx.fetchOutDir, ctx.now()))) {
+      if (ctx.now() - fetchDownAlert.at > FETCH_DOWN_ALERT_EVERY_MS) {
+        fetchDownAlert.at = ctx.now()
+        await ctx.alert('music-fetch is not running (no heartbeat): SoundCloud links are waiting', { itemId: it.id })
+      }
+      return waitOrGiveUp(ctx, it, FETCH_DOWN_RETRY_S, 'music-fetch not running')
+    }
     await writeFetchRequest(ctx.fetchInDir, { uuid: it.fetchRequestId, url: url.url, requestedBy: `item:${it.id}` })
   }
   await ctx.db
@@ -150,6 +180,7 @@ export async function collectFetchResults(ctx: FetchCtx): Promise<number> {
     const uuid = it.fetchRequestId
     if (!uuid || !it.uploadId) {
       await rejectFetchItem(ctx, it, 'sc_bad_result')
+      n++
       continue
     }
     let r
@@ -218,7 +249,14 @@ export async function collectFetchResults(ctx: FetchCtx): Promise<number> {
       .where(and(eq(items.id, it.id), eq(items.status, 'probing'), eq(items.fetchStage, 'fetching')))
     n++
   }
+  // An item left 'fetching': the next queued link need not wait for its
+  // RetryLater (the ticketOpen pattern, handlers.ts).
+  if (n > 0) await wakeQueuedFetches(ctx)
   return n
+}
+
+export async function wakeQueuedFetches(ctx: Pick<FetchCtx, 'db'>): Promise<void> {
+  await ctx.db.execute(sql`UPDATE jobs SET run_after = now() WHERE kind = 'soundcloud_fetch' AND status = 'queued' AND run_after > now()`)
 }
 
 // A marker the worker meant to write can be lost: a restart between an item's

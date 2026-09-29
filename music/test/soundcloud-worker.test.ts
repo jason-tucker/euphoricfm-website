@@ -7,18 +7,29 @@
 // The harness's real worker shares this database: items here get no job row
 // (the handlers are called directly), so it never runs them.
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type { Viewer } from '@/server/authz/predicates'
 import { closeDb, getDb } from '@/server/db/client'
 import { HttpError } from '@/server/http/errors'
 import { DEFAULT_CAPS } from '@/server/settings-defaults'
 import { addSoundCloudToBatch } from '@/server/soundcloud'
+import { withdrawItem } from '@/server/submissions'
 import { clipTag } from '@/probe/tags'
 import { collectProbeResults, RetryLater } from '@/worker/handlers'
-import { collectFetchResults, FETCH_RELEASE_WINDOW_S, reissueFetchReleases, runSoundcloudFetch, type FetchCtx } from '@/worker/soundcloud'
+import { runJob } from '@/worker/main'
+import {
+  collectFetchResults,
+  FETCH_BUSY_RETRY_S,
+  FETCH_DISABLED_RETRY_S,
+  fetchDownAlert,
+  FETCH_RELEASE_WINDOW_S,
+  reissueFetchReleases,
+  runSoundcloudFetch,
+  type FetchCtx,
+} from '@/worker/soundcloud'
 import { ownerSql } from './helpers/db'
 import { DBENV } from './helpers/env'
 import { mkBatch, mkUser } from './helpers/p3'
@@ -169,6 +180,20 @@ describe.skipIf(!DBENV())('SoundCloud links: web admission (v0.4.0)', () => {
   })
 })
 
+describe.skipIf(!DBENV())('SoundCloud links: daily cap (v0.4.1)', () => {
+  it('links that never reached SoundCloud (kill switch, queue timeout) do not count; every other one does', async () => {
+    const u = await mkUser()
+    const b = await mkBatch(u.id, { status: 'draft' })
+    for (let i = 0; i < 10; i++) await ownerSql()`INSERT INTO items (batch_id, owner_user_id, status, source, probe_error) VALUES (${b}, ${u.id}, 'rejected', 'soundcloud', 'sc_disabled')`
+    for (let i = 0; i < 10; i++) await ownerSql()`INSERT INTO items (batch_id, owner_user_id, status, source, probe_error) VALUES (${b}, ${u.id}, 'rejected', 'soundcloud', 'sc_queue_timeout')`
+    for (let i = 0; i < 19; i++) await ownerSql()`INSERT INTO items (batch_id, owner_user_id, status, source, probe_error) VALUES (${b}, ${u.id}, 'rejected', 'soundcloud', 'sc_extractor_failed')`
+    const ok = await addSoundCloudToBatch(db(), viewer(u), b, 'https://soundcloud.com/a/twentieth')
+    created.push(ok.id)
+    await ownerSql()`UPDATE items SET status = 'rejected', fetch_stage = NULL WHERE id = ${ok.id}`
+    expect(await httpError(addSoundCloudToBatch(db(), viewer(u), b, 'https://soundcloud.com/a/b'))).toEqual({ status: 429, code: 'sc_daily_cap' })
+  })
+})
+
 describe.skipIf(!DBENV())('SoundCloud links: worker ↔ music-fetch spool (v0.4.0)', () => {
   beforeAll(() => {
     base = mkdtempSync(join(tmpdir(), 'scw-'))
@@ -193,6 +218,14 @@ describe.skipIf(!DBENV())('SoundCloud links: worker ↔ music-fetch spool (v0.4.
       alerts,
     } as unknown as FetchCtx & { alerts: string[] }
   })
+  // music-fetch's heartbeat (v0.4.1): alive unless a test says otherwise
+  const alive = (agoMs = 0) => {
+    const p = join(ctx.fetchOutDir, '.alive')
+    writeFileSync(p, '')
+    const t = (Date.now() - agoMs) / 1000
+    utimesSync(p, t, t)
+  }
+  beforeEach(() => alive())
   afterEach(async () => {
     // never leave a 'fetching' item behind: the harness worker's queue waits on it
     await ownerSql()`UPDATE items SET status = 'rejected', fetch_stage = NULL WHERE source = 'soundcloud' AND status = 'probing' AND id = ANY(${created})`
@@ -223,10 +256,10 @@ describe.skipIf(!DBENV())('SoundCloud links: worker ↔ music-fetch spool (v0.4.
     expect(await item(x.id)).toMatchObject({ fetch_stage: 'fetching' })
   })
 
-  it('job: one link at a time (RetryLater while another is fetching); the kill switch rejects queued links', async () => {
+  it('job: one link at a time (RetryLater while another is fetching); the kill switch parks queued links (v0.4.1)', async () => {
     const a = await mkScItem({ stage: 'fetching', requestedAgoS: 5 })
     const b = await mkScItem()
-    await expect(runSoundcloudFetch(ctx, { itemId: b.id })).rejects.toBeInstanceOf(RetryLater)
+    await expect(runSoundcloudFetch(ctx, { itemId: b.id })).rejects.toMatchObject({ name: 'RetryLater', delayS: FETCH_BUSY_RETRY_S, exact: true })
     expect(existsSync(join(ctx.fetchInDir, `${b.fetchId}.json`))).toBe(false)
     await ownerSql()`UPDATE items SET status = 'rejected', fetch_stage = NULL WHERE id = ${a.id}`
     // a link that waited past FETCH_QUEUE_MAX_S is rejected instead of waiting on
@@ -236,15 +269,97 @@ describe.skipIf(!DBENV())('SoundCloud links: worker ↔ music-fetch spool (v0.4.
     expect(await item(old.id)).toMatchObject({ status: 'rejected', probe_error: 'sc_queue_timeout' })
     await ownerSql()`UPDATE items SET status = 'rejected', fetch_stage = NULL WHERE id = ${a2.id}`
 
+    // kill switch OFF: the link waits (it survives a short OFF) ...
     await ownerSql()`INSERT INTO settings (key, value) VALUES ('soundcloud_fetch_enabled', 'false'::jsonb) ON CONFLICT (key) DO UPDATE SET value = 'false'::jsonb`
+    const old2 = await mkScItem({ createdAgoS: 4 * 3600 })
     try {
-      await runSoundcloudFetch(ctx, { itemId: b.id })
+      await expect(runSoundcloudFetch(ctx, { itemId: b.id })).rejects.toMatchObject({ name: 'RetryLater', delayS: FETCH_DISABLED_RETRY_S })
+      // ... until it has waited FETCH_QUEUE_MAX_S
+      await runSoundcloudFetch(ctx, { itemId: old2.id })
     } finally {
       await ownerSql()`DELETE FROM settings WHERE key = 'soundcloud_fetch_enabled'`
     }
-    expect(await item(b.id)).toMatchObject({ status: 'rejected', probe_error: 'sc_disabled', fetch_stage: null })
-    expect(await upload(b.upload)).toMatchObject({ status: 'expired' })
+    expect(await item(b.id)).toMatchObject({ status: 'probing', fetch_stage: 'queued' })
+    expect(await upload(b.upload)).toMatchObject({ status: 'attached' })
     expect(existsSync(join(ctx.fetchInDir, `${b.fetchId}.json`))).toBe(false)
+    expect(await item(old2.id)).toMatchObject({ status: 'rejected', probe_error: 'sc_queue_timeout' })
+    expect(await upload(old2.upload)).toMatchObject({ status: 'expired' })
+    // ON again: the parked link goes
+    await runSoundcloudFetch(ctx, { itemId: b.id })
+    expect(await item(b.id)).toMatchObject({ status: 'probing', fetch_stage: 'fetching' })
+    expect(existsSync(join(ctx.fetchInDir, `${b.fetchId}.json`))).toBe(true)
+  })
+
+  it('job: no music-fetch heartbeat → the link waits (no request, no 15-min timeout) and ONE alert per hour (v0.4.1)', async () => {
+    fetchDownAlert.at = 0
+    ctx.alerts.length = 0
+    rmSync(join(ctx.fetchOutDir, '.alive'))
+    const x = await mkScItem()
+    await expect(runSoundcloudFetch(ctx, { itemId: x.id })).rejects.toMatchObject({ name: 'RetryLater', message: 'music-fetch not running' })
+    alive(5 * 60_000) // stale: stopped five minutes ago
+    await expect(runSoundcloudFetch(ctx, { itemId: x.id })).rejects.toMatchObject({ name: 'RetryLater' })
+    expect(ctx.alerts.filter((a) => /music-fetch is not running/.test(a))).toHaveLength(1)
+    expect(existsSync(join(ctx.fetchInDir, `${x.fetchId}.json`))).toBe(false)
+    expect(await item(x.id)).toMatchObject({ status: 'probing', fetch_stage: 'queued', fetch_requested_at: null })
+    // a symlink is not a heartbeat
+    rmSync(join(ctx.fetchOutDir, '.alive'))
+    const decoy = join(base, 'decoy-alive')
+    writeFileSync(decoy, '')
+    symlinkSync(decoy, join(ctx.fetchOutDir, '.alive'))
+    await expect(runSoundcloudFetch(ctx, { itemId: x.id })).rejects.toMatchObject({ name: 'RetryLater' })
+    rmSync(join(ctx.fetchOutDir, '.alive'))
+    // back up: the request goes
+    alive()
+    await runSoundcloudFetch(ctx, { itemId: x.id })
+    expect(existsSync(join(ctx.fetchInDir, `${x.fetchId}.json`))).toBe(true)
+    expect(await item(x.id)).toMatchObject({ fetch_stage: 'fetching' })
+  })
+
+  it('job: a soundcloud_fetch job that dies (8 failed attempts) rejects the link sc_internal and releases it (v0.4.1)', async () => {
+    const x = await mkScItem()
+    const [j] = await ownerSql()`INSERT INTO jobs (kind, payload, status, attempts, dedupe_key) VALUES ('soundcloud_fetch', ${ownerSql().json({ itemId: x.id })}, 'running', 8, ${`test-dead:${x.id}`}) RETURNING id`
+    // the request cannot be written (the inbox is gone)
+    const broken = { ...ctx, fetchInDir: join(base, 'no-such-dir') } as typeof ctx
+    await runJob(broken, { id: Number(j!.id), kind: 'soundcloud_fetch', payload: { itemId: x.id }, attempts: 8, max_attempts: 8, age_s: 60 })
+    expect((await ownerSql()`SELECT status FROM jobs WHERE id = ${j!.id}`)[0]!.status).toBe('dead')
+    expect(await item(x.id)).toMatchObject({ status: 'rejected', probe_error: 'sc_internal', fetch_stage: null })
+    expect(await upload(x.upload)).toMatchObject({ status: 'expired' })
+  })
+
+  it('a member cancels a queued link (withdrawn): no request is ever written; a withdrawn fetching link gets its release marker (v0.4.1)', async () => {
+    const q = await mkScItem()
+    await withdrawItem(db(), viewer(q.user), q.id)
+    expect(await item(q.id)).toMatchObject({ status: 'withdrawn', fetch_stage: null })
+    expect(await upload(q.upload)).toMatchObject({ status: 'expired' })
+    await runSoundcloudFetch(ctx, { itemId: q.id })
+    expect(existsSync(join(ctx.fetchInDir, `${q.fetchId}.json`))).toBe(false)
+
+    const f = await mkScItem({ stage: 'fetching', requestedAgoS: 5 })
+    writeFileSync(join(ctx.fetchInDir, `${f.fetchId}.json`), '{}') // the request music-fetch has not taken yet
+    await withdrawItem(db(), viewer(f.user), f.id)
+    expect(await item(f.id)).toMatchObject({ status: 'withdrawn', fetch_stage: null })
+    // a late result is ignored (the item is no longer 'fetching') ...
+    writeFetchOut(f.fetchId, okResult(f.fetchId))
+    await collectFetchResults(ctx)
+    expect(await item(f.id)).toMatchObject({ status: 'withdrawn' })
+    expect(existsSync(join(ctx.spoolInDir, `${f.fetchId}.json`))).toBe(false)
+    // ... and the marker cancels the queued request / drops the download
+    await reissueFetchReleases(ctx, 100_000)
+    expect(existsSync(join(ctx.fetchInDir, `${f.fetchId}.release`))).toBe(true)
+    expect(existsSync(join(ctx.fetchInDir, `${q.fetchId}.release`))).toBe(true)
+  })
+
+  it('an item that leaves fetching wakes the queued links at once (v0.4.1)', async () => {
+    const x = await mkScItem({ stage: 'fetching', requestedAgoS: 5 })
+    const [j] = await ownerSql()`
+      INSERT INTO jobs (kind, payload, status, run_after, dedupe_key)
+      VALUES ('soundcloud_fetch', ${ownerSql().json({ itemId: x.id })}, 'queued', now() + interval '1 hour', ${`test-wake:${x.id}`}) RETURNING id`
+    writeFetchOut(x.fetchId, { v: 1, uuid: x.fetchId, status: 'error', errorCode: 'not_a_track', files: null, meta: null, rawSha256: null })
+    expect(await collectFetchResults(ctx)).toBeGreaterThanOrEqual(1)
+    const r = (await ownerSql()`SELECT status, run_after <= now() AS due FROM jobs WHERE id = ${j!.id}`)[0]!
+    // the harness's worker may already have run it (a no-op: the item left 'queued')
+    expect(r.status !== 'queued' || r.due).toBe(true)
+    await ownerSql()`DELETE FROM jobs WHERE id = ${j!.id}`
   })
 
   it('result ok → strict checks → probe_fetch request (id = the fetch id), sanitized pre-fill, license, canonical URL; idempotent', async () => {

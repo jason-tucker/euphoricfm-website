@@ -168,19 +168,42 @@ export async function submitBatch(db: DB, v: Viewer, batchId: number, attest: un
   })
 }
 
+// v0.4.1: a SoundCloud link still 'probing' (waiting its turn, fetching or
+// converting) may be withdrawn too, so one slow or doomed link no longer
+// blocks the whole draft. Its staging charge is released at once; the worker
+// copes on its own (the job returns for a non-probing item, late results are
+// only taken for 'fetching' / 'probing' items, and reissueFetchReleases asks
+// music-fetch to cancel or drop the job).
 export async function withdrawItem(db: DB, v: Viewer, itemId: number) {
   const it = await db.query.items.findFirst({ where: eq(items.id, itemId) })
   if (!it || !canViewOwned(v, it)) throw notFound()
   if (!isOwner(v, it)) throw forbidden()
-  const row = oneOrConflict(
-    await db
-      .update(items)
-      .set({ status: 'withdrawn', updatedAt: new Date() })
-      .where(and(eq(items.id, it.id), eq(items.ownerUserId, v.userId), eq(items.status, 'pending')))
-      .returning(),
-  )
-  await audit(db, { actorUserId: v.userId, actorDiscordId: v.discordId, action: 'item.withdraw', targetType: 'item', targetId: it.id })
-  return { id: row.id, status: row.status }
+  const link = it.source === 'soundcloud' && it.status === 'probing'
+  return db.transaction(async (tx) => {
+    const row = oneOrConflict(
+      await tx
+        .update(items)
+        .set({ status: 'withdrawn', ...(link ? { fetchStage: null } : {}), updatedAt: new Date() })
+        .where(
+          and(
+            eq(items.id, it.id),
+            eq(items.ownerUserId, v.userId),
+            link ? and(eq(items.status, 'probing'), eq(items.source, 'soundcloud')) : eq(items.status, 'pending'),
+          ),
+        )
+        .returning(),
+    )
+    if (link && it.uploadId) await tx.update(uploads).set({ status: 'expired' }).where(and(eq(uploads.id, it.uploadId), eq(uploads.status, 'attached')))
+    await audit(tx, {
+      actorUserId: v.userId,
+      actorDiscordId: v.discordId,
+      action: 'item.withdraw',
+      targetType: 'item',
+      targetId: it.id,
+      ...(link ? { detail: { soundcloud: true, stage: it.fetchStage } } : {}),
+    })
+    return { id: row.id, status: row.status }
+  })
 }
 
 // PATCH /api/items/:id — per-field overrides that become the metadata the

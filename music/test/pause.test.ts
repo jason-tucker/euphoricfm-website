@@ -6,7 +6,7 @@ import { resolveProfile } from '@/server/azuracast/guard'
 import { closeDb, getDb } from '@/server/db/client'
 import { assertQueuesNotPaused, getQueuesPaused, MUTATING_JOB_KINDS } from '@/server/pause'
 import { contractProbe, type WorkerCtx } from '@/worker/handlers'
-import { claimJob } from '@/worker/main'
+import { claimJob, IDLE_POLL_MS } from '@/worker/main'
 import { DBENV, MOCKS } from './helpers/env'
 import { ownerSql } from './helpers/db'
 import { control } from './helpers/http'
@@ -77,8 +77,9 @@ describe.skipIf(!DBENV() || !MOCKS())('contract probe pauses mutating jobs and f
     }
     const mutatingIds = jobIds.slice(0, MUTATING_JOB_KINDS.length)
     expect(claimed.filter((id) => mutatingIds.includes(id))).toEqual([])
-    // Give the running worker (2 s poll) time to try as well.
-    await new Promise((r) => setTimeout(r, 5000))
+    // Give the running worker time to try as well: its idle poll backs off
+    // from 2 s to IDLE_POLL_MS.max (5 s, v0.4.1), so wait for two of those.
+    await new Promise((r) => setTimeout(r, 2 * IDLE_POLL_MS.max + 2000))
     const rows = await ownerSql()`SELECT id, status FROM jobs WHERE id IN ${ownerSql()(mutatingIds)}`
     expect(rows.every((r) => r.status === 'queued')).toBe(true)
 
