@@ -2,6 +2,12 @@
 // Only a same-origin, relative path is ever accepted: it must start with a
 // single '/', hold no backslash or control character, and resolve to the
 // portal's own origin. Anything else is ignored (the visitor lands on '/').
+//
+// The RESULT is checked too (security review): URL resolution removes dot
+// segments, so '/..//evil.example' (or '/.%2e//…', '/a/..//…') resolves to
+// the path '//evil.example', which a Location header reads as another host.
+// A result that starts with '//' is refused, and so is anything under /api
+// (sign-in only ever returns to a page).
 
 const BASE = 'https://portal.invalid'
 
@@ -16,6 +22,7 @@ export function safeNext(v: unknown): string | null {
     return null
   }
   if (u.origin !== BASE) return null
+  if (!u.pathname.startsWith('/') || u.pathname.startsWith('//') || /^\/api(?:\/|$)/i.test(u.pathname)) return null
   const path = `${u.pathname}${u.search}`
   return path === '/' ? null : path
 }

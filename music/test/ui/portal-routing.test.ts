@@ -122,6 +122,8 @@ describe('sign-in keeps the destination (A10)', async () => {
     expect(await outcome(pageViewer('submit'))).toBe('NEXT_REDIRECT /')
     state.path = '//evil.example/x'
     expect(await outcome(pageViewer('submit'))).toBe('NEXT_REDIRECT /')
+    state.path = '/..//evil.example/x'
+    expect(await outcome(pageViewer('submit'))).toBe('NEXT_REDIRECT /')
   })
 
   it('the sign-in action honours a safe next and ignores anything else', async () => {
@@ -134,7 +136,8 @@ describe('sign-in keeps the destination (A10)', async () => {
     await signInWithDiscord(form('https://evil.example/'))
     await signInWithDiscord(form())
     await signInWithDiscord()
-    expect(state.signIn).toEqual([{ redirectTo: '/library?intent=remove' }, { redirectTo: '/' }, { redirectTo: '/' }, { redirectTo: '/' }])
+    await signInWithDiscord(form('/..//evil.example')) // v0.4.1 review: resolves to '//evil.example'
+    expect(state.signIn).toEqual([{ redirectTo: '/library?intent=remove' }, { redirectTo: '/' }, { redirectTo: '/' }, { redirectTo: '/' }, { redirectTo: '/' }])
   })
 
   it('safeNext accepts only same-origin relative paths', () => {
@@ -144,6 +147,14 @@ describe('sign-in keeps the destination (A10)', async () => {
     for (const bad of ['', '/', 'library', 'https://evil.example/', '//evil.example', '/\\evil.example', '/x\ny', 'javascript:alert(1)', 42, null, `/${'a'.repeat(600)}`])
       expect(safeNext(bad), String(bad)).toBeNull()
     expect(safeNext('/%0d%0aX')).toBe('/%0d%0aX') // stays percent-encoded: harmless in a Location header
+    // security review (v0.4.1): dot segments resolved to a '//host' path were
+    // an open redirect for a signed-in visitor (/?next=/..//evil.example →
+    // Location: //evil.example); /api is never a sign-in destination
+    for (const bad of ['/..//evil.example', '/.//evil.example', '/a/..//evil.example', '/.%2e//evil.example', '/%2e%2e//evil.example/x?y=1', '/api', '/api/items/1', '/API/x', '/a/../api/x'])
+      expect(safeNext(bad), bad).toBeNull()
+    expect(safeNext('/./submit')).toBe('/submit')
+    expect(safeNext('/%2F/evil.example')).toBe('/%2F/evil.example') // an encoded slash stays a path on this origin
+    expect(safeNext('/apidocs')).toBe('/apidocs')
     expect(nextLabel('/library?intent=remove')).toBe('ask for a song’s removal')
     expect(nextLabel('/submit')).toBe('Submit songs')
     expect(nextLabel('/requests/7')).toBe('your request')
