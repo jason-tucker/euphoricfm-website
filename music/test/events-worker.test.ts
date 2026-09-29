@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto'
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { writeSpoolResultNoClobber } from '@/server/spool/protocol'
 import { probeRequestIdForUpload } from '@/events/contract/paths'
 import { finalizeRequestIdFor } from '@/events/worker/jobs/audio'
 import { endWaitTarget } from '@/events/worker/jobs/kicks'
+import { eventsAlerter } from '@/events/worker/main'
 import { EVENTS_MUTATING_KINDS, runEventJob, tickPeriodic } from '@/events/worker/loop'
 import { harness, OWNER, settingsWith, type Harness } from './events-fakes'
 
@@ -671,5 +672,31 @@ describe('events worker: sweeps', () => {
       { mediaId: 601, path: 'EFM Stingers/one.mp3', title: 'One', lengthS: 12 },
       { mediaId: 602, path: 'EFM Stingers/two.mp3', title: 'two', lengthS: 8 },
     ])
+  })
+})
+
+describe('events worker: alerts', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('reuse the music makeAlert: the optional ALERT_DISCORD_WEBHOOK is paged (labelled Events), then an audit row', async () => {
+    const posts: { url: string; body: { content: string; allowed_mentions: unknown } }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      posts.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      return new Response(null, { status: 204 })
+    }))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const audits: { action: string; detail: unknown }[] = []
+    const store = { audit: async (action: string, _t: string, _id: number, detail?: Record<string, unknown>) => void audits.push({ action, detail }) }
+    const on = await eventsAlerter(store, { ALERT_DISCORD_WEBHOOK: 'https://discord.example/api/webhooks/1/x' })
+    await on('events start kick FAILED for event #42', { eventId: 42 })
+    expect(posts).toHaveLength(1)
+    expect(posts[0]!.url).toBe('https://discord.example/api/webhooks/1/x')
+    expect(posts[0]!.body.content).toBe('⚠️ EFM Events Portal: events start kick FAILED for event #42')
+    expect(posts[0]!.body.allowed_mentions).toEqual({ parse: [] })
+    expect(audits).toEqual([{ action: 'events.alert', detail: { title: 'events start kick FAILED for event #42', detail: { eventId: 42 } } }])
+    const off = await eventsAlerter(store, {})
+    await off('another', {})
+    expect(posts).toHaveLength(1)
+    expect(audits).toHaveLength(2)
   })
 })

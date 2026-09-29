@@ -17,6 +17,7 @@ import { loadWorkerEnv, type WorkerEnv } from '../server/env'
 import { enqueue } from '../server/jobs'
 import { assertQueuesNotPaused, MUTATING_JOB_KINDS, PAUSED_SQL, QueuesPausedError } from '../server/pause'
 import { TicketsClient } from '../server/tickets/client'
+import { makeAlert } from './alert'
 import { isP3Ctx, type P3Ctx } from './ingest/context'
 import { P3_JOBS } from './ingest/jobs'
 import { failIngest } from './ingest/pipeline'
@@ -55,31 +56,6 @@ export async function startupChecks(deps: StartupDeps = {}): Promise<{ env: Work
   })
   await azuracast.selfCheck()
   return { env, profile, azuracast }
-}
-
-async function makeAlert(env: WorkerEnv) {
-  return async (title: string, detail: Record<string, unknown>) => {
-    console.error(`[alert] ${title}`, JSON.stringify(detail).slice(0, 2000))
-    const tasks: Promise<unknown>[] = []
-    if (env.KUMA_PUSH_URL) {
-      const u = new URL(env.KUMA_PUSH_URL)
-      u.searchParams.set('status', 'down')
-      u.searchParams.set('msg', title.slice(0, 200))
-      tasks.push(fetch(u, { redirect: 'error', signal: AbortSignal.timeout(10_000) }))
-    }
-    if (env.ALERT_DISCORD_WEBHOOK) {
-      tasks.push(
-        fetch(env.ALERT_DISCORD_WEBHOOK, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ content: `⚠️ EFM Music Portal: ${title}`.slice(0, 1900), allowed_mentions: { parse: [] } }),
-          redirect: 'error',
-          signal: AbortSignal.timeout(10_000),
-        }),
-      )
-    }
-    await Promise.allSettled(tasks)
-  }
 }
 
 type JobRow = { id: number; kind: string; payload: Record<string, unknown>; attempts: number; max_attempts: number; age_s?: number }

@@ -311,6 +311,10 @@ describe('env forbidden keys both ways (v0.5.0)', () => {
     expect(() => loadEventsWorkerEnv({ ...evWorker, EVENTS_CANARY_STATION_IDS: 'x' })).toThrow()
     expect(() => loadEventsWorkerEnv({ ...evWorker, AZURACAST_BASE_URL: 'https://euphoric.fm/x' })).toThrow(/bare origin/)
     expect(() => loadEventsWorkerEnv({ ...evWorker, AZURACAST_BASE_URL: 'http://az' })).toThrow(/https/)
+    // the optional alert webhook, as on the music worker
+    expect(e.ALERT_DISCORD_WEBHOOK).toBeUndefined()
+    expect(loadEventsWorkerEnv({ ...evWorker, ALERT_DISCORD_WEBHOOK: 'https://discord.com/api/webhooks/1/x' }).ALERT_DISCORD_WEBHOOK).toBe('https://discord.com/api/webhooks/1/x')
+    expect(() => loadEventsWorkerEnv({ ...evWorker, ALERT_DISCORD_WEBHOOK: 'not a url' })).toThrow()
     for (const k of ['AZURACAST_API_KEY', 'TICKETS_WRITE_KEY', 'AUTH_SECRET', 'APP_ENC_KEY', 'TICKETS_WEBHOOK_SECRET', 'DATABASE_OWNER_URL']) {
       expect(() => loadEventsWorkerEnv({ ...evWorker, [k]: 'x' }), k).toThrow(/another service/)
     }

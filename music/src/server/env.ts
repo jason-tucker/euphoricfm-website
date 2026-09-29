@@ -240,6 +240,9 @@ const eventsWorkerSchema = z.object({
     .refine((v) => /^\d+(,\d+)*$/.test(v), 'must be comma-separated station ids')
     .transform((v) => v.split(',').map(Number))
     .refine((ids) => ids.length > 0 && !ids.includes(14), 'must not include the Events station (14)'),
+  // Optional, like the music worker's: alerts (start-kick failures, dead
+  // jobs, self-check failures) are also posted to this Discord webhook.
+  ALERT_DISCORD_WEBHOOK: z.string().url().optional(),
   SPOOL_PROBE_IN_DIR: z.string().default('/spool/probe/in-worker'),
   SPOOL_PROBE_OUT_DIR: z.string().default('/spool/probe/out'),
   STAGING_FINAL_DIR: z.string().default('/staging/final'),

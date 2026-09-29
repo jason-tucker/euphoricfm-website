@@ -12,6 +12,7 @@
 import { closeDb, getDb } from '../../server/db/client'
 import { loadEventsWorkerEnv, type EventsWorkerEnv } from '../../server/env'
 import { TicketsClient } from '../../server/tickets/client'
+import { makeAlert } from '../../worker/alert'
 import { EVENTS_STATION_ID } from '../azuracast/allowlist'
 import { EventsAzuraCastClient } from '../azuracast/client'
 import { folderLinkCheck, keySelfCheck, type FolderLinkReport } from '../azuracast/selfcheck'
@@ -37,13 +38,18 @@ export async function eventsStartupChecks(deps: EventsStartupDeps = {}): Promise
   return { env, az, links }
 }
 
-function alerter(store: PgEventsStore) {
+/**
+ * Alerts: the music worker's makeAlert (stderr, plus the optional
+ * ALERT_DISCORD_WEBHOOK so a failed start kick can page), then an audit row.
+ */
+export async function eventsAlerter(store: Pick<PgEventsStore, 'audit'>, env: Pick<EventsWorkerEnv, 'ALERT_DISCORD_WEBHOOK'>) {
+  const page = await makeAlert({ ALERT_DISCORD_WEBHOOK: env.ALERT_DISCORD_WEBHOOK }, 'EFM Events Portal')
   return async (title: string, detail: Record<string, unknown>) => {
-    console.error(`[alert] ${title}`, JSON.stringify(detail).slice(0, 2000))
+    await page(title, detail)
     try {
       await store.audit('events.alert', 'events_worker', 0, { title: title.slice(0, 300), detail })
     } catch {
-      // the log line above is the fallback
+      // the log line written by makeAlert is the fallback
     }
   }
 }
@@ -65,7 +71,7 @@ export async function main(): Promise<void> {
     spoolOutDir: env.SPOOL_PROBE_OUT_DIR,
     finalDir: env.STAGING_FINAL_DIR,
     now: Date.now,
-    alert: alerter(store),
+    alert: await eventsAlerter(store, env),
     ingestBlocked: links.ok ? null : `folder link covers ${links.linked.map((l) => l.folder).join(', ')}`,
   }
   if (!links.ok) await ctx.alert('events ingest blocked at start-up: a station-14 folder link covers Events/Uploads', { linked: links.linked })
