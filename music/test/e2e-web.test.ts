@@ -27,19 +27,22 @@ describe.skipIf(!E2E())('security headers on the built server', () => {
     expect(r1.headers.get('strict-transport-security')).toBe('max-age=63072000; includeSubDomains')
     expect(r1.headers.get('x-content-type-options')).toBe('nosniff')
     expect(r1.headers.get('referrer-policy')).toBe('same-origin')
+    expect(r1.headers.get('permissions-policy')).toBe('accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=(), interest-cohort=()')
     expect(r1.headers.get('x-powered-by')).toBeNull()
   })
 
-  it('API responses and static assets get HSTS / nosniff / Referrer-Policy too', async () => {
+  it('API responses and static assets get HSTS / nosniff / Referrer-Policy / Permissions-Policy too', async () => {
     const api = await req(null, '/api/health')
     expect(api.headers.get('x-content-type-options')).toBe('nosniff')
     expect(api.headers.get('strict-transport-security')).toBeTruthy()
+    expect(api.headers.get('permissions-policy')).toMatch(/^accelerometer=\(\), camera=\(\)/)
     const html = await (await req(null, '/')).text()
     const asset = /\/_next\/static\/[^"]+\.js/.exec(html)![0]
     const s = await req(null, asset)
     expect(s.status).toBe(200)
     expect(s.headers.get('x-content-type-options')).toBe('nosniff')
     expect(s.headers.get('referrer-policy')).toBe('same-origin')
+    expect(s.headers.get('permissions-policy')).toMatch(/microphone=\(\)/)
   })
 })
 

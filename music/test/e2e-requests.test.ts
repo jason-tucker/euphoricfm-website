@@ -95,6 +95,20 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
     expect(snap.proposed).toEqual({ title: 'Fixed Title' })
     expect((await req(other, `/api/requests/${editId}`)).status).toBe(404)
     expect((await req(reviewer, `/api/requests/${editId}`)).status).toBe(200)
+    // v0.4.1 (A1): the card's "Open in portal" link is a real page (it was
+    // Next's 404): requester → the song, reviewer → the queue, others → 404,
+    // signed out → sign in and come back.
+    const link = new URL(t.card.link.url).pathname
+    const go = async (jar: Jar | null) => {
+      const r = await req(jar, link)
+      return { status: r.status, location: r.headers.get('location') ?? '' }
+    }
+    expect(await go(member)).toMatchObject({ status: 307, location: expect.stringMatching(new RegExp(`/library/${songs[0]!.id}$`)) })
+    expect(await go(reviewer)).toMatchObject({ status: 307, location: expect.stringMatching(new RegExp(`/review/requests#request-${editId}$`)) })
+    expect((await go(other)).status).toBe(404)
+    expect(await go(null)).toMatchObject({ status: 307, location: expect.stringContaining(`/?next=${encodeURIComponent(link)}`) })
+    const queue = await req(reviewer, '/review/requests')
+    expect(await queue.text()).toContain(`id="request-${editId}"`)
   })
 
   it('a removal needs a reason and opens its own songremoval ticket', async () => {
@@ -236,6 +250,10 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
     expect(moved.playlists).toEqual([])
     await waitFor(async () => (await ownerSql()`SELECT status FROM requests WHERE id = ${id}`)[0]!.status === 'verifying')
     const a = (await ownerSql()`SELECT id FROM archive WHERE media_id = ${s.id} AND status = 'archived'`)[0]!
+    // v0.4.1 (A1): the requester's ticket link now leads to Archived songs
+    const gone = await req(member, `/requests/${id}`)
+    expect(gone.status).toBe(307)
+    expect(gone.headers.get('location')).toMatch(/\/library\/archived$/)
     expect((await file(member, { kind: 'edit', mediaId: s.id, proposed: { title: 'x' } })).status).toBe(404) // archived: not requestable
     const list = await json<{ id: number }[]>(await req(reviewer, '/api/archive'))
     expect(list.some((x) => x.id === a.id)).toBe(true)
@@ -276,7 +294,7 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
   it('admin settings: admin only, validated per key, audited', async () => {
     const put = (jar: Jar, body: unknown) => req(jar, '/api/admin/settings', { method: 'PUT', json: body })
     expect((await put(reviewer, { key: 'auto_close_days', value: 5 })).status).toBe(403)
-    expect((await put(admin, { key: 'playlist_names', value: { '2': '1General Rotation', '3': 'Night' } })).status).toBe(200)
+    expect((await put(admin, { key: 'playlist_names', value: { '2': 'General Rotation', '3': 'Night' } })).status).toBe(200)
     expect((await put(admin, { key: 'station_id', value: 7 })).status).toBe(400)
     expect((await put(admin, { key: 'auto_close_days', value: 0 })).status).toBe(400)
     expect((await put(admin, { key: 'default_playlist_ids', value: [3] })).status).toBe(400) // not assignable
@@ -292,7 +310,7 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
     expect((await put(admin, { key: 'foreign_playlist_ids', value: [74, 75, 76, 77, 78] })).status).toBe(200)
     expect((await put(admin, { key: 'assignable_playlist_ids', value: [2, 74] })).status).toBe(400) // an Events id is never assignable
     const s = Object.fromEntries((await ownerSql()`SELECT key, value, updated_by FROM settings WHERE key IN ('playlist_names', 'discord_invite_url')`).map((r) => [r.key, r]))
-    expect(s.playlist_names!.value).toEqual({ '2': '1General Rotation', '3': 'Night' })
+    expect(s.playlist_names!.value).toEqual({ '2': 'General Rotation', '3': 'Night' })
     expect(s.discord_invite_url!.updated_by).toBe(ADMIN_ID)
     const au = await ownerSql()`SELECT detail FROM audit_log WHERE action = 'settings.update' AND target_id = 'playlist_names' ORDER BY id DESC LIMIT 1`
     expect(au[0]!.detail).toMatchObject({ after: { '3': 'Night' } })

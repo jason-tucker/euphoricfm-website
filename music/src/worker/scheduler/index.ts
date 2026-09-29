@@ -10,10 +10,12 @@
 //   batch contract    at start and daily: behavioural /files/batch check
 //   archive reconcile every 10 min: stale 'archiving' / 'restoring' rows with
 //                     no live job get a reconcile_archive job (P4)
+//   prune             daily (v0.4.1): 'done' jobs and hook deliveries older
+//                     than 30 days ('dead' jobs stay for diagnosis)
 
 import { randomUUID } from 'node:crypto'
 import { statfs } from 'node:fs/promises'
-import { and, eq, isNotNull, isNull, lt, or } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { ingestRuns, items } from '../../server/db/schema'
 import { enqueue } from '../../server/jobs'
@@ -58,6 +60,20 @@ export async function finalCleanup(ctx: P3Ctx): Promise<number> {
     await ctx.db.update(ingestRuns).set({ finalRemovedAt: new Date(ctx.now()) }).where(eq(ingestRuns.itemId, r.itemId))
   }
   return rows.length
+}
+
+// ---------------------------------------------------------------- prune --
+
+export const PRUNE_AFTER_DAYS = 30
+
+// The claim query stays fast either way (jobs_ready_idx), but the admin
+// overview's GROUP BY status and autovacuum scan the whole table, and the
+// hook dedupe window is minutes, not months.
+export async function pruneOld(ctx: P3Ctx): Promise<{ jobs: number; deliveries: number }> {
+  // The database clock, not ctx.now(): the tests pin a far-future clock.
+  const jobs = await ctx.db.execute(sql`DELETE FROM jobs WHERE status = 'done' AND updated_at < now() - make_interval(days => ${PRUNE_AFTER_DAYS}) RETURNING id`)
+  const deliveries = await ctx.db.execute(sql`DELETE FROM hook_deliveries WHERE received_at < now() - make_interval(days => ${PRUNE_AFTER_DAYS}) RETURNING delivery_id`)
+  return { jobs: (jobs as unknown[]).length, deliveries: (deliveries as unknown[]).length }
 }
 
 // ---------------------------------------------------------- disk push ---
@@ -145,6 +161,7 @@ export const TASKS: readonly Task[] = [
   { name: 'disk_push', everyMs: 5 * MIN, run: diskPush },
   { name: 'batch_contract', everyMs: DAY, run: batchContractCheck },
   { name: 'archive_reconcile', everyMs: 10 * MIN, run: sweepStaleArchiveRows },
+  { name: 'prune', everyMs: DAY, run: pruneOld },
 ]
 
 export class Scheduler {

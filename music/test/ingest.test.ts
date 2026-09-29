@@ -2,11 +2,12 @@
 // mocks, a pinned far-future clock, and the test playing the probe.
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { runFinalize } from '@/probe/finalize'
+import { DIRS, handleClaimed } from '@/probe/main'
 import { AzuraCastClient, AzuraCastError } from '@/server/azuracast/client'
 import { resolveProfile } from '@/server/azuracast/guard'
 import { closeDb } from '@/server/db/client'
@@ -16,12 +17,12 @@ import { QueuesPausedError } from '@/server/pause'
 import { mainArtist } from '@/server/library/artists'
 import { clearItemArt, decideItem, editItemMetadata, setItemArt, submitBatch } from '@/server/submissions'
 import { Defer } from '@/worker/handlers'
-import { runIngest, runIngestVerify } from '@/worker/ingest/pipeline'
+import { FINALIZE_TIMEOUT_MS, runIngest, runIngestVerify } from '@/worker/ingest/pipeline'
 import { afterScans, pacingWaitMs, scanWindow, WindowConfigError } from '@/worker/ingest/window'
 import { artUrlFor, isLibraryPath, stationSet, syncLibrary } from '@/worker/library/sync'
 import { runJob } from '@/worker/main'
 import { setPlaylistsJob, type RequestsCtx } from '@/worker/requests/jobs'
-import { batchContractCheck, diskPush, finalCleanup, Scheduler } from '@/worker/scheduler'
+import { batchContractCheck, diskPush, finalCleanup, pruneOld, Scheduler, TASKS } from '@/worker/scheduler'
 import { autoCloseSweep, batchSummary, summaryBody, summarySweep, ticketAutoclose, ticketItemEvent } from '@/worker/scheduler/tickets'
 import { ownerSql } from './helpers/db'
 import { DBENV, MOCKS } from './helpers/env'
@@ -710,6 +711,49 @@ describe.skipIf(!DBENV() || !MOCKS())('ingest pipeline (station 1, Portal-Test/ 
     ctx.cleanup()
   })
 
+  it('A7(a): a finalize the probe answers after the timeout leaves nothing in /staging/final', async () => {
+    const ctx = makeCtx(slot(39))
+    const owner = await mkUser()
+    const folder = `PT Late ${uniq()}`
+    const artistId = await mkArtist(folder)
+    const b = await mkBatch(owner.id)
+    const cleanupsFor = (file: string) =>
+      readdirSync(ctx.spoolInDir)
+        .filter((n) => n.endsWith('.json'))
+        .map((n) => JSON.parse(readFileSync(join(ctx.spoolInDir, n), 'utf8')) as { id: string; type: string; file?: string })
+        .filter((r) => r.type === 'cleanup_final' && r.file === file)
+
+    // never claimed: the request is withdrawn when the worker gives up
+    const a = await mkItem({ batchId: b, ownerId: owner.id, title: 'Late A', artist: folder, artistId })
+    expect((await step(ctx, a))?.message).toBe('finalize submitted')
+    const ra = (await run(a))!.finalize_request_id as string
+    ctx.clock.t += FINALIZE_TIMEOUT_MS - 60_000
+    expect((await step(ctx, a))?.message).toBe('finalize pending') // 29 min: still waiting (was 15)
+    ctx.clock.t += 2 * 60_000
+    expect(await step(ctx, a)).toBeNull()
+    expect(await item(a)).toMatchObject({ status: 'failed' })
+    expect((await run(a))!.last_error).toBe('finalize_timeout')
+    expect(existsSync(join(ctx.spoolInDir, `${ra}.json`))).toBe(false)
+
+    // claimed by the probe, answered after the worker gave up
+    ctx.clock.t = slot(39, 30)
+    const c = await mkItem({ batchId: b, ownerId: owner.id, title: 'Late C', artist: folder, artistId })
+    expect((await step(ctx, c))?.message).toBe('finalize submitted')
+    const rc = (await run(c))!.finalize_request_id as string
+    renameSync(join(ctx.spoolInDir, `${rc}.json`), join(ctx.spoolOutDir, '..', `claimed-${rc}.json`))
+    ctx.clock.t += FINALIZE_TIMEOUT_MS + 60_000
+    expect(await step(ctx, c)).toBeNull()
+    expect(await item(c)).toMatchObject({ status: 'failed' })
+    writeFileSync(join(ctx.finalDir, `${rc}.mp3`), 'late final') // the late answer lands
+    const [cleanup] = cleanupsFor(`${rc}.mp3`)
+    expect(cleanup).toBeTruthy()
+    // the probe takes it after the late finalize (in-worker is oldest first)
+    const res = await handleClaimed('in-worker', cleanup!.id, join(ctx.spoolInDir, `${cleanup!.id}.json`), { ...DIRS, final: ctx.finalDir })
+    expect(res).toMatchObject({ type: 'cleanup_final', ok: true, removed: true })
+    expect(readdirSync(ctx.finalDir)).not.toContain(`${rc}.mp3`)
+    ctx.cleanup()
+  })
+
   it('artist gate: waits on a pending new-artist item, fails when it is denied or the artist is unknown', async () => {
     const ctx = makeCtx(slot(10))
     const owner = await mkUser()
@@ -759,12 +803,23 @@ describe.skipIf(!DBENV() || !MOCKS())('review: new artists, metadata edits, atte
     const s1 = await mkItem({ batchId: b, ownerId: owner.id, status: 'pending', title: 'A', artist: `Known ${tag} feat. X` })
     const s2 = await mkItem({ batchId: b, ownerId: owner.id, status: 'pending', title: 'B', artist: `Newbie ${tag} & Y` })
     const s3 = await mkItem({ batchId: b, ownerId: owner.id, status: 'pending', title: 'C', artist: `newbie ${tag}` })
+    // Put s2's row physically after s3's: changing an indexed column forces a
+    // non-HOT update (a new tuple and new index entries), so a scan in heap
+    // or batch-index order meets the lowercase spelling first. Only the
+    // query's ORDER BY id keeps the first song's spelling.
+    await ownerSql()`UPDATE items SET status = 'draft' WHERE id = ${s2}`
+    await ownerSql()`UPDATE items SET status = 'pending' WHERE id = ${s2}`
     const v = viewer(owner)
     expect(await httpCode(submitBatch(ctx.db, v, b, true, 'bad version!'))).toBe('400 bad_attest_version')
     await submitBatch(ctx.db, v, b, true, '2026-09-27')
     expect((await ownerSql()`SELECT attest_version, attested_at FROM batches WHERE id = ${b}`)[0]).toMatchObject({ attest_version: '2026-09-27', attested_at: expect.any(Date) })
     expect((await item(s1)).artist_id).toBe(known)
     expect((await item(s2)).new_artist_name).toBe(`Newbie ${tag}`)
+    // every song keeps the artist exactly as the member typed it; the one
+    // new-artist item takes the first song's spelling (s2 before s3)
+    expect((await item(s3)).new_artist_name).toBe(`newbie ${tag}`)
+    expect((await item(s3)).artist).toBe(`newbie ${tag}`)
+    expect((await item(s2)).artist).toBe(`Newbie ${tag} & Y`)
     const nas = await ownerSql()`SELECT * FROM items WHERE batch_id = ${b} AND kind = 'new_artist'`
     expect(nas).toHaveLength(1)
     expect(nas[0]).toMatchObject({ status: 'pending', new_artist_name: `Newbie ${tag}`, prefill: { proposedFolder: `Newbie ${tag}` } })
@@ -880,6 +935,58 @@ describe.skipIf(!DBENV() || !MOCKS())('library sync, ticket posts, auto-close, s
     expect(alertsFor()).toHaveLength(seen)
     const pages = ((await control('/__mock/az/calls')) as { method: string; path: string; query: Record<string, string> }[]).filter((c) => c.method === 'GET' && c.path === '/api/station/1/files')
     expect(pages.at(-1)!.query).toMatchObject({ per_page: '100' })
+    ctx.cleanup()
+  })
+
+  it('v0.4.1: an unchanged listing is not rewritten (skipped); any change is synced', async () => {
+    const ctx = makeCtx(Date.now())
+    const tag = uniq()
+    const lib = `Hash ${tag}`
+    await control('/__mock/az/seed', { files: [{ path: `Music/Artists/${lib}/${lib} - One.mp3`, title: 'One', artist: lib, playlists: [2] }] })
+    await syncLibrary(ctx) // (or the harness's worker did: either way the listing is recorded)
+    const stamp = async () => (await ownerSql()`SELECT path, refreshed_at FROM library_cache WHERE path LIKE ${`%${tag}%`} ORDER BY path`).map((r) => [r.path, String(r.refreshed_at)])
+    const before = await stamp()
+    expect(before).toHaveLength(1)
+    ctx.clock.t += 60_000
+    const again = await syncLibrary(ctx)
+    expect(again.skipped).toBe(true)
+    expect(await stamp()).toEqual(before) // not rewritten
+    await control('/__mock/az/seed', { files: [{ path: `Music/Artists/${lib}/${lib} - Two.mp3`, title: 'Two', artist: lib, playlists: [2] }] })
+    await syncLibrary(ctx)
+    expect((await stamp()).map((r) => r[0])).toEqual([`Music/Artists/${lib}/${lib} - One.mp3`, `Music/Artists/${lib}/${lib} - Two.mp3`])
+    // a cache that lost a row is rebuilt even when the listing did not change
+    await ownerSql()`DELETE FROM library_cache WHERE path = ${`Music/Artists/${lib}/${lib} - One.mp3`}`
+    expect((await syncLibrary(ctx)).skipped).toBe(false)
+    expect(await stamp()).toHaveLength(2)
+    ctx.cleanup()
+  })
+
+  it('v0.4.1: prune removes done jobs and hook deliveries older than 30 days, and nothing else; it is a daily task', async () => {
+    const ctx = makeCtx(slot(40))
+    const tag = uniq()
+    const job = async (status: string, days: number) =>
+      Number(
+        (await ownerSql()`INSERT INTO jobs (kind, payload, status, dedupe_key, updated_at) VALUES ('test_prune', '{}', ${status}::job_status, ${`prune:${tag}:${status}:${days}`}, now() - make_interval(days => ${days})) RETURNING id`)[0]!.id,
+      )
+    const oldDone = await job('done', 31)
+    const newDone = await job('done', 29)
+    const oldDead = await job('dead', 90)
+    const hook = async (days: number) => {
+      const id = randomUUID()
+      await ownerSql()`INSERT INTO hook_deliveries (delivery_id, event, received_at) VALUES (${id}, 'test', now() - make_interval(days => ${days}))`
+      return id
+    }
+    const oldHook = await hook(31)
+    const newHook = await hook(1)
+    const r = await pruneOld(ctx)
+    expect(r.jobs).toBeGreaterThanOrEqual(1)
+    expect(r.deliveries).toBeGreaterThanOrEqual(1)
+    const jobs = (await ownerSql()`SELECT id FROM jobs WHERE id IN ${ownerSql()([oldDone, newDone, oldDead])}`).map((x) => Number(x.id)).sort((a, b) => a - b)
+    expect(jobs).toEqual([newDone, oldDead].sort((a, b) => a - b))
+    const hooks = (await ownerSql()`SELECT delivery_id FROM hook_deliveries WHERE delivery_id IN ${ownerSql()([oldHook, newHook])}`).map((x) => x.delivery_id)
+    expect(hooks).toEqual([newHook])
+    expect(TASKS.find((t) => t.name === 'prune')).toMatchObject({ everyMs: 86_400_000 })
+    await ownerSql()`DELETE FROM jobs WHERE id IN ${ownerSql()([newDone, oldDead])}`
     ctx.cleanup()
   })
 

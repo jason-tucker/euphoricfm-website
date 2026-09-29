@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { RoleBindings } from '@/components/admin/RoleBindings'
+import { SettingsForm } from '@/components/admin/SettingsForm'
 import { ApiError, messageFor } from '@/components/api'
 import { ArtistDecision } from '@/components/requests/ArtistDecision'
 import { stubFetch } from './fetch'
@@ -45,5 +46,31 @@ describe('P4 codes and the new-artist wait', () => {
     fireEvent.change(screen.getByLabelText(/reason for denying/i), { target: { value: 'typo' } })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm deny' }))
     await vi.waitFor(() => expect(calls[0]?.body).toEqual({ decision: 'deny', reason: 'typo' }))
+  })
+})
+
+describe('v0.4.1: the SoundCloud kill switch help text', () => {
+  it('says the switch is on by default and that music-fetch relies on the botvps host rules (keep it off on a new server)', () => {
+    render(
+      <SettingsForm
+        initial={{
+          assignablePlaylistIds: [1],
+          stationPlaylistIds: [1],
+          foreignPlaylistIds: [],
+          defaultPlaylistIds: [1],
+          playlistNames: { '1': 'General Rotation' },
+          autoCloseDays: 7,
+          caps: { maxItemsPerBatch: 20, ingestPerHour: 6, ingestSpacingS: 600, fetchesPerUserPerDay: 20 },
+          rights: { version: 'v1', text: 'I own it.' },
+          inviteUrl: null,
+          soundcloudEnabled: true,
+        }}
+      />,
+    )
+    expect(screen.getByLabelText('Allow “Add from a SoundCloud link”')).toBeTruthy()
+    const note = screen.getByTestId('sc-host-note').textContent!
+    expect(note).toMatch(/On by default \(no saved setting counts as on\)/)
+    expect(note).toMatch(/botvps host firewall \(efm-music-egress\)/)
+    expect(note).toMatch(/keep this off until those rules are verified/)
   })
 })

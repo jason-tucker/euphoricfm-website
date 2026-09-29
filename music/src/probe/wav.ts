@@ -35,8 +35,10 @@ import { z } from 'zod'
 import { MAX_DURATION_S } from '../lib/fit'
 import { MAX_TAG_BYTES } from './id3scan'
 import { ProbeReject } from './files'
+import { DEFAULT_MIN_DURATION_S, probeMinDurationS } from './min-duration'
 
-export const MIN_WAV_DURATION_S = 30 // same as the MP3 rule (probe.ts MIN_DURATION_S)
+// same as the MP3 rule; enforced as probeMinDurationS() (min-duration.ts)
+export const MIN_WAV_DURATION_S = DEFAULT_MIN_DURATION_S
 export const MIN_WAV_RATE = 8000
 export const MAX_WAV_RATE = 192_000
 export const MAX_WAV_CHANNELS = 8
@@ -227,7 +229,7 @@ export async function scanWav(readAt: (offset: number, len: number) => Promise<B
   if (!data) throw new ProbeReject('wav_bad_data')
   if (data.size < fmt.blockAlign) throw new ProbeReject('wav_no_audio')
   const durationS = data.size / fmt.byteRate
-  if (durationS < MIN_WAV_DURATION_S) throw new ProbeReject('too_short')
+  if (durationS < probeMinDurationS()) throw new ProbeReject('too_short')
   if (durationS > MAX_DURATION_S) throw new ProbeReject('wav_too_long')
   return { fmt, dataOffset: data.offset, dataSize: data.size, durationS, id3, chunks }
 }
@@ -280,7 +282,7 @@ export function judgeWavFfprobe(json: unknown, info: WavInfo): { durationS: numb
   const durationS = Number(format.duration ?? s.duration)
   if (!Number.isFinite(durationS)) throw new ProbeReject('no_duration')
   if (Math.abs(durationS - info.durationS) > 1) throw new ProbeReject('wav_header_mismatch')
-  if (durationS < MIN_WAV_DURATION_S) throw new ProbeReject('too_short')
+  if (durationS < probeMinDurationS()) throw new ProbeReject('too_short')
   if (durationS > MAX_DURATION_S) throw new ProbeReject('wav_too_long')
   return { durationS, codec: s.codec_name }
 }

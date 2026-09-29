@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { duration } from '@/components/format'
+import { openGraph } from '@/components/og'
 import { ActionIcon, parseIntent, requestHref, type RequestIntent } from '@/components/HomeActions'
 import { Thumb } from '@/components/Thumb'
 import { PageTitle } from '@/components/ui'
@@ -8,7 +9,11 @@ import { browseLibrary, PAGE_SIZE } from '@/server/ui/browse'
 import { pageViewer } from '@/server/ui/page'
 
 export const dynamic = 'force-dynamic'
-export const metadata = { title: 'Library' }
+export const metadata = {
+  title: 'Library',
+  description: 'Every song on EuphoricFM: find one to fix its info or cover, or to ask for its removal.',
+  openGraph: openGraph('Library · EuphoricFM Music Portal', 'Every song on EuphoricFM.', '/library'),
+}
 
 const BANNER: Record<RequestIntent, { title: string; text: string; button: string }> = {
   edit: {

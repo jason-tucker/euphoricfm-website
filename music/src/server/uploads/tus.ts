@@ -13,6 +13,7 @@ import { EVENTS, MemoryLocker, Server } from '@tus/server'
 import { FileStore } from '@tus/file-store'
 import { getDb } from '../db/client'
 import { uploads } from '../db/schema'
+import { loadEventsSettings } from '../admin/events-settings'
 import { webEnv } from '../env'
 import { loadCaps } from '../settings'
 import { MAX_PROBE_INPUT_BYTES } from '../spool/protocol'
@@ -61,7 +62,15 @@ export function tusServer(): Server {
     async onUploadCreate(req, upload) {
       const ctx = tusContext.getStore()
       if (!ctx) throw refuse(401, 'Unauthorized')
-      const refusal = await admitUpload(db, ctx.userId, upload.id, upload.size ?? 0, await loadCaps(db), declaredKind(req.headers))
+      // v0.5.0: the events site accepts uploads only while
+      // events_uploads_enabled is on, within its own staging budget.
+      let site: Parameters<typeof admitUpload>[6] = { site: 'music' }
+      if (env.PORTAL_SITE === 'events') {
+        const ev = await loadEventsSettings(db)
+        if (!ev.events_uploads_enabled) throw refuse(403, 'uploads_disabled')
+        site = { site: 'events', eventsBudgetBytes: ev.events_staging_budget_bytes }
+      }
+      const refusal = await admitUpload(db, ctx.userId, upload.id, upload.size ?? 0, await loadCaps(db), declaredKind(req.headers), site)
       if (refusal) throw refuse(refusal.status, refusal.code)
       // Replace (not merge) whatever the client sent.
       return { metadata: { owner: ctx.userId } }

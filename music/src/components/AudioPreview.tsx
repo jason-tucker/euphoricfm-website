@@ -48,7 +48,7 @@ export function AudioPreview({
       ) : (
         <div
           aria-label="No cover art"
-          className={`${compact ? 'size-14' : 'size-20'} flex shrink-0 items-center justify-center rounded-lg border border-dashed border-cream/20 text-[10px] text-cream/40`}
+          className={`${compact ? 'size-14' : 'size-20'} flex shrink-0 items-center justify-center rounded-lg border border-dashed border-cream/20 text-[10px] text-cream/55`}
         >
           No cover
         </div>

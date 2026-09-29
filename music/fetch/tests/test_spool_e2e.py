@@ -9,8 +9,8 @@ import time
 import unittest
 
 from fetchsvc.envguard import CHILD_PATH
-from fetchsvc.errors import (ARTWORK_HOST, BAD_MEDIA, BAD_REQUEST, BAD_URL, EXTRACTOR_FAILED, INTERRUPTED,
-                             NOT_A_TRACK, REDIRECT_HOST, TIMEOUT, TOO_LARGE, TOO_LONG)
+from fetchsvc.errors import (BAD_MEDIA, BAD_REQUEST, BAD_URL, EXTRACTOR_FAILED, INTERRUPTED, NOT_A_TRACK,
+                             PREVIEW_ONLY, REDIRECT_HOST, TIMEOUT, TOO_LARGE, TOO_LONG)
 from tests.helpers import JPEG, Env
 
 SC = 'https://soundcloud.com/stub/'
@@ -155,6 +155,17 @@ class ErrorPathTests(E2EBase):
         self.assertError(SC + 'long', TOO_LONG)
         self.assertLess(time.monotonic() - t, 10)  # stub would sleep 30 s before writing audio
 
+    def test_preview_only_stops_download_early(self):
+        # 0.2.1 (second pass A2): a Go+ track whose only format is the 30 s
+        # preview, with the full length in `duration`, is refused on the info
+        # JSON alone: no media is downloaded (the stub sleeps 30 s first).
+        self.env.svc.cfg.timeout_s = 60
+        for slug in ('preview', 'snipped'):
+            with self.subTest(slug=slug):
+                t = time.monotonic()
+                self.assertError(SC + slug, PREVIEW_ONLY)
+                self.assertLess(time.monotonic() - t, 10)
+
     def test_playlist_info_stops_early(self):
         self.env.svc.cfg.timeout_s = 60
         t = time.monotonic()
@@ -234,9 +245,19 @@ class ErrorPathTests(E2EBase):
 
 class ArtworkE2ETests(E2EBase):
     def test_artwork_host_allowlist(self):
+        # 0.2.1 (second pass): a disallowed artwork URL drops the artwork and
+        # keeps the song (it used to fail the job with artwork_host); still no
+        # request is made to it.
         for slug in ['evil', 'lookalike', 'at', 'http', 'port', 'bare', 'suffix', 'meta']:
             with self.subTest(slug=slug):
-                self.assertError(SC + f'art-{slug}', ARTWORK_HOST)
+                uid, res = self.env.run(SC + f'art-{slug}')
+                self.assertEqual(res['status'], 'ok', res)
+                self.assertIsNone(res['errorCode'])
+                self.assertEqual(res['warnings'], ['artwork_host'])
+                self.assertNotIn('artwork', res['files'])
+                self.assertNotIn('artworkSha256', res)
+                self.assertIsNone(res['meta']['artworkSourceHost'])
+                self.assertEqual(os.listdir(self.env.job_dir(uid)), ['audio.mp3'])
         self.assertEqual(self.env.art.calls, [], 'no request may be made to a non-allowlisted host')
 
     def test_artwork_transfer_problems_only_drop_artwork(self):
@@ -323,6 +344,19 @@ class RequestDocTests(E2EBase):
         self.assertFalse(os.path.exists(self.env.job_dir(uid)))
         self.assertEqual(os.listdir(os.path.join(self.env.spool, 'claimed')), [])
 
+    def test_recovery_keeps_a_job_that_was_already_answered(self):
+        # Portal v0.4.1: a crash between writing the ok result and unlinking
+        # the claim. The result stands and the download stays for the probe.
+        uid, res = self.env.run(SC + 'ok-m4a')
+        self.assertEqual(res['status'], 'ok')
+        with open(os.path.join(self.env.spool, 'claimed', f'{uid}.json'), 'w') as f:
+            f.write('{}')
+        Service = type(self.env.svc)
+        Service(self.env.svc.cfg).prepare()
+        self.assertEqual(self.env.result(uid), res)
+        self.assertTrue(os.path.isfile(os.path.join(self.env.job_dir(uid), 'audio.m4a')))
+        self.assertEqual(os.listdir(os.path.join(self.env.spool, 'claimed')), [])
+
 
 class SweepTests(E2EBase):
     def test_stale_job_dirs_swept(self):
@@ -345,6 +379,95 @@ class SweepTests(E2EBase):
         self.assertIn('not-a-uuid', left)
         self.assertEqual(len(left), 3)  # the symlink is left alone (and its target untouched)
         self.assertTrue(os.path.isdir(decoy_dir))
+
+
+    def test_old_results_and_tmp_files_swept(self):
+        # Portal v0.4.1: out/<uuid>.json older than the TTL and .tmp-* left by
+        # a crash between create and rename; the heartbeat, fresh files and
+        # other names stay; a symlink is removed as a link, never followed.
+        import uuid as u
+        spool = self.env.spool
+        old_res, fresh_res = str(u.uuid4()), str(u.uuid4())
+        past = time.time() - 3 * 86400
+
+        def mk(path, old=True):
+            with open(path, 'w') as f:
+                f.write('{}')
+            if old:
+                os.utime(path, (past, past))
+            return path
+
+        mk(os.path.join(spool, 'out', f'{old_res}.json'))
+        mk(os.path.join(spool, 'out', f'{fresh_res}.json'), old=False)
+        mk(os.path.join(spool, 'out', '.tmp-aaaa'))
+        mk(os.path.join(spool, 'out', '.tmp-fresh'), old=False)
+        mk(os.path.join(spool, 'in', '.tmp-bbbb'))
+        mk(os.path.join(spool, 'claimed', '.tmp-cccc'))
+        mk(os.path.join(spool, 'out', '.alive'))
+        mk(os.path.join(spool, 'out', 'not-a-uuid.json'))
+        queued = str(u.uuid4())
+        mk(os.path.join(spool, 'in', f'{queued}.json'))  # a request is never swept here
+        os.utime(self.env.decoy, (past, past))
+        os.symlink(self.env.decoy, os.path.join(spool, 'out', '.tmp-link'))
+        os.utime(os.path.join(spool, 'out', '.tmp-link'), (past, past), follow_symlinks=False)
+        self.env.svc.maybe_sweep()
+        self.assertEqual(sorted(os.listdir(os.path.join(spool, 'out'))), sorted([f'{fresh_res}.json', '.tmp-fresh', '.alive', 'not-a-uuid.json']))
+        self.assertEqual(os.listdir(os.path.join(spool, 'in')), [f'{queued}.json'])
+        self.assertEqual(os.listdir(os.path.join(spool, 'claimed')), [])
+        self.assertTrue(os.path.isfile(self.env.decoy))
+
+    def test_no_spool_sweep_when_the_ttl_is_off(self):
+        import uuid as u
+        env = Env(staging_ttl_s=0)
+        try:
+            p = os.path.join(env.spool, 'out', f'{u.uuid4()}.json')
+            with open(p, 'w') as f:
+                f.write('{}')
+            os.utime(p, (0, 0))
+            env.svc.maybe_sweep()
+            self.assertTrue(os.path.exists(p))
+        finally:
+            env.cleanup()
+
+
+class HeartbeatTests(E2EBase):
+    """Portal v0.4.1: out/.alive tells the worker music-fetch is running."""
+
+    def test_touch_creates_and_refreshes_it(self):
+        path = os.path.join(self.env.spool, 'out', '.alive')
+        self.assertFalse(os.path.exists(path))
+        self.env.svc.touch_heartbeat()
+        self.assertTrue(os.path.isfile(path))
+        os.utime(path, (0, 0))
+        self.env.svc.touch_heartbeat()
+        self.assertGreater(os.stat(path).st_mtime, time.time() - 60)
+
+    def test_a_symlink_is_never_followed(self):
+        path = os.path.join(self.env.spool, 'out', '.alive')
+        os.utime(self.env.decoy, (0, 0))
+        os.symlink(self.env.decoy, path)
+        self.env.svc.touch_heartbeat()
+        self.assertEqual(os.stat(self.env.decoy).st_mtime, 0)
+        with open(self.env.decoy) as f:
+            self.assertEqual(f.read(), 'decoy')
+
+    def test_the_service_loop_beats_while_it_runs(self):
+        path = os.path.join(self.env.spool, 'out', '.alive')
+        t = threading.Thread(target=self.env.svc.run_forever, daemon=True)
+        t.start()
+        try:
+            deadline = time.time() + 5
+            while not os.path.exists(path) and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(os.path.isfile(path))
+            # the id listers never take it for a request or a result
+            from fetchsvc.spool import list_release_ids, list_request_ids
+            self.assertEqual(list_request_ids(os.path.join(self.env.spool, 'out')), [])
+            self.assertEqual(list_release_ids(os.path.join(self.env.spool, 'out')), [])
+        finally:
+            self.env.svc.stop.set()
+            t.join(5)
+        self.assertFalse(t.is_alive())
 
 
 class ReleaseTests(E2EBase):

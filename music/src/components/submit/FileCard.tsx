@@ -5,7 +5,7 @@
 // with its proposed folder, duplicate warnings and remove.
 
 import { useEffect, useState } from 'react'
-import { AUDIO_PAYLOAD_BYTES } from '@/lib/fit'
+import { mp3FitsUntouched } from '@/lib/fit'
 import { parseSoundCloudUrl, soundcloudLabel } from '@/lib/soundcloud'
 import { ItemArtControl } from '../ItemArtControl'
 import { AudioPreview } from '../AudioPreview'
@@ -80,8 +80,11 @@ export function FileCard({
   const scUrl = scLink?.ok ? scLink.url : null
   const isWav = !sc && fileKind({ name: e.fileName, type: '' }) === 'wav'
   // An MP3 over the audio budget is re-encoded by the probe (a hint only:
-  // the probe decides, from the bytes).
-  const big = !sc && !isWav && e.size > AUDIO_PAYLOAD_BYTES
+  // the probe decides, from the bytes). v0.4.1: the same rule as the probe,
+  // so the leading ID3 tag (cover art) does not count.
+  const big = !sc && !isWav && e.size > 0 && !mp3FitsUntouched(e.size, e.id3Size ?? 0)
+  // v0.4.1: a SoundCloud link can be cancelled while it waits or fetches.
+  const cancellable = sc && e.phase === 'probing' && Boolean(e.itemId)
 
   return (
     <li className="card space-y-3" data-entry={e.key} data-phase={e.phase}>
@@ -135,10 +138,10 @@ export function FileCard({
             type="button"
             className="btn btn-danger btn-sm"
             onClick={onRemove}
-            disabled={e.phase === 'attaching' || e.phase === 'probing'}
-            title={e.phase === 'probing' ? 'You can remove this file once its check finishes' : undefined}
+            disabled={e.phase === 'attaching' || (e.phase === 'probing' && !cancellable)}
+            title={cancellable ? 'Cancel this link' : e.phase === 'probing' ? 'You can remove this file once its check finishes' : undefined}
           >
-            Remove
+            {cancellable ? 'Cancel' : 'Remove'}
           </button>
         </div>
       </div>
@@ -164,7 +167,7 @@ export function FileCard({
               ? 'Fetched from SoundCloud. Converting it to an MP3…'
               : scStage === 'fetching'
                 ? 'Fetching the track from SoundCloud… This can take a minute or two.'
-                : 'Waiting for its turn to be fetched from SoundCloud…'
+                : 'Waiting for its turn to be fetched from SoundCloud. Links are fetched one at a time, so this can take a while; you can cancel it if you don’t want to wait.'
             : isWav
             ? 'Checking the WAV and converting it to an MP3… Large files can take a few minutes.'
             : big
@@ -182,7 +185,14 @@ export function FileCard({
             src={cover}
             hasCustomArt={Boolean(e.item?.hasCustomArt)}
             onChange={onArt}
-            prompt="This song has no cover art yet. Add a square JPEG, PNG or WebP (up to 5 MB). It's optional: you can still submit without it."
+            prompt={
+              // v0.4.1: a SoundCloud link whose artwork could not be used (an
+              // address outside SoundCloud's image server, a failed or odd
+              // image) keeps the song; the card says why there is no cover.
+              sc
+                ? "SoundCloud's artwork for this track couldn't be used (or it has none), so the song has no cover yet. Add a square JPEG, PNG or WebP (up to 5 MB). It's optional: you can still submit without it."
+                : "This song has no cover art yet. Add a square JPEG, PNG or WebP (up to 5 MB). It's optional: you can still submit without it."
+            }
           />
           <AudioPreview itemId={e.itemId} hideCover onUrls={(u) => setCover(u.coverUrl)} />
           <div className="grid gap-3 sm:grid-cols-2">

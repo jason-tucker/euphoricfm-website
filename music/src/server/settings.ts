@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import type { DB } from './db/client'
 import { settings } from './db/schema'
@@ -11,9 +11,21 @@ export async function getSetting(db: DB, key: string): Promise<unknown> {
   return row ? row.value : DEFAULT_SETTINGS[key]
 }
 
-export async function getIntList(db: DB, key: string): Promise<number[]> {
-  const r = intList.safeParse(await getSetting(db, key))
+// v0.4.1: several keys in ONE query (a page used to issue one SELECT per
+// key: 12 for an anonymous GET /). Missing keys get DEFAULT_SETTINGS.
+export async function getSettings<K extends string>(db: DB, keys: readonly K[]): Promise<Record<K, unknown>> {
+  const rows = await db.select({ key: settings.key, value: settings.value }).from(settings).where(inArray(settings.key, [...keys]))
+  const found = new Map(rows.map((r) => [r.key, r.value]))
+  return Object.fromEntries(keys.map((k) => [k, found.has(k) ? found.get(k) : DEFAULT_SETTINGS[k]])) as Record<K, unknown>
+}
+
+export function intListOf(v: unknown): number[] {
+  const r = intList.safeParse(v)
   return r.success ? r.data : []
+}
+
+export async function getIntList(db: DB, key: string): Promise<number[]> {
+  return intListOf(await getSetting(db, key))
 }
 
 const capsOverride = z
@@ -44,7 +56,11 @@ const capsOverride = z
 // ceiling everywhere. An invalid value falls back to the default for that
 // field.
 export async function loadCaps(db: DB): Promise<Caps> {
-  const raw = await getSetting(db, 'caps')
+  return capsOf(await getSetting(db, 'caps'))
+}
+
+// loadCaps on an already-read settings value.
+export function capsOf(raw: unknown): Caps {
   const out: Record<string, number> = { ...DEFAULT_CAPS }
   if (raw && typeof raw === 'object') {
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
@@ -59,5 +75,7 @@ export async function loadCaps(db: DB): Promise<Caps> {
 // v0.4.0: the SoundCloud kill switch. Only a stored `false` turns it off; a
 // missing or malformed value means the default (on).
 export async function soundcloudEnabled(db: DB): Promise<boolean> {
-  return (await getSetting(db, 'soundcloud_fetch_enabled')) !== false
+  return soundcloudEnabledOf(await getSetting(db, 'soundcloud_fetch_enabled'))
 }
+
+export const soundcloudEnabledOf = (v: unknown): boolean => v !== false

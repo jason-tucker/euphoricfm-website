@@ -16,6 +16,7 @@ import { and, eq, lt, sql } from 'drizzle-orm'
 import { audit } from '../audit'
 import type { DB } from '../db/client'
 import { artUploads } from '../db/schema'
+import { portalSite, type PortalSite } from '../env'
 import { writeSpoolRequest } from '../spool/protocol'
 
 const D = 24 * 3600_000
@@ -24,11 +25,12 @@ const D = 24 * 3600_000
 const ITEM_DONE = `('live', 'denied', 'withdrawn', 'rejected', 'failed')`
 const REQUEST_DONE = `('done', 'denied', 'withdrawn', 'failed')`
 
-export async function sweepArt(db: DB, dirs: { spoolIn: string }, now = Date.now()): Promise<{ expired: number; timedOut: number }> {
+// v0.5.0: only this site's rows (art_uploads.site = PORTAL_SITE).
+export async function sweepArt(db: DB, dirs: { spoolIn: string }, now = Date.now(), site: PortalSite = portalSite()): Promise<{ expired: number; timedOut: number }> {
   const timedOut = await db
     .update(artUploads)
     .set({ status: 'rejected', reason: 'probe_timeout', updatedAt: new Date(now) })
-    .where(and(eq(artUploads.status, 'processing'), lt(artUploads.createdAt, new Date(now - D))))
+    .where(and(eq(artUploads.site, site), eq(artUploads.status, 'processing'), lt(artUploads.createdAt, new Date(now - D))))
     .returning({ id: artUploads.id, rawPath: artUploads.rawPath })
   for (const r of timedOut) if (r.rawPath) await unlink(r.rawPath).catch(() => {})
 
@@ -37,7 +39,7 @@ export async function sweepArt(db: DB, dirs: { spoolIn: string }, now = Date.now
   const stale = await db.execute<{ id: string; status: string; raw_path: string | null }>(sql`
     SELECT a.id::text AS id, a.status::text AS status, a.raw_path
     FROM art_uploads a
-    WHERE a.status IN ('ready', 'rejected') AND a.created_at < ${cut}
+    WHERE a.site = ${site} AND a.status IN ('ready', 'rejected') AND a.created_at < ${cut}
       AND NOT EXISTS (
         SELECT 1 FROM items i
         WHERE i.custom_art_id = a.id

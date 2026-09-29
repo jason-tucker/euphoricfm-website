@@ -210,6 +210,42 @@ describe.skipIf(!DBENV())('draft retention (plan §3.4 "drafts after 7 days")', 
     expect((await ownerSql()`SELECT status FROM batches WHERE id = ${freshDraft!.id}`)[0]!.status).toBe('draft')
     expect(await staged()).toBe(200) // no longer counts toward the staging caps
   })
+
+  // v0.4.1 security review of the link cancel (A3): the reserve is released
+  // at the cancel, so what the probe publishes afterwards must not stay.
+  it('a SoundCloud link withdrawn while probing: whatever the probe publishes later is removed at every sweep; other withdrawn items keep 7 days', async () => {
+    const db = getDb(process.env.TEST_APP_DATABASE_URL, 2)
+    const dir = mkdtempSync(join(tmpdir(), 'sweep-sc-'))
+    const [u] = await ownerSql()`INSERT INTO "user" (id, discord_id) VALUES (${randomUUID()}, ${'4' + String(Date.now()).padStart(17, '0')}) RETURNING id`
+    const [b] = await ownerSql()`INSERT INTO batches (owner_user_id, status) VALUES (${u!.id}, 'draft') RETURNING id`
+    const mk = async (probeSha: string | null) => {
+      const up = randomUUID().replace(/-/g, '')
+      const fetchId = randomUUID()
+      await ownerSql()`INSERT INTO uploads (id, owner_user_id, length, status) VALUES (${up}, ${u!.id}, ${60 * 1024 * 1024}, 'expired')`
+      const [it] = await ownerSql()`INSERT INTO items (batch_id, owner_user_id, status, source, upload_id, fetch_request_id, probe_request_id, probe_sha256)
+        VALUES (${b!.id}, ${u!.id}, 'withdrawn', 'soundcloud', ${up}, ${fetchId}, ${fetchId}, ${probeSha}) RETURNING id`
+      return { id: it!.id as number, up, cover: `cover-${fetchId}.jpg` }
+    }
+    const cancelled = await mk(null) // withdrawn while converting: never collected
+    const afterReady = await mk('e'.repeat(64)) // withdrawn once pending: the normal 7 days
+    const publish = (x: { up: string; cover: string }) => {
+      writeFileSync(join(dir, x.up), 'mp3')
+      writeFileSync(join(dir, x.cover), 'jpg')
+    }
+    publish(cancelled)
+    publish(afterReady)
+    await sweepStaging(db, dir)
+    expect(existsSync(join(dir, cancelled.up))).toBe(false)
+    expect(existsSync(join(dir, cancelled.cover))).toBe(false)
+    expect(existsSync(join(dir, afterReady.up))).toBe(true)
+    expect(existsSync(join(dir, afterReady.cover))).toBe(true)
+    // a late publication (the probe was still converting at the first sweep) goes at the next
+    publish(cancelled)
+    await sweepStaging(db, dir)
+    expect(existsSync(join(dir, cancelled.up))).toBe(false)
+    expect(existsSync(join(dir, cancelled.cover))).toBe(false)
+    expect((await ownerSql()`SELECT upload_id FROM items WHERE id = ${cancelled.id}`)[0]!.upload_id).toBe(cancelled.up)
+  })
 })
 
 describe.skipIf(!DBENV())('dependency waits do not spend attempts (ticket not open yet)', () => {

@@ -8,6 +8,7 @@
 // is the actual path segment, the name the first-listed artist that matches
 // it) and maintains station_playlist_ids (sync-owned; see stationSet).
 
+import { createHash } from 'node:crypto'
 import { notInArray, sql } from 'drizzle-orm'
 import type { StationMedia } from '../../server/azuracast/client'
 import { audit } from '../../server/audit'
@@ -79,7 +80,37 @@ export function artUrlFor(m: Pick<StationMedia, 'unique_id'> & { art?: unknown }
   return `${ART_ORIGIN}/api/station/${encodeURIComponent(shortcode)}/art/${encodeURIComponent(m.unique_id)}`
 }
 
-export type SyncResult = { total: number; library: number; removed: number; artistsAdded: number; stationPlaylistIds: number[] }
+// skipped (v0.4.1): the listing was the same as at the last sync, so the
+// cache and the artists were left untouched.
+export type SyncResult = { total: number; library: number; removed: number; artistsAdded: number; stationPlaylistIds: number[]; skipped: boolean }
+
+// v0.4.1: everything the cache rows are built from. Unchanged since the last
+// sync (and the row count agrees) → no rewrite of ~350 rows every 10 min.
+export const LIBRARY_HASH_KEY = 'library_sync_hash'
+
+export function listingHash(rows: readonly StationMedia[], foreign: ReadonlySet<number>, shortcode: string): string {
+  const h = createHash('sha256')
+  h.update(JSON.stringify([shortcode, [...foreign].sort((a, b) => a - b)]))
+  for (const r of rows) {
+    h.update(
+      JSON.stringify([
+        r.id,
+        r.unique_id,
+        r.path,
+        r.title ?? null,
+        r.artist ?? null,
+        r.album ?? null,
+        r.genre ?? null,
+        r.playlists.map((p) => p.id),
+        typeof r.length === 'number' ? Math.round(r.length) : null,
+        typeof r.mtime === 'number' ? Math.round(r.mtime) : null,
+        artUrlFor(r, shortcode),
+      ]),
+    )
+    h.update('\n')
+  }
+  return h.digest('hex')
+}
 
 const intList = (v: unknown): number[] | null => (Array.isArray(v) && v.every((x) => Number.isSafeInteger(x) && x > 0) ? (v as number[]) : null)
 const sorted = (xs: Iterable<number>) => [...new Set(xs)].sort((a, b) => a - b)
@@ -111,12 +142,20 @@ export function stationSet(opts: {
   return { station, unconfirmed, fresh }
 }
 
+export async function eventRegistryPlaylistIds(db: Pick<P3Ctx['db'], 'execute'>): Promise<number[]> {
+  const rows = (await db.execute<{ id: number }>(sql`SELECT DISTINCT playlist_id AS id FROM event_registry WHERE playlist_id IS NOT NULL`)) as unknown as { id: number }[]
+  return rows.map((r) => Number(r.id)).filter((id) => Number.isSafeInteger(id) && id > 0)
+}
+
 export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
   const all = await ctx.azuracast.listAllFiles(100)
   const rows = all.filter((f) => isLibraryPath(f.path))
 
   // Station playlist ids (stationSet above).
-  const foreign = new Set(await getIntList(ctx.db, 'foreign_playlist_ids'))
+  // v0.5.0: plus every playlist the events worker registered (its registry
+  // row is committed before any song is assigned, and is read here AFTER the
+  // listing above), so event playlists are never absorbed or alerted on.
+  const foreign = new Set([...(await getIntList(ctx.db, 'foreign_playlist_ids')), ...(await eventRegistryPlaylistIds(ctx.db))])
   const observed = new Set<number>()
   for (const r of rows) for (const p of r.playlists) observed.add(p.id)
   const configured = [...(await getIntList(ctx.db, 'assignable_playlist_ids')), ...(await getIntList(ctx.db, 'default_playlist_ids'))]
@@ -133,68 +172,76 @@ export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
   const sc = await getSetting(ctx.db, 'nowplaying_shortcode')
   const shortcode = typeof sc === 'string' && /^[a-z0-9_]{1,64}$/.test(sc) ? sc : 'euphoricfm'
 
-  let removed = 0
-  await ctx.db.transaction(async (tx) => {
-    const ids = rows.map((r) => r.id)
-    if (prune) {
-      const del = await tx
-        .delete(libraryCache)
-        .where(ids.length ? notInArray(libraryCache.mediaId, ids) : undefined)
-        .returning({ id: libraryCache.mediaId })
-      removed = del.length
-    }
-    for (let i = 0; i < rows.length; i += 100) {
-      const chunk = rows.slice(i, i + 100)
-      // A path whose media id changed (a lost-and-reimported row) must free
-      // the unique path first.
-      for (const r of chunk) await tx.execute(sql`DELETE FROM library_cache WHERE path = ${r.path} AND media_id <> ${r.id}`)
-      await tx
-        .insert(libraryCache)
-        .values(
-          chunk.map((r) => ({
-            mediaId: r.id,
-            uniqueId: r.unique_id,
-            path: r.path,
-            title: r.title ?? null,
-            artist: r.artist ?? null,
-            album: r.album ?? null,
-            genre: r.genre ?? null,
-            playlistIds: r.playlists.map((p) => p.id).filter((id) => !foreign.has(id)),
-            lengthS: typeof r.length === 'number' ? Math.round(r.length) : null,
-            mtime: typeof r.mtime === 'number' ? Math.round(r.mtime) : null,
-            artUrl: artUrlFor(r, shortcode),
-            refreshedAt: new Date(ctx.now()),
-          })),
-        )
-        .onConflictDoUpdate({
-          target: libraryCache.mediaId,
-          set: {
-            uniqueId: sql`excluded.unique_id`,
-            path: sql`excluded.path`,
-            title: sql`excluded.title`,
-            artist: sql`excluded.artist`,
-            album: sql`excluded.album`,
-            genre: sql`excluded.genre`,
-            playlistIds: sql`excluded.playlist_ids`,
-            lengthS: sql`excluded.length_s`,
-            mtime: sql`excluded.mtime`,
-            artUrl: sql`excluded.art_url`,
-            refreshedAt: sql`excluded.refreshed_at`,
-          },
-        })
-    }
-  })
+  const hash = listingHash(rows, foreign, shortcode)
+  const skipped = prune && existing === rows.length && (await getSetting(ctx.db, LIBRARY_HASH_KEY)) === hash
 
+  let removed = 0
   let artistsAdded = 0
-  for (const [folder, a] of artistsFromLibrary(rows)) {
-    const ins = await ctx.db
-      .insert(artists)
-      .values({ name: a.name, folder, aliases: a.aliases, status: 'active' })
-      .onConflictDoNothing({ target: artists.folder })
-      .returning({ id: artists.id })
-    artistsAdded += ins.length
+  if (!skipped) {
+    await ctx.db.transaction(async (tx) => {
+      const ids = rows.map((r) => r.id)
+      if (prune) {
+        const del = await tx
+          .delete(libraryCache)
+          .where(ids.length ? notInArray(libraryCache.mediaId, ids) : undefined)
+          .returning({ id: libraryCache.mediaId })
+        removed = del.length
+      }
+      for (let i = 0; i < rows.length; i += 100) {
+        const chunk = rows.slice(i, i + 100)
+        // A path whose media id changed (a lost-and-reimported row) must free
+        // the unique path first.
+        for (const r of chunk) await tx.execute(sql`DELETE FROM library_cache WHERE path = ${r.path} AND media_id <> ${r.id}`)
+        await tx
+          .insert(libraryCache)
+          .values(
+            chunk.map((r) => ({
+              mediaId: r.id,
+              uniqueId: r.unique_id,
+              path: r.path,
+              title: r.title ?? null,
+              artist: r.artist ?? null,
+              album: r.album ?? null,
+              genre: r.genre ?? null,
+              playlistIds: r.playlists.map((p) => p.id).filter((id) => !foreign.has(id)),
+              lengthS: typeof r.length === 'number' ? Math.round(r.length) : null,
+              mtime: typeof r.mtime === 'number' ? Math.round(r.mtime) : null,
+              artUrl: artUrlFor(r, shortcode),
+              refreshedAt: new Date(ctx.now()),
+            })),
+          )
+          .onConflictDoUpdate({
+            target: libraryCache.mediaId,
+            set: {
+              uniqueId: sql`excluded.unique_id`,
+              path: sql`excluded.path`,
+              title: sql`excluded.title`,
+              artist: sql`excluded.artist`,
+              album: sql`excluded.album`,
+              genre: sql`excluded.genre`,
+              playlistIds: sql`excluded.playlist_ids`,
+              lengthS: sql`excluded.length_s`,
+              mtime: sql`excluded.mtime`,
+              artUrl: sql`excluded.art_url`,
+              refreshedAt: sql`excluded.refreshed_at`,
+            },
+          })
+      }
+    })
+
+    for (const [folder, a] of artistsFromLibrary(rows)) {
+      const ins = await ctx.db
+        .insert(artists)
+        .values({ name: a.name, folder, aliases: a.aliases, status: 'active' })
+        .onConflictDoNothing({ target: artists.folder })
+        .returning({ id: artists.id })
+      artistsAdded += ins.length
+    }
+    if (artistsAdded > 0) await audit(ctx.db, { action: 'artists.seed', targetType: 'artists', detail: { added: artistsAdded } })
+    // Only after a full, pruned sync: a shrunken listing (rows kept) is synced
+    // again next time.
+    if (prune) await putSetting(ctx, LIBRARY_HASH_KEY, hash)
   }
-  if (artistsAdded > 0) await audit(ctx.db, { action: 'artists.seed', targetType: 'artists', detail: { added: artistsAdded } })
 
   if (JSON.stringify(prev) !== JSON.stringify(stationIds)) {
     await putSetting(ctx, 'station_playlist_ids', stationIds)
@@ -208,5 +255,5 @@ export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
       firstSync: prev === null,
     })
   }
-  return { total: all.length, library: rows.length, removed, artistsAdded, stationPlaylistIds: stationIds }
+  return { total: all.length, library: rows.length, removed, artistsAdded, stationPlaylistIds: stationIds, skipped }
 }

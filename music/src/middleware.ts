@@ -28,6 +28,8 @@ import { checkBodyLimited } from './server/http/body'
 import { readBodyLimitHeaderOnly } from './server/http/body-header'
 import { checkCsrf, SAFE_METHODS } from './server/http/csrf'
 import { buildCsp, MEDIA_CSP } from './server/http/csp'
+import { NOT_FOUND_PATH, siteGate } from './server/http/site-gate'
+import { portalSite } from './server/env'
 import { clientKey, LIMITS, RateLimiter } from './server/http/ratelimit'
 
 const limiter = new RateLimiter()
@@ -45,6 +47,11 @@ function json(status: number, code: string, headers: Record<string, string> = {}
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
+  // v0.5.0 site gate (server/http/site-gate.ts): music vs events.
+  const site = portalSite()
+  const gate = siteGate(site, pathname)
+  if (gate.kind === 'not_found' && gate.api) return json(404, 'not_found')
+  const rewriteTo = gate.kind === 'rewrite' ? gate.pathname : gate.kind === 'not_found' ? NOT_FOUND_PATH : null
   const method = req.method.toUpperCase()
   const unsafe = !SAFE_METHODS.has(method)
   const isHook = pathname === '/api/hooks/tickets'
@@ -77,11 +84,16 @@ export async function middleware(req: NextRequest) {
   }
 
   const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('base64')
-  const csp = pathname.startsWith('/api/media/') ? MEDIA_CSP : buildCsp(nonce)
+  const csp = pathname.startsWith('/api/media/') || /^\/api\/ev\/audio\/\d+\/preview$/.test(pathname) ? MEDIA_CSP : buildCsp(nonce, site)
   const requestHeaders = new Headers(req.headers)
   requestHeaders.set('x-nonce', nonce)
+  // v0.4.1: the page being asked for, so a page's sign-in redirect can come
+  // back to it (server/ui/page.ts). Always overwritten: never the client's.
+  requestHeaders.set('x-efm-path', `${pathname}${req.nextUrl.search}`.slice(0, 1024))
   requestHeaders.set('content-security-policy', csp)
-  const res = NextResponse.next({ request: { headers: requestHeaders } })
+  const res = rewriteTo
+    ? NextResponse.rewrite(Object.assign(req.nextUrl.clone(), { pathname: rewriteTo }), { request: { headers: requestHeaders } })
+    : NextResponse.next({ request: { headers: requestHeaders } })
   res.headers.set('Content-Security-Policy', csp)
   return res
 }

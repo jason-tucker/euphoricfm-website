@@ -91,7 +91,7 @@ export function SubmitPanel({
         />
         <span className="text-sm">
           {rights.text}
-          <span id="rights-version" className="mt-1 block text-xs text-cream/45">
+          <span id="rights-version" className="mt-1 block text-xs text-cream/55">
             Rights statement version {rights.version}. Required.
           </span>
         </span>

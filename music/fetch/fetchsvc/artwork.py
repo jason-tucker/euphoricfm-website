@@ -2,9 +2,10 @@
 https://*.sndcdn.com, size-capped (5 MiB) and time-capped, stored RAW.
 
 fetch never decodes the image; music-probe re-encodes it (plan §3.6). A URL
-outside the allowlist fails the whole job with `artwork_host`. A transfer
-problem (non-200, redirect, non-image type, too big, slow) only drops the
-artwork and adds a warning: artwork is optional.
+outside the allowlist is never requested; since 0.2.1 it only drops the
+artwork (warning `artwork_host`; it used to fail the whole job). A transfer
+problem (non-200, redirect, non-image type, too big, slow) also only drops
+the artwork and adds a warning: artwork is optional.
 """
 
 from __future__ import annotations
