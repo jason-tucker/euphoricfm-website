@@ -109,9 +109,13 @@ export async function clearEventsSettings(keys: string[]): Promise<void> {
 // 24 h minimum notice and the 48 h warning are both behind us), at a UTC hour
 // that stays clear of the 01:55–02:05 ET nightly restart. Suites use
 // disjoint day ranges so their events never clash (10-min gap rule).
+// RUN_SHIFT moves every slot of one test process by 0–77 days, so a re-run
+// against a kept stack (KEEP=1, same database) rarely lands on the previous
+// run's events; a fresh harness run never has any.
+const RUN_SHIFT = (Math.floor(Date.now() / 60_000) % 12) * 7
 export function slot(dayAhead: number, hourUtc = 20, lengthMin = 120): { startsAt: string; endsAt: string } {
   const d = new Date()
-  const start = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + dayAhead, hourUtc, 0, 0)
+  const start = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + dayAhead + RUN_SHIFT, hourUtc, 0, 0)
   return { startsAt: new Date(start).toISOString(), endsAt: new Date(start + lengthMin * 60_000).toISOString() }
 }
 
