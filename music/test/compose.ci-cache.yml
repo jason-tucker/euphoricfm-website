@@ -1,0 +1,37 @@
+# CI only (test/run.sh adds it when MUSIC_TEST_BUILD_CACHE=gha): the buildx
+# layer cache in the GitHub Actions cache, one scope per build target, like
+# the site's `build` job (scope=site). mode=max keeps the shared deps / next
+# build stages, so an unchanged lockfile skips pnpm install and next build.
+# ignore-error: a cache-service hiccup never fails the build. Needs a buildx
+# builder (docker-container driver) and the ACTIONS_* runtime env
+# (.github/workflows/build-and-publish.yml, build-music).
+services:
+  music-init:
+    build:
+      cache_from: ["type=gha,scope=music-worker"]
+  music-migrate:
+    build:
+      cache_from: ["type=gha,scope=music-worker"]
+  music-worker:
+    build:
+      cache_from: ["type=gha,scope=music-worker"]
+      cache_to: ["type=gha,scope=music-worker,mode=max,ignore-error=true"]
+  music-web:
+    build:
+      cache_from: ["type=gha,scope=music-web"]
+      cache_to: ["type=gha,scope=music-web,mode=max,ignore-error=true"]
+  music-probe:
+    build:
+      cache_from: ["type=gha,scope=music-probe"]
+      cache_to: ["type=gha,scope=music-probe,mode=max,ignore-error=true"]
+  music-fetch:
+    build:
+      cache_from: ["type=gha,scope=music-fetch"]
+      cache_to: ["type=gha,scope=music-fetch,mode=max,ignore-error=true"]
+  mocks:
+    build:
+      cache_from: ["type=gha,scope=music-test"]
+  tests:
+    build:
+      cache_from: ["type=gha,scope=music-test"]
+      cache_to: ["type=gha,scope=music-test,mode=max,ignore-error=true"]

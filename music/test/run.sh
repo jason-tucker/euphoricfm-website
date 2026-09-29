@@ -3,12 +3,19 @@
 #   builds web/worker/probe/fetch/test images, brings up postgres + mocks + the
 #   real containers with their real mounts, runs music-fetch's own unit suite
 #   (network none), vitest (unit + DB + e2e), then the mount / start-up-guard
-#   shell checks, then records idle `docker stats`.
+#   shell checks, then records one `docker stats` snapshot (informational).
 #   Nothing here reaches SoundCloud or any production system: music-fetch runs
 #   with network_mode none and a fake yt-dlp (test/fetch-fake).
 # Usage: test/run.sh            (from music/ or anywhere)
 # Env:   DOCKER_COMPOSE="docker compose" (override the compose command)
 #        KEEP=1 to leave the stack up afterwards.
+#        MUSIC_TEST_BUILD_CACHE=gha (CI only): adds test/compose.ci-cache.yml
+#        (buildx layer cache in the GitHub Actions cache; needs a buildx
+#        builder and the ACTIONS_* runtime env) and builds the fetch test
+#        stage on the same builder.
+#        The audio fixtures are cached by content hash in
+#        test/.out/fixture-cache (see test/setup/global.ts); delete it to
+#        force a rebuild.
 #        MUSIC_TEST_PROJECT=<name> (default efm-music-test) isolates parallel
 #        runs from different worktrees (compose project, networks, test image
 #        tag); MUSIC_TEST_TAG overrides the runtime image tag; the web gets no
@@ -24,6 +31,7 @@ elif [ "$P" = efm-music-test ]; then export MUSIC_TAG=local-test
 else export MUSIC_TAG="local-test-$P"; fi
 FILES="-f compose.yml -f test/compose.test.yml"
 if [ -n "${MUSIC_TEST_WEB_PORT:-}" ]; then export MUSIC_TEST_WEB_PORT; FILES="$FILES -f test/compose.webport.yml"; fi
+if [ "${MUSIC_TEST_BUILD_CACHE:-}" = gha ]; then FILES="$FILES -f test/compose.ci-cache.yml"; fi
 DC="${DOCKER_COMPOSE:-docker compose} -p $P $FILES"
 
 cleanup() {
@@ -35,7 +43,7 @@ cleanup() {
 trap cleanup EXIT
 
 $DC --profile tests down -v --remove-orphans >/dev/null 2>&1 || true
-mkdir -p test/.out/data
+mkdir -p test/.out/data test/.out/fixture-cache
 docker run --rm -v "$PWD/test/.out:/o" alpine:3 sh -c 'rm -rf /o/data && mkdir -p /o/data/fetch-fixtures' >/dev/null
 
 # The PRODUCTION compose definitions, resolved (anchors merged), for the
@@ -58,7 +66,13 @@ $DC up -d --wait music-web music-worker music-probe music-fetch events-web event
 
 status=0
 echo "== music-fetch unit tests (its own suite: runtime constraints, network none)"
-if docker build -q --target test -t "$P/fetch-test:local" fetch >/dev/null \
+if [ "${MUSIC_TEST_BUILD_CACHE:-}" = gha ]; then
+  # the buildx builder the compose build used: the base stage is cached there
+  fetch_build() { docker buildx build --load -q --target test -t "$P/fetch-test:local" fetch; }
+else
+  fetch_build() { docker build -q --target test -t "$P/fetch-test:local" fetch; }
+fi
+if fetch_build >/dev/null \
   && docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop ALL \
        --security-opt no-new-privileges:true --network none "$P/fetch-test:local" > test/.out/fetch-unit.log 2>&1; then
   tail -3 test/.out/fetch-unit.log
@@ -70,11 +84,42 @@ echo "== vitest"
 $DC --profile tests run --rm tests pnpm exec vitest run --reporter=default > test/.out/vitest.log 2>&1 || status=1
 cat test/.out/vitest.log
 
-echo "== mount checks (real compose mounts)"
-mc=0
-check() { # name, service, command, expect(ok|fail)
+echo "== mount checks (real compose mounts; one container per service)"
+# check <name> <service> <command> <expect ok|fail> queues a check; run_checks
+# then runs every check of a service in ONE container (was one container
+# each: ~2 s of start-up per check) and reports in declaration order.
+nck=0
+check() {
+  nck=$((nck + 1))
+  eval "CK_NAME_$nck=\$1 CK_SVC_$nck=\$2 CK_CMD_$nck=\$3 CK_WANT_$nck=\$4"
+}
+# check_now <name> <service> <command> <expect ok|fail> runs one check in its
+# own container immediately (for checks whose order across services matters).
+check_now() {
   if $DC run --rm --no-deps -T --entrypoint sh "$2" -c "$3" >/dev/null 2>&1; then got=ok; else got=fail; fi
-  if [ "$got" = "$4" ]; then echo "  PASS $1"; else echo "  FAIL $1 (got $got, want $4)"; mc=1; fi
+  if [ "$got" = "$4" ]; then echo "  PASS $1"; else echo "  FAIL $1 (expected $4, got $got)"; mc=$((mc + 1)); fi
+}
+run_checks() {
+  mc=0
+  for svc in music-web music-worker music-probe music-fetch events-web events-worker events-probe; do
+    script='' n=1
+    while [ $n -le $nck ]; do
+      eval "s=\$CK_SVC_$n c=\$CK_CMD_$n"
+      [ "$s" = "$svc" ] && script="$script
+if ( $c ) >/dev/null 2>&1; then echo 'CK $n ok'; else echo 'CK $n fail'; fi"
+      n=$((n + 1))
+    done
+    out=$($DC run --rm --no-deps -T --entrypoint sh "$svc" -c "$script" 2>&1) || true
+    eval "OUT_$(printf '%s' "$svc" | tr - _)=\$out"
+  done
+  n=1
+  while [ $n -le $nck ]; do
+    eval "name=\$CK_NAME_$n s=\$CK_SVC_$n want=\$CK_WANT_$n"
+    eval "out=\$OUT_$(printf '%s' "$s" | tr - _)"
+    got=$(printf '%s\n' "$out" | awk -v n="$n" '$1 == "CK" && $2 == n { print $3 }')
+    if [ "$got" = "$want" ]; then echo "  PASS $name"; else echo "  FAIL $name (got ${got:-no result}, want $want)"; mc=1; fi
+    n=$((n + 1))
+  done
 }
 check "web cannot write in-worker"          music-web   'touch /spool/probe/in-worker/x' fail
 check "web cannot see in-worker at all"     music-web   'test -e /spool/probe/in-worker' fail
@@ -119,11 +164,14 @@ check "events-worker cannot see uploads/art/fetch" events-worker 'test -e /stagi
 check "events-probe has no network"           events-probe 'wget -q -T 3 -O /dev/null http://mocks:4104/egress' fail
 check "events-probe sees no art-in/fetch"     events-probe 'test -e /staging/art-in || test -e /staging/fetch' fail
 check "events-probe art dir is its own tmpfs" events-probe 'grep -q " /staging/art tmpfs " /proc/mounts' ok
+run_checks
+# Order matters here (touch in one tree, look from the other, clean up), so
+# these three run one container at a time, after the batched checks.
 # The two trees are disjoint: a marker in music's in-web never shows up in
 # the events in-web (and the reverse).
-check "music in-web is not events in-web"     music-web   'touch /spool/probe/in-web/.iso-music' ok
-check "events in-web does not see music's"    events-web  'test -e /spool/probe/in-web/.iso-music' fail
-check "clean up the isolation marker"         music-web   'rm /spool/probe/in-web/.iso-music' ok
+check_now "music in-web is not events in-web"     music-web   'touch /spool/probe/in-web/.iso-music' ok
+check_now "events in-web does not see music's"    events-web  'test -e /spool/probe/in-web/.iso-music' fail
+check_now "clean up the isolation marker"         music-web   'rm /spool/probe/in-web/.iso-music' ok
 [ $mc -eq 0 ] || status=1
 
 echo "== worker start-up guard (real image)"
@@ -159,8 +207,9 @@ out=$($DC run --rm --no-deps -T -e AUTH_SECRET=x --entrypoint python music-fetch
 if [ $rc -eq 78 ] && echo "$out" | grep -q "unexpected environment variables: AUTH_SECRET" && ! echo "$out" | grep -q "=x"; then echo "  PASS fetch refuses an unexpected env var (exit 78, name only)"; else echo "  FAIL fetch env guard (rc=$rc)"; echo "$out" | tail -3; gc=1; fi
 [ $gc -eq 0 ] || status=1
 
-echo "== idle memory (docker stats)"
-sleep 20
+# One snapshot, no settling sleep (the stack has been idle through the
+# checks above); informational, for the memory figures in the ops notes.
+echo "== memory (docker stats snapshot)"
 docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}' \
   "$P-music-web-1" "$P-music-worker-1" "$P-music-probe-1" "$P-music-fetch-1" "$P-music-db-1" \
   "$P-events-web-1" "$P-events-worker-1" "$P-events-probe-1" | tee test/.out/stats.txt
