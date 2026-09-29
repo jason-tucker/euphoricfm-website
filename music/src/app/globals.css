@@ -71,6 +71,21 @@
     background: rgb(var(--efm-sunburst-rgb));
     color: rgb(var(--efm-ink-rgb));
   }
+  /* Native dropdown lists (every select on music. and events.): the open
+   * list is painted by the OS/browser. An opaque dark fill with cream text,
+   * never the inherited cream on a default white popup (white-on-white,
+   * 2026-09-29). #17171d = the portal's dark card surface, opaque. */
+  select {
+    color-scheme: dark;
+  }
+  select option,
+  select optgroup {
+    background-color: #17171d;
+    color: rgb(var(--efm-cream-rgb));
+  }
+  select option:disabled {
+    color: rgb(var(--efm-cream-rgb) / 0.45);
+  }
 }
 
 @layer components {
@@ -219,6 +234,37 @@
   .input {
     @apply w-full rounded-xl border border-cream/20 bg-cream/[0.06] px-3 py-2 text-sm text-cream placeholder:text-cream/40
       hover:border-cream/35 focus:border-sunburst/70 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  /* Dropdowns: .input's translucent fill makes Chrome on Windows fall back
+   * to a WHITE option list under the inherited cream text. A select gets an
+   * OPAQUE dark fill (the same as its options) and its own chevron: two CSS
+   * gradients (no url(): independent of the CSP), 44 px tall (48 px on
+   * phones), a visible focus ring, and the .input disabled state. */
+  select.input {
+    @apply min-h-11 cursor-pointer appearance-none pr-10;
+    color-scheme: dark;
+    background-color: #17171d;
+    background-image: linear-gradient(45deg, transparent 50%, rgb(var(--efm-cream-rgb) / 0.75) 50%),
+      linear-gradient(135deg, rgb(var(--efm-cream-rgb) / 0.75) 50%, transparent 50%);
+    background-position: calc(100% - 21px) 50%, calc(100% - 15px) 50%;
+    background-size: 6px 6px, 6px 6px;
+    background-repeat: no-repeat;
+  }
+  select.input:hover {
+    background-color: #1f1f27;
+  }
+  select.input:focus-visible {
+    outline: 2px solid rgb(var(--efm-sunburst-rgb));
+    outline-offset: 2px;
+  }
+  select.input:disabled {
+    @apply cursor-not-allowed opacity-50;
+    background-color: #17171d;
+  }
+  @media (max-width: 640px) {
+    select.input {
+      min-height: 48px;
+    }
   }
   .label {
     @apply mb-1 block text-xs font-medium text-cream/70;
