@@ -119,9 +119,9 @@ export function Calendar({ initialMonth, initialView }: { initialMonth: string |
 
       {month && view === 'grid' ? (
         <>
-          <div className="ev-cal" role="grid" aria-label={monthTitle(month)}>
+          <div className="ev-cal" role="group" aria-label={`${monthTitle(month)} month view`}>
             {WEEKDAYS.map((w) => (
-              <div key={w} className="ev-cal-h" role="columnheader">
+              <div key={w} className="ev-cal-h" aria-hidden="true">
                 {w}
               </div>
             ))}
@@ -129,23 +129,34 @@ export function Calendar({ initialMonth, initialView }: { initialMonth: string |
               .flat()
               .map((c) => {
                 const evs = byDay.get(c.key) ?? []
-                const label = `${dayTitle(c.key)}: ${evs.length ? `${evs.length} event${evs.length > 1 ? 's' : ''}` : 'nothing booked'}`
+                const texts = evs.map((v) => {
+                  const p = project(v)
+                  return { v, p, text: `${formatIn(p.startsAt, mode, 'time')} ${p.heading}` }
+                })
+                const label = `${dayTitle(c.key)}: ${texts.length ? texts.map((t) => t.text).join('; ') : 'nothing booked'}`
                 return (
-                  <div key={c.key} className="ev-cal-day" data-out={!c.inMonth} data-today={c.key === today} role="gridcell">
-                    <button type="button" className="ev-cal-num text-left" onClick={() => setSelected(c.key)} aria-label={label} aria-pressed={selected === c.key}>
-                      {c.day}
-                    </button>
-                    {evs.slice(0, 3).map((v) => {
-                      const p = project(v)
-                      const text = `${formatIn(p.startsAt, mode, 'time')} ${p.heading}`
-                      return (
-                        <button key={v.id} type="button" className="ev-cal-ev" data-kind={p.kind} onClick={() => setSelected(c.key)} aria-label={`${text}, ${dayTitle(c.key)}`} title={text}>
-                          {text}
-                        </button>
-                      )
-                    })}
-                    {evs.length > 3 ? <span className="text-[10px] text-cream/60">+{evs.length - 3}</span> : null}
-                  </div>
+                  <button
+                    key={c.key}
+                    type="button"
+                    className="ev-cal-day"
+                    data-out={!c.inMonth}
+                    data-today={c.key === today}
+                    aria-pressed={selected === c.key}
+                    aria-label={label}
+                    onClick={() => setSelected(c.key)}
+                  >
+                    <span className="ev-cal-num">{c.day}</span>
+                    {texts.slice(0, 3).map(({ v, p, text }) => (
+                      <span key={v.id} className="ev-cal-ev" data-kind={p.kind} aria-hidden="true">
+                        {text}
+                      </span>
+                    ))}
+                    {evs.length > 3 ? (
+                      <span className="text-[10px] text-cream/60" aria-hidden="true">
+                        +{evs.length - 3}
+                      </span>
+                    ) : null}
+                  </button>
                 )
               })}
           </div>

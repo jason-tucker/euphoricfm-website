@@ -90,10 +90,10 @@ describe('calendar', () => {
     expect(Date.parse(q.searchParams.get('from')!)).toBeLessThan(Date.parse('2026-10-01T04:00:00Z'))
     expect(Date.parse(q.searchParams.get('to')!)).toBeGreaterThan(Date.parse('2026-11-01T04:00:00Z'))
     // grid chips (ET): the public event is on Oct 17 ET
-    const grid = screen.getByRole('grid')
-    expect(within(grid).getByRole('button', { name: /Vespucci Motors grand opening, Saturday, October 17/ })).toBeTruthy()
-    expect(within(grid).getByRole('button', { name: /Booked · Private event, Monday, October 19/ })).toBeTruthy()
-    expect(within(grid).getByRole('button', { name: /Pending, Wednesday, October 21/ })).toBeTruthy()
+    const grid = screen.getByRole('group', { name: 'October 2026 month view' })
+    expect(within(grid).getByRole('button', { name: /^Saturday, October 17: 8:00 PM Vespucci Motors grand opening$/ })).toBeTruthy()
+    expect(within(grid).getByRole('button', { name: /^Monday, October 19: 8:00 PM Booked · Private event$/ })).toBeTruthy()
+    expect(within(grid).getByRole('button', { name: /^Wednesday, October 21: 8:00 PM Pending$/ })).toBeTruthy()
     expect(container.textContent).not.toMatch(LEAKS)
 
     fireEvent.click(screen.getByRole('button', { name: 'List' }))

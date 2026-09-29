@@ -138,6 +138,9 @@
   background: rgb(var(--efm-cream-rgb) / 0.02);
   min-width: 0;
 }
+.ev-cal-day { text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.ev-cal-day:hover { border-color: rgb(var(--efm-cream-rgb) / 0.3); background: rgb(var(--efm-cream-rgb) / 0.06); }
+.ev-cal-day[aria-pressed='true'] { border-color: rgb(var(--efm-sunburst-rgb) / 0.8); background: rgb(var(--efm-sunburst-rgb) / 0.08); }
 .ev-cal-day[data-out='true'] { opacity: 0.4; }
 .ev-cal-day[data-today='true'] { border-color: rgb(var(--efm-sunburst-rgb) / 0.6); }
 .ev-cal-num { font-size: 12px; font-weight: 700; color: rgb(var(--efm-cream-rgb) / 0.7); }
@@ -159,7 +162,6 @@
 .ev-cal-ev[data-kind='public'] { background: rgb(var(--efm-sunburst-rgb) / 0.2); border-color: rgb(var(--efm-sunburst-rgb) / 0.55); color: rgb(var(--efm-gold-rgb)); }
 .ev-cal-ev[data-kind='private'], .ev-cal-ev[data-kind='full'] { background: rgb(var(--efm-midnight-rgb) / 0.6); border-color: rgb(140 160 255 / 0.5); color: rgb(200 210 255); }
 .ev-cal-ev[data-kind='pending'] { background: transparent; border-color: rgb(var(--efm-cream-rgb) / 0.35); border-style: dashed; color: rgb(var(--efm-cream-rgb) / 0.75); }
-.ev-cal-ev:hover { filter: brightness(1.2); }
 @media (max-width: 639px) {
   .ev-cal { gap: 2px; }
   .ev-cal-day { min-height: 52px; padding: 3px 2px; }
