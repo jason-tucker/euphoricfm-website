@@ -12,11 +12,12 @@ import { scanOffsetS } from '../../worker/ingest/window'
 import { eventJobDedupeKey, parseEventJobPayload, PERIODIC_EVENT_JOB_KINDS, type EventJobKind, type EventJobPayload } from '../contract/jobs'
 import type { EventsSettings } from '../contract/settings'
 import type { AudioStatus, BuildStatus, EventStatus, RegistryRole } from '../contract/types'
-import type { AnnouncementRow, AudioPatch, AudioRow, BuildRow, ClaimedJob, EnqueueOpts, EventRow, EventsStore, JobOutcome, RegistryRow, StingerRow, TrackRow } from './store'
+import type { AnnouncementRow, AudioPatch, AudioRow, BuildRow, ClaimedJob, CreateAttemptMarker, EnqueueOpts, EventRow, EventsStore, JobOutcome, RegistryRow, StingerRow, TrackRow } from './store'
 
 const ACTIVE: readonly EventStatus[] = ['approved', 'built', 'live']
 export const UPLOAD_ATTEMPT_ACTION = 'events.audio.upload_attempted'
 export const START_KICK_ACTION = 'events.kick.start'
+export const CREATE_ATTEMPT_ACTION = 'events.registry.create_attempt'
 
 type EventSel = typeof events.$inferSelect
 
@@ -377,6 +378,26 @@ export class PgEventsStore implements EventsStore {
 
   async audit(action: string, targetType: string, targetId: number, detail: Record<string, unknown> = {}): Promise<void> {
     await auditRow(this.db, { action, targetType, targetId, detail })
+  }
+
+  // The marker is an audit row (append-only: the app role cannot UPDATE or
+  // DELETE audit_log), written by the worker only.
+  async markCreateAttempt(rowId: number, m: CreateAttemptMarker): Promise<void> {
+    await auditRow(this.db, { action: CREATE_ATTEMPT_ACTION, targetType: 'event_registry', targetId: rowId, detail: { eventId: m.eventId, buildId: m.buildId, name: m.name, maxIdBefore: m.maxIdBefore } })
+  }
+
+  async createAttempt(rowId: number): Promise<CreateAttemptMarker | null> {
+    const rows = await this.db.execute<{ detail: Record<string, unknown> | null }>(
+      sql`SELECT detail FROM audit_log WHERE action = ${CREATE_ATTEMPT_ACTION} AND target_type = 'event_registry' AND target_id = ${String(rowId)} ORDER BY id DESC LIMIT 1`,
+    )
+    const d = (rows as unknown as { detail: Record<string, unknown> | null }[])[0]?.detail
+    if (!d) return null
+    const n = (x: unknown) => (typeof x === 'number' && Number.isSafeInteger(x) ? x : null)
+    const eventId = n(d.eventId)
+    const buildId = n(d.buildId)
+    const maxIdBefore = n(d.maxIdBefore)
+    if (eventId === null || buildId === null || maxIdBefore === null || typeof d.name !== 'string') return null
+    return { eventId, buildId, name: d.name, maxIdBefore }
   }
 
   async lastStartKickMs(eventId: number): Promise<number | null> {

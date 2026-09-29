@@ -180,13 +180,89 @@ describe('events worker: build', () => {
     const { h } = world()
     const ev = h.store.events[0]!
     const b = await h.store.createBuild(42, 1, {})
-    await h.store.insertIntent(42, b.id, 'main', 'Grand Opening')
+    const row = await h.store.insertIntent(42, b.id, 'main', 'Grand Opening')
+    // the crashed attempt: marker committed (highest id then: 149), POST
+    // made playlist 150, the worker died before recording it
+    await h.store.markCreateAttempt(row.id, { eventId: 42, buildId: b.id, name: 'Grand Opening', maxIdBefore: 149 })
     h.az.playlists.set(150, { ...h.az.playlists.get(76)!, id: 150, name: 'Grand Opening', is_enabled: false })
     await h.store.enqueue('build_now', { eventId: ev.id })
     await drain(h)
     expect(mainIdOf(h, 42)).toBe(150)
     expect(h.az.writes().some((w) => w.method === 'POST' && w.path.endsWith('/playlists'))).toBe(false)
     expect(h.alerts.some((a) => a.includes('adopted orphan playlist 150'))).toBe(true)
+    expect(h.store.events[0]!.status).toBe('built')
+  })
+
+  it('a create crash is healed end to end: the retried build adopts what the first attempt created', async () => {
+    const { h } = world()
+    // the first attempt's POST succeeds, then the worker "dies" before the id is recorded
+    const record = h.store.setRegistryPlaylist.bind(h.store)
+    let died = false
+    h.store.setRegistryPlaylist = async (...a) => {
+      if (!died) {
+        died = true
+        throw new Error('worker died')
+      }
+      return record(...a)
+    }
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const made = [...h.az.playlists.values()].filter((p) => p.name === 'Grand Opening')
+    expect(made).toHaveLength(1)
+    expect(h.store.reg.find((r) => r.intentName === 'Grand Opening')!.playlistId).toBeNull()
+    // the retry (same build id) adopts it; no second create
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(mainIdOf(h, 42)).toBe(made[0]!.id)
+    expect([...h.az.playlists.values()].filter((p) => p.name === 'Grand Opening')).toHaveLength(1)
+    expect(h.store.events[0]!.status).toBe('built')
+  })
+
+  it('first build of an event titled like an existing disabled station playlist fails and alerts; it never adopts it', async () => {
+    const { h } = world()
+    // a staff playlist kept for later, same name as the member's event title
+    h.az.playlists.set(150, { ...h.az.playlists.get(76)!, id: 150, name: 'Grand Opening', is_enabled: false })
+    h.az.addFile('Music/Artists/D/d.mp3', { id: 504, playlists: [150] })
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(h.store.buildRows[0]!.status).toBe('failed')
+    expect(h.store.buildRows[0]!.lastError).toBe('playlist_name_collision')
+    expect(h.alerts.some((a) => a.includes('playlist_name_collision'))).toBe(true)
+    expect(h.alerts.some((a) => a.includes('adopted'))).toBe(false)
+    expect(h.store.events[0]!.status).toBe('approved')
+    // playlist 150 untouched: no write to it, still holds its file, nothing registered
+    expect(h.az.writes().some((w) => /\/playlist\/150(\/|$)/.test(w.path))).toBe(false)
+    expect(h.az.writes().some((w) => w.method === 'POST' && w.path.endsWith('/playlists'))).toBe(false)
+    expect(h.az.files.get(504)!.playlists).toEqual([150])
+    expect(h.store.reg.some((r) => r.playlistId === 150)).toBe(false)
+    // a cancel + teardown never deletes it either
+    h.store.events[0]!.status = 'cancelled'
+    await h.store.enqueue('teardown', { eventId: 42 }, { dedupeExtra: 'cancelled' })
+    await drain(h)
+    expect(h.az.playlists.has(150)).toBe(true)
+  })
+
+  it('an intent row left WITHOUT a create-attempt marker (crash before the POST) never adopts a same-named playlist', async () => {
+    const { h } = world()
+    const b = await h.store.createBuild(42, 1, {})
+    await h.store.insertIntent(42, b.id, 'main', 'Grand Opening')
+    h.az.playlists.set(150, { ...h.az.playlists.get(76)!, id: 150, name: 'Grand Opening', is_enabled: false })
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(h.store.buildRows[0]!.lastError).toBe('playlist_name_collision')
+    expect(h.store.reg.some((r) => r.playlistId === 150)).toBe(false)
+  })
+
+  it('a marker only proves playlists created after it: an older same-named playlist is a collision', async () => {
+    const { h } = world()
+    const b = await h.store.createBuild(42, 1, {})
+    const row = await h.store.insertIntent(42, b.id, 'main', 'Grand Opening')
+    h.az.playlists.set(150, { ...h.az.playlists.get(76)!, id: 150, name: 'Grand Opening', is_enabled: false })
+    await h.store.markCreateAttempt(row.id, { eventId: 42, buildId: b.id, name: 'Grand Opening', maxIdBefore: 150 })
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(h.store.buildRows[0]!.lastError).toBe('playlist_name_collision')
+    expect(h.store.reg.some((r) => r.playlistId === 150)).toBe(false)
   })
 
   it('custom audio of another member fails the build; a compile error fails it with a ticket note', async () => {

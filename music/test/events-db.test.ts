@@ -18,6 +18,7 @@ import { DEFAULT_CAPS, MB } from '@/server/settings-defaults'
 import { admitUpload, siteStagedBytes } from '@/server/uploads/caps'
 import { sweepStaging } from '@/server/uploads/retention'
 import { eventRegistryPlaylistIds } from '@/worker/library/sync'
+import { PgEventsStore } from '@/events/worker/store-pg'
 import { ownerSql } from './helpers/db'
 import { DBENV } from './helpers/env'
 import { mkUser } from './helpers/p3'
@@ -137,6 +138,23 @@ describe.skipIf(!DBENV())('events: library sync foreign set', () => {
     const ids = await eventRegistryPlaylistIds(db())
     expect(ids).toContain(pid)
     expect(ids.every((n) => Number.isSafeInteger(n) && n > 0)).toBe(true)
+  })
+})
+
+describe.skipIf(!DBENV())('events: create-attempt marker (worker store, orphan adoption proof)', () => {
+  it('round-trips the latest marker per intent row, as the app role; none for another row', async () => {
+    const u = await mkUser()
+    const [ev] = await ownerSql()`INSERT INTO events (owner_user_id, owner_discord_id, title, event_type, starts_at, ends_at, entered_tz, visibility, status)
+      VALUES (${u.id}, ${u.discordId}, 'T', 'other', now() + interval '2 days', now() + interval '2 days 2 hours', 'UTC', 'public', 'approved') RETURNING id`
+    const store = new PgEventsStore(db())
+    const b = await store.createBuild(Number(ev!.id), 1, {})
+    const row = await store.insertIntent(Number(ev!.id), b.id, 'main', 'T')
+    const other = await store.insertIntent(Number(ev!.id), b.id, 'pin', `~EVT${ev!.id} s1`)
+    expect(await store.createAttempt(row.id)).toBeNull()
+    await store.markCreateAttempt(row.id, { eventId: Number(ev!.id), buildId: b.id, name: 'T', maxIdBefore: 140 })
+    await store.markCreateAttempt(row.id, { eventId: Number(ev!.id), buildId: b.id, name: 'T', maxIdBefore: 155 })
+    expect(await store.createAttempt(row.id)).toEqual({ eventId: Number(ev!.id), buildId: b.id, name: 'T', maxIdBefore: 155 })
+    expect(await store.createAttempt(other.id)).toBeNull()
   })
 })
 

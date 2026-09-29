@@ -4,10 +4,14 @@
 // (exact path per source; custom audio must be the event owner's, live and
 // not deleted), compiles the plan, then applies it idempotently:
 //
-//   1. one registry INTENT row per playlist is committed before its create;
-//      a crash between the create and recording its id is healed by
-//      adopting the single disabled, never-registered station-14 playlist
-//      with exactly that name (more than one: the build fails);
+//   1. one registry INTENT row per playlist is committed before its create,
+//      and a create-attempt marker (build id + the highest station-14 id
+//      before the POST) right before the POST; a crash between the create
+//      and recording its id is healed by adopting the single disabled,
+//      never-registered playlist with exactly that name and an id above the
+//      marker — only for an intent row left by an EARLIER attempt. Any
+//      other same-named disabled, never-registered playlist (e.g. a staff
+//      playlist a member title matches) fails the build and pages staff;
 //   2. playlists are created (or updated) DISABLED unless the event is live;
 //   3. membership: one serialized read-merge-write per file under the
 //      membership lock (membership.ts), covering the plan's files and every
@@ -261,9 +265,38 @@ async function scheduleKicks(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan
   }
 }
 
+// Same-named station-14 playlists no registry row ever held, above the
+// floor, not legacy, disabled: what a crash between a create and recording
+// its id would leave behind — but also what a member-chosen title could
+// collide with (a disabled staff playlist kept for later).
+function orphanCandidates(station: readonly PlaylistRead[], name: string, ever: ReadonlySet<number>): PlaylistRead[] {
+  return station.filter((s) => s.name === name && s.id > PLAYLIST_ID_FLOOR && !LEGACY_PLAYLIST_IDS.includes(s.id) && !ever.has(s.id) && s.is_enabled === false)
+}
+
+/**
+ * Whether the intent row's playlist may be adopted instead of created, and
+ * which one. Adoption needs PROOF that this worker created it: the row
+ * existed before this build attempt (never one inserted just now), it
+ * carries a create-attempt marker for this event and name, and exactly one
+ * candidate has an id above the highest id that existed right before that
+ * attempt. A same-named candidate without that proof fails the build (and
+ * pages staff) — it is never adopted, never duplicated.
+ */
+async function adoptableOrphan(ctx: EventsCtx, ev: EventRow, row: RegistryRow, preexisting: boolean, candidates: readonly PlaylistRead[]): Promise<PlaylistRead | null> {
+  const marker = preexisting ? await ctx.store.createAttempt(row.id) : null
+  const proven = marker && marker.eventId === ev.id && marker.name === row.intentName ? candidates.filter((c) => c.id > marker.maxIdBefore) : []
+  const unproven = candidates.filter((c) => !proven.includes(c))
+  if (unproven.length > 0) throw new BuildFailure('playlist_name_collision', { name: row.intentName, ids: unproven.map((c) => c.id) })
+  if (proven.length > 1) throw new BuildFailure('ambiguous_orphan_playlists', { name: row.intentName, ids: proven.map((o) => o.id) })
+  return proven[0] ?? null
+}
+
 async function applyPlan(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: CompiledPlan, resolved: Resolved, previous: readonly BuildRow[]): Promise<void> {
   const live = ev.status === 'live'
   let rows = await ctx.store.registry(ev.id)
+  // Intent rows that existed before this attempt (the only ones a crash
+  // can have left without a recorded id).
+  const preexisting = new Set(rows.map((r) => r.id))
   const byName = new Map(rows.map((r) => [r.intentName, r]))
   const station = await ctx.az.listPlaylists()
   const ever = await ctx.store.everRegisteredPlaylistIds()
@@ -278,16 +311,19 @@ async function applyPlan(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: Co
       rows = [...rows, row]
     }
     if (row.playlistId === null) {
-      const orphans = station.filter((s) => s.name === p.name && s.id > PLAYLIST_ID_FLOOR && !LEGACY_PLAYLIST_IDS.includes(s.id) && !ever.has(s.id) && s.is_enabled === false)
-      if (orphans.length > 1) throw new BuildFailure('ambiguous_orphan_playlists', { name: p.name, ids: orphans.map((o) => o.id) })
+      const orphan = await adoptableOrphan(ctx, ev, row, preexisting.has(row.id), orphanCandidates(station, p.name, ever))
       let id: number
       let scheduleIds: number[] = []
-      if (orphans.length === 1) {
-        id = orphans[0]!.id
-        await ctx.store.audit('events.registry.adopted', 'event', ev.id, { name: p.name, playlistId: id })
+      if (orphan) {
+        id = orphan.id
+        await ctx.store.audit('events.registry.adopted', 'event', ev.id, { name: p.name, playlistId: id, rowId: row.id })
         await ctx.alert(`events build #${build.id}: adopted orphan playlist ${id} (${p.name})`, { eventId: ev.id, playlistId: id })
       } else {
-        // The create names the intent row that is already committed.
+        // The create-attempt marker commits before the POST (with the
+        // highest id on the station right now), then the create names the
+        // intent row that is already committed.
+        const before = await ctx.az.listPlaylists()
+        await ctx.store.markCreateAttempt(row.id, { eventId: ev.id, buildId: build.id, name: p.name, maxIdBefore: before.reduce((m, x) => Math.max(m, x.id), 0) })
         const made = await ctx.az.createPlaylist({ ...p.body, is_enabled: live }, playlistScope(ev, rows))
         id = made.id
         scheduleIds = scheduleIdsOf(made)
@@ -296,7 +332,7 @@ async function applyPlan(ctx: EventsCtx, ev: EventRow, build: BuildRow, plan: Co
       row = { ...row, playlistId: id, scheduleIds }
       byName.set(p.name, row)
       rows = rows.map((r) => (r.id === row!.id ? row! : r))
-      if (orphans.length === 1) await ctx.az.updatePlaylist(id, { ...p.body, is_enabled: live }, playlistScope(ev, rows))
+      if (orphan) await ctx.az.updatePlaylist(id, { ...p.body, is_enabled: live }, playlistScope(ev, rows))
     } else {
       await ctx.az.updatePlaylist(row.playlistId, { ...p.body, is_enabled: live }, playlistScope(ev, rows))
       const fresh = await ctx.az.getPlaylist(row.playlistId)

@@ -11,7 +11,7 @@ import { eventJobDedupeKey, parseEventJobPayload, PERIODIC_EVENT_JOB_KINDS, type
 import { EVENTS_SETTING_DEFAULTS, resolveEventsSettings, type EventsSettings } from '@/events/contract/settings'
 import type { AudioStatus, BuildStatus, EventStatus, RegistryRole } from '@/events/contract/types'
 import type { EventsCtx } from '@/events/worker/ctx'
-import type { AnnouncementRow, AudioPatch, AudioRow, BuildRow, ClaimedJob, EnqueueOpts, EventRow, EventsStore, JobOutcome, RegistryRow, StingerRow, TrackRow } from '@/events/worker/store'
+import type { AnnouncementRow, AudioPatch, AudioRow, BuildRow, ClaimedJob, CreateAttemptMarker, EnqueueOpts, EventRow, EventsStore, JobOutcome, RegistryRow, StingerRow, TrackRow } from '@/events/worker/store'
 
 export const OWNER = '700000000000000001'
 export const OTHER = '700000000000000002'
@@ -464,6 +464,13 @@ export class MemStore implements EventsStore {
   }
   async audit(action: string, _t: string, targetId: number, detail: Record<string, unknown> = {}) {
     this.audits.push({ action, targetId, detail, at: this.now() })
+  }
+  async markCreateAttempt(rowId: number, m: CreateAttemptMarker) {
+    this.audits.push({ action: 'events.registry.create_attempt', targetId: rowId, detail: { ...m }, at: this.now() })
+  }
+  async createAttempt(rowId: number) {
+    const a = this.audits.filter((x) => x.action === 'events.registry.create_attempt' && x.targetId === rowId).at(-1)
+    return a ? (a.detail as CreateAttemptMarker) : null
   }
   async lastStartKickMs(eventId: number) {
     const t = this.audits.filter((a) => a.action === 'events.kick.start' && a.targetId === eventId).map((a) => a.at)
