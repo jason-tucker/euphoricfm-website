@@ -54,12 +54,16 @@ describe.skipIf(!EVENTS_E2E())('events site: gate, sign-in and uploads (real con
   })
 
   it('[W0] events-web 404s every music route; /ev/** asked for directly is a 404 too', async () => {
-    const api = ['/api/me', '/api/batches', '/api/items/1', '/api/library?q=x', '/api/requests', '/api/archive', '/api/admin/settings', '/api/media/1', '/api/uploads/art', '/api/ui/nav']
+    const api = ['/api/me', '/api/batches', '/api/items/1', '/api/library?q=x', '/api/requests', '/api/archive', '/api/admin/settings', '/api/media/1', '/api/ui/nav']
     for (const p of api) {
       const r = await evReq(eventsJar, p)
       expect(r.status, p).toBe(404)
     }
     for (const p of ['/api/hooks/tickets', '/api/batches', '/api/uploads/art']) expect((await evReq(eventsJar, p, { json: {} })).status, p).toBe(404)
+    // /api/uploads/** bypasses the middleware (tus streaming): the art route
+    // itself 404s on events for the methods it has; others get Next's 405.
+    expect([404, 405]).toContain((await evReq(eventsJar, '/api/uploads/art')).status)
+    expect((await evReq(eventsJar, `/api/uploads/art/${'0'.repeat(8)}-0000-4000-8000-${'0'.repeat(12)}`)).status).toBe(404)
     for (const p of ['/dashboard', '/submit', '/library', '/admin', '/ev', '/ev/calendar', '/ev/my']) expect((await evReq(eventsJar, p)).status, p).toBe(404)
     expect((await evReq(null, '/api/health')).status).toBe(200)
     // encoded tricks resolve to the same verdict
