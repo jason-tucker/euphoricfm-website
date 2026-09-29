@@ -47,6 +47,11 @@ MAX_DURATION_S = 24 * 60
 AUDIO_RE = re.compile(r'\Aaudio\.(mp3|m4a|mp4|opus|ogg|oga|wav|flac)\Z')
 ARTWORK_NAME = 'artwork.raw'
 SWEEP_EVERY_S = 600
+# Portal v0.4.1: the liveness file the worker checks before it writes a
+# request (out/ is read-only for the worker; both id listers ignore the name).
+HEARTBEAT_NAME = '.alive'
+HEARTBEAT_EVERY_S = 30.0
+TMP_PREFIX = '.tmp-'
 
 
 def _default_ytdlp() -> list[str]:
@@ -196,7 +201,12 @@ class Service:
         for name in os.listdir(self.claimed_dir):
             path = os.path.join(self.claimed_dir, name)
             uuid = name[:-5] if name.endswith('.json') else ''
-            if UUID_RE.match(uuid):
+            # A crash between writing the result and unlinking the claim: the
+            # job finished, so its result stands and its media stays until the
+            # worker's release marker (or the 24 h sweep). Only the claim goes.
+            if UUID_RE.match(uuid) and os.path.lexists(os.path.join(self.out_dir, f'{uuid}.json')):
+                _log(f'{uuid} already answered; claim dropped at startup')
+            elif UUID_RE.match(uuid):
                 self._remove_job_dir(uuid)
                 write_result_noclobber(self.out_dir, uuid, self._error_doc(uuid, E.INTERRUPTED))
                 _log(f'{uuid} error {E.INTERRUPTED} (recovered at startup)')
@@ -205,8 +215,29 @@ class Service:
             except OSError:
                 pass
 
+    def touch_heartbeat(self) -> None:
+        """Create or refresh out/.alive (never through a symlink)."""
+        path = os.path.join(self.out_dir, HEARTBEAT_NAME)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
+        except OSError:
+            return
+        try:
+            os.utime(fd)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+    def _heartbeat_loop(self) -> None:
+        # A thread, so the beat continues while a job runs (up to 10 min).
+        while not self.stop.is_set():
+            self.touch_heartbeat()
+            self.stop.wait(HEARTBEAT_EVERY_S)
+
     def run_forever(self) -> None:
         _log('ready')
+        threading.Thread(target=self._heartbeat_loop, name='heartbeat', daemon=True).start()
         while not self.stop.is_set():
             self.process_releases()
             ids = list_request_ids(self.in_dir)
@@ -472,3 +503,36 @@ class Service:
             if stat.S_ISDIR(st.st_mode) and now - st.st_mtime > ttl:
                 shutil.rmtree(e.path, ignore_errors=True)
                 _log(f'swept stale staging dir {e.name}')
+        n = self.sweep_spool(now, ttl)
+        if n:
+            _log(f'swept {n} old spool file(s)')
+
+    def sweep_spool(self, now: float, ttl: float) -> int:
+        """Portal v0.4.1: results in out/ older than the TTL (the worker reads a
+        result within 15 min of its request) and `.tmp-*` files a crash left
+        between create and rename in in/, claimed/ and out/. Regular files
+        only, by name; unlink never follows a link."""
+        n = 0
+        for d, results in ((self.out_dir, True), (self.in_dir, False), (self.claimed_dir, False)):
+            try:
+                with os.scandir(d) as it:
+                    entries = list(it)
+            except OSError:
+                continue
+            for e in entries:
+                name = e.name
+                is_result = results and name.endswith('.json') and UUID_RE.match(name[:-5]) is not None
+                if not (is_result or name.startswith(TMP_PREFIX)):
+                    continue
+                try:
+                    st = e.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)) or now - st.st_mtime <= ttl:
+                    continue
+                try:
+                    os.unlink(e.path)
+                    n += 1
+                except OSError:
+                    pass
+        return n

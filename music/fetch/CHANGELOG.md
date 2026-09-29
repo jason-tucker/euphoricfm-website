@@ -2,6 +2,16 @@
 
 Service-local history. The repo-level `CHANGELOG.md` entry and the `package.json` version bump are added when this directory is merged into the portal.
 
+## [0.2.1] — 2026-09-29 — Second pass (music v0.4.1)
+
+### Fixed
+- **Start-up recovery keeps a finished job.** A crash between writing `out/<uuid>.json` and unlinking the claim used to delete the job's download and leave the ok result pointing at nothing (the member saw "The downloaded file went missing"). A leftover claim whose result already exists now only loses the claim.
+
+### Added
+- **Heartbeat** `out/.alive`, refreshed every 30 s by a thread (so it keeps beating during a 10-min job), created with `O_NOFOLLOW`. The worker checks it before it writes a request: with music-fetch stopped, links wait their turn instead of each burning the 15-min timeout and alerting. Both id listers ignore the name.
+- **Spool sweep**: with the staging sweep (every 10 min, same 24 h TTL), results in `out/` and `.tmp-*` files a crash left in `in/`, `claimed/` and `out/` are unlinked (never followed). The heartbeat and requests are never swept.
+- 6 new tests (82 in all).
+
 ## [0.2.0] — 2026-09-28 — Integrated into the portal (music v0.4.0)
 
 ### Changed
