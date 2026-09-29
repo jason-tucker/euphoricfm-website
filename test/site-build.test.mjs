@@ -19,6 +19,12 @@ import {
   streamOptions,
 } from '../src/lib/player-data.ts';
 import { site } from '../src/site.config.ts';
+import {
+  createNowPlayingPoller,
+  stationUnavailable,
+  SLOW_RETRY_AFTER,
+  SLOW_RETRY_MS,
+} from '../src/scripts/np-core.ts';
 import { DEFAULT_EXCLUDE_PLAYLISTS } from '../server/stats.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,7 +65,9 @@ test('home keeps its bundle and links the Web Player from the hero', () => {
   const html = read('index.html');
   assert.match(html, /id="np-card"/);
   assert.match(html, /<a href="\/player\/" id="open-player" class="btn btn-ghost">/);
-  assert.match(html, /efm-runtime-config\.js/);
+  // Deferred: a no-store script must not block the first paint of the page.
+  assert.match(html, /<script defer src="\/efm-runtime-config\.js"><\/script>/);
+  assert.equal(html.match(/efm-runtime-config\.js/g)?.length, 1);
   assert.match(html, /BaseLayout\.astro_astro_type_script/);
 });
 
@@ -205,10 +213,45 @@ test('pop-ups sit above the sticky top bar: outside <main> (a z-[1] stacking con
   }
 });
 
-test('no built info page mentions Discord (owner decision)', () => {
+test('no built info page mentions Discord (owner decision) or spells the brand "Euphoric FM"', () => {
   for (const page of ['index.html', 'events/index.html', 'player/index.html']) {
-    assert.doesNotMatch(read(page), /discord/i, page);
+    const html = read(page);
+    assert.doesNotMatch(html, /discord/i, page);
+    assert.doesNotMatch(html, /Euphoric FM/, `${page}: the spelling is "EuphoricFM"`);
   }
+});
+
+test('copy: sentence case on /events/ and the pop-up headings, FAQ names the Requested tab', () => {
+  const events = read('events/index.html');
+  for (const t of ['Plan Your Event', 'How It Works', 'Tell Us About Your Event', 'We Build the Sound', 'Your Event. Your Sound.', 'Good For', 'Happening Now', 'On the Calendar', 'Listen Live', 'Send Inquiry', 'Plan an Event']) {
+    assert.ok(!events.includes(t), `/events/ still says "${t}"`);
+  }
+  assert.ok(events.includes('<meta name="description" content="Bring EuphoricFM to your next event'), 'events meta');
+  assert.ok(events.includes('<meta property="og:description" content="Bring EuphoricFM to your next event'), 'events og');
+  const home = read('index.html');
+  assert.match(home, />Request a song<\/h2>/);
+  assert.match(home, />Contact us<\/h2>/);
+  assert.match(home, />Plan an event with EuphoricFM<\/h2>/);
+  assert.doesNotMatch(home, /Requested songs/);
+  assert.ok(site.home.faq.items.some((i) => i.a.includes('the Requested tab')), 'FAQ points at the Requested tab');
+});
+
+test('portal links: every Submit music goes to /submit, the fix link keeps its intent, one product name', () => {
+  const home = read('index.html');
+  const submits = [...home.matchAll(/<a\b[^>]*href="([^"]*)"[^>]*>(?:(?!<\/a>)[\s\S])*?Submit music(?:(?!<\/a>)[\s\S])*?<\/a>/g)].map((m) => m[1]);
+  assert.ok(submits.length >= 3, `bar, #music and footer (found ${submits.length})`);
+  for (const href of submits) assert.equal(href, 'https://music.euphoric.fm/submit');
+  assert.match(home, /<a href="https:\/\/music\.euphoric\.fm\/library\?intent=edit"[^>]*>Fix or remove a song<\/a>/, 'footer fix link');
+  const nav = JSON.parse(src('shared/nav.json'));
+  assert.equal(nav.musicMenu.title, 'EuphoricFM Music Portal');
+  assert.equal(nav.sheet.musicHeading, 'EuphoricFM Music Portal');
+});
+
+test('shared phone bar fits a 320 px viewport (row budget in efm-bar.css)', () => {
+  const css = src('shared/efm-bar.css');
+  assert.match(css, /@media \(max-width: 359px\) \{\s*\.efmh-in \{ gap: 4px; \}\s*\.efmh-player \{ padding: 0 8px; \}/);
+  assert.match(css, /@media \(max-width: 339px\) \{ \.efmh-brand \{ min-width: 124px; \} \}/);
+  assert.match(css, /@media \(max-width: 339px\) \{\s*\.efmh-euph \{ font-size: 14px; \}\s*\.efmh-fm \{ font-size: 18px; \}/);
 });
 
 test('stats.ts is not in the home entry script (loaded when #stats nears the viewport)', () => {
@@ -220,7 +263,7 @@ test('stats.ts is not in the home entry script (loaded when #stats nears the vie
   assert.match(js, /import\(["'][^"']*stats[^"']*\.js["']\)|stats\.[\w-]+\.js/, 'lazy import of the stats chunk');
 });
 
-test('share previews: og:image is a real 1200x630 PNG', () => {
+test('share previews: og:image is a real 1200x630 PNG under 100 KB', () => {
   const html = read('index.html');
   assert.match(html, /<meta property="og:image" content="https:\/\/info\.euphoric\.fm\/images\/og\.png"/);
   const f = dist('images/og.png');
@@ -228,6 +271,32 @@ test('share previews: og:image is a real 1200x630 PNG', () => {
   const b = readFileSync(f);
   assert.equal(b.subarray(1, 4).toString(), 'PNG');
   assert.deepEqual([b.readUInt32BE(16), b.readUInt32BE(20)], [1200, 630]);
+  assert.ok(b.length <= 100_000, `og.png is ${b.length} bytes (max 100 KB)`);
+});
+
+test('robots.txt is a real file, and the dead PWA bits are gone', () => {
+  assert.match(read('robots.txt'), /^User-agent/);
+  for (const f of ['manifest.webmanifest', 'icon.svg']) {
+    assert.ok(!existsSync(dist(f)), `dist/${f} must not come back (the CEF first-paint bug)`);
+  }
+  for (const page of ['index.html', 'events/index.html', 'player/index.html']) {
+    assert.doesNotMatch(read(page), /rel="manifest"/, page);
+  }
+});
+
+test('wordmark script font: a WOFF2 subset under 20 KB, listed before the TTF, preloaded', () => {
+  const woff2 = readFileSync(dist('fonts/CortadoScript-Regular.woff2'));
+  assert.equal(woff2.subarray(0, 4).toString(), 'wOF2');
+  assert.ok(woff2.length <= 20_000, `CortadoScript-Regular.woff2 is ${woff2.length} bytes (max 20 KB)`);
+  assert.ok(existsSync(dist('fonts/CortadoScript-Regular.ttf')), 'TTF kept (fallback + docs/og)');
+  const face = /@font-face\s*\{[^}]*font-family:\s*'Cortado Script'[^}]*\}/.exec(src('src/styles/global.css'))?.[0] ?? '';
+  assert.match(face, /CortadoScript-Regular\.woff2'\) format\('woff2'\),\s*url\('\/fonts\/CortadoScript-Regular\.ttf'\)/);
+  for (const page of ['index.html', 'events/index.html', 'player/index.html']) {
+    const html = read(page);
+    for (const f of ['Begaron-Regular.woff2', 'CortadoScript-Regular.woff2']) {
+      assert.match(html, new RegExp(`<link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/${f}"`), `${page} preloads ${f}`);
+    }
+  }
 });
 
 // ---- Config drift -------------------------------------------------------------
@@ -289,4 +358,124 @@ test('playlist files: .pls and .m3u list every mount, one line per title', () =>
   ].join('\n'));
   const m3u = buildM3u('EuphoricFM', opts);
   assert.equal(m3u, ['#EXTM3U', '#EXTINF:-1,EuphoricFM – Evil File2=https://x (MP3 · 128k)', MOUNT.url, ''].join('\n'));
+});
+
+// ---- Station offline (np-core poller) ----------------------------------------------
+
+test('now-playing poller: a failing API (5xx, network, timeout) is reported and turns the pages offline', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  let mode = '502';
+  let calls = 0;
+  const fetchFn = async (url, init) => {
+    calls++;
+    assert.equal(url, 'https://euphoric.fm/api/nowplaying/euphoricfm');
+    assert.ok(init.signal instanceof AbortSignal, 'every request carries a timeout signal');
+    assert.equal(init.cache, 'no-store');
+    if (mode === '502') return new Response('bad gateway', { status: 502 });
+    if (mode === 'network') throw new TypeError('fetch failed');
+    if (mode === 'hang') {
+      return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+    }
+    return Response.json({ now_playing: { sh_id: 1 } });
+  };
+  let now = 1_000_000;
+  const errors = [];
+  const data = [];
+  const poller = createNowPlayingPoller({
+    url: 'https://euphoric.fm/api/nowplaying/euphoricfm',
+    onData: (d) => data.push(d),
+    onError: (n) => errors.push(n),
+    fetchFn,
+    timeoutMs: 30,
+    now: () => now,
+  });
+
+  // First poll fails with nothing on screen yet → offline straight away.
+  await poller.poll();
+  assert.deepEqual(errors, [1]);
+  assert.equal(stationUnavailable(1, false), true, 'no data yet: first miss shows offline');
+  assert.equal(stationUnavailable(1, true), false, 'with data: one dropped poll does not flicker');
+
+  // Network error, then a hanging request that the timeout aborts.
+  mode = 'network';
+  await poller.poll();
+  mode = 'hang';
+  await poller.poll();
+  assert.deepEqual(errors, [1, 2, 3]);
+  assert.equal(stationUnavailable(2, true), true, 'with data: offline after two misses in a row');
+
+  // Slower retry after SLOW_RETRY_AFTER misses in a row.
+  assert.equal(SLOW_RETRY_AFTER, 3);
+  const before = calls;
+  now += 5000;
+  await poller.tick();
+  assert.equal(calls, before, 'no request 5 s after the third miss');
+  now += SLOW_RETRY_MS;
+  mode = 'ok';
+  await poller.tick();
+  assert.equal(calls, before + 1, 'retried after SLOW_RETRY_MS');
+
+  // Recovery: data flows again and the miss counter resets.
+  assert.equal(data.length, 1);
+  assert.equal(poller.failures(), 0);
+});
+
+test('now-playing poller: only one request in flight at a time', async () => {
+  let calls = 0;
+  let release;
+  const fetchFn = () => {
+    calls++;
+    return new Promise((resolve) => { release = () => resolve(Response.json({})); });
+  };
+  const poller = createNowPlayingPoller({ url: 'x', onData: () => {}, onError: () => {}, fetchFn });
+  const first = poller.poll();
+  await poller.poll();
+  await poller.tick();
+  assert.equal(calls, 1, 'a slow API does not stack requests');
+  release();
+  await first;
+  const second = poller.poll();
+  assert.equal(calls, 2, 'the next poll goes out once the first settled');
+  release();
+  await second;
+});
+
+test('offline copy ships with both players', () => {
+  assert.equal(site.player.offline, 'Station offline — retrying');
+  const home = read('index.html');
+  assert.ok(home.includes(`data-offline="${site.player.offline}"`), 'home card');
+  assert.ok(home.includes(`data-offline="${site.home.upNext.offline}"`), 'up next row');
+  assert.ok(home.includes(`data-offline="${site.home.songs.offline}"`), 'recently played');
+  const player = read('player/index.html');
+  const cfg = /data-player-config="([^"]*)"/.exec(player)?.[1] ?? '';
+  const parsed = JSON.parse(cfg.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+  assert.equal(parsed.offline, site.player.offline);
+  assert.equal(parsed.playFailed, site.player.playFailed);
+  // A rejected audio.play() reaches a toast instead of only console.warn.
+  assert.match(src('src/scripts/stream-audio.ts'), /onPlayError\?\.\(err\)/);
+  assert.match(src('src/components/PlayerCard.astro'), /onPlayError: \(\) => showToast\(site\.player\.playFailed\)/);
+  assert.match(src('src/scripts/player.ts'), /onPlayError: \(\) => showToast\(pc\.playFailed\)/);
+});
+
+// ---- Home card parity with /player/ -------------------------------------------------
+
+test('home card + Recently played use the break filter, clamp the time, refresh pending every 30 s', () => {
+  const js = src('src/scripts/nowplaying.ts');
+  assert.match(js, /history\.filter\(\(h\) => !isBreakEntry\(h, excludePlaylists\)\)\.slice\(0, 4\)/, 'Recently played skips ads/imaging');
+  assert.match(js, /const brk = isBreakEntry\(np, excludePlaylists\)/, 'now playing shows a station break');
+  assert.match(js, /Math\.min\(duration, Math\.max\(0, \(Date\.now\(\) - playedAt\) \/ 1000\)\)/, 'elapsed clamped to the song length');
+  assert.match(js, /const PENDING_REFRESH_MS = 30_000;/);
+  // refreshPending runs on a track change / 30 s timer, not on every poll.
+  const onNp = /const onNowPlaying = [\s\S]*?\n  \};/.exec(js)?.[0] ?? '';
+  assert.equal(onNp.match(/refreshPending\(\)/g)?.length, 1, 'one call, inside the sh_id change block');
+  assert.match(onNp, /np\.sh_id !== lastShId\) \{[\s\S]*?refreshPending\(\);[\s\S]*?\n    \}/);
+  const card = /<div id="np-card"[^>]*>/.exec(read('index.html'))?.[0] ?? '';
+  assert.ok(card.includes(`data-break-title="${site.player.breakTitle}"`));
+  assert.ok(card.includes(`data-break-artist="${site.player.breakArtist}"`));
+});
+
+test('/player/#history opens the full Song history', () => {
+  assert.match(src('src/scripts/player.ts'), /location\.hash === '#history'\) setExpanded\(true\)/);
+  assert.match(src('src/scripts/player.ts'), /addEventListener\('hashchange', expandForHash\)/);
+  assert.match(read('index.html'), /href="\/player\/#history"/);
 });

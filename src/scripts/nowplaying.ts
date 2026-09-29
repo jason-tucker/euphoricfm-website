@@ -18,10 +18,13 @@ import { fmtTime, fmtElapsed, fmtAgo, escapeHtml as escape, isBreakEntry } from 
 import {
   getConfig,
   subscribeNowPlaying,
+  stationUnavailable,
   toSameOriginArt,
   setMediaMetadata,
   bindMediaSessionActions,
 } from './np-core';
+
+const PENDING_REFRESH_MS = 30_000;
 
 (() => {
   const cfg = getConfig();
@@ -54,6 +57,12 @@ import {
     choosing: elUpNext?.dataset.choosing || '',
     stationBreak: elUpNext?.dataset.break || '',
     live: elUpNext?.dataset.live || '',
+    offline: elUpNext?.dataset.offline || '',
+  };
+  // Ads / station imaging show as "Station break / EuphoricFM", like /player/.
+  const breakCopy = {
+    title: elCard?.dataset.breakTitle || '',
+    artist: elCard?.dataset.breakArtist || '',
   };
   let excludePlaylists: string[] = [];
   try { excludePlaylists = JSON.parse(elUpNext?.dataset.exclude || '[]'); } catch { /* keep [] */ }
@@ -73,6 +82,10 @@ import {
 
   // Mutable state for the RAF loop.
   let lastShId = 0;
+  // Offline state: set while the station's API is unreachable (np-core
+  // reports failed polls); cleared by the next successful poll.
+  let hasData = false;
+  let offline = false;
   let playedAt = 0; // ms
   let duration = 0; // seconds
   let listeners = 0;
@@ -96,18 +109,21 @@ import {
 
   const applyNowPlaying = (np: AzuraNowPlayingEntry) => {
     const song = np.song;
+    const brk = isBreakEntry(np, excludePlaylists);
+    const title = brk ? breakCopy.title : song.title || song.text || 'Unknown track';
+    const artist = brk ? breakCopy.artist : song.artist || '—';
     if (elArt && song.art) {
       const artUrl = toSameOriginArt(song.art);
       elArt.src = artUrl;
-      elArt.alt = `${song.title} — ${song.artist}`;
+      elArt.alt = `${title} — ${artist}`;
       // Announce the (same-origin) art URL so effects.ts can extract its
       // palette. It dedupes by URL, so firing every poll is harmless.
       document.dispatchEvent(new CustomEvent('efm:track-art', { detail: { url: artUrl } }));
     }
-    if (elTitle) elTitle.textContent = song.title || song.text || 'Unknown track';
-    if (elArtist) elArtist.textContent = song.artist || '—';
-    if (elAlbum) elAlbum.textContent = song.album || '';
-    if (elNpRequested) elNpRequested.classList.toggle('hidden', !np.is_request);
+    if (elTitle) elTitle.textContent = title;
+    if (elArtist) elArtist.textContent = artist;
+    if (elAlbum) elAlbum.textContent = brk ? '' : song.album || '';
+    if (elNpRequested) elNpRequested.classList.toggle('hidden', brk || !np.is_request);
     playedAt = (np.played_at || 0) * 1000;
     duration = np.duration || 0;
   };
@@ -208,7 +224,7 @@ import {
   };
 
   // Re-render right after RequestModal POSTs a new entry — without this the
-  // sidebar wouldn't update until the next 5s poll.
+  // sidebar wouldn't update until the next track change or 30 s refresh.
   document.addEventListener('efm:pending-changed', () => {
     refreshPending();
   });
@@ -216,7 +232,8 @@ import {
   const applyRecent = (history: AzuraNowPlayingEntry[]) => {
     if (!elRecent) return;
     const nowSec = Date.now() / 1000;
-    const rows = history.slice(0, 4).map((h) => {
+    // Same break filter as /player/'s Song history: no ads or imaging rows.
+    const rows = history.filter((h) => !isBreakEntry(h, excludePlaylists)).slice(0, 4).map((h) => {
       // "X minutes ago" should be relative to when the track *ended*, not
       // when it started. Each history entry's end = played_at + duration.
       const endedAt = (h.played_at || 0) + (h.duration || 0);
@@ -305,6 +322,8 @@ import {
   // Runs on every now-playing poll (np-core owns the fetch, the interval and
   // the hidden-tab pause).
   const onNowPlaying = (data: AzuraNowPlayingResponse) => {
+    hasData = true;
+    offline = false;
     const np = data.now_playing;
     listeners = data.listeners?.current ?? 0;
     if (elListeners) elListeners.textContent = String(listeners);
@@ -323,12 +342,41 @@ import {
       }
       lastShId = np.sh_id;
       updateMediaSession(np);
+      // A track change is when a pending request most likely aired. Not
+      // awaited — the pending list must not gate the now-playing paint.
+      refreshPending();
     }
     applyRecent(data.song_history || []);
     applyUpNext(data.playing_next || null);
-    // Don't await — pending-list latency shouldn't gate the now-playing
-    // paint. The fetch races the next poll harmlessly if it's slow.
-    refreshPending();
+  };
+
+  // The station's API is unreachable (network error, timeout, 5xx). Replace
+  // the live-looking "Loading…" / AUTO DJ state with an honest offline card,
+  // stop the stream (it comes from the same server) and keep retrying; the
+  // next successful poll repaints everything (lastShId = 0 forces it).
+  const onUnavailable = (failures: number) => {
+    if (offline || !stationUnavailable(failures, hasData)) return;
+    offline = true;
+    if (isLive) applyLive(undefined, false);
+    setOnline(false);
+    lastShId = 0;
+    playedAt = 0;
+    duration = 0;
+    if (elTitle) elTitle.textContent = elCard?.dataset.offline || '';
+    if (elArtist) elArtist.textContent = '—';
+    if (elAlbum) elAlbum.textContent = '';
+    if (elNpRequested) elNpRequested.classList.add('hidden');
+    if (elBar) elBar.style.width = '0%';
+    if (elTimes) elTimes.textContent = '0:00 / 0:00';
+    if (elListeners) elListeners.textContent = '0';
+    upNextShown = false;
+    elUpNext?.classList.remove('is-open');
+    setUpNextNote(upNextCopy.offline);
+    if (elRecent) {
+      const note = escape(elRecent.dataset.offline || '');
+      elRecent.innerHTML = `<li class="py-2 text-sm text-cream/50">${note}</li>`;
+    }
+    window.__efmAudio?.pause();
   };
 
   // RAF loop: paint the progress bar between polls using the server-anchored
@@ -347,8 +395,10 @@ import {
             : liveCopy.elapsedPrefix;
       }
     } else if (duration > 0 && playedAt > 0) {
-      const elapsedSec = (Date.now() - playedAt) / 1000;
-      const pct = Math.min(100, Math.max(0, (elapsedSec / duration) * 100));
+      // Clamped like /player/: poll data that lags the real song end must not
+      // read "3:15 / 3:10".
+      const elapsedSec = Math.min(duration, Math.max(0, (Date.now() - playedAt) / 1000));
+      const pct = (elapsedSec / duration) * 100;
       if (elBar) elBar.style.width = `${pct}%`;
       if (elTimes) {
         elTimes.textContent = `${fmtTime(elapsedSec)} / ${fmtTime(duration)}`;
@@ -372,16 +422,22 @@ import {
   const updateMediaSession = (np: AzuraNowPlayingEntry) => {
     // During a live event the DJ gets the credit — applyLive re-invokes this
     // on is_live flips and mid-event renames, so it restores too.
+    const brk = isBreakEntry(np, excludePlaylists);
     setMediaMetadata(
-      np.song,
-      isLive ? `${liveCopy.elapsedPrefix}: ${liveStreamer}` : np.song.artist || 'EuphoricFM',
+      brk ? { title: breakCopy.title, art: np.song.art } : np.song,
+      isLive ? `${liveCopy.elapsedPrefix}: ${liveStreamer}` : brk ? breakCopy.artist : np.song.artist || 'EuphoricFM',
     );
   };
 
   bindMediaSessionActions();
 
-  // Boot.
+  // Boot. The pending list is refreshed on a track change, right after this
+  // visitor requests a song (efm:pending-changed) and otherwise every 30 s
+  // (skipped while the tab is hidden) — not on every 5 s now-playing poll.
   refreshPending();
-  subscribeNowPlaying(onNowPlaying);
+  window.setInterval(() => {
+    if (document.visibilityState !== 'hidden') refreshPending();
+  }, PENDING_REFRESH_MS);
+  subscribeNowPlaying(onNowPlaying, onUnavailable);
   requestAnimationFrame(tick);
 })();
