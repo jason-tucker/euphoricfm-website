@@ -5,6 +5,16 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.22.4] — 2026-09-29 — Events move to events.euphoric.fm
+
+### Changed
+- **`/events/` sends real browsers to https://events.euphoric.fm/**, where event requests, the calendar and event radio now live. A tiny `<head>` script redirects only a top-level page (`window.self === window.parent`, `location.replace`) — it never reads `window.top` and never breaks out of a frame, so inside the in-game phone's iframe (which can't load events.euphoric.fm) `/events/` stays and simply explains events: how they work, services, good-for list and the live schedule card. Without JavaScript a small link to events.euphoric.fm sits under the schedule card. The nav's Events link is unchanged.
+- The event inquiry pop-up and its "Plan your event" buttons are gone from `/events/`; the home events teaser's button is now a plain **Learn about events** link to `/events/`, and its empty calendar line no longer offers to book. (The home page's Get in touch "Plan an event" pop-up and the `/contact/event` relay are unchanged.)
+- The schedule card (home + `/events/`) ignores the station's `~` helper playlists (pinned songs, announcements), so only the main event row shows; midnight-split rows still merge. The row guard and merge moved to `src/lib/event-schedule.ts`.
+
+### Tests
+- `test/site-build.test.mjs`: the redirect script is on `/events/` only, in `<head>`, uses `window.self === window.parent` and the `site.config` URL; no built page uses `window.top`; `/events/` has no inquiry pop-up/CTA but keeps its explainer sections and the no-JS link; the teaser links `/events/` without `data-open`; `~` rows are filtered before the midnight merge.
+
 ## [0.22.3] — 2026-09-29 — Contact forms relayed server-side
 
 ### Security
