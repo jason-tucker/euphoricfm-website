@@ -26,6 +26,11 @@ import {
   SLOW_RETRY_MS,
 } from '../src/scripts/np-core.ts';
 import { DEFAULT_EXCLUDE_PLAYLISTS } from '../server/stats.mjs';
+import {
+  CONTACT_AVATAR_URL,
+  CONTACT_STATION_NAME,
+  NEWDAYRP_PROFILE_PATTERN,
+} from '../server/index.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = (p) => join(ROOT, 'dist', p);
@@ -66,9 +71,6 @@ test('home keeps its bundle and links the Web Player from the hero', () => {
   const html = read('index.html');
   assert.match(html, /id="np-card"/);
   assert.match(html, /<a href="\/player\/" id="open-player" class="btn btn-ghost">/);
-  // Deferred: a no-store script must not block the first paint of the page.
-  assert.match(html, /<script defer src="\/efm-runtime-config\.js"><\/script>/);
-  assert.equal(html.match(/efm-runtime-config\.js/g)?.length, 1);
   assert.match(html, /BaseLayout\.astro_astro_type_script/);
 });
 
@@ -213,6 +215,24 @@ test('pop-ups sit above the sticky top bar: outside <main> (a z-[1] stacking con
     assert.match(cls[1] ?? cls[2], /\bz-\[70\]/, `${ov} above the bar`);
     assert.ok(html.indexOf(`id="${ov}"`) > mainEnd, `#${ov} is outside <main>`);
   }
+});
+
+test('the contact forms post to the same-origin relay; no page loads a runtime config or a delivery URL', () => {
+  for (const page of ['index.html', 'events/index.html', 'player/index.html']) {
+    const html = read(page);
+    assert.doesNotMatch(html, /discord\.com/i, page);
+    assert.doesNotMatch(html, /api\/webhooks/i, page);
+    assert.doesNotMatch(html, /efm-runtime-config/, page);
+    assert.doesNotMatch(html, /__EFM_CONFIG__\.contact|getWebhook/, page);
+  }
+  assert.match(read('index.html'), /fetch\('\/contact\/message'/);
+  assert.match(read('events/index.html'), /fetch\('\/contact\/event'/);
+});
+
+test('the sidecar contact relay mirrors site.config (avatar, name, profile pattern)', () => {
+  assert.equal(CONTACT_AVATAR_URL, site.discord.avatarUrl);
+  assert.equal(CONTACT_STATION_NAME, site.name);
+  assert.equal(NEWDAYRP_PROFILE_PATTERN, site.newDayRpProfilePattern);
 });
 
 test('no built info page mentions Discord (owner decision) or spells the brand "Euphoric FM"', () => {
