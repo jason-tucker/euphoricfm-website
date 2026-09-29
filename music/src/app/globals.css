@@ -33,12 +33,11 @@
   font-style: normal;
   font-display: swap;
 }
-/* v0.4.1 (A9): the subset WOFF2 (the site's file, byte-identical) goes FIRST
- * in this src list once it is in public/fonts; the full TTF stays last as the
- * fallback. Until then the TTF is the only source. */
+/* v0.4.1 (A9): the 19 KB subset WOFF2 (byte-identical to the info site's,
+ * letters + space only) is listed first; the full TTF stays as the fallback. */
 @font-face {
   font-family: 'Cortado Script';
-  src: url('/fonts/CortadoScript-Regular.ttf') format('truetype');
+  src: url('/fonts/CortadoScript-Regular.woff2') format('woff2'), url('/fonts/CortadoScript-Regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
   font-display: swap;
