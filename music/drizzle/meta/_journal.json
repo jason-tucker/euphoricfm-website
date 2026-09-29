@@ -71,6 +71,13 @@
       "when": 1790632180174,
       "tag": "0009_v040_soundcloud",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790659604326,
+      "tag": "0010_v050_events",
+      "breakpoints": true
     }
   ]
 }
