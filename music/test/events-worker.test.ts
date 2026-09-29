@@ -430,6 +430,48 @@ describe('events worker: kicks and teardown', () => {
     expect(h.alerts.some((a) => a.includes('no applied build for version 2'))).toBe(true)
   })
 
+  it('cancel while live + one failed restart: the retried off-air restart still restarts (registry already empty)', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    const main = mainIdOf(h, 42)
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    h.store.events[0]!.status = 'cancelled'
+    h.az.failRestarts = 1
+    await h.store.enqueue('teardown', { eventId: 42 }, { dedupeExtra: 'v1:cancel' })
+    await drain(h)
+    // playlists gone and the registry rows marked deleted, the first restart failed
+    expect(h.az.playlists.has(main)).toBe(false)
+    expect(h.store.reg.every((r) => r.deletedAt)).toBe(true)
+    expect(h.store.job('teardown')[0]!.status).toBe('done')
+    const job = h.store.job('off_air_restart')[0]!
+    expect(job.status).toBe('queued')
+    expect(h.az.restarts).toBe(1)
+    h.clock.t += 31_000
+    await drain(h)
+    expect(job.status).toBe('done')
+    expect(h.az.restarts).toBe(2)
+    expect(h.az.calls.filter((c) => c.path.endsWith('/backend/restart'))).toHaveLength(3)
+  })
+
+  it('the off-air restart waits while a playlist of the event is still enabled (teardown mid-way)', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    const main = mainIdOf(h, 42)
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    h.store.events[0]!.status = 'cancelled'
+    await h.store.enqueue('off_air_restart', { eventId: 42, reason: 'teardown' }, { dedupeExtra: 'x' })
+    await runOne(h, 'off_air_restart')
+    expect(h.az.restarts).toBe(1)
+    expect(h.store.job('off_air_restart')[0]!.status).toBe('queued')
+    h.az.playlists.get(main)!.is_enabled = false
+    h.clock.t += 60_000
+    await drain(h)
+    expect(h.az.restarts).toBe(2)
+  })
+
   it('teardown of an event sent back for review only disables its playlists', async () => {
     const { h } = await built()
     h.store.events[0]!.status = 'pending'

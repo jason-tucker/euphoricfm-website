@@ -12,13 +12,13 @@ import type { EventsCtx } from './ctx'
 import { Permanent, Retry, Wait } from './errors'
 import { audioDelete, audioFinalize, audioIngest, collectAudio } from './jobs/audio'
 import { buildJob, buildNowJob, recheckJob, verifyJob } from './jobs/build'
-import { endKick, startKick, startKickFailed, teardown } from './jobs/kicks'
+import { endKick, offAirRestart, startKick, startKickFailed, teardown } from './jobs/kicks'
 import { audioExpire, pendingExpire, pendingReminder, stingerSync } from './jobs/sweeps'
 import { ticketClose, ticketOpen, ticketPost } from './jobs/tickets'
 import type { ClaimedJob } from './store'
 
 // Every kind that writes to AzuraCast (queues_paused holds them).
-export const EVENTS_MUTATING_KINDS: readonly EventJobKind[] = ['audio_ingest', 'audio_delete', 'build', 'build_now', 'start_kick', 'end_kick', 'teardown', 'recheck']
+export const EVENTS_MUTATING_KINDS: readonly EventJobKind[] = ['audio_ingest', 'audio_delete', 'build', 'build_now', 'start_kick', 'end_kick', 'teardown', 'off_air_restart', 'recheck']
 
 export async function dispatch(ctx: EventsCtx, kind: EventJobKind, payload: unknown): Promise<void> {
   switch (kind) {
@@ -52,6 +52,8 @@ export async function dispatch(ctx: EventsCtx, kind: EventJobKind, payload: unkn
       return endKick(ctx, parseEventJobPayload(kind, payload))
     case 'teardown':
       return teardown(ctx, parseEventJobPayload(kind, payload))
+    case 'off_air_restart':
+      return offAirRestart(ctx, parseEventJobPayload(kind, payload))
     case 'recheck':
       return recheckJob(ctx, parseEventJobPayload(kind, payload))
     case 'pending_expire':
