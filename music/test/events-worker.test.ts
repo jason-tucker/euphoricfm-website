@@ -472,6 +472,47 @@ describe('events worker: kicks and teardown', () => {
     expect(h.az.restarts).toBe(2)
   })
 
+  it('end kick whose restart always fails: exactly 2 restart attempts 30 s apart, then an alert and stop', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    const end = T('2026-10-10T22:00:00-04:00')
+    h.clock.t = end + 91_000
+    h.az.failRestarts = 100
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('ended')
+    const job = h.store.job('off_air_restart')[0]!
+    expect(job.maxAttempts).toBe(2)
+    expect(job.runAfter).toBe(h.clock.t + 30_000)
+    h.clock.t += 30_000
+    await drain(h)
+    expect(job.status).toBe('dead')
+    h.clock.t += 3600_000
+    await drain(h)
+    const restartCalls = h.az.calls.filter((c) => c.path.endsWith('/backend/restart'))
+    expect(restartCalls).toHaveLength(3) // the start kick + 2 off-air attempts
+    expect(h.alerts.some((a) => a.includes('off-air restart FAILED for event #42') && a.includes('after its end'))).toBe(true)
+    expect(h.store.job('end_kick')[0]!.status).toBe('done')
+  })
+
+  it('an on-air teardown whose restart always fails: 2 attempts, then an alert', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    h.store.events[0]!.status = 'cancelled'
+    h.az.failRestarts = 100
+    await h.store.enqueue('teardown', { eventId: 42 }, { dedupeExtra: 'v1:cancel' })
+    await drain(h)
+    h.clock.t += 31_000
+    await drain(h)
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(h.store.job('off_air_restart')[0]!.status).toBe('dead')
+    expect(h.az.calls.filter((c) => c.path.endsWith('/backend/restart'))).toHaveLength(3)
+    expect(h.alerts.some((a) => a.includes('off-air restart FAILED for event #42') && a.includes('after its teardown'))).toBe(true)
+  })
+
   it('teardown of an event sent back for review only disables its playlists', async () => {
     const { h } = await built()
     h.store.events[0]!.status = 'pending'

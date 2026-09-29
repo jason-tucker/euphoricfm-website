@@ -12,7 +12,7 @@ import type { EventsCtx } from './ctx'
 import { Permanent, Retry, Wait } from './errors'
 import { audioDelete, audioFinalize, audioIngest, collectAudio } from './jobs/audio'
 import { buildJob, buildNowJob, recheckJob, verifyJob } from './jobs/build'
-import { endKick, offAirRestart, startKick, startKickFailed, teardown } from './jobs/kicks'
+import { endKick, offAirRestart, offAirRestartFailed, startKick, startKickFailed, teardown } from './jobs/kicks'
 import { audioExpire, pendingExpire, pendingReminder, stingerSync } from './jobs/sweeps'
 import { ticketClose, ticketOpen, ticketPost } from './jobs/tickets'
 import type { ClaimedJob } from './store'
@@ -81,6 +81,7 @@ async function onDead(ctx: EventsCtx, job: ClaimedJob, error: string): Promise<v
   const eventId = typeof p.eventId === 'number' ? p.eventId : null
   const audioId = typeof p.audioId === 'number' ? p.audioId : null
   if (job.kind === 'start_kick' && eventId) await startKickFailed(ctx, eventId, error)
+  if (job.kind === 'off_air_restart' && eventId) await offAirRestartFailed(ctx, eventId, p.reason, error)
   if ((job.kind === 'build' || job.kind === 'build_now') && eventId) {
     const ev = await ctx.store.getEvent(eventId)
     const b = ev ? await ctx.store.buildFor(ev.id, ev.version) : null

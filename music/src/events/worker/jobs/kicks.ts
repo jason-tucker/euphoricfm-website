@@ -21,7 +21,8 @@
 //     BEFORE the playlists are touched, so the decision survives a failed
 //     restart and a retried teardown that finds no registry rows left. It
 //     waits until none of the event's playlists is enabled any more, then
-//     purges and restarts.
+//     purges and restarts: 2 attempts 30 s apart, then an alert (never a
+//     loop of restarts).
 
 import { EventsAzuraCastError, type NowPlaying, type PlaylistScope } from '../../azuracast/client'
 import type { EventJobPayload } from '../../contract/jobs'
@@ -232,8 +233,19 @@ export async function teardown(ctx: EventsCtx, p: EventJobPayload<'teardown'>): 
 const OFF_AIR_WAIT_S = 15
 const OFF_AIR_MAX_WAIT_S = 3600
 
+// Like the start kick: one retry after START_KICK_RETRY_S, then the job is
+// dead, staff are paged (offAirRestartFailed) and it never loops restarts.
+export const OFF_AIR_RESTART_MAX_ATTEMPTS = 2
+
 async function requestOffAirRestart(ctx: EventsCtx, ev: EventRow, reason: 'end' | 'teardown', discriminator: string): Promise<void> {
-  await ctx.store.enqueue('off_air_restart', { eventId: ev.id, reason }, { dedupeExtra: discriminator })
+  await ctx.store.enqueue('off_air_restart', { eventId: ev.id, reason }, { dedupeExtra: discriminator, maxAttempts: OFF_AIR_RESTART_MAX_ATTEMPTS })
+}
+
+// An off-air restart that ran out of attempts (loop.ts failure hook).
+export async function offAirRestartFailed(ctx: EventsCtx, eventId: number, reason: unknown, error: string): Promise<void> {
+  const ev = await ctx.store.getEvent(eventId)
+  const when = ev ? ` (${whenLine(ev)})` : ''
+  await ctx.alert(`events off-air restart FAILED for event #${eventId}${when} after its ${reason === 'end' ? 'end' : 'teardown'}: station 14 did not restart; its playlists may keep airing until the next restart`, { eventId, error })
 }
 
 /**
