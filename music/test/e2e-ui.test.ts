@@ -10,6 +10,7 @@ import { has } from './helpers/env'
 import { fxBuf } from './helpers/fixtures'
 import { Jar, req } from './helpers/http'
 import { tusUpload } from './helpers/tus'
+import { waitFor } from './helpers/wait'
 import { SITE_LINKS } from '@/components/site-links'
 import { DEFAULT_CAPS, type Caps } from '@/server/settings-defaults'
 import { uploadLimitsForUi } from '@/server/ui/limits'
@@ -54,13 +55,10 @@ async function homeSettings() {
 const rightsOnHome = (html: string) => unescapeHtml(/<blockquote[^>]*data-testid="rights-text"[^>]*>([^<]*)<\/blockquote>/.exec(html)?.[1] ?? '')
 
 async function waitPending(jar: Jar, itemId: number) {
-  const deadline = Date.now() + 60_000
-  for (;;) {
+  return waitFor(async () => {
     const it = (await (await req(jar, `/api/items/${itemId}`)).json()) as { status: string; title: string | null }
-    if (it.status !== 'probing') return it
-    if (Date.now() > deadline) throw new Error('probe timeout')
-    await new Promise((r) => setTimeout(r, 500))
-  }
+    return it.status !== 'probing' ? it : null
+  }, 60_000)
 }
 
 describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)', () => {

@@ -79,6 +79,8 @@ describe.skipIf(!DBENV() || !MOCKS())('contract probe pauses mutating jobs and f
     expect(claimed.filter((id) => mutatingIds.includes(id))).toEqual([])
     // Give the running worker time to try as well: its idle poll backs off
     // from 2 s to IDLE_POLL_MS.max (5 s, v0.4.1), so wait for two of those.
+    // A deliberate NEGATIVE wait (proving nothing happens cannot be polled
+    // for), derived from the poll interval rather than a guess.
     await new Promise((r) => setTimeout(r, 2 * IDLE_POLL_MS.max + 2000))
     const rows = await ownerSql()`SELECT id, status FROM jobs WHERE id IN ${ownerSql()(mutatingIds)}`
     expect(rows.every((r) => r.status === 'queued')).toBe(true)
