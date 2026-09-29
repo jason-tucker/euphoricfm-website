@@ -2,11 +2,12 @@
 // mocks, a pinned far-future clock, and the test playing the probe.
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { runFinalize } from '@/probe/finalize'
+import { DIRS, handleClaimed } from '@/probe/main'
 import { AzuraCastClient, AzuraCastError } from '@/server/azuracast/client'
 import { resolveProfile } from '@/server/azuracast/guard'
 import { closeDb } from '@/server/db/client'
@@ -16,7 +17,7 @@ import { QueuesPausedError } from '@/server/pause'
 import { mainArtist } from '@/server/library/artists'
 import { clearItemArt, decideItem, editItemMetadata, setItemArt, submitBatch } from '@/server/submissions'
 import { Defer } from '@/worker/handlers'
-import { runIngest, runIngestVerify } from '@/worker/ingest/pipeline'
+import { FINALIZE_TIMEOUT_MS, runIngest, runIngestVerify } from '@/worker/ingest/pipeline'
 import { afterScans, pacingWaitMs, scanWindow, WindowConfigError } from '@/worker/ingest/window'
 import { artUrlFor, isLibraryPath, stationSet, syncLibrary } from '@/worker/library/sync'
 import { runJob } from '@/worker/main'
@@ -707,6 +708,49 @@ describe.skipIf(!DBENV() || !MOCKS())('ingest pipeline (station 1, Portal-Test/ 
     expect(await item(id)).toMatchObject({ status: 'failed' })
     expect((await run(id))!).toMatchObject({ stage: 'failed', last_error: 'wait_expired' })
     expect((await ownerSql()`SELECT 1 FROM jobs WHERE dedupe_key = ${`ticket_item_event:item:${id}:failed`}`).length).toBe(1)
+    ctx.cleanup()
+  })
+
+  it('A7(a): a finalize the probe answers after the timeout leaves nothing in /staging/final', async () => {
+    const ctx = makeCtx(slot(39))
+    const owner = await mkUser()
+    const folder = `PT Late ${uniq()}`
+    const artistId = await mkArtist(folder)
+    const b = await mkBatch(owner.id)
+    const cleanupsFor = (file: string) =>
+      readdirSync(ctx.spoolInDir)
+        .filter((n) => n.endsWith('.json'))
+        .map((n) => JSON.parse(readFileSync(join(ctx.spoolInDir, n), 'utf8')) as { id: string; type: string; file?: string })
+        .filter((r) => r.type === 'cleanup_final' && r.file === file)
+
+    // never claimed: the request is withdrawn when the worker gives up
+    const a = await mkItem({ batchId: b, ownerId: owner.id, title: 'Late A', artist: folder, artistId })
+    expect((await step(ctx, a))?.message).toBe('finalize submitted')
+    const ra = (await run(a))!.finalize_request_id as string
+    ctx.clock.t += FINALIZE_TIMEOUT_MS - 60_000
+    expect((await step(ctx, a))?.message).toBe('finalize pending') // 29 min: still waiting (was 15)
+    ctx.clock.t += 2 * 60_000
+    expect(await step(ctx, a)).toBeNull()
+    expect(await item(a)).toMatchObject({ status: 'failed' })
+    expect((await run(a))!.last_error).toBe('finalize_timeout')
+    expect(existsSync(join(ctx.spoolInDir, `${ra}.json`))).toBe(false)
+
+    // claimed by the probe, answered after the worker gave up
+    ctx.clock.t = slot(39, 30)
+    const c = await mkItem({ batchId: b, ownerId: owner.id, title: 'Late C', artist: folder, artistId })
+    expect((await step(ctx, c))?.message).toBe('finalize submitted')
+    const rc = (await run(c))!.finalize_request_id as string
+    renameSync(join(ctx.spoolInDir, `${rc}.json`), join(ctx.spoolOutDir, '..', `claimed-${rc}.json`))
+    ctx.clock.t += FINALIZE_TIMEOUT_MS + 60_000
+    expect(await step(ctx, c)).toBeNull()
+    expect(await item(c)).toMatchObject({ status: 'failed' })
+    writeFileSync(join(ctx.finalDir, `${rc}.mp3`), 'late final') // the late answer lands
+    const [cleanup] = cleanupsFor(`${rc}.mp3`)
+    expect(cleanup).toBeTruthy()
+    // the probe takes it after the late finalize (in-worker is oldest first)
+    const res = await handleClaimed('in-worker', cleanup!.id, join(ctx.spoolInDir, `${cleanup!.id}.json`), { ...DIRS, final: ctx.finalDir })
+    expect(res).toMatchObject({ type: 'cleanup_final', ok: true, removed: true })
+    expect(readdirSync(ctx.finalDir)).not.toContain(`${rc}.mp3`)
     ctx.cleanup()
   })
 
