@@ -87,14 +87,17 @@ export function zonedToUtc(date: string, time: string, zone: string | undefined)
   const [h, mi] = [Number(tm[1]), Number(tm[2])]
   if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59) return null
   const wall = Date.UTC(y, mo - 1, d, h, mi)
-  // Two passes settle the offset around a DST change.
-  let guess = wall - offsetAt(wall, zone)
-  guess = wall - offsetAt(guess, zone)
-  // Prefer the earlier instant when the wall time repeats (fall back).
-  const earlier = guess - HOUR
-  const e = partsIn(earlier, zone)
-  if (e.year === y && e.month === mo && e.day === d && e.hour === h && e.minute === mi) return new Date(earlier)
-  return new Date(guess)
+  const same = (t: number) => {
+    const p = partsIn(t, zone)
+    return p.year === y && p.month === mo && p.day === d && p.hour === h && p.minute === mi
+  }
+  // Candidates from the offsets on either side of a possible DST change.
+  const g1 = wall - offsetAt(wall, zone)
+  const g2 = wall - offsetAt(g1, zone)
+  const matches = [g1, g2, g1 - HOUR, g2 - HOUR].filter(same)
+  // A repeated wall time (fall back) takes the earlier instant; a skipped
+  // one (spring forward) lands after the gap.
+  return new Date(matches.length ? Math.min(...matches) : Math.max(g1, g2))
 }
 
 /** Short zone label at an instant: "ET" for Eastern, else e.g. "CEST" / "GMT+2". */
