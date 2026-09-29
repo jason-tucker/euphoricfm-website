@@ -236,6 +236,13 @@
 
 /* ------------------------------------------------ phones ---------------- */
 @media (max-width: 767px) {
+  /* The events row: tabs get the full width (the shared bar's fade shows
+   * when they scroll); the ET/Local toggle and the account sit on a row of
+   * their own below, right-aligned. */
+  .ev-root .efms-in { flex-wrap: wrap; row-gap: 6px; }
+  .ev-root .efms-tabs { flex: 1 0 100%; }
+  .ev-root .efms-tab, .ev-root .efms-btn { height: 48px; }
+
   /* Touch targets: 48 px tall on phones. */
   .ev-tz { height: auto; padding: 0; gap: 2px; }
   .ev-tz-btn { min-height: 48px; }
