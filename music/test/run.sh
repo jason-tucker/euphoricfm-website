@@ -45,7 +45,10 @@ cfg=test/.out/prodcfg
 rm -rf "$cfg" && mkdir -p "$cfg/env"
 for f in db migrate web worker; do : > "$cfg/env/$f.env"; done
 cp compose.yml "$cfg/compose.yml"
-MUSIC_TAG=static-check ${DOCKER_COMPOSE:-docker compose} -f "$cfg/compose.yml" config --format json > test/.out/data/compose.prod.json
+MUSIC_TAG=static-check ${DOCKER_COMPOSE:-docker compose} -f "$cfg/compose.yml" config --format json > "$cfg/compose.prod.json"
+# test/.out/data was just recreated as root by the alpine step above, so a
+# non-root CI runner cannot write into it: copy the file in the same way.
+docker run --rm -v "$PWD/test/.out:/o" alpine:3 sh -c 'cp /o/prodcfg/compose.prod.json /o/data/compose.prod.json && chmod 644 /o/data/compose.prod.json' >/dev/null
 
 echo "== build"
 $DC --profile tests build
