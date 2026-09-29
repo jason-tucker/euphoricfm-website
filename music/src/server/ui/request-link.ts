@@ -2,8 +2,11 @@
 // (worker/requests/jobs.ts: <portal>/requests/<id>) takes each viewer. The
 // visibility rule is GET /api/requests/[id]'s (owner or reviewer, else 404).
 //   owner    → the song page (it lists "Your requests for this song"), or
-//              Archived songs once the song has left the library (an applied
-//              removal, an archive in progress, a row no longer on the surface)
+//              Archived songs only when the song is positively known to have
+//              left the library (an applied removal, an archive row, or a
+//              cached row whose path is no longer on the surface), or My
+//              music's request list when the song is simply not in the cache
+//              (the song page would 404; that is not "archived")
 //   reviewer → the requests queue, at this request
 import { and, eq, inArray } from 'drizzle-orm'
 import { canViewOwned, isOwner, type Viewer } from '../authz/predicates'
@@ -21,5 +24,7 @@ export async function requestLinkTarget(db: DB, v: Viewer, id: number): Promise<
     db.query.libraryCache.findFirst({ where: eq(libraryCache.mediaId, r.mediaId) }),
     db.query.archive.findFirst({ where: and(eq(archive.mediaId, r.mediaId), inArray(archive.status, ['archiving', 'archived'])) }),
   ])
-  return lib && onLibrarySurface(lib.path) && !gone ? `/library/${r.mediaId}` : '/library/archived'
+  if (gone) return '/library/archived'
+  if (!lib) return '/dashboard#requests'
+  return onLibrarySurface(lib.path) ? `/library/${r.mediaId}` : '/library/archived'
 }

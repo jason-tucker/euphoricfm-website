@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HttpError } from '@/server/http/errors'
 import { nextLabel, safeNext } from '@/lib/next-path'
+import { libraryRoot } from '@/server/ui/library'
 
 type V = { userId: string; discordId: string; name: string; perms: Set<string> }
 const state = vi.hoisted(() => ({
@@ -43,7 +44,11 @@ vi.mock('@/server/auth/config', () => ({ signIn: vi.fn(async (_p: string, o: unk
 const member: V = { userId: 'u1', discordId: '100000000000000001', name: 'Mia', perms: new Set(['submit', 'request']) }
 const other: V = { ...member, userId: 'u9', name: 'Other' }
 const reviewer: V = { userId: 'u2', discordId: '100000000000000002', name: 'Rev', perms: new Set(['submit', 'request', 'review']) }
-const LIB_PATH = 'Music/Artists/GRIM/GRIM - Night.mp3'
+// On the library surface in THIS environment: the harness sets
+// PORTAL_TEST_PREFIX (the surface is then Portal-Test/Music/Artists/…), the
+// jsdom run does not. (A fixed 'Music/Artists/…' path was off the surface in
+// the harness, so the requester was sent to Archived songs.)
+const LIB_PATH = `${libraryRoot()}Music/Artists/GRIM/GRIM - Night.mp3`
 
 beforeEach(() => {
   state.viewer = null
@@ -96,10 +101,16 @@ describe('GET /requests/<id> (the ticket card link, A1)', async () => {
     state.archived = { mediaId: 501, status: 'archived' }
     expect(await open()).toBe('NEXT_REDIRECT /library/archived')
     state.archived = null
-    state.lib = { mediaId: 501, path: 'Removed/501/GRIM - Night.mp3' }
+    state.lib = { mediaId: 501, path: `${libraryRoot()}Removed/501/GRIM - Night.mp3` }
     expect(await open()).toBe('NEXT_REDIRECT /library/archived')
+  })
+
+  it('a song that is simply not in the library cache is not "archived": the requester goes to My music’s requests', async () => {
+    state.viewer = member
     state.lib = null
-    expect(await open()).toBe('NEXT_REDIRECT /library/archived')
+    expect(await open()).toBe('NEXT_REDIRECT /dashboard#requests')
+    state.request = { ...state.request, kind: 'removal', status: 'pending' }
+    expect(await open()).toBe('NEXT_REDIRECT /dashboard#requests')
   })
 
   it('a reviewer lands on the request in the queue', async () => {
