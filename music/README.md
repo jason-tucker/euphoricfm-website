@@ -158,6 +158,69 @@ docker compose -p efm-music exec music-worker node /app/legacy-import.mjs status
 
 **Stop / roll back.** To stop part way: `UPDATE jobs SET status = 'done' WHERE kind = 'import_legacy_archive' AND status = 'queued';` (or set `settings.queues_paused`); a file in flight finishes or is rolled back by the reconciler. Per song, the supported way back is **Release** into an artist folder. A full return to UNRELEASED is manual and not a portal action: move `Removed/<id>/<name>` back to its `archive.original_path` folder with AzuraCast's own file manager (a batch move keeps the id), re-add the `before_archive` snapshot's playlists (only 5112 had one: playlist 2), then close the row as the DB owner: `UPDATE archive SET status = 'restored', restored_at = now(), updated_at = now() WHERE id = <archive id> AND origin = 'legacy_unreleased';`.
 
+## Events portal (v0.5.0)
+
+`https://events.euphoric.fm` is a **second instance of this app** (same images and `MUSIC_TAG`, same database, same Discord app) with `PORTAL_SITE=events`. Plan: vault **"EFM Events Portal — Plan"** (v2.1); names and shapes: the events contract (`src/events/contract/`).
+
+| Service | Image | Networks | Holds | Budget |
+|---|---|---|---|---|
+| `events-web` | `web` | `music-int`, `worker-egress` | `events-web.env` (below). No AzuraCast key, no tickets key of either portal: it refuses to start on `AZURACAST_API_KEY`, `TICKETS_WRITE_KEY`, `EVENTS_AZURACAST_API_KEY` or `EVENTS_TICKETS_WRITE_KEY`. Published on `127.0.0.1:6097` only. | 192m, heap 128 |
+| `events-worker` | `worker`, `command: node /app/events-worker.mjs` | `music-int`, `efm-public-net`, `worker-egress` | `events-worker.env`: the **events** AzuraCast key (station 14 only) and the **efm-events** tickets key. Refuses the music keys and every web secret. Claims only `event_jobs`. | 160m, heap 96 |
+| `events-probe` | `probe` | `network_mode: none` | Nothing (no env_file). Unchanged probe code on the events tree. | 256m |
+
+**Data root** `${MUSIC_DATA_DIR}/events/`, created (uid 1000) by `music-init`: `staging/{uploads,final,work}` and `spool/probe/{in-web,in-worker,out,claimed}`. No art or fetch dirs. Pinned mounts:
+
+| Container | Mount |
+|---|---|
+| events-web | `events/staging/uploads` rw (tus), `events/spool/probe/in-web` rw, `events/spool/probe/out` **ro** |
+| events-worker | `events/staging/final` **ro**, `events/spool/probe/in-worker` rw, `events/spool/probe/out` **ro** |
+| events-probe | `events/staging/{uploads,final,work}` rw, `events/spool/probe` rw; `/staging/art` is a 1 MB tmpfs (the probe creates it at start-up; events has no art) |
+
+No events service mounts anything of music's tree, and no music service mounts `events/` (`test/compose-events.test.ts`, and the mount checks in `test/run.sh`).
+
+**Site gate** (`src/server/http/site-gate.ts`): on events, `/x` renders `app/ev/x`; only `/api/ev/**`, `/api/auth/**`, `/api/health` and the tus routes (`/api/uploads`, `/api/uploads/<id>`) exist; everything else is a 404. Music 404s `/ev/**` and `/api/ev/**`.
+
+### Env files and secrets
+
+On botvps the secrets live in **`/home/botuser/secrets/efm-events/`** (mode 700, files 600, owner botuser); `env/events-web.env` and `env/events-worker.env` in the checkout are copies of (or symlinks to) those files. Templates: `env/events-web.env.example`, `env/events-worker.env.example`.
+
+| Key | `events-web.env` | Rule |
+|---|---|---|
+| `DATABASE_URL`, `AUTH_DISCORD_ID`, `AUTH_DISCORD_SECRET`, `APP_ENC_KEY`, `DISCORD_GUILD_ID`, `PORTAL_OWNER_IDS` | **same as music's `web.env`** | both webs read and refresh the same encrypted `account` tokens |
+| `PORTAL_ORIGIN`, `AUTH_URL` | `https://events.euphoric.fm` | must differ; `AUTH_URL` must equal `PORTAL_ORIGIN` |
+| `AUTH_SECRET` | its own (`openssl rand -base64 33`) | never music's |
+| `TICKETS_WEBHOOK_SECRET` | random, registered nowhere (`openssl rand -hex 32`) | the schema requires one; v1 has no inbound webhook |
+| `TICKETS_GUILD_READ_KEY` | empty | sign-in relies on Discord's member lookup only |
+| `PORTAL_SITE` | set by `compose.yml` | — |
+
+`events-worker.env`: `DATABASE_URL`, `AZURACAST_BASE_URL` and `TICKETS_API_BASE` as in music's `worker.env`; `EVENTS_STATION_ID=14` (anything else refuses to start); `EVENTS_AZURACAST_API_KEY` (dedicated Events user, station 14 media + playlists + broadcasting); `EVENTS_CANARY_STATION_IDS=1,7` (each must answer 403 at start-up); `EVENTS_TICKETS_WRITE_KEY` (integration `efm-events`: `tickets:write` + `tickets:close`, category `eventrequest`, link origin `https://events.euphoric.fm`, no actor impersonation); `PORTAL_ORIGIN=https://events.euphoric.fm`.
+
+**Music's env files must hold no `EVENTS_*` variable at all** (music-web and music-worker refuse the whole prefix). Set `AZURACAST_EXTRA_CANARY_STATION_IDS=14` in music's `worker.env` (it is the default; set it explicitly), so an events key pasted into the wrong file refuses to start.
+
+### Deploy additions
+
+1. Create the two env files (above) from the secrets dir; `chmod 600`.
+2. `docker compose -p efm-music up -d`: `music-init` re-runs and creates the `events/` tree (it is idempotent; to re-run it alone: `docker compose -p efm-music up music-init`), `music-migrate` applies `0010`.
+3. Cloudflare: `events.euphoric.fm → http://localhost:6097`, and the edge answers 404 for `events.euphoric.fm/api/hooks/`.
+4. **Egress probe from events-web** (before go-live, and after each botvps reboot or Docker upgrade until the unit has been seen to restore the rules). events-web sits on `worker-egress` (172.31.252.0/24), so `efm-music-egress.service` already confines it; verify. `IP` values: the music-worker's address on worker-egress (`docker inspect efm-music-music-worker-1 --format '{{(index .NetworkSettings.Networks "efm-music_worker-egress").IPAddress}}'`) and tickets-web's address (`docker inspect tickets-web --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}'`):
+
+   ```sh
+   docker compose -p efm-music exec -T events-web node -e '
+   const net = require("node:net");
+   const t = [["MUSIC_WORKER_IP",3000],["169.254.169.254",80],["100.100.100.100",53],["TICKETS_WEB_IP",3000],["10.0.0.1",80],["discord.com",443],["euphoric.fm",443]];
+   (async () => { for (const [h,p] of t) await new Promise((r) => { const s = net.connect({host:h,port:p,timeout:3000});
+     s.on("connect",()=>{console.log(h,"OPEN");s.destroy();r()}); s.on("timeout",()=>{console.log(h,"blocked: timeout");s.destroy();r()});
+     s.on("error",(e)=>{console.log(h,"blocked:",e.code);r()}) }) })()'
+   ```
+
+   **Only `discord.com` and `euphoric.fm` may print `OPEN`.** A worker port that is not listening prints `ECONNREFUSED` if the packet got through: that counts as **not** blocked (a DROP shows as a timeout). Anything else reachable → `docker compose -p efm-music stop events-web`, fix the rules, re-verify; record the result in the vault's botvps note.
+
+### Tests
+
+The harness runs the three events services with test constants (`test/compose.test.yml`): events-web reaches the mock Discord over `worker-egress`, events-worker the mock AzuraCast with a **second key that only reaches station 14** (stations 1 and 7 answer 403) and the mock tickets API with the `efm-events` key (category `eventrequest`, events link origin). The station-14 mock keeps playlists with schedule rows, order entries, a queue and restarts; its `files/batch do=playlist` **replaces only the file's station-14 memberships** (station 1's stay), like upstream. Anything the events wrapper's allowlist forbids is recorded in `GET /__mock/az/station14/violations` and not applied; `GET /__mock/az/station14/state` shows the whole station.
+
+`e2e-events-*.test.ts` and `compose-events.test.ts` tag each test with what it needs: **[W0]** (contract commit only: compose, site gate, sign-in, tus flag/site/sweepers, library sync, set_playlists merge), **[A]** (the events API) or **[A+C]** (the API and the events worker). A failing [A] or [A+C] test on a branch without that code is expected.
+
 ## Database migrations
 
 `drizzle/` holds `0000_init`, `0001_audit_append_only` (the append-only trigger, hand-written), `0002_foundation_art` (album-art uploads) and `0003_integration` (P3 + P4, generated by drizzle-kit from the merged `schema.ts` on the 0002 snapshot: `ingest_runs`, `batches.attest_version`, `items.custom_art_id` with its FK, the P4 request and snapshot columns). `music-migrate` applies them as the owner, then (re)grants `music_app`. `schema.ts` and the migrations are equivalent (drizzle-kit `generate` reports no changes; a migrated database matches one built from `schema.ts` column for column, apart from the 0001 triggers). drizzle-kit `push` always proposes re-setting the five `'{}'::int[]` / `'{}'::text[]` array defaults: that is a drizzle-kit comparison artefact that does not converge and was already present at 0002, not drift. Later releases add `0004_v021_worker`, `0005_v022_archive_reconcile`, `0006_v030_wav_input` (`items.input_format`), `0007_v032_transcode_kbps` (`items.transcode_kbps`) `0008_v036_archive_legacy` (`archive.origin` enum `portal` / `legacy_unreleased`, `reason`, `linked_user_id` → `user`, `release_artist_id` → `artists`, `release_playlist_ids`, `restore_path`) and `0009_v040_soundcloud` (`items.fetch_request_id`, `fetch_stage`, `fetch_requested_at`, `source_url`, `fetch_license`), each generated by drizzle-kit from `schema.ts`.
@@ -230,7 +293,7 @@ The harness builds the images, starts Postgres, the mocks and the real container
 - music-fetch's own unit suite (`fetch/tests`, network none, runtime constraints);
 - `vitest` (unit, DB and e2e for every phase: foundation, ingest, requests, UI page smoke, SoundCloud links);
 - the mount checks;
-- the worker start-up refusals.
+- the worker start-up refusals (v0.5.0: also the events worker's: the music AzuraCast key or a station other than 14 refuses, and music-worker refuses any `EVENTS_*` key).
 
 Finally it prints idle `docker stats`. The web's own retention sweeper is off in the harness (`MUSIC_DISABLE_SWEEPER=1`), because the retention tests call it directly.
 

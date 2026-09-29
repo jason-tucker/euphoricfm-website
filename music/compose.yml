@@ -21,6 +21,9 @@
 #                    service is on it, and music-fetch is on nothing else
 #                    (no music-int, no database, no other container).
 #   probe            network_mode none
+#   v0.5.0 events:   events-web    = music-int + worker-egress (Discord OAuth)
+#                    events-worker = music-int + efm-public-net + worker-egress
+#                    events-probe  = network_mode none
 #
 # The host egress guard is NOT applied by this repo: on botvps the systemd
 # unit efm-music-egress.service (revision 3.1) keeps three chains, each rule
@@ -276,6 +279,110 @@ services:
       - ${MUSIC_DATA_DIR:-./data}/staging/fetch:/staging/fetch:rw
     networks:
       - fetch-egress
+    depends_on:
+      music-init:
+        condition: service_completed_successfully
+
+  # ------------------------------------------------------------------------
+  # v0.5.0: EFM Events Portal (events.euphoric.fm). A second instance of the
+  # same images: PORTAL_SITE=events on the web, the events entry point on the
+  # worker, an unchanged probe. Own data root ${MUSIC_DATA_DIR}/events/ (its
+  # own staging + spool tree, created by music-init), own env files, same
+  # database. Plan: vault "EFM Events Portal — Plan" §2; README "Events".
+  # ------------------------------------------------------------------------
+
+  events-web:
+    <<: *hardening
+    image: ghcr.io/jason-tucker/euphoricfm-website-music:web-${MUSIC_TAG:?set MUSIC_TAG in .env}
+    # Shares ONLY AUTH_DISCORD_ID/SECRET, APP_ENC_KEY and DATABASE_URL with
+    # music-web (template: env/events-web.env.example). Refuses to start if
+    # it sees any AzuraCast / tickets write key (music's or events').
+    env_file: ./env/events-web.env
+    environment:
+      PORTAL_SITE: events
+      HOSTNAME: 0.0.0.0
+      NODE_OPTIONS: --max-old-space-size=128
+    ports:
+      - "127.0.0.1:6097:3000"
+    tmpfs:
+      - /tmp:size=16m
+      - /app/.next/cache:size=16m,uid=1000,gid=1000
+    mem_limit: 192m
+    memswap_limit: 192m # no swap on top of the limit (2 GB botvps)
+    # PINNED MOUNTS: the events tus dir and the events in-web inbox (rw), the
+    # events probe results (ro). No art dirs (the site gate 404s art), and
+    # nothing of music's staging or spool.
+    volumes:
+      - ${MUSIC_DATA_DIR:-./data}/events/staging/uploads:/staging/uploads:rw
+      - ${MUSIC_DATA_DIR:-./data}/events/spool/probe/in-web:/spool/probe/in-web:rw
+      - ${MUSIC_DATA_DIR:-./data}/events/spool/probe/out:/spool/probe/out:ro
+    # music-int: the database. worker-egress (172.31.252.0/24, confined by
+    # botvps's efm-music-egress.service): Discord OAuth + member lookup. No
+    # efm-music-hooks: v1 has no inbound tickets webhook and no guild:read key.
+    networks:
+      - music-int
+      - worker-egress
+    depends_on:
+      music-init:
+        condition: service_completed_successfully
+      music-migrate:
+        condition: service_completed_successfully
+
+  events-worker:
+    <<: *hardening
+    image: ghcr.io/jason-tucker/euphoricfm-website-music:worker-${MUSIC_TAG:?set MUSIC_TAG in .env}
+    command: ["node", "/app/events-worker.mjs"]
+    # The ONLY holder of the events AzuraCast key (station 14) and the
+    # efm-events tickets key; refuses the music keys. Claims only event_jobs.
+    env_file: ./env/events-worker.env
+    environment:
+      NODE_OPTIONS: --max-old-space-size=96
+    tmpfs:
+      - /tmp:size=8m
+    # JSON ingest holds the file + its base64 (≤ 35 MiB final).
+    mem_limit: 160m
+    memswap_limit: 160m # no swap on top of the limit (2 GB botvps)
+    # PINNED MOUNTS: events final (ro), the events in-worker inbox (rw), the
+    # events probe results (ro). Never the uploads dir, never music's tree.
+    volumes:
+      - ${MUSIC_DATA_DIR:-./data}/events/staging/final:/staging/final:ro
+      - ${MUSIC_DATA_DIR:-./data}/events/spool/probe/in-worker:/spool/probe/in-worker:rw
+      - ${MUSIC_DATA_DIR:-./data}/events/spool/probe/out:/spool/probe/out:ro
+    networks:
+      - music-int
+      - efm-public-net
+      - worker-egress
+    depends_on:
+      music-init:
+        condition: service_completed_successfully
+      music-migrate:
+        condition: service_completed_successfully
+
+  events-probe:
+    <<: *hardening
+    image: ghcr.io/jason-tucker/euphoricfm-website-music:probe-${MUSIC_TAG:?set MUSIC_TAG in .env}
+    # Unchanged probe code on the events tree. No network, no env_file.
+    network_mode: none
+    environment:
+      HOME: /tmp
+    # /staging/art: the probe creates it at start-up (src/probe/main.ts) and
+    # would exit on the read-only rootfs. Events has no album art (no art-in
+    # anywhere, the site gate 404s the art routes), so an empty tmpfs, never
+    # a disk dir shared with anyone.
+    tmpfs:
+      - /tmp:size=32m
+      - /staging/art:size=1m,uid=1000,gid=1000,mode=0750
+    mem_limit: 256m
+    memswap_limit: 256m # no swap on top of the limit (2 GB botvps)
+    pids_limit: 128
+    cpu_shares: 256 # yields to the bots, like music-probe
+    # PINNED MOUNTS: the events staging subtrees it works on + the events
+    # probe spool. No art / fetch dirs (events has neither).
+    volumes:
+      - ${MUSIC_DATA_DIR:-./data}/events/staging/uploads:/staging/uploads:rw
+      - ${MUSIC_DATA_DIR:-./data}/events/staging/final:/staging/final:rw
+      - ${MUSIC_DATA_DIR:-./data}/events/staging/work:/staging/work:rw
+      - ${MUSIC_DATA_DIR:-./data}/events/spool/probe:/spool/probe:rw
     depends_on:
       music-init:
         condition: service_completed_successfully

@@ -45,6 +45,45 @@ x-worker-env: &worker-env
   ALLOW_TEST_ENDPOINTS: "1"
   NODE_OPTIONS: --max-old-space-size=96
 
+# v0.5.0 events-web: shares ONLY the Discord app, APP_ENC_KEY and the DB URL
+# with music-web; its own AUTH_SECRET, an unused webhook secret, no guild:read
+# key (members are checked against the mock Discord only), no test prefix
+# (the events worker drives real Music/Artists/** paths on the mock).
+x-events-web-env: &events-web-env
+  DATABASE_URL: postgres://music_app:test-only-app-password-000000@music-db:5432/music
+  PORTAL_SITE: events
+  PORTAL_ORIGIN: https://events.euphoric.fm
+  AUTH_URL: https://events.euphoric.fm
+  AUTH_SECRET: test-only-events-auth-secret-not-real-0000
+  AUTH_DISCORD_ID: test-client-id
+  AUTH_DISCORD_SECRET: test-client-secret
+  APP_ENC_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  DISCORD_GUILD_ID: "915830850694815765"
+  PORTAL_OWNER_IDS: "117501528641634310"
+  DISCORD_API_BASE: http://mocks:4101/api/v10
+  DISCORD_AUTHORIZE_URL: http://mocks:4101/oauth2/authorize
+  DISCORD_TOKEN_URL: http://mocks:4101/api/oauth2/token
+  TICKETS_API_BASE: http://mocks:4102
+  TICKETS_GUILD_READ_KEY: ""
+  TICKETS_WEBHOOK_SECRET: test-only-events-webhook-never-used-00000
+  ALLOW_TEST_ENDPOINTS: "1"
+  # The events sweeper tests call sweepStaging directly (site = events).
+  MUSIC_DISABLE_SWEEPER: "1"
+  HOSTNAME: 0.0.0.0
+  NODE_OPTIONS: --max-old-space-size=128
+
+x-events-worker-env: &events-worker-env
+  DATABASE_URL: postgres://music_app:test-only-app-password-000000@music-db:5432/music
+  EVENTS_STATION_ID: "14"
+  EVENTS_CANARY_STATION_IDS: "1,7"
+  AZURACAST_BASE_URL: http://mocks:4103
+  EVENTS_AZURACAST_API_KEY: test-events-azuracast-key-0000
+  PORTAL_ORIGIN: https://events.euphoric.fm
+  TICKETS_API_BASE: http://mocks:4102
+  EVENTS_TICKETS_WRITE_KEY: test-events-tickets-write-key
+  ALLOW_TEST_ENDPOINTS: "1"
+  NODE_OPTIONS: --max-old-space-size=96
+
 services:
   music-init:
     build: { context: ., target: worker }
@@ -107,6 +146,29 @@ services:
       - ./test/fetch-fake:/fake:ro
       - ${MUSIC_DATA_DIR:-./data}/fetch-fixtures:/fixtures:ro
 
+  # v0.5.0 events services: the same images and PINNED MOUNTS as compose.yml;
+  # only env (test constants) and the host port change. events-web reaches the
+  # mock Discord over worker-egress (the mocks join it), like production.
+  events-web:
+    build: { context: ., target: web }
+    env_file: !reset []
+    ports: !reset []
+    environment: *events-web-env
+    depends_on:
+      mocks:
+        condition: service_started
+
+  events-worker:
+    build: { context: ., target: worker }
+    env_file: !reset []
+    environment: *events-worker-env
+    depends_on:
+      mocks:
+        condition: service_started
+
+  events-probe:
+    build: { context: ., target: probe }
+
   mocks:
     image: ${MUSIC_TEST_PROJECT:-efm-music-test}/test:local
     build: { context: ., target: test }
@@ -134,6 +196,12 @@ services:
       TEST_DATA_DIR: /data
       TICKETS_WRITE_KEY: test-tickets-write-key
       AZURACAST_API_KEY: test-azuracast-key-0000
+      # v0.5.0: the events site + its worker's test keys (direct mock
+      # checks). Deliberately NOT named EVENTS_*: that prefix is what the
+      # music services' env loaders refuse.
+      E2E_EVENTS_WEB_URL: http://events-web:3000
+      TEST_EVENTS_AZURACAST_KEY: test-events-azuracast-key-0000
+      TEST_EVENTS_TICKETS_KEY: test-events-tickets-write-key
       # v0.4.0: where the tests write the fake yt-dlp's fixtures
       # (/data/fetch-fixtures, mounted read-only into music-fetch as /fixtures)
       FETCH_FIXTURES_DIR: /data/fetch-fixtures
