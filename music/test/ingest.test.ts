@@ -803,12 +803,23 @@ describe.skipIf(!DBENV() || !MOCKS())('review: new artists, metadata edits, atte
     const s1 = await mkItem({ batchId: b, ownerId: owner.id, status: 'pending', title: 'A', artist: `Known ${tag} feat. X` })
     const s2 = await mkItem({ batchId: b, ownerId: owner.id, status: 'pending', title: 'B', artist: `Newbie ${tag} & Y` })
     const s3 = await mkItem({ batchId: b, ownerId: owner.id, status: 'pending', title: 'C', artist: `newbie ${tag}` })
+    // Put s2's row physically after s3's: changing an indexed column forces a
+    // non-HOT update (a new tuple and new index entries), so a scan in heap
+    // or batch-index order meets the lowercase spelling first. Only the
+    // query's ORDER BY id keeps the first song's spelling.
+    await ownerSql()`UPDATE items SET status = 'draft' WHERE id = ${s2}`
+    await ownerSql()`UPDATE items SET status = 'pending' WHERE id = ${s2}`
     const v = viewer(owner)
     expect(await httpCode(submitBatch(ctx.db, v, b, true, 'bad version!'))).toBe('400 bad_attest_version')
     await submitBatch(ctx.db, v, b, true, '2026-09-27')
     expect((await ownerSql()`SELECT attest_version, attested_at FROM batches WHERE id = ${b}`)[0]).toMatchObject({ attest_version: '2026-09-27', attested_at: expect.any(Date) })
     expect((await item(s1)).artist_id).toBe(known)
     expect((await item(s2)).new_artist_name).toBe(`Newbie ${tag}`)
+    // every song keeps the artist exactly as the member typed it; the one
+    // new-artist item takes the first song's spelling (s2 before s3)
+    expect((await item(s3)).new_artist_name).toBe(`newbie ${tag}`)
+    expect((await item(s3)).artist).toBe(`newbie ${tag}`)
+    expect((await item(s2)).artist).toBe(`Newbie ${tag} & Y`)
     const nas = await ownerSql()`SELECT * FROM items WHERE batch_id = ${b} AND kind = 'new_artist'`
     expect(nas).toHaveLength(1)
     expect(nas[0]).toMatchObject({ status: 'pending', new_artist_name: `Newbie ${tag}`, prefill: { proposedFolder: `Newbie ${tag}` } })
