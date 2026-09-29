@@ -146,6 +146,18 @@
     }
   }
 
+  # ---- Old section URLs → the one-page anchors -------------------------------
+  # Since v0.22.0 Stats, About, Listen and Contact are sections of the home
+  # page. Typed or bookmarked /stats, /about, /listen and /contact used to
+  # render the home page under the wrong URL (or, for /stats/, the stats
+  # sidecar's JSON 404). Exact paths only (no `*`), so /stats/summary and the
+  # other /stats/* API routes still reach the sidecar (test/caddy-player.sh).
+  redir /stats /#stats 301
+  redir /stats/ /#stats 301
+  redir /about /#about 301
+  redir /listen /#listen 301
+  redir /contact /#contact 301
+
   # ---- Shared pending-requests API --------------------------------------
   # Tiny Node service in the `efm-requests` container holds the cross-visitor
   # pending-requests list (v0.6.0 was per-browser localStorage, this is the
@@ -225,32 +237,67 @@
     }
   }
 
+  # ---- Missing build assets: a real 404, never the landing page -----------
+  # Every deploy replaces dist/ wholesale, so the previous build's hashed
+  # /_astro/* files vanish. A visitor holding an older HTML page asks for those
+  # old hashes; without this block the fallback below would answer with the
+  # home page as text/html (refused as a script/stylesheet under nosniff → an
+  # unstyled page with no player). Missing /_astro, /fonts and /images paths
+  # therefore fail loudly, uncached (test/caddy-player.sh).
+  @missingAsset {
+    path /_astro/* /fonts/* /images/*
+    not file
+  }
+  handle @missingAsset {
+    header Cache-Control "no-store"
+    respond "Not found" 404
+  }
+
   # ---- Static file serving + landing-page fallback -----------------------
   # The in-game phone hardcodes a single URL and may append suffixes we don't
   # control. Query strings were always harmless, but a PATH suffix (e.g.
   # /mobile) used to hit the 404 page. Any path that isn't a real built file
   # (or one of the proxied prefixes above) now serves the landing page —
   # whatever gets appended, the phone renders the site. Real files
-  # (/cef-test.html, /_astro/*, /fonts/*, sw.js) and the built page
+  # (/_astro/*, /fonts/*, /robots.txt, sw.js, and /cef-test.html — kept on
+  # purpose as the no-framework page for checking that the in-game phone's
+  # iframe can reach this origin at all) and the built page
   # directories (/events/, /player/ — served via `{path}/`, with the bare
   # /events and /player 308-redirected to the slash form by file_server)
   # still win because try_files checks the actual path first
   # (test/caddy-player.sh).
+  #
+  # Pages are revalidated on every visit (`no-cache` = keep a copy, but ask
+  # first; the ETag makes that a cheap 304). Without an explicit policy
+  # browsers guessed a freshness lifetime of hours and kept showing a page
+  # whose /_astro/* hashes a deploy had already deleted. The `?` only sets the
+  # header when nothing earlier did, so the asset/icon/sw.js policies below win.
   handle {
     try_files {path} {path}/ /index.html
+    header ?Cache-Control "no-cache"
     file_server
   }
 
-  # Fingerprinted Astro assets — cache forever.
-  @astroAssets path /_astro/*
+  # Fingerprinted Astro assets — cache forever. `file` scopes these to files
+  # that exist: a missing hash (404 above) must never be marked immutable.
+  @astroAssets {
+    path /_astro/*
+    file
+  }
   header @astroAssets Cache-Control "public, max-age=31536000, immutable"
 
   # Font files don't change once shipped — cache hard.
-  @fonts path /fonts/*
+  @fonts {
+    path /fonts/*
+    file
+  }
   header @fonts Cache-Control "public, max-age=31536000, immutable"
 
   # Images cached for a week.
-  @images path /images/*
+  @images {
+    path /images/*
+    file
+  }
   header @images Cache-Control "public, max-age=604800"
 
   # Icons and small meta files cached a day.
