@@ -61,7 +61,7 @@ export const DEFAULT_SETTINGS: Record<string, unknown> = {
   scan_end_offset_s: 10,
   queues_paused: null,
   // UI-facing settings (admin-editable via PUT /api/admin/settings).
-  playlist_names: { '2': '1General Rotation' },
+  playlist_names: { '2': 'General Rotation' },
   rights_attestation: {
     version: '2026-09-27',
     text:

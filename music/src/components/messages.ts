@@ -102,7 +102,7 @@ export const ERROR_TEXT: Record<string, string> = {
   wav_upload_too_large: 'That WAV file is larger than the WAV upload limit.',
   uploads_paused: 'Uploads are paused because the server is low on space. Try again later.',
   staging_full: 'Uploads are paused because the server is low on space. Try again later.',
-  too_many_concurrent_uploads: 'You can upload 3 files at a time. The rest will start when these finish.',
+  too_many_concurrent_uploads: 'Only a few uploads can run at once. The rest start when these finish.',
   inflight_quota: 'You have too much uploading at once. Wait for some uploads to finish.',
 
   // SoundCloud links (v0.4.0): POST /api/batches/:id/soundcloud refusals
@@ -200,6 +200,8 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   sc_bad_media: 'SoundCloud sent a file that is not a supported audio format. Upload the file instead.',
   sc_interrupted: 'Fetching from SoundCloud was interrupted by a server restart. Add the link again.',
   sc_internal: 'Something went wrong while fetching from SoundCloud. Add the link again, or upload the file instead.',
+  // v0.4.1: a Go+ (premium) track, which SoundCloud only offers logged out as a 30 s preview
+  sc_preview_only: 'SoundCloud only offers a preview of this track (it is for SoundCloud Go subscribers), so it was not added. Upload the file instead.',
   // ...the worker's own checks of music-fetch's answer
   sc_disabled: 'Adding songs from SoundCloud was switched off before this link was fetched. Upload the file instead.',
   sc_queue_timeout: 'This link waited too long for its turn. Add it again later.',
@@ -215,6 +217,8 @@ export const PROBE_ERROR_TEXT: Record<string, string> = {
   sc_convert_timeout: 'Converting the SoundCloud track took too long. Try again later.',
   sc_convert_invalid: "The track from SoundCloud couldn't be converted to a valid MP3. Upload the file instead.",
   sc_converted_too_large: `The converted MP3 would be larger than ${mibOf(MAX_UPLOAD_BYTES)} MB. Upload a shorter song.`,
+  // v0.4.1: the audio is not as long as SoundCloud says the track is (a preview or a cut-off download)
+  sc_duration_mismatch: 'SoundCloud only offers a preview of this track, or sent less than the whole song, so it was not added. Upload the file instead.',
 }
 
 export function probeErrorText(code: string | null | undefined): string {
@@ -253,6 +257,14 @@ export const ITEM_STATUS: Record<string, { label: string; tone: ChipTone; help: 
   withdrawn: { label: 'Withdrawn', tone: 'muted', help: 'You withdrew this song.' },
   failed: { label: 'Failed', tone: 'bad', help: 'Adding it to the station failed; managers have been alerted.' },
   ingest_failed: { label: 'Ingest failed', tone: 'bad', help: 'Adding it to the station failed; managers have been alerted.' },
+}
+
+// v0.4.1: a SoundCloud link still 'probing' is not "Checking file": it waits
+// for its turn, is fetched, then converted (items.fetch_stage).
+export const FETCH_STAGE_STATUS: Record<string, { label: string; help: string }> = {
+  queued: { label: 'Waiting for SoundCloud', help: 'Links are fetched one at a time; this one is waiting for its turn.' },
+  fetching: { label: 'Fetching from SoundCloud', help: 'The track is being downloaded from SoundCloud.' },
+  converting: { label: 'Converting', help: 'The track is being converted to an MP3.' },
 }
 
 export const BATCH_STATUS: Record<string, { label: string; tone: ChipTone }> = {

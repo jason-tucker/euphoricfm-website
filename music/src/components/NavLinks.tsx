@@ -26,7 +26,7 @@ export function NavLinks({ items }: { items: NavItem[] }) {
     nav.scrollLeft = Math.max(0, cur.offsetLeft - nav.offsetLeft - (nav.clientWidth - cur.offsetWidth) / 2)
   }, [path])
   return (
-    <nav ref={ref} aria-label="Music portal" className="efms-tabs">
+    <nav ref={ref} aria-label="Music Portal" className="efms-tabs">
       {items.map((i) => (
         <Link
           key={i.href}

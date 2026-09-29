@@ -14,7 +14,7 @@
 // every path in it is re-derived from the job's own uuid before use.
 
 import { constants as FS } from 'node:fs'
-import { open, rename, unlink } from 'node:fs/promises'
+import { lstat, open, rename, unlink } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -164,4 +164,18 @@ export function artworkPathOk(uuid: string, path: string): boolean {
 
 export function canonicalUrlOk(url: string): boolean {
   return CANONICAL_URL_RE.test(url)
+}
+
+// v0.4.1: music-fetch refreshes out/.alive every 30 s (fetch/README.md
+// "Heartbeat"). Missing, not a regular file, or older than this: not running.
+export const FETCH_ALIVE_FILE = '.alive'
+export const FETCH_ALIVE_MAX_AGE_MS = 90_000
+
+export async function fetchAlive(outDir: string, now = Date.now()): Promise<boolean> {
+  try {
+    const st = await lstat(join(outDir, FETCH_ALIVE_FILE))
+    return st.isFile() && now - st.mtimeMs < FETCH_ALIVE_MAX_AGE_MS
+  } catch {
+    return false
+  }
 }

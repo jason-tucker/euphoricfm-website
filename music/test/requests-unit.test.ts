@@ -119,7 +119,7 @@ describe('admin setting schemas', () => {
     expect(SETTING_SCHEMAS.discord_invite_url!.safeParse('https://discord.gg/abc').success).toBe(true)
     expect(SETTING_SCHEMAS.discord_invite_url!.safeParse(null).success).toBe(true)
     expect(SETTING_SCHEMAS.discord_invite_url!.safeParse('https://evil.example/discord.gg/').success).toBe(false)
-    expect(SETTING_SCHEMAS.playlist_names!.safeParse({ '2': '1General Rotation' }).success).toBe(true)
+    expect(SETTING_SCHEMAS.playlist_names!.safeParse({ '2': 'General Rotation' }).success).toBe(true)
     expect(SETTING_SCHEMAS.playlist_names!.safeParse({ x: 'y' }).success).toBe(false)
     const caps = { maxUploadBytes: 35 * 1024 * 1024, chunkBytes: 8 * 1024 * 1024, maxInflightBytesPerUser: 1024 * 1024 * 1024, maxConcurrentUploadsPerUser: 3, maxStagingBytes: 5 * 1024 * 1024 * 1024, diskPausePercent: 85, maxItemsPerBatch: 20, ingestPerHour: 6, ingestSpacingS: 90 }
     expect(SETTING_SCHEMAS.caps!.safeParse(caps).success).toBe(true)

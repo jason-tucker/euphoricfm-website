@@ -5,7 +5,7 @@ The SoundCloud import service for the EFM Music Portal. This is phase **P5**, an
 It takes one request at a time from a spool directory. For each request it validates the URL, resolves a shortlink if there is one, runs a pinned **yt-dlp**, checks the result, and writes the raw media under `/staging/fetch/<uuid>/`. **Transcoding and probing happen in `music-probe`, not here.**
 
 - Language: Python standard library plus `yt-dlp`, with no other packages.
-- Idle memory: about **14.6 MiB** (cgroup) and 23 MB RSS, measured with `docker stats` on the hardened runtime container.
+- Idle memory: about **15–20 MiB** (cgroup) and 22 MiB RSS, measured with `docker stats` on the hardened runtime container (portal v0.4.0; the same figures as the portal CHANGELOG).
 - Secrets, database access and inbound ports: none.
 
 ## Spool protocol
@@ -29,7 +29,9 @@ It takes one request at a time from a spool directory. For each request it valid
 - fetch claims a request with `rename`, and reads it with `O_NOFOLLOW` and a size cap.
 - The job directory must be **new**. If it already exists, fetch returns `bad_request` and leaves the directory alone.
 - On any error, fetch removes the job directory it created.
-- On startup, a leftover claim becomes an `interrupted` result, and its partial directory is removed.
+- On startup, a leftover claim becomes an `interrupted` result, and its partial directory is removed. **Unless the job already has a result** (portal v0.4.1: a crash between writing `out/<uuid>.json` and unlinking the claim): then only the claim goes, and the result and its download stand.
+- **Heartbeat** (portal v0.4.1): a thread refreshes `out/.alive` every 30 s (created with `O_NOFOLLOW`), including while a job runs. The worker writes no request while it is missing or older than 90 s, so links wait for a stopped music-fetch instead of each burning the 15-min result timeout. The id listers ignore the name.
+- **Spool sweep** (portal v0.4.1): with the staging sweep (every 10 min, the same `--staging-ttl-hours`, default 24 h), results in `out/` and `.tmp-*` files a crash left in `in/`, `claimed/` and `out/` are unlinked once older than the TTL (never followed; requests and the heartbeat are never swept).
 - **Release markers** (portal v0.4.0): before each job and when idle, fetch handles `in/<uuid>.release`. It unlinks the marker (never following a link; the content is never read) and deletes `/staging/fetch/<uuid>/` only if that job has a result in `out/` and is not claimed. The marker only names a finished job, and `<uuid>` is a v4 UUID, so it cannot reach outside the staging directory. The 24 h sweep stays as the backstop.
 
 **An `ok` result:**
@@ -58,7 +60,7 @@ It takes one request at a time from a spool directory. For each request it valid
   - capped the lengths: title and uploader at 200, genre at 100, description at 4000, with newlines kept only in the description.
 - The whole document stays well under the portal's 64 KiB spool-document cap.
 - `license` is SoundCloud's license id, such as `cc-by` or `all-rights-reserved`. It is useful next to the rights-attestation flag.
-- `warnings` lists skipped artwork, for example `artwork_too_large`, `artwork_not_image`, `artwork_http_302` or `artwork_timeout`.
+- `warnings` lists skipped artwork, for example `artwork_host` (0.2.1: a URL outside the allowlist, never requested), `artwork_too_large`, `artwork_not_image`, `artwork_http_302` or `artwork_timeout`.
 
 **An `error` result:**
 
@@ -68,7 +70,7 @@ It takes one request at a time from a spool directory. For each request it valid
 
 ### Error codes
 
-The first eight codes are the contract from plan §3.6 and the P5 brief. The last four are additions, for failures the contract list does not name.
+The first eight codes are the contract from plan §3.6 and the P5 brief. The rest are additions, for failures the contract list does not name.
 
 | Code | Meaning |
 |---|---|
@@ -79,11 +81,12 @@ The first eight codes are the contract from plan §3.6 and the P5 brief. The las
 | `too_long` | The info JSON duration is over 1440 s (24 min, the portal's cap since v0.4.0; was 1200 s). The download is stopped as soon as the info JSON appears. |
 | `timeout` | yt-dlp ran past 10 minutes, or shortlink resolution ran past 30 s. |
 | `extractor_failed` | yt-dlp failed, the info JSON is missing, unparseable or has no duration, there is no audio, or there are unexpected files in the job directory. |
-| `artwork_host` | The info JSON's artwork URL is not `https://<label>.sndcdn.com/…`, where the host may have several labels but no port or userinfo. |
+| `artwork_host` | **No longer a job error since 0.2.1** (music v0.4.1): the info JSON's artwork URL is not `https://<label>.sndcdn.com/…` (the host may have several labels but no port or userinfo), so the artwork is dropped, the song is kept, and `artwork_host` is listed in `warnings`. The code stays in the list for results written before 0.2.1. |
 | `bad_request` *(addition)* | A malformed spool document, a mismatch between the uuid and the file name, a symlinked request, or an existing job directory. |
 | `bad_media` *(addition)* | The magic bytes are outside mp3/mp4/ogg/opus/wav/flac, the extension does not match the container, or the audio is a symlink or a hard link. |
 | `interrupted` *(addition)* | A SIGTERM arrived mid-job, or startup recovery found a leftover claim. |
 | `internal` *(addition)* | An unexpected exception. The traceback goes to the container log. |
+| `preview_only` *(addition, 0.2.1)* | SoundCloud offers this track only as a 30 s preview (a Go+ / premium track, logged out): the selected format's `format_id` contains `preview`, or the info JSON says `snipped: true`, while `duration` is the full length. The download is stopped as soon as the info JSON appears, so no media is fetched. The portal shows `sc_preview_only`. |
 
 ## URL handling (§3.6)
 
@@ -112,13 +115,13 @@ python -I -B -m yt_dlp --ignore-config --no-plugin-dirs --no-cache-dir --use-ext
 - stdin is `/dev/null`, fds are closed, and the working directory is `/tmp`.
 - The child runs in its own session. The **whole process group** is SIGKILLed on a timeout, a size cap or SIGTERM, and also after a normal exit, so no grandchild survives.
 - `--use-extractors soundcloud` is a full-match regex over extractor names. It loads **only** `SoundcloudIE`, so `soundcloud:set`, `soundcloud:user`, generic and the rest are never loaded. With the pinned version, a set URL fails with "No suitable extractor found", which was verified offline.
-- **The info JSON is parsed as data only.** fetch reads `_type`, `entries`, `extractor`, `extractor_key`, `duration`, `title`, `uploader`, `genre` / `genres[0]`, `description`, `license`, `id`, `thumbnails` and `thumbnail`. Nothing from it is executed or used to build a path. It is deleted after parsing, so only media remains in staging.
+- **The info JSON is parsed as data only.** fetch reads `_type`, `entries`, `extractor`, `extractor_key`, `format_id` and `snipped` (the preview check, 0.2.1), `duration`, `title`, `uploader`, `genre` / `genres[0]`, `description`, `license`, `id`, `thumbnails` and `thumbnail`. Nothing from it is executed or used to build a path. It is deleted after parsing, so only media remains in staging.
 - **ffmpeg is deliberately not in this image.** yt-dlp downloads SoundCloud's HLS formats with its native Python HLS downloader, and ffmpeg fix-up steps are skipped with a warning. The one real smoke run produced fragmented MP4 (`hls_aac_160k`), which `ffprobe -protocol_whitelist file -f mp4` reads correctly. This differs from the plan's "yt-dlp + ffmpeg" line in §3; see "Decisions for review".
 
 ## Artwork
 
 - fetch picks one thumbnail, preferring `t500x500`, then `crop`, `t300x300` and `original`, then the `thumbnail` field.
-- If that URL is not `https://*.sndcdn.com`, the **whole job fails** with `artwork_host`, and no request is made.
+- If that URL is not `https://*.sndcdn.com`, no request is made and the artwork is dropped with the warning `artwork_host`; the song is kept (0.2.1; before, the **whole job failed** with `artwork_host`).
 - The download uses no redirects, a 20 s socket timeout, a 30 s overall deadline, `Content-Type: image/*`, and a cap of **5 MiB**, checked against both Content-Length and the streamed byte count.
 - The file is written with `O_EXCL|O_NOFOLLOW` as `artwork.raw`. **fetch never decodes it.**
 - A transfer problem only drops the artwork and adds a warning.
@@ -204,42 +207,40 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop A
 
 ### 4. Requirements on music-worker
 
-- Read `out/<uuid>.json` with `O_NOFOLLOW` and the 64 KiB cap, and parse it with a strict schema. `status` must be `ok` or `error`, and `errorCode` must be one of the 12 codes above.
+- Read `out/<uuid>.json` with `O_NOFOLLOW` and the 64 KiB cap, and parse it with a strict schema. `status` must be `ok` or `error`, and `errorCode` must be one of the 13 codes above (`music/src/lib/soundcloud.ts` `FETCH_ERROR_CODES`).
 - Treat `meta.*` as untrusted display text.
 - Submit `probe_fetch` to `/spool/probe/in-worker` only.
 - Write `in/<uuid>.release` once the probe result is collected (portal v0.4.0).
 
-## Host step (not applied by this repo, REQUIRED before music-fetch starts): DOCKER-USER and INPUT rules for fetch-egress
+## Host step (not applied by this repo, REQUIRED before music-fetch starts): the botvps egress guard
 
-These rules belong to P0b and Deploy-1, next to the worker-egress rules. **Both the DOCKER-USER and the INPUT rules are required, not optional:** yt-dlp's own connections (SoundCloud's API and CDN) do not go through the in-process connect-time guard, which covers only the shortlink and artwork requests. Apply them on botvps, as root, and verify them (below and in the portal's `music/README.md`, "Pre-deploy: fetch-egress host rules") **before music-fetch is started**:
+yt-dlp's own connections (SoundCloud's API and CDN) do not go through the in-process connect-time guard, which covers only the shortlink and artwork requests, so the host's egress guard is the only thing between a steered yt-dlp and private, tailnet or metadata addresses. It is **not** a set of hand-typed rules any more: on botvps it is the systemd unit **`efm-music-egress.service`** (script `/usr/local/sbin/efm-music-egress.sh`, revision 3.1, 2026-09-29) plus **`efm-music-egress-check.timer`**, which re-checks every 5 min and rebuilds only on drift. The deployed script is kept in the vault (the portal Operations note and its tailnet-fix plan attachment). It keeps three chains, each rule matched by ingress bridge **and** source address:
 
-```sh
-SUBNET=172.31.251.0/24
-# Forwarded traffic from fetch containers to private, CGNAT and link-local/metadata space
-for NET in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do
-  iptables -I DOCKER-USER -s "$SUBNET" -d "$NET" -j DROP
-done
-# Traffic addressed to the HOST itself (the bridge gateway 172.31.251.1, the droplet's public IP,
-# docker0 and so on) goes through INPUT, not FORWARD, so DOCKER-USER never sees it. Block it too:
-iptables -I INPUT -i br-efm-fetch -j DROP
-```
+- `EFM-MUSIC-EGRESS` (first in `DOCKER-USER`): drops 10/8, 172.16/12, 192.168/16, 100.64/10 and 169.254/16 from `br-efm-fetch` (172.31.251.0/24), from worker-egress and from music-web;
+- `EFM-MUSIC-TAILNET` (first in `mangle FORWARD`): drops the same sources routed out `tailscale+` (Tailscale's `ts-forward` accepts container → tailnet traffic before `DOCKER-USER`);
+- `EFM-MUSIC-INPUT` (first in `INPUT`): drops NEW connections to the host itself from `br-efm-fetch`, the worker-egress and `music-int` bridges and music-web.
 
-- **DNS.** Container DNS goes to Docker's embedded resolver at 127.0.0.11, inside the container's namespace. If the droplet's upstream resolver is itself an RFC1918 or CGNAT address, add an `ACCEPT` for exactly that resolver's IP and port 53 **above** the DROP rules, then re-check. DigitalOcean's default resolvers (67.207.67.2 and .3) are public.
+**The portal's kill switch is on by default** (`soundcloud_fetch_enabled`: a missing row counts as on), so these host rules are the only thing standing between yt-dlp and private addresses on a new host. On a fresh or rebuilt host, or with a restored database, set the switch to `false` before the first `up -d` and turn it on only once the checks below pass (`music/README.md`, "The switch defaults ON").
+
+**Before music-fetch starts**, run the four pre-deploy checks in the portal's `music/README.md` ("Pre-deploy: the host egress guard") and `systemctl is-enabled efm-music-egress.service efm-music-egress-check.timer`.
+
+- **DNS.** Container DNS goes to Docker's embedded resolver at 127.0.0.11, inside the container's namespace. If the droplet's upstream resolver is itself an RFC1918 or CGNAT address, the guard needs an `ACCEPT` for exactly that resolver's IP and port 53 above its drops. DigitalOcean's default resolvers (67.207.67.2 and .3) are public.
 - **IPv6.** The network is created with `enable_ipv6: false`, so no ip6tables rules are needed.
-- **Persistence.** DOCKER-USER survives Docker restarts but **not reboots**. Persist these rules with whatever mechanism P0b uses for the worker-egress rules, and record them in the vault.
-- **Verification** (plan §6 P5, "egress to RFC1918 and metadata is blocked"):
+- **Verification** (plan §6 P5, "egress to RFC1918, the tailnet and metadata is blocked"), after `up -d`:
 
 ```sh
 docker exec efm-music-music-fetch-1 python -I -c '
 import socket
-for h,p in [("169.254.169.254",80),("10.0.0.1",80),("172.31.251.1",22),("192.168.1.1",80),("100.100.100.100",53),("PUBLIC_IP",22),("1.1.1.1",443)]:
+for h,p in [("169.254.169.254",80),("10.0.0.1",80),("172.31.251.1",22),("192.168.1.1",80),
+            ("100.100.100.100",53),("TAILNET_PEER",22),("PUBLIC_IP",22),("1.1.1.1",443)]:
     s=socket.socket(); s.settimeout(3)
     try: s.connect((h,p)); print(h,"OPEN")
-    except OSError as e: print(h,"blocked:",type(e).__name__)
+    except TimeoutError: print(h,"blocked (timeout)")
+    except OSError as e: print(h,"REACHED:",type(e).__name__)
     finally: s.close()'
 ```
 
-Replace `PUBLIC_IP` with the droplet's own public address (the INPUT rule's case). Only `1.1.1.1` may print `OPEN`.
+Replace `PUBLIC_IP` with the droplet's own public address (the INPUT case) and `TAILNET_PEER` with the 100.x address of another node on the tailnet. Only `1.1.1.1` may print `OPEN`, and every other line must say **`blocked (timeout)`**: `REACHED: ConnectionRefusedError` means the packet got to a host that answered, so it is a failure too. On any failure: stop music-fetch, turn the kill switch off, `systemctl restart efm-music-egress`, re-verify.
 
 ## Version pins and the monthly bump
 
@@ -289,7 +290,8 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop A
 |---|---|
 | `test_urls.py` | Every accept and reject case. Includes `soundcloud.com.evil.com`, `evil.com/soundcloud.com`, `@` tricks, ports, IDN, punycode and fullwidth lookalikes, IP literals, encodings, query-parameter trickery, sets, likes, reposts and secret tokens. |
 | `test_shortlink.py` | A **local redirect server**: chains, a relative `Location`, exactly 5 redirects allowed and a 6th never requested, and foreign, userinfo, port, http, metadata, IDN and api hosts refused before they are requested. Also covers 404, 200, 500, a timeout, and the connect-time public-IP guard (the production opener refuses `localhost`). |
-| `test_spool_e2e.py` | The spool protocol end to end with `stub_ytdlp.py`, which emits fixture files. Covers every container type, timeout, too_large (directory cap, RLIMIT and yt-dlp's message), too_long (stopped early), playlists and foreign extractors, magic-byte rejects (HTML, HLS, MPEG-TS, mismatch, symlink, hard link), the artwork allowlist (no request made) and artwork skips, request-document validation, no clobbering, recovery, SIGTERM abort, grandchild kill, the staging sweep, and release markers (portal v0.4.0). The stub also asserts the **exact pinned flags**. |
+| `test_spool_e2e.py` | The spool protocol end to end with `stub_ytdlp.py`, which emits fixture files. Covers every container type, timeout, too_large (directory cap, RLIMIT and yt-dlp's message), too_long and preview_only (stopped early), playlists and foreign extractors, magic-byte rejects (HTML, HLS, MPEG-TS, mismatch, symlink, hard link), the artwork allowlist (no request made; since 0.2.1 the artwork is dropped and the song kept) and artwork skips, request-document validation, no clobbering, recovery (and a claim whose job was already answered, portal v0.4.1), SIGTERM abort, grandchild kill, the staging sweep and the spool sweep (old results, `.tmp-*`), the heartbeat, and release markers (portal v0.4.0). The stub also asserts the **exact pinned flags**. |
+| `test_info.py` | `check_info` on its own: a preview-only format (`format_id` containing `preview`, or `snipped: true`) → `preview_only`, decided before the duration (0.2.1), plus the playlist, extractor, duration and too_long checks. |
 | `test_runner.py` | The pinned argv, the directory-cap kill, the timeout kill, the RLIMIT_FSIZE backstop, the bounded output tail, and stdin being closed. |
 | `test_artwork.py` | The host allowlist and the capped, redirect-free download. |
 | `test_magic.py` | Allowed and rejected containers. |
@@ -300,4 +302,5 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop A
 - **No ffmpeg in fetch**, although the plan's §3 table says "yt-dlp + ffmpeg". Leaving it out keeps a remote-input media parser out of the only container with internet egress. yt-dlp's native HLS downloader handles SoundCloud; the smoke output was fMP4 AAC and probes correctly. If a future SoundCloud format needs ffmpeg, adding it here is a plan change.
 - **"Original download" format.** When an uploader enables downloads, yt-dlp prefers the original file (`format_id=download`, quality 10). That file can be a large WAV or FLAC, which fails with `too_large`, or AIFF, which fails with `bad_media`, even when a stream format would fit. Fixing this means adding `-f` to the pinned invocation, for example `-f 'bestaudio[format_id!=download]/bestaudio'`, which is a plan change.
 - **Input host is strict.** `m.soundcloud.com` and `www.soundcloud.com` are rejected on **input**, following the brief's "accept only". `m.` is accepted only as a shortlink's final host. Relaxing the input rule is a one-line change in `urls.py`. The portal (v0.4.0) accepts `m.soundcloud.com` and `www.soundcloud.com` links from members but always sends music-fetch the link rebuilt on `soundcloud.com`, so this rule stays strict.
-- **Artwork host violation fails the whole job**, because `artwork_host` is a contract error code. A transfer problem only drops the artwork.
+- **Artwork host violation drops the artwork** (0.2.1; it used to fail the whole job, because `artwork_host` is a contract error code). Nothing is requested from a disallowed URL either way, and a SoundCloud CDN host change no longer blocks every import. A transfer problem also only drops the artwork.
+- **No `-f` format selector for previews** (0.2.1, second pass A2). yt-dlp already ranks a preview transcoding below every full one (`preference: -10`, a priority sort field), so a filter such as `bestaudio[format_id!*=preview]` would select exactly the same format for every normal track. It would change only the preview-only case, and there it would make yt-dlp fail with "Requested format is not available" before writing the info JSON, turning the clear `preview_only` answer into a generic `extractor_failed`. The pinned flags therefore stay as they are (12, `test_runner.py`); `check_info` refuses the preview on the info JSON instead.

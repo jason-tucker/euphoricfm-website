@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic'
 
 // A saved cap may be lowered, never raised past the compiled default.
 const capOf = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.min(v, max) : max)
-export const metadata = { title: 'Submit songs' }
+export const metadata = { title: 'Submit songs', description: 'Upload your songs to EuphoricFM for review.' }
 
 export default async function SubmitPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const viewer = await pageViewer('submit')
@@ -27,7 +27,14 @@ export default async function SubmitPage({ searchParams }: { searchParams: Promi
   const s = await uiSettings(db)
   return (
     <section>
-      <PageTitle title="Submit songs" sub="Upload MP3s or WAVs, check the details we read from each file, then send the batch to the managers." />
+      <PageTitle
+        title="Submit songs"
+        sub={
+          s.soundcloudEnabled
+            ? 'Upload MP3s or WAVs, or paste a public SoundCloud track link, check the details we read from each song, then send the batch to the managers.'
+            : 'Upload MP3s or WAVs, check the details we read from each file, then send the batch to the managers.'
+        }
+      />
       <SubmitFlow
         initialBatchId={batch?.id ?? null}
         initialItems={batch?.items ?? []}
@@ -39,6 +46,8 @@ export default async function SubmitPage({ searchParams }: { searchParams: Promi
         maxWavUploadBytes={capOf(s.caps.maxWavUploadBytes, DEFAULT_CAPS.maxWavUploadBytes)}
         chunkBytes={Math.min(s.caps.chunkBytes, DEFAULT_CAPS.chunkBytes)}
         maxItemsPerBatch={s.caps.maxItemsPerBatch}
+        soundcloudEnabled={s.soundcloudEnabled}
+        fetchesPerDay={capOf(s.caps.fetchesPerUserPerDay, DEFAULT_CAPS.fetchesPerUserPerDay)}
       />
     </section>
   )

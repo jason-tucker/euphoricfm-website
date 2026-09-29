@@ -73,7 +73,10 @@ export type Mp3Info = { durationS: number; bitrate: number; sampleRate: number |
 
 // `maxDurationS`: MAX_DURATION_S for an upload; the probe's own encoded
 // output is judged with a few seconds' allowance (its -t cap).
-export function judgeFfprobe(json: unknown, maxDurationS: number = MAX_DURATION_S): Mp3Info {
+// `minDurationS` (v0.4.1): 0 lets a caller that counts the frames judge the
+// short end itself (probe_fetch: a SoundCloud preview must be reported as a
+// preview, not as too_short).
+export function judgeFfprobe(json: unknown, maxDurationS: number = MAX_DURATION_S, minDurationS: number = MIN_DURATION_S): Mp3Info {
   const r = ffprobeOut.safeParse(json)
   if (!r.success) throw new ProbeReject('ffprobe_unparseable')
   const { streams, format } = r.data
@@ -84,7 +87,7 @@ export function judgeFfprobe(json: unknown, maxDurationS: number = MAX_DURATION_
   if (other.some((s) => s.codec_type !== 'video' || s.disposition?.attached_pic !== 1)) throw new ProbeReject('unexpected_streams')
   const durationS = Number(format.duration)
   if (!Number.isFinite(durationS)) throw new ProbeReject('no_duration')
-  if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
+  if (durationS < minDurationS) throw new ProbeReject('too_short')
   if (durationS > maxDurationS) throw new ProbeReject('too_long')
   const bitrate = Number(audio[0]!.bit_rate ?? format.bit_rate)
   if (!Number.isFinite(bitrate) || bitrate < MIN_BITRATE) throw new ProbeReject('bitrate_too_low')
@@ -146,7 +149,13 @@ export async function countedDurationS(file: string, work: string, sampleRate: n
 
 // ffprobe, forced mp3 demuxer, file/pipe protocols only, 1 thread, timeout
 // 20 s, address-space limit; stdin is empty.
-export async function ffprobeMp3(file: string, work: string, maxDurationS: number = MAX_DURATION_S, whitelist: 'file,pipe' | 'file' = 'file,pipe'): Promise<Mp3Info> {
+export async function ffprobeMp3(
+  file: string,
+  work: string,
+  maxDurationS: number = MAX_DURATION_S,
+  whitelist: 'file,pipe' | 'file' = 'file,pipe',
+  minDurationS: number = MIN_DURATION_S,
+): Promise<Mp3Info> {
   const fp = await runLimited('ffprobe', ffprobeArgs(file, whitelist), { timeoutS: 20, vmemKb: 524288, cwd: work })
   if (fp.timedOut) throw new ProbeReject('ffprobe_timeout')
   if (fp.code !== 0) throw new ProbeReject('not_mp3')
@@ -156,7 +165,23 @@ export async function ffprobeMp3(file: string, work: string, maxDurationS: numbe
   } catch {
     throw new ProbeReject('ffprobe_unparseable')
   }
-  return judgeFfprobe(parsed, maxDurationS)
+  return judgeFfprobe(parsed, maxDurationS, minDurationS)
+}
+
+// v0.4.1 (second pass): the duration of an MP3 that is KEPT byte for byte.
+// ffprobe's -show_format duration comes from the upload's own Xing / Info
+// frame count, and a forged one (a short length, a high bit rate) passed the
+// 24-min cap while the file held e.g. 60 min at 64 kbps; it went to review,
+// and on air, with the forged length. So the frames are counted here too
+// (countedDurationS, demux only, as the re-encode path does), the cap is
+// applied to the longer of the two, the floor to the counted length, and the
+// counted length is what the item reports.
+export async function keptMp3DurationS(file: string, work: string, info: Mp3Info, whitelist: 'file,pipe' | 'file' = 'file,pipe'): Promise<number> {
+  if (info.sampleRate === null || !MP3_RATES.has(info.sampleRate)) throw new ProbeReject('not_mp3')
+  const counted = await countedDurationS(file, work, info.sampleRate, whitelist)
+  if (Math.max(counted, info.durationS) > MAX_DURATION_S) throw new ProbeReject('too_long')
+  if (counted < MIN_DURATION_S) throw new ProbeReject('too_short')
+  return counted
 }
 
 const mmOut = z.object({
@@ -234,8 +259,11 @@ async function probeMp3(job: Job, copy: string, sha256: string, size: number): P
   // 4. music-metadata: tags and cover always come from the ORIGINAL file
   const tags = await readTags(copy, job.work, job.dirs)
   const flags: string[] = []
-  // 5. an MP3 that already fits stays exactly as uploaded (no re-encode)
+  // 5. an MP3 that already fits stays exactly as uploaded (no re-encode);
+  //    v0.4.1: its length is counted from the frames, not taken from its
+  //    own header (keptMp3DurationS)
   if (mp3FitsUntouched(size, magic.id3Size)) {
+    const keptS = await keptMp3DurationS(copy, job.work, info)
     const cover = await publishCover(job, tags, flags)
     return {
       v: 1,
@@ -245,7 +273,7 @@ async function probeMp3(job: Job, copy: string, sha256: string, size: number): P
       ok: true,
       sha256,
       size,
-      durationS: Math.round(info.durationS * 10) / 10,
+      durationS: Math.round(keptS * 10) / 10,
       bitrate: info.bitrate,
       tags: tagsOf(tags),
       cover,

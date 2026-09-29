@@ -6,6 +6,7 @@
 
 import Link from 'next/link'
 import { signInToRequestRemoval, signInToSuggestEdit, signInWithDiscord } from '@/app/actions'
+import { nextLabel } from '@/lib/next-path'
 import type { UiUploadLimits } from '@/server/ui/limits'
 import { ItemStatusChip } from '../ui'
 import { SITE_LINKS } from '../site-links'
@@ -17,6 +18,9 @@ export type HomeInfoData = {
   requestCaps: { edit: number; removal: number }
   autoCloseDays: number
   inviteUrl: string
+  // v0.4.1: the "Add from a SoundCloud link" kill switch; the copy mentions
+  // links only while it is on.
+  soundcloudEnabled: boolean
 }
 
 // The statuses a song shows in My music, in the order it moves through them
@@ -75,9 +79,16 @@ function Facts({ rows, testId }: { rows: [string, string][]; testId?: string }) 
 
 // ------------------------------------------------------------ signed out --
 
-export function Hero({ inviteUrl }: { inviteUrl: string }) {
+// `next`: the page a signed-out visitor was sent here from (already checked
+// by safeNext); signing in goes back there.
+export function Hero({ inviteUrl, next = null }: { inviteUrl: string; next?: string | null }) {
   return (
     <div className="card hero-card space-y-4 sm:p-8">
+      {next ? (
+        <p className="rounded-xl border border-sunburst/50 bg-sunburst/10 px-4 py-3 text-sm text-cream" role="status" data-testid="sign-in-next">
+          Sign in with Discord to continue to {nextLabel(next)}.
+        </p>
+      ) : null}
       <p className="eyebrow">EuphoricFM Music Portal</p>
       <h1 className="text-3xl font-bold leading-tight sm:text-4xl">
         Get your music on <span className="text-sunburst">Euphoric</span>
@@ -88,6 +99,7 @@ export function Hero({ inviteUrl }: { inviteUrl: string }) {
       </p>
       <div className="flex flex-wrap items-center gap-3">
         <form action={signInWithDiscord}>
+          {next ? <input type="hidden" name="next" value={next} /> : null}
           <button type="submit" className="btn btn-primary px-6 text-base">
             <DiscordMark /> Sign in with Discord
           </button>
@@ -106,9 +118,9 @@ export function Hero({ inviteUrl }: { inviteUrl: string }) {
   )
 }
 
-export function AtAGlance({ limits }: { limits: UiUploadLimits }) {
+export function AtAGlance({ limits, soundcloud = false }: { limits: UiUploadLimits; soundcloud?: boolean }) {
   const items = [
-    `${limits.text.formats}, ${limits.text.batchShort} at a time`,
+    `${limits.text.formats}${soundcloud ? ' (or a SoundCloud link)' : ''}, ${limits.text.batchShort} at a time`,
     'A manager listens to every song',
     'Your own Discord ticket for each batch',
     'Approved songs go into rotation on the station',
@@ -130,7 +142,7 @@ export function AtAGlance({ limits }: { limits: UiUploadLimits }) {
   )
 }
 
-export function WhoAndNeeds() {
+export function WhoAndNeeds({ soundcloud = false }: { soundcloud?: boolean }) {
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <section aria-labelledby="who-h" className="card">
@@ -148,7 +160,7 @@ export function WhoAndNeeds() {
         </h2>
         <ul className="mt-2 space-y-2 text-sm text-cream/85">
           <li className="flex gap-2">
-            <Check /> Your finished song as an MP3 or WAV
+            <Check /> Your finished song as an MP3 or WAV{soundcloud ? ', or a public SoundCloud track link (we fetch and convert it for you)' : ''}
           </li>
           <li className="flex gap-2">
             <Check /> Cover art (optional: we read it from the file, or you can add one)
@@ -183,12 +195,15 @@ export function StatusLegend() {
   )
 }
 
-export function Timeline({ limits }: { limits: UiUploadLimits }) {
+export function Timeline({ limits, soundcloud = false }: { limits: UiUploadLimits; soundcloud?: boolean }) {
   const steps = [
     { t: 'Sign in with Discord', d: 'The portal is for members of the EuphoricFM Discord. Signing in checks that you’re in the server.' },
     {
       t: 'Upload your songs',
-      d: `Drop in ${limits.text.batchShort} as MP3s or WAVs; ${limits.text.fitShort}. We read the title, artist and cover art for you, and you can fix anything before you send.`,
+      d:
+        `Drop in ${limits.text.batchShort} as MP3s or WAVs; ${limits.text.fitShort}.` +
+        (soundcloud ? ' Or paste a public SoundCloud track link and we fetch it for you.' : '') +
+        ' We read the title, artist and cover art for you, and you can fix anything before you send.',
     },
     { t: 'Managers review', d: 'Each batch opens a ticket in Discord. Managers listen, ask questions there, then approve or decline each song, with a reason if declined.' },
     { t: 'On air', d: 'Approved songs are added to the station a few at a time and go into rotation. Follow every song in My music.' },
@@ -217,9 +232,9 @@ export function Timeline({ limits }: { limits: UiUploadLimits }) {
   )
 }
 
-export function CantTake({ limits }: { limits: UiUploadLimits }) {
+export function CantTake({ limits, soundcloud = false }: { limits: UiUploadLimits; soundcloud?: boolean }) {
   const items = [
-    `${limits.text.refusedFormats}. Export an MP3 or WAV first.`,
+    `${limits.text.refusedFormats}. Export an MP3 or WAV first${soundcloud ? ', or paste the song’s SoundCloud link' : ''}.`,
     `Files or songs outside the limits: ${limits.text.tooLong}`,
     `MP3s under ${limits.minKbps} kbps.`,
     'Music you don’t own or don’t have permission to share.',
@@ -255,7 +270,7 @@ export function RightsBox({ rights }: { rights: { version: string; text: string 
   )
 }
 
-export function FilesAndLimits({ limits, rights }: { limits: UiUploadLimits; rights: { version: string; text: string } }) {
+export function FilesAndLimits({ limits, rights, soundcloud = false }: { limits: UiUploadLimits; rights: { version: string; text: string }; soundcloud?: boolean }) {
   const t = limits.text
   return (
     <section aria-labelledby="accept-h" className="scroll-mt-6">
@@ -309,7 +324,7 @@ export function FilesAndLimits({ limits, rights }: { limits: UiUploadLimits; rig
         {limits.note}
       </p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <CantTake limits={limits} />
+        <CantTake limits={limits} soundcloud={soundcloud} />
         <RightsBox rights={rights} />
       </div>
     </section>
@@ -486,16 +501,17 @@ export function ChangingASong({ requestCaps }: { requestCaps: { edit: number; re
 
 // ----------------------------------------------------------- whole pages --
 
-export function SignedOutInfo({ data }: { data: HomeInfoData }) {
+export function SignedOutInfo({ data, next = null }: { data: HomeInfoData; next?: string | null }) {
+  const sc = data.soundcloudEnabled
   return (
     <div className="space-y-10 sm:space-y-12">
       <div className="grid gap-4 lg:grid-cols-[3fr_2fr]">
-        <Hero inviteUrl={data.inviteUrl} />
-        <AtAGlance limits={data.limits} />
+        <Hero inviteUrl={data.inviteUrl} next={next} />
+        <AtAGlance limits={data.limits} soundcloud={sc} />
       </div>
-      <WhoAndNeeds />
-      <Timeline limits={data.limits} />
-      <FilesAndLimits limits={data.limits} rights={data.rights} />
+      <WhoAndNeeds soundcloud={sc} />
+      <Timeline limits={data.limits} soundcloud={sc} />
+      <FilesAndLimits limits={data.limits} rights={data.rights} soundcloud={sc} />
       <EditsAndRemovals requestCaps={data.requestCaps} signedIn={false} />
       <Faq entries={faqEntries(data)} />
       <MoreLinks inviteUrl={data.inviteUrl} />

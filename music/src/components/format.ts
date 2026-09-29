@@ -2,9 +2,15 @@
 
 import { transcodeLabel } from '@/lib/fit'
 
+// Staff screens (admin, review): the name and the AzuraCast id.
 export function playlistLabel(names: Record<string, string>, id: number): string {
   const n = names[String(id)]
   return n ? `${n} (#${id})` : `Playlist #${id}`
+}
+
+// v0.4.1: member screens: the name only (the id is an admin detail).
+export function playlistName(names: Record<string, string>, id: number): string {
+  return names[String(id)] ?? `Playlist #${id}`
 }
 
 export function duration(s: number | null | undefined): string {
@@ -20,7 +26,8 @@ export function bytes(n: number): string {
 }
 
 // Deterministic UTC date text (server and client render the same string, so
-// there is no hydration mismatch).
+// there is no hydration mismatch). Member screens use <LocalTime>, which
+// starts from this and switches to the viewer's own time zone.
 export function when(iso: string | null | undefined): string {
   if (!iso) return ''
   const d = new Date(iso)
@@ -35,7 +42,18 @@ export function convertedLabel(inputFormat: string | null | undefined, transcode
   return transcodeLabel(inputFormat, transcodeKbps)
 }
 
-export function songName(it: { title?: string | null; artist?: string | null }): string {
+// The viewer's local date and time ("Sep 28, 2026, 2:03 PM").
+export function localWhen(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(d)
+}
+
+// v0.4.1: a SoundCloud link without a title yet (waiting or fetching) is
+// named by its link (host and path), not "Untitled".
+export function songName(it: { title?: string | null; artist?: string | null; source?: string | null; sourceUrl?: string | null }): string {
+  if (!it.title?.trim() && it.source === 'soundcloud' && it.sourceUrl) return it.sourceUrl.replace(/^https:\/\//, '')
   const t = it.title?.trim() || 'Untitled'
   return it.artist?.trim() ? `${it.artist.trim()} – ${t}` : t
 }

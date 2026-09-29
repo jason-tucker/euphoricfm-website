@@ -62,6 +62,8 @@ def base_info():
         'duration': 200.5, 'genre': 'House', 'description': 'line one\nline two\x00',
         'license': 'cc-by', 'extractor': 'soundcloud', 'extractor_key': 'Soundcloud',
         'webpage_url': 'https://soundcloud.com/stub/x', '_type': 'video',
+        # yt-dlp merges the SELECTED format's fields into the info JSON
+        'format_id': 'hls_aac_160k',
         'thumbnails': [{'id': 'original', 'url': 'https://i1.sndcdn.com/artworks-abc-original.png'},
                        {'id': 't500x500', 'url': 'https://i1.sndcdn.com/artworks-abc-t500x500.jpg'}],
         'thumbnail': 'https://i1.sndcdn.com/artworks-abc-original.png',
@@ -123,6 +125,18 @@ def main():
         write_info(job, info)
         time.sleep(30)  # must be killed early, on the info JSON alone
         write(os.path.join(job, 'audio.mp3'), mp3_bytes())
+        return 0
+    if slug in ('preview', 'snipped'):
+        # A Go+ track: only the 30 s preview transcoding is offered, while
+        # `duration` is the full length (0.2.1: must stop on the info JSON).
+        if slug == 'preview':
+            info['format_id'] = 'hls_aac_160k_preview'
+        else:
+            info['snipped'] = True
+        info['duration'] = 240.0
+        write_info(job, info)
+        time.sleep(30)
+        write(os.path.join(job, 'audio.m4a'), m4a_bytes())
         return 0
     if slug == 'exactly24':
         info['duration'] = 1440

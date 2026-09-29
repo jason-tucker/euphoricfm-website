@@ -7,6 +7,7 @@ import { open } from 'node:fs/promises'
 import { join } from 'node:path'
 import { MEDIA_CSP } from '../http/csp'
 import { notFound } from '../http/errors'
+import { MEDIA_URL_TTL_S } from './signing'
 
 export const MEDIA_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
@@ -14,6 +15,12 @@ export const MEDIA_HEADERS = {
   'Cache-Control': 'private, no-store',
   'Cross-Origin-Resource-Policy': 'same-origin',
 }
+
+// v0.4.1: a cover / art image may be kept by the browser for the lifetime
+// of its signed URL (media/signing.ts MEDIA_URL_TTL_S): the URL is bound to
+// the viewer and the expiry, so a re-render within it needs no re-download.
+// Audio stays no-store.
+export const IMAGE_CACHE_CONTROL = `private, max-age=${MEDIA_URL_TTL_S}`
 
 export async function serveStagedFile(opts: {
   dir: string
@@ -72,6 +79,7 @@ export async function serveStagedFile(opts: {
   })
   const headers: Record<string, string> = {
     ...MEDIA_HEADERS,
+    ...(opts.contentType === 'image/jpeg' ? { 'Cache-Control': IMAGE_CACHE_CONTROL } : {}),
     'Content-Type': opts.contentType,
     'Content-Length': String(end - start + 1),
     'Content-Disposition': `attachment; filename="${opts.downloadName}"`,

@@ -7,11 +7,13 @@ export type FaqContext = {
   limits: UiUploadLimits
   requestCaps: { edit: number; removal: number }
   autoCloseDays: number
+  // v0.4.1: mention SoundCloud links only while the kill switch is on
+  soundcloudEnabled?: boolean
 }
 
 export type FaqEntry = { id: string; q: string; a: string }
 
-export function faqEntries({ limits: l, requestCaps, autoCloseDays }: FaqContext): FaqEntry[] {
+export function faqEntries({ limits: l, requestCaps, autoCloseDays, soundcloudEnabled = false }: FaqContext): FaqEntry[] {
   return [
     {
       // submissions.ts submitBatch → ticket job; review decisions; ingest.
@@ -39,7 +41,10 @@ export function faqEntries({ limits: l, requestCaps, autoCloseDays }: FaqContext
       q: 'Which file should I upload?',
       a:
         `The best-quality export you have: an MP3 (${l.text.mp3Quality}, ${l.text.mp3Size}) or a WAV (${l.text.wavSize}), ${l.text.mp3Length} long. ` +
-        `${l.note} Other formats such as ${l.text.refusedShort} are refused: export an MP3 or WAV first.`,
+        `${l.note} Other formats such as ${l.text.refusedShort} are refused: export an MP3 or WAV first.` +
+        (soundcloudEnabled
+          ? ' You can also paste a public SoundCloud track link on the Submit page: we download it, convert it to an MP3 and fill in the title, artist and genre for you.'
+          : ''),
     },
     {
       // Probe rejections are shown on the file card (messages.ts PROBE_ERROR_TEXT).
@@ -76,12 +81,15 @@ export function faqEntries({ limits: l, requestCaps, autoCloseDays }: FaqContext
         `You can have one open edit and one open removal request per song, and file up to ${requestCaps.edit} edit and ${requestCaps.removal} removal requests a day. Follow them under My music.`,
     },
     {
-      // Approved removals archive the file (worker/requests/jobs.ts archiveMedia); /library/archived needs `manage`.
+      // Approved removals archive the file (worker/requests/jobs.ts archiveMedia). v0.3.6: /library/archived is open to
+      // members (their own uploaded or linked songs, read-only; ui/browse.ts archivedSongs), reviewers see all, and only
+      // `manage` restores (api/archive/*).
       id: 'archived',
       q: 'Who can see a song after it’s removed?',
       a:
-        'An approved removal takes the song off the station and moves it to an archive; it is not deleted. ' +
-        'Archived songs no longer appear in the Library. Only the station managers can see them, and they can put one back.',
+        'An approved removal takes the song off the station and moves it to an archive; nothing is deleted. ' +
+        'It leaves the Library, but if you uploaded it here you still see it under Library → My archived songs, read-only. ' +
+        'Reviewers see every archived song, and only managers can put one back, so say so in its removal ticket in Discord if it should return.',
     },
   ]
 }

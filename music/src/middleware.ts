@@ -80,6 +80,9 @@ export async function middleware(req: NextRequest) {
   const csp = pathname.startsWith('/api/media/') ? MEDIA_CSP : buildCsp(nonce)
   const requestHeaders = new Headers(req.headers)
   requestHeaders.set('x-nonce', nonce)
+  // v0.4.1: the page being asked for, so a page's sign-in redirect can come
+  // back to it (server/ui/page.ts). Always overwritten: never the client's.
+  requestHeaders.set('x-efm-path', `${pathname}${req.nextUrl.search}`.slice(0, 1024))
   requestHeaders.set('content-security-policy', csp)
   const res = NextResponse.next({ request: { headers: requestHeaders } })
   res.headers.set('Content-Security-Policy', csp)
