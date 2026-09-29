@@ -45,6 +45,8 @@ CMD ["node", "server.js"]
 FROM ${NODE_IMAGE} AS worker
 WORKDIR /app
 ENV NODE_ENV=production NODE_OPTIONS=--max-old-space-size=96
+# worker.mjs (music-worker), events-worker.mjs (events-worker, compose
+# `command:` override), migrate.mjs, legacy-import.mjs
 COPY --from=build /build/dist/worker/ ./
 COPY --from=build /build/drizzle ./drizzle
 COPY scripts/init-dirs.sh ./init-dirs.sh
