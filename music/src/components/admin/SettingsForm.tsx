@@ -70,7 +70,7 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
     if (d.some((n) => !a.includes(n)) || d.length === 0) return setMsg({ tone: 'error', text: 'Default playlists must be chosen from the assignable playlists.' })
     if (fo.some((n) => !Number.isInteger(n) || n <= 0)) return setMsg({ tone: 'error', text: 'Events playlist ids must be a list of playlist ids.' })
     if (fo.some((n) => a.includes(n))) return setMsg({ tone: 'error', text: 'An Events playlist cannot also be assignable.' })
-    if (!nm) return setMsg({ tone: 'error', text: 'Playlist names must be one per line, like: 2 = 1General Rotation' })
+    if (!nm) return setMsg({ tone: 'error', text: 'Playlist names must be one per line, like: 2 = General Rotation' })
     if (![autoClose, maxItems, perHour, spacing, scPerDay].every(posInt)) return setMsg({ tone: 'error', text: 'Numbers must be whole numbers greater than zero.' })
     if (!rightsText.trim()) return setMsg({ tone: 'error', text: 'The rights statement cannot be empty.' })
     if (invite.trim() && !/^https:\/\/(discord\.gg|discord\.com)\//.test(invite.trim())) return setMsg({ tone: 'error', text: 'The invite link must start with https://discord.gg/ or https://discord.com/.' })

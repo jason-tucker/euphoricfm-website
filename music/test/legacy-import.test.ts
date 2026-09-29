@@ -161,7 +161,7 @@ describe.skipIf(!(DBENV() && MOCKS()))('v0.3.6 UNRELEASED import, release and vi
     const text = formatPlan({ ...plan, files: mine, others: plan.others.filter((o) => o.path.includes(RUN)), summary: summarize(mine, plan.others.filter((o) => o.path.includes(RUN))) })
     expect(text).toContain('DRY RUN (nothing was written)')
     expect(text).toContain(`→ ${PREFIX}Removed/${b.id}/save_me_from_me-${RUN}.mp3`)
-    expect(text).toContain('clear playlists 2 (1General Rotation) (comes off the air)')
+    expect(text).toContain('clear playlists 2 (General Rotation) (comes off the air)')
     expect(text).toContain('REFUSED: in Events playlist(s) 74')
     expect(text).toContain('4 media file(s): 3 to archive (1 of them leave rotation), 1 refused')
     // The dry-run example the release notes quote (harness data dir).

@@ -46,6 +46,9 @@ export const ACTIONS: readonly Action[] = [
 
 const actionsFor = (perms: ReadonlySet<string>) => ACTIONS.filter((a) => perms.has(a.perm))
 
+// v0.4.1: the submit card mentions SoundCloud links while the switch is on.
+export const SUBMIT_DESC_SOUNDCLOUD = 'Upload MP3 or WAV files, or paste a SoundCloud link. We read the tags and cover art for you.'
+
 export function ActionIcon({ name, className = 'size-6' }: { name: Action['key']; className?: string }) {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -73,7 +76,7 @@ export function ActionIcon({ name, className = 'size-6' }: { name: Action['key']
 }
 
 // Home page: "What do you want to do?" — one column on phones, three on desktop.
-export function ActionCards({ perms }: { perms: ReadonlySet<string> }) {
+export function ActionCards({ perms, soundcloudEnabled = false }: { perms: ReadonlySet<string>; soundcloudEnabled?: boolean }) {
   const list = actionsFor(perms)
   if (list.length === 0) return null
   return (
@@ -85,7 +88,7 @@ export function ActionCards({ perms }: { perms: ReadonlySet<string> }) {
               <ActionIcon name={a.key} />
             </span>
             <h3 className="text-lg font-bold text-cream">{a.title}</h3>
-            <p className="text-sm text-cream/70">{a.desc}</p>
+            <p className="text-sm text-cream/70">{a.key === 'submit' && soundcloudEnabled ? SUBMIT_DESC_SOUNDCLOUD : a.desc}</p>
             <span className="action-cue" aria-hidden="true">
               {a.key === 'submit' ? 'Start uploading' : 'Find the song'} <span className="text-lg leading-none">›</span>
             </span>

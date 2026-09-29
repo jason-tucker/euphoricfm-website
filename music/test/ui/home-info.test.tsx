@@ -19,6 +19,7 @@ const state = vi.hoisted(() => ({
   viewer: null as null | V,
   caps: null as null | Record<string, unknown>,
   invite: null as null | string,
+  sc: false,
 }))
 
 vi.mock('@/app/actions', () => ({ signInWithDiscord: vi.fn(), signOutAction: vi.fn(), signInToSuggestEdit: vi.fn(), signInToRequestRemoval: vi.fn() }))
@@ -36,6 +37,8 @@ vi.mock('@/server/ui/settings', async () => {
       inviteUrl: state.invite,
       autoCloseDays: 9,
       caps: { ...caps, ...(state.caps ?? {}) },
+      requestCaps: { edit: 4, removal: 6 },
+      soundcloudEnabled: state.sc,
     }),
   }
 })
@@ -47,6 +50,7 @@ beforeEach(() => {
   state.viewer = null
   state.caps = null
   state.invite = null
+  state.sc = false
 })
 
 describe('uploadLimitsForUi (the one source of upload figures)', () => {
@@ -94,7 +98,7 @@ describe('home page, signed out', async () => {
   const { default: Home } = await import('@/app/page')
 
   it('hero, glance, who / needs, four steps and the real status labels', async () => {
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Get your music on EuphoricFM')
     expect(screen.getByRole('button', { name: /sign in with discord/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /how it works/i }).getAttribute('href')).toBe('#how-h')
@@ -111,7 +115,7 @@ describe('home page, signed out', async () => {
 
   it('files and limits are the helper’s text (follows lowered MP3 / WAV caps, not the final-file cap)', async () => {
     state.caps = { maxUploadBytes: 20 * MB, maxMp3UploadBytes: 80 * MB, maxWavUploadBytes: 100 * MB, maxItemsPerBatch: 12 }
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     const l = uploadLimitsForUi({ ...DEFAULT_CAPS, ...state.caps } as unknown as Caps)
     const mp3 = screen.getByTestId('limits-mp3').textContent
     for (const t of [l.text.mp3Size, l.text.mp3Quality, l.text.mp3Length, l.text.mp3Tags, l.text.mp3Fit]) expect(mp3).toContain(t)
@@ -129,7 +133,7 @@ describe('home page, signed out', async () => {
   })
 
   it('the rights statement is word for word the one the submit page asks to confirm', async () => {
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     const home = screen.getByTestId('rights-text')
     expect(home.textContent).toBe(RIGHTS.text)
     expect(home.getAttribute('data-version')).toBe(RIGHTS.version)
@@ -141,7 +145,7 @@ describe('home page, signed out', async () => {
   })
 
   it('edits and removals: sign-in buttons and the request caps', async () => {
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     expect(screen.getByRole('button', { name: 'Sign in to suggest an edit' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Sign in to request removal' })).toBeTruthy()
     expect(screen.getByTestId('request-caps').textContent).toContain('up to 4 edit and 6 removal requests a day')
@@ -150,7 +154,7 @@ describe('home page, signed out', async () => {
   })
 
   it('FAQ: eight keyboard-reachable <details>, closed by default, with settings-driven answers', async () => {
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     const faq = screen.getByTestId('faq')
     expect(within(faq).getByRole('heading', { level: 2, name: 'Questions artists ask' })).toBeTruthy()
     const items = faq.querySelectorAll('details')
@@ -169,11 +173,14 @@ describe('home page, signed out', async () => {
     expect(text('edits')).toContain('one open edit and one open removal request per song')
     expect(text('ticket')).toContain('mentions only you')
     expect(text('ticket')).not.toContain('staff roles')
-    expect(text('archived')).toContain('Only the station managers')
+    // v0.4.1: members see their own archived songs since v0.3.6
+    expect(text('archived')).toContain('you still see it under Library → My archived songs')
+    expect(text('archived')).toContain('only managers can put one back')
+    expect(text('archived')).not.toContain('Only the station managers can see them')
   })
 
   it('links: Listen live to the main site; Join our Discord from the constant, or the admin setting', async () => {
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     expect(screen.getByTestId('listen-live').getAttribute('href')).toBe(SITE_LINKS.listen)
     expect(screen.getByTestId('discord-invite').getAttribute('href')).toBe(SITE_LINKS.discordInvite)
     expect(SITE_LINKS.discordInvite).toBe('https://discord.gg/QzDESUFmQ2')
@@ -183,7 +190,7 @@ describe('home page, signed out', async () => {
 
   it('an admin-set invite URL wins over the constant', async () => {
     state.invite = 'https://discord.gg/other'
-    render(await Home())
+    render(await Home({ searchParams: Promise.resolve({}) }))
     expect(screen.getByTestId('discord-invite').getAttribute('href')).toBe('https://discord.gg/other')
   })
 })
@@ -193,7 +200,7 @@ describe('home page, signed in', async () => {
 
   it('greeting, action cards first, then My music, then the condensed info and FAQ', async () => {
     state.viewer = member
-    const { container } = render(await Home())
+    const { container } = render(await Home({ searchParams: Promise.resolve({}) }))
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Welcome back, Mia')
     const order = ['greeting', 'action-cards', 'my-music-card', 'before-you-upload', 'how-it-works', 'changing-a-song', 'faq', 'discord-invite'].map((id) =>
       container.querySelector(`[data-testid="${id}"]`),
@@ -208,5 +215,58 @@ describe('home page, signed in', async () => {
     expect(screen.getByTestId('faq').querySelectorAll('details')).toHaveLength(8)
     // No sign-in prompts for a member.
     expect(screen.queryByRole('button', { name: /sign in/i })).toBeNull()
+  })
+})
+
+describe('v0.4.1: SoundCloud links on the home page follow the kill switch', async () => {
+  const { default: Home } = await import('@/app/page')
+  const soundcloudText = () => document.body.textContent!.match(/SoundCloud/g)?.length ?? 0
+
+  it('switch off: no SoundCloud mention anywhere (signed out or in)', async () => {
+    render(await Home({ searchParams: Promise.resolve({}) }))
+    expect(soundcloudText()).toBe(0)
+    document.body.innerHTML = ''
+    state.viewer = member
+    render(await Home({ searchParams: Promise.resolve({}) }))
+    expect(soundcloudText()).toBe(0)
+  })
+
+  it('switch on: glance, what you need, step 2, "We can’t take", the FAQ file answer and the Submit card say you can paste a link', async () => {
+    state.sc = true
+    render(await Home({ searchParams: Promise.resolve({}) }))
+    expect(screen.getByTestId('at-a-glance').textContent).toContain('(or a SoundCloud link)')
+    expect(screen.getByRole('heading', { name: 'What you’ll need' }).parentElement!.textContent).toContain('public SoundCloud track link')
+    expect(screen.getByTestId('steps').textContent).toContain('Or paste a public SoundCloud track link')
+    expect(screen.getByTestId('cant-take').textContent).toContain('or paste the song’s SoundCloud link')
+    expect(document.querySelector('[data-faq="file"]')!.textContent).toContain('paste a public SoundCloud track link on the Submit page')
+    document.body.innerHTML = ''
+    state.viewer = member
+    render(await Home({ searchParams: Promise.resolve({}) }))
+    expect(document.querySelector('[data-action="submit"]')!.textContent).toContain('or paste a SoundCloud link')
+  })
+})
+
+describe('v0.4.1: a signed-out visitor sent here from a portal page (?next=)', async () => {
+  const { default: Home } = await import('@/app/page')
+
+  it('says where signing in leads and carries the path in the sign-in form', async () => {
+    render(await Home({ searchParams: Promise.resolve({ next: '/library?intent=remove' }) }))
+    expect(screen.getByTestId('sign-in-next').textContent).toBe('Sign in with Discord to continue to ask for a song’s removal.')
+    const form = screen.getByRole('button', { name: /sign in with discord/i }).closest('form')!
+    expect((form.querySelector('input[name="next"]') as HTMLInputElement).value).toBe('/library?intent=remove')
+  })
+
+  it('ignores anything that is not a same-origin path', async () => {
+    for (const next of ['https://evil.example/x', '//evil.example/x', '/\\evil.example', 'javascript:alert(1)', '/']) {
+      render(await Home({ searchParams: Promise.resolve({ next }) }))
+      expect(screen.queryByTestId('sign-in-next')).toBeNull()
+      expect(document.querySelector('input[name="next"]')).toBeNull()
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('a signed-in visitor with ?next= goes straight there', async () => {
+    state.viewer = member
+    await expect(Home({ searchParams: Promise.resolve({ next: '/submit' }) })).rejects.toThrow('NEXT_REDIRECT /submit')
   })
 })

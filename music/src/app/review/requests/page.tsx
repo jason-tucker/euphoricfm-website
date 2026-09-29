@@ -51,7 +51,7 @@ export default async function ReviewRequestsPage() {
       ) : (
         <ul className="space-y-4">
           {rows.map((r) => (
-            <li key={r.id} className="card space-y-3" data-request-id={r.id}>
+            <li key={r.id} id={`request-${r.id}`} className="card scroll-mt-6 space-y-3" data-request-id={r.id}>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-semibold">
                   {r.kind === 'edit' ? 'Edit' : 'Removal'} request #{r.id}{' '}

@@ -92,11 +92,27 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
       const r = await page(null, p)
       expect([302, 303, 307], p).toContain(r.status)
     }
+    // v0.4.1 (A10): the redirect keeps where the visitor was going, and the
+    // home page says so and carries it into the sign-in form.
+    for (const p of ['/submit', '/library?intent=remove', '/library/12345', '/requests/1', '/dashboard']) {
+      const r = await page(null, p)
+      expect(new URL(r.location, 'https://music.euphoric.fm').pathname + new URL(r.location, 'https://music.euphoric.fm').search, p).toBe(`/?next=${encodeURIComponent(p)}`)
+    }
+    const back = await page(null, `/?next=${encodeURIComponent('/library?intent=remove')}`)
+    expect(back.html).toContain('Sign in with Discord to continue to ask for a song’s removal.')
+    expect(back.html).toContain('name="next" value="/library?intent=remove"')
+    expect((await page(null, `/?next=${encodeURIComponent('https://evil.example/')}`)).html).not.toContain('name="next"')
   })
 
   it('member flow: dashboard, submit, batch detail; staff notes hidden; no review/admin', async () => {
     const member = await loginOk({ id: newId() })
     const admin = await loginOk({ id: OWNER })
+
+    // v0.4.1 (A10): signed in (by the header's button, which has no next),
+    // /?next= goes on to the page the visitor wanted.
+    const onward = await page(member, `/?next=${encodeURIComponent('/library?intent=remove')}`)
+    expect([302, 303, 307]).toContain(onward.status)
+    expect(onward.location).toMatch(/\/library\?intent=remove$/)
 
     // v0.3.1 home: action cards + My music counts for this member only.
     const home = await page(member, '/')
@@ -201,7 +217,7 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     const rev = await page(admin, `/review/items/${item.id}`)
     expect(rev.status).toBe(200)
     expect(rev.html).toContain('Deny')
-    expect(rev.html).toContain('1General Rotation')
+    expect(rev.html).toContain('General Rotation')
     const adm = await page(admin, '/admin')
     expect(adm.status).toBe(200)
     expect(adm.html).toContain('Reviewer roles')
@@ -250,7 +266,7 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     expect(song.status).toBe(200)
     expect(song.html).toContain('Suggest an edit')
     expect(song.html).not.toContain('Manager tools')
-    expect(song.html).not.toContain('1General Rotation') // playlists are staff-only
+    expect(song.html).not.toContain('General Rotation') // playlists are staff-only
     expect((await page(member, `/library/${mediaId + 1}`)).status).toBe(404) // outside Music/Artists/**
     // v0.3.6: members reach Archived songs, filtered to their own / linked songs.
     const memberArchived = await page(member, '/library/archived')
