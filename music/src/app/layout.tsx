@@ -8,7 +8,7 @@ import { openGraph, SITE_NAME as SITE } from '@/components/og'
 
 const DESCRIPTION = 'Where artists send their songs to EuphoricFM and follow each one through review to the air.'
 
-export const metadata: Metadata = {
+const musicMetadata: Metadata = {
   metadataBase: new URL('https://music.euphoric.fm'),
   title: { default: SITE, template: `%s · ${SITE}` },
   description: DESCRIPTION,
@@ -18,12 +18,26 @@ export const metadata: Metadata = {
   twitter: { card: 'summary_large_image' },
 }
 
+// Per request (not a static export): one image serves both sites. On the
+// events host app/ev/layout.tsx supplies the titles.
+export function generateMetadata(): Metadata {
+  return process.env.PORTAL_SITE === 'events' ? { icons: { icon: '/favicon.svg' } } : musicMetadata
+}
+
 export const viewport: Viewport = { width: 'device-width', initialScale: 1, themeColor: '#0a0a0a' }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   // Reading the nonce makes every page dynamic, so Next stamps it on its
   // inline scripts (the CSP has no 'unsafe-inline').
   await headers()
+  // v0.5.0: on events.euphoric.fm app/ev/layout.tsx owns the bar, <main> and footer.
+  if (process.env.PORTAL_SITE === 'events') {
+    return (
+      <html lang="en">
+        <body className="min-h-screen bg-ink text-cream antialiased">{children}</body>
+      </html>
+    )
+  }
   const viewer = await headerViewer()
   return (
     <html lang="en">

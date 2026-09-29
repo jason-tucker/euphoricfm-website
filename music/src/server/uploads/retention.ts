@@ -18,6 +18,7 @@ import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import { audit } from '../audit'
 import type { DB } from '../db/client'
 import { batches, items, uploads } from '../db/schema'
+import { portalSite, type PortalSite } from '../env'
 import { COVER_FILE_RE, UPLOAD_ID_RE } from '../spool/protocol'
 
 const H = 3600_000
@@ -39,15 +40,24 @@ async function removeUploadFiles(dir: string, uploadId: string | null, coverFile
   return n
 }
 
-export async function sweepStaging(db: DB, dir: string, now = Date.now()): Promise<{ removed: number }> {
+// v0.5.0: each web sweeps only its own site's uploads (uploads.site =
+// PORTAL_SITE): the two sites stage into different directories. Items are
+// music-only, so the draft / decided-item passes run on the music site only;
+// the events site instead releases an attached upload once its event_audio
+// no longer needs the raw bytes (live, rejected, failed or deleted), and
+// any events upload attached to something that is not an event_audio row.
+export async function sweepStaging(db: DB, dir: string, now = Date.now(), site: PortalSite = portalSite()): Promise<{ removed: number }> {
   let removed = 0
   const stale = await db
     .select()
     .from(uploads)
     .where(
-      or(
-        and(eq(uploads.status, 'uploading'), lt(uploads.createdAt, new Date(now - D))),
-        and(eq(uploads.status, 'complete'), lt(uploads.createdAt, new Date(now - 7 * D))),
+      and(
+        eq(uploads.site, site),
+        or(
+          and(eq(uploads.status, 'uploading'), lt(uploads.createdAt, new Date(now - D))),
+          and(eq(uploads.status, 'complete'), lt(uploads.createdAt, new Date(now - 7 * D))),
+        ),
       ),
     )
     .limit(500)
@@ -55,6 +65,39 @@ export async function sweepStaging(db: DB, dir: string, now = Date.now()): Promi
     await removeUploadFiles(dir, u.id, null)
     await db.update(uploads).set({ status: 'expired' }).where(eq(uploads.id, u.id))
     removed++
+  }
+  if (site === 'events') {
+    const released = await db
+      .update(uploads)
+      .set({ status: 'expired' })
+      .where(
+        and(
+          eq(uploads.site, 'events'),
+          eq(uploads.status, 'attached'),
+          sql`EXISTS (SELECT 1 FROM event_audio ea WHERE ea.upload_id = ${uploads.id}
+                AND (ea.status IN ('live', 'rejected', 'failed') OR ea.deleted_at IS NOT NULL))`,
+        ),
+      )
+      .returning({ id: uploads.id })
+    for (const u of released) await removeUploadFiles(dir, u.id, null)
+    // An events upload attached to anything but an event_audio row (e.g. a
+    // music batch before v0.5.0 checked the site) is never released by the
+    // pass above: expire and unlink it too. createAudio attaches and inserts
+    // its event_audio in ONE transaction, so a row still being attached is
+    // never seen here as attached without its audio.
+    const foreign = await db
+      .update(uploads)
+      .set({ status: 'expired' })
+      .where(
+        and(
+          eq(uploads.site, 'events'),
+          eq(uploads.status, 'attached'),
+          sql`NOT EXISTS (SELECT 1 FROM event_audio ea WHERE ea.upload_id = ${uploads.id})`,
+        ),
+      )
+      .returning({ id: uploads.id })
+    for (const u of foreign) await removeUploadFiles(dir, u.id, null)
+    return { removed: removed + released.length + foreign.length }
   }
   // Drafts: never submitted within 7 days. The conditional UPDATE runs first
   // (same status as selected, batch still a draft), so a submit that races

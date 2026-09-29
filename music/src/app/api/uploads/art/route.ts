@@ -6,7 +6,7 @@
 import { acceptArtUpload } from '@/server/art/uploads'
 import { requirePermission } from '@/server/authz/viewer'
 import { getDb } from '@/server/db/client'
-import { webEnv } from '@/server/env'
+import { portalSite, webEnv } from '@/server/env'
 import { HttpError } from '@/server/http/errors'
 import { clientKey, LIMITS, RateLimiter } from '@/server/http/ratelimit'
 import { jsonResponse, route } from '@/server/http/route'
@@ -24,6 +24,9 @@ const CLOSE = { Connection: 'close' }
 const closing = (e: unknown) => (e instanceof HttpError ? new HttpError(e.status, e.code, e.extra, { ...e.headers, ...CLOSE }) : e)
 
 export const POST = route(async (req) => {
+  // v0.5.0 site gate: the middleware skips /api/uploads/**, and the events
+  // site has no album art (contract "Site gate").
+  if (portalSite() === 'events') throw new HttpError(404, 'not_found', undefined, CLOSE)
   const r = limiter.hit(LIMITS.mutation, clientKey(req.headers))
   if (!r.ok) throw new HttpError(429, 'rate_limited', undefined, { 'Retry-After': String(r.retryAfterS), ...CLOSE })
   const v = await requirePermission('submit').catch((e: unknown) => {

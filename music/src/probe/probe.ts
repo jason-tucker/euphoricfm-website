@@ -26,12 +26,16 @@ import { runLimited } from './exec'
 import { copyNoFollowHashed, ProbeReject, publishFile, reader, sha256File } from './files'
 import { MAX_TAG_BYTES, scanId3 } from './id3scan'
 import { checkMp3Magic, id3v2TagSize } from './magic'
+import { DEFAULT_MIN_DURATION_S, probeMinDurationS } from './min-duration'
 import { mp3TranscodeArgs } from './transcode'
 import { CONVERT_NICE, CONVERT_TIMEOUT_S, CONVERT_VMEM_KB, convertArgs, judgeWavFfprobe, scanWav, sniffWav, wavFfprobeArgs, type WavInfo } from './wav'
 
 export type ProbeDirs = { uploads: string; work: string; mmChild: string }
 
-export const MIN_DURATION_S = 30
+// The music rule (and the UI's number). The probe enforces
+// probeMinDurationS(), which is this unless PROBE_MIN_DURATION_S lowers it
+// (min-duration.ts; the events probe only).
+export const MIN_DURATION_S = DEFAULT_MIN_DURATION_S
 // v0.3.5: the longest song that fits at the ladder's floor (fit.ts, 24 min),
 // for MP3 and WAV alike (was 20 min for an MP3).
 export { MAX_DURATION_S }
@@ -76,7 +80,7 @@ export type Mp3Info = { durationS: number; bitrate: number; sampleRate: number |
 // `minDurationS` (v0.4.1): 0 lets a caller that counts the frames judge the
 // short end itself (probe_fetch: a SoundCloud preview must be reported as a
 // preview, not as too_short).
-export function judgeFfprobe(json: unknown, maxDurationS: number = MAX_DURATION_S, minDurationS: number = MIN_DURATION_S): Mp3Info {
+export function judgeFfprobe(json: unknown, maxDurationS: number = MAX_DURATION_S, minDurationS: number = probeMinDurationS()): Mp3Info {
   const r = ffprobeOut.safeParse(json)
   if (!r.success) throw new ProbeReject('ffprobe_unparseable')
   const { streams, format } = r.data
@@ -154,7 +158,7 @@ export async function ffprobeMp3(
   work: string,
   maxDurationS: number = MAX_DURATION_S,
   whitelist: 'file,pipe' | 'file' = 'file,pipe',
-  minDurationS: number = MIN_DURATION_S,
+  minDurationS: number = probeMinDurationS(),
 ): Promise<Mp3Info> {
   const fp = await runLimited('ffprobe', ffprobeArgs(file, whitelist), { timeoutS: 20, vmemKb: 524288, cwd: work })
   if (fp.timedOut) throw new ProbeReject('ffprobe_timeout')
@@ -180,7 +184,7 @@ export async function keptMp3DurationS(file: string, work: string, info: Mp3Info
   if (info.sampleRate === null || !MP3_RATES.has(info.sampleRate)) throw new ProbeReject('not_mp3')
   const counted = await countedDurationS(file, work, info.sampleRate, whitelist)
   if (Math.max(counted, info.durationS) > MAX_DURATION_S) throw new ProbeReject('too_long')
-  if (counted < MIN_DURATION_S) throw new ProbeReject('too_short')
+  if (counted < probeMinDurationS()) throw new ProbeReject('too_short')
   return counted
 }
 
@@ -289,7 +293,7 @@ async function probeMp3(job: Job, copy: string, sha256: string, size: number): P
   //    would inflate the estimate of a file without one.
   if (info.sampleRate === null || !MP3_RATES.has(info.sampleRate) || info.channels === null || info.channels > 2) throw new ProbeReject('not_mp3')
   const durationS = await countedDurationS(copy, job.work, info.sampleRate)
-  if (durationS < MIN_DURATION_S) throw new ProbeReject('too_short')
+  if (durationS < probeMinDurationS()) throw new ProbeReject('too_short')
   const bitrate = pickBitrate(durationS)
   if (bitrate === null) throw new ProbeReject('too_long')
   const out = join(job.work, 'out.mp3')

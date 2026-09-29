@@ -142,12 +142,20 @@ export function stationSet(opts: {
   return { station, unconfirmed, fresh }
 }
 
+export async function eventRegistryPlaylistIds(db: Pick<P3Ctx['db'], 'execute'>): Promise<number[]> {
+  const rows = (await db.execute<{ id: number }>(sql`SELECT DISTINCT playlist_id AS id FROM event_registry WHERE playlist_id IS NOT NULL`)) as unknown as { id: number }[]
+  return rows.map((r) => Number(r.id)).filter((id) => Number.isSafeInteger(id) && id > 0)
+}
+
 export async function syncLibrary(ctx: P3Ctx): Promise<SyncResult> {
   const all = await ctx.azuracast.listAllFiles(100)
   const rows = all.filter((f) => isLibraryPath(f.path))
 
   // Station playlist ids (stationSet above).
-  const foreign = new Set(await getIntList(ctx.db, 'foreign_playlist_ids'))
+  // v0.5.0: plus every playlist the events worker registered (its registry
+  // row is committed before any song is assigned, and is read here AFTER the
+  // listing above), so event playlists are never absorbed or alerted on.
+  const foreign = new Set([...(await getIntList(ctx.db, 'foreign_playlist_ids')), ...(await eventRegistryPlaylistIds(ctx.db))])
   const observed = new Set<number>()
   for (const r of rows) for (const p of r.playlists) observed.add(p.id)
   const configured = [...(await getIntList(ctx.db, 'assignable_playlist_ids')), ...(await getIntList(ctx.db, 'default_playlist_ids'))]

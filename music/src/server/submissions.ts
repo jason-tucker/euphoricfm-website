@@ -106,11 +106,14 @@ export async function addUploadToBatch(db: DB, v: Viewer, batchId: number, uploa
       .from(items)
       .where(and(eq(items.batchId, b.id), inArray(items.status, ['probing', 'pending', 'draft'])))
     if (n >= caps.maxItemsPerBatch) throw new HttpError(409, 'batch_full')
+    // v0.5.0: only a MUSIC upload. An events upload (events staging dir,
+    // events budget) answers like a missing id: attached here, nothing
+    // would ever release it from the events staging disk.
     const up = oneOrConflict(
       await tx
         .update(uploads)
         .set({ status: 'attached' })
-        .where(and(eq(uploads.id, uploadId), eq(uploads.ownerUserId, v.userId), eq(uploads.status, 'complete')))
+        .where(and(eq(uploads.id, uploadId), eq(uploads.ownerUserId, v.userId), eq(uploads.status, 'complete'), eq(uploads.site, 'music')))
         .returning(),
       'upload_not_available',
     )

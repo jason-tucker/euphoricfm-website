@@ -114,7 +114,23 @@ export async function stagedBytes(q: Pick<DB, 'execute'>): Promise<{ uploads: nu
 // maxMp3UploadBytes). A WAV (or an MP3 too big to fit, v0.3.5) is charged at
 // its full length until the probe's MP3 replaces it (the worker then sets
 // `length` to the MP3's size) or a rejection releases it.
-export async function admitUpload(db: DB, userId: string, id: string, length: number, caps: Caps = DEFAULT_CAPS, kind: DeclaredKind = 'mp3'): Promise<Refusal | null> {
+//
+// v0.5.0 (events): `site` is stamped on the row (uploads.site). An events
+// upload must also fit the events staging budget (`eventsBudgetBytes`,
+// setting events_staging_budget_bytes): the events site's own
+// uploading/complete/attached bytes, checked under the same staging lock.
+// The shared maxStagingBytes and the per-user caps count both sites (one
+// disk, one member); attached uploads whose event_audio is still
+// probing/ready/ingesting count as in flight.
+export async function admitUpload(
+  db: DB,
+  userId: string,
+  id: string,
+  length: number,
+  caps: Caps = DEFAULT_CAPS,
+  kind: DeclaredKind = 'mp3',
+  site: { site: 'music' } | { site: 'events'; eventsBudgetBytes: number } = { site: 'music' },
+): Promise<Refusal | null> {
   if (length > maxBytesFor(kind, caps)) return tooLarge(kind)
   return db.transaction(async (tx) => {
     await lockStaging(tx)
@@ -122,21 +138,35 @@ export async function admitUpload(db: DB, userId: string, id: string, length: nu
     // Per-user "in flight" = every staged byte the user still holds that no
     // decision has released: uploads being written or finished but not
     // attached, plus attached uploads whose item is still undecided
-    // (probing / draft / pending). The concurrency count is 'uploading' only.
+    // (probing / draft / pending) or whose event audio is not live yet.
+    // The concurrency count is 'uploading' only.
     const [u] = await tx.execute<{ inflight: string; n: string }>(
       sql`SELECT
             COALESCE(SUM(up.length) FILTER (
               WHERE up.status IN ('uploading', 'complete')
                  OR (up.status = 'attached' AND EXISTS (
                       SELECT 1 FROM items i WHERE i.upload_id = up.id AND i.status IN ('probing', 'draft', 'pending')))
+                 OR (up.status = 'attached' AND EXISTS (
+                      SELECT 1 FROM event_audio ea WHERE ea.upload_id = up.id AND ea.status IN ('probing', 'ready', 'ingesting')))
             ), 0)::bigint AS inflight,
             COUNT(*) FILTER (WHERE up.status = 'uploading')::int AS n
           FROM ${uploads} up WHERE up.owner_user_id = ${userId}`,
     )
     if (staged.uploads + staged.art + length > caps.maxStagingBytes) return { status: 503, code: 'staging_full', retryAfterS: 600 }
+    if (site.site === 'events' && (await siteStagedBytes(tx, 'events')) + length > site.eventsBudgetBytes) {
+      return { status: 503, code: 'staging_full', retryAfterS: 600 }
+    }
     if (Number(u?.n ?? 0) >= caps.maxConcurrentUploadsPerUser) return { status: 429, code: 'too_many_concurrent_uploads', retryAfterS: 30 }
     if (Number(u?.inflight ?? 0) + length > caps.maxInflightBytesPerUser) return { status: 429, code: 'inflight_quota', retryAfterS: 60 }
-    await tx.insert(uploads).values({ id, ownerUserId: userId, length, status: 'uploading' })
+    await tx.insert(uploads).values({ id, ownerUserId: userId, length, status: 'uploading', site: site.site })
     return null
   })
+}
+
+// v0.5.0: one site's staged tus bytes (the events staging budget).
+export async function siteStagedBytes(q: Pick<DB, 'execute'>, site: 'music' | 'events'): Promise<number> {
+  const [g] = await q.execute<{ n: string }>(
+    sql`SELECT COALESCE(SUM(length), 0)::bigint AS n FROM ${uploads} WHERE site = ${site} AND status IN ('uploading','complete','attached')`,
+  )
+  return Number(g?.n ?? 0)
 }

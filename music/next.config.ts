@@ -17,6 +17,20 @@ const securityHeaders = [
   { key: 'Permissions-Policy', value: PERMISSIONS_POLICY },
 ]
 
+// Server Actions (sign-in/out) accept both portal hosts. The standalone
+// build freezes this config into server.js, so PORTAL_ORIGIN is only seen
+// when set at BUILD time (dev/test builds); events.euphoric.fm is listed
+// explicitly for the shared production image (events-web).
+function actionOrigins(): string[] {
+  const hosts = new Set(['music.euphoric.fm', 'events.euphoric.fm'])
+  try {
+    if (process.env.PORTAL_ORIGIN) hosts.add(new URL(process.env.PORTAL_ORIGIN).host)
+  } catch {
+    // invalid PORTAL_ORIGIN: the env loader refuses to start anyway
+  }
+  return [...hosts]
+}
+
 const nextConfig: NextConfig = {
   output: 'standalone',
   poweredByHeader: false,
@@ -25,7 +39,7 @@ const nextConfig: NextConfig = {
   images: { unoptimized: true },
   serverExternalPackages: ['@tus/server', '@tus/file-store', 'postgres'],
   experimental: {
-    serverActions: { bodySizeLimit: '1mb', allowedOrigins: ['music.euphoric.fm'] },
+    serverActions: { bodySizeLimit: '1mb', allowedOrigins: actionOrigins() },
   },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }]

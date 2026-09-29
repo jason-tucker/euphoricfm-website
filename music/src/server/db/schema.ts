@@ -5,6 +5,7 @@
 
 import { sql } from 'drizzle-orm'
 import {
+  bigint,
   bigserial,
   boolean,
   check,
@@ -20,6 +21,16 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core'
+import {
+  AUDIO_KINDS,
+  AUDIO_STATUSES,
+  BUILD_STATUSES,
+  EVENT_STATUSES,
+  EVENT_TYPES,
+  PLAYLIST_ORDERS,
+  REGISTRY_ROLES,
+  VISIBILITIES,
+} from '../../events/contract/types'
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' })
 
@@ -391,8 +402,11 @@ export const uploads = pgTable(
     status: uploadStatusEnum('status').notNull().default('uploading'),
     createdAt: ts('created_at').notNull().defaultNow(),
     completedAt: ts('completed_at'),
+    // v0.5.0: which portal instance (PORTAL_SITE) accepted the upload. Caps,
+    // sweepers and attach routes only ever see their own site's rows.
+    site: text('site').notNull().default('music'),
   },
-  (t) => [index('uploads_owner_status_idx').on(t.ownerUserId, t.status)],
+  (t) => [index('uploads_owner_status_idx').on(t.ownerUserId, t.status), check('uploads_site', sql`${t.site} IN ('music', 'events')`)],
 )
 
 // ---------------------------------------------------------- album art ---
@@ -421,8 +435,14 @@ export const artUploads = pgTable(
     height: integer('height'),
     createdAt: ts('created_at').notNull().defaultNow(),
     updatedAt: ts('updated_at').notNull().defaultNow(),
+    // v0.5.0: see uploads.site.
+    site: text('site').notNull().default('music'),
   },
-  (t) => [index('art_uploads_owner_idx').on(t.owner), index('art_uploads_status_idx').on(t.status, t.createdAt)],
+  (t) => [
+    index('art_uploads_owner_idx').on(t.owner),
+    index('art_uploads_status_idx').on(t.status, t.createdAt),
+    check('art_uploads_site', sql`${t.site} IN ('music', 'events')`),
+  ],
 )
 
 // -------------------------------------------------------- media safety ---
@@ -601,4 +621,235 @@ export const auditLog = pgTable(
     ip: text('ip'),
   },
   (t) => [index('audit_log_at_idx').on(t.at), index('audit_log_target_idx').on(t.targetType, t.targetId)],
+)
+
+// ------------------------------------------------------ events (v0.5.0) ---
+// EFM Events Portal (events.euphoric.fm; contract "Tables", plan §3). Written
+// by events-web and the events worker only; the music services never touch
+// these tables except worker/library/sync.ts, which reads
+// event_registry.playlist_id to keep event playlists foreign.
+
+const inList = (col: unknown, values: readonly string[]) => sql`${col} IN (${sql.raw(values.map((v) => `'${v}'`).join(', '))})`
+
+export const events = pgTable(
+  'events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    ownerUserId: text('owner_user_id')
+      .notNull()
+      .references(() => users.id),
+    ownerDiscordId: text('owner_discord_id').notNull(),
+    title: text('title').notNull(),
+    hostName: text('host_name'),
+    description: text('description'),
+    location: text('location'),
+    eventType: text('event_type').notNull(),
+    startsAt: ts('starts_at').notNull(),
+    endsAt: ts('ends_at').notNull(),
+    enteredTz: text('entered_tz').notNull(),
+    visibility: text('visibility').notNull(),
+    status: text('status').notNull(),
+    shortNotice: boolean('short_notice').notNull().default(false),
+    playlistOrder: text('playlist_order').notNull().default('shuffle'),
+    ticketId: integer('ticket_id'),
+    ticketNumber: integer('ticket_number'),
+    ticketUrl: text('ticket_url'),
+    createdByStaff: boolean('created_by_staff').notNull().default(false),
+    submittedAt: ts('submitted_at'),
+    decidedAt: ts('decided_at'),
+    decidedBy: text('decided_by'),
+    denyReason: text('deny_reason'),
+    // Bumped on every content edit; builds and their dedupe keys carry it.
+    version: integer('version').notNull().default(1),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('events_status_starts_idx').on(t.status, t.startsAt),
+    index('events_owner_status_idx').on(t.ownerUserId, t.status),
+    check('events_ends_after_starts', sql`${t.endsAt} > ${t.startsAt}`),
+    check('events_title_len', sql`char_length(${t.title}) BETWEEN 1 AND 80`),
+    check('events_host_name_len', sql`${t.hostName} IS NULL OR char_length(${t.hostName}) <= 80`),
+    check('events_description_len', sql`${t.description} IS NULL OR char_length(${t.description}) <= 2000`),
+    check('events_location_len', sql`${t.location} IS NULL OR char_length(${t.location}) <= 120`),
+    check('events_status', inList(t.status, EVENT_STATUSES)),
+    check('events_visibility', inList(t.visibility, VISIBILITIES)),
+    check('events_playlist_order', inList(t.playlistOrder, PLAYLIST_ORDERS)),
+    check('events_event_type', inList(t.eventType, EVENT_TYPES)),
+  ],
+)
+
+// A member's reusable custom audio (My audio). Lifecycle: probing → ready →
+// ingesting → live (rejected / failed); deleted_at is the owner/staff delete.
+export const eventAudio = pgTable(
+  'event_audio',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    ownerUserId: text('owner_user_id')
+      .notNull()
+      .references(() => users.id),
+    ownerDiscordId: text('owner_discord_id').notNull(),
+    uploadId: text('upload_id').references(() => uploads.id),
+    kind: text('kind').notNull(),
+    title: text('title').notNull(),
+    artist: text('artist'),
+    durationS: integer('duration_s'),
+    status: text('status').notNull(),
+    probeSha256: text('probe_sha256'),
+    transcodeKbps: integer('transcode_kbps'),
+    inputFormat: text('input_format'),
+    mediaId: integer('media_id'),
+    uniqueId: text('unique_id'),
+    path: text('path'),
+    lastError: text('last_error'),
+    deletedAt: ts('deleted_at'),
+    // Set when first attached to a submitted event (unused audio expires).
+    usedAt: ts('used_at'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('event_audio_owner_status_idx').on(t.ownerUserId, t.status),
+    index('event_audio_status_idx').on(t.status, t.createdAt),
+    check('event_audio_kind', inList(t.kind, AUDIO_KINDS)),
+    check('event_audio_status', inList(t.status, AUDIO_STATUSES)),
+  ],
+)
+
+export const eventTracks = pgTable(
+  'event_tracks',
+  {
+    eventId: bigint('event_id', { mode: 'number' })
+      .notNull()
+      .references(() => events.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    source: text('source').notNull(),
+    mediaId: integer('media_id'),
+    audioId: bigint('audio_id', { mode: 'number' }).references(() => eventAudio.id),
+    pinAt: ts('pin_at'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.eventId, t.position] }),
+    index('event_tracks_audio_idx').on(t.audioId),
+    check(
+      'event_tracks_source',
+      sql`(${t.source} = 'library' AND ${t.mediaId} IS NOT NULL AND ${t.audioId} IS NULL) OR (${t.source} = 'upload' AND ${t.audioId} IS NOT NULL AND ${t.mediaId} IS NULL)`,
+    ),
+  ],
+)
+
+export const eventAnnouncements = pgTable(
+  'event_announcements',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    eventId: bigint('event_id', { mode: 'number' })
+      .notNull()
+      .references(() => events.id, { onDelete: 'cascade' }),
+    source: text('source').notNull(),
+    mediaId: integer('media_id'),
+    audioId: bigint('audio_id', { mode: 'number' }).references(() => eventAudio.id),
+    mode: text('mode').notNull(),
+    at: ts('at'),
+    everyMin: integer('every_min'),
+    fromAt: ts('from_at'),
+    untilAt: ts('until_at'),
+  },
+  (t) => [
+    index('event_announcements_event_idx').on(t.eventId),
+    index('event_announcements_audio_idx').on(t.audioId),
+    check(
+      'event_announcements_source',
+      sql`(${t.source} = 'stinger' AND ${t.mediaId} IS NOT NULL AND ${t.audioId} IS NULL) OR (${t.source} = 'upload' AND ${t.audioId} IS NOT NULL AND ${t.mediaId} IS NULL)`,
+    ),
+    check(
+      'event_announcements_mode',
+      sql`(${t.mode} = 'at' AND ${t.at} IS NOT NULL AND ${t.everyMin} IS NULL) OR (${t.mode} = 'every' AND ${t.everyMin} IN (15, 20, 30, 60) AND ${t.fromAt} IS NOT NULL AND ${t.untilAt} > ${t.fromAt})`,
+    ),
+  ],
+)
+
+// One compiled desired state per (event, version).
+export const eventBuilds = pgTable(
+  'event_builds',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    eventId: bigint('event_id', { mode: 'number' })
+      .notNull()
+      .references(() => events.id),
+    version: integer('version').notNull(),
+    plan: jsonb('plan').notNull(),
+    status: text('status').notNull().default('pending'),
+    lastError: text('last_error'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('event_builds_event_idx').on(t.eventId, t.version),
+    check('event_builds_status', inList(t.status, BUILD_STATUSES)),
+  ],
+)
+
+// Every AzuraCast playlist the events worker creates. The intent row is
+// committed BEFORE the create (playlist_id null), then filled in. The music
+// library sync treats every non-null playlist_id here as foreign.
+export const eventRegistry = pgTable(
+  'event_registry',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    eventId: bigint('event_id', { mode: 'number' })
+      .notNull()
+      .references(() => events.id),
+    buildId: bigint('build_id', { mode: 'number' })
+      .notNull()
+      .references(() => eventBuilds.id),
+    role: text('role').notNull(),
+    intentName: text('intent_name').notNull(),
+    playlistId: integer('playlist_id'),
+    scheduleIds: integer('schedule_ids')
+      .array()
+      .notNull()
+      .default(sql`'{}'::int[]`),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    deletedAt: ts('deleted_at'),
+  },
+  (t) => [
+    index('event_registry_event_idx').on(t.eventId),
+    uniqueIndex('event_registry_playlist_uq')
+      .on(t.playlistId)
+      .where(sql`${t.playlistId} IS NOT NULL`),
+    check('event_registry_role', inList(t.role, REGISTRY_ROLES)),
+  ],
+)
+
+// Cache of `EFM Stingers/` (stinger_sync, every 6 h); the announcement
+// picker reads it.
+export const eventStingers = pgTable('event_stingers', {
+  mediaId: integer('media_id').primaryKey(),
+  path: text('path').notNull(),
+  title: text('title').notNull(),
+  lengthS: integer('length_s').notNull(),
+  refreshedAt: ts('refreshed_at').notNull().defaultNow(),
+})
+
+// Same shape as `jobs`; claimed ONLY by the events worker.
+export const eventJobs = pgTable(
+  'event_jobs',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    kind: text('kind').notNull(),
+    payload: jsonb('payload').notNull().default(sql`'{}'::jsonb`),
+    status: jobStatusEnum('status').notNull().default('queued'),
+    runAfter: ts('run_after').notNull().defaultNow(),
+    attempts: integer('attempts').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(8),
+    lockedAt: ts('locked_at'),
+    lastError: text('last_error'),
+    dedupeKey: text('dedupe_key'),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    updatedAt: ts('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('event_jobs_ready_idx').on(t.status, t.runAfter),
+    uniqueIndex('event_jobs_dedupe_uq').on(t.dedupeKey),
+  ],
 )

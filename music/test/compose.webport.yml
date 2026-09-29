@@ -5,3 +5,7 @@ services:
   music-web:
     ports: !override
       - "127.0.0.1:${MUSIC_TEST_WEB_PORT}:3000"
+  # v0.5.0: the events site on the next port up.
+  events-web:
+    ports: !override
+      - "127.0.0.1:${MUSIC_TEST_EVENTS_WEB_PORT:-6197}:3000"
