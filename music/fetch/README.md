@@ -5,7 +5,7 @@ The SoundCloud import service for the EFM Music Portal. This is phase **P5**, an
 It takes one request at a time from a spool directory. For each request it validates the URL, resolves a shortlink if there is one, runs a pinned **yt-dlp**, checks the result, and writes the raw media under `/staging/fetch/<uuid>/`. **Transcoding and probing happen in `music-probe`, not here.**
 
 - Language: Python standard library plus `yt-dlp`, with no other packages.
-- Idle memory: about **14.6 MiB** (cgroup) and 23 MB RSS, measured with `docker stats` on the hardened runtime container.
+- Idle memory: about **15–20 MiB** (cgroup) and 22 MiB RSS, measured with `docker stats` on the hardened runtime container (portal v0.4.0; the same figures as the portal CHANGELOG).
 - Secrets, database access and inbound ports: none.
 
 ## Spool protocol
@@ -29,7 +29,9 @@ It takes one request at a time from a spool directory. For each request it valid
 - fetch claims a request with `rename`, and reads it with `O_NOFOLLOW` and a size cap.
 - The job directory must be **new**. If it already exists, fetch returns `bad_request` and leaves the directory alone.
 - On any error, fetch removes the job directory it created.
-- On startup, a leftover claim becomes an `interrupted` result, and its partial directory is removed.
+- On startup, a leftover claim becomes an `interrupted` result, and its partial directory is removed. **Unless the job already has a result** (portal v0.4.1: a crash between writing `out/<uuid>.json` and unlinking the claim): then only the claim goes, and the result and its download stand.
+- **Heartbeat** (portal v0.4.1): a thread refreshes `out/.alive` every 30 s (created with `O_NOFOLLOW`), including while a job runs. The worker writes no request while it is missing or older than 90 s, so links wait for a stopped music-fetch instead of each burning the 15-min result timeout. The id listers ignore the name.
+- **Spool sweep** (portal v0.4.1): with the staging sweep (every 10 min, the same `--staging-ttl-hours`, default 24 h), results in `out/` and `.tmp-*` files a crash left in `in/`, `claimed/` and `out/` are unlinked once older than the TTL (never followed; requests and the heartbeat are never swept).
 - **Release markers** (portal v0.4.0): before each job and when idle, fetch handles `in/<uuid>.release`. It unlinks the marker (never following a link; the content is never read) and deletes `/staging/fetch/<uuid>/` only if that job has a result in `out/` and is not claimed. The marker only names a finished job, and `<uuid>` is a v4 UUID, so it cannot reach outside the staging directory. The 24 h sweep stays as the backstop.
 
 **An `ok` result:**
@@ -209,37 +211,33 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop A
 - Submit `probe_fetch` to `/spool/probe/in-worker` only.
 - Write `in/<uuid>.release` once the probe result is collected (portal v0.4.0).
 
-## Host step (not applied by this repo, REQUIRED before music-fetch starts): DOCKER-USER and INPUT rules for fetch-egress
+## Host step (not applied by this repo, REQUIRED before music-fetch starts): the botvps egress guard
 
-These rules belong to P0b and Deploy-1, next to the worker-egress rules. **Both the DOCKER-USER and the INPUT rules are required, not optional:** yt-dlp's own connections (SoundCloud's API and CDN) do not go through the in-process connect-time guard, which covers only the shortlink and artwork requests. Apply them on botvps, as root, and verify them (below and in the portal's `music/README.md`, "Pre-deploy: fetch-egress host rules") **before music-fetch is started**:
+yt-dlp's own connections (SoundCloud's API and CDN) do not go through the in-process connect-time guard, which covers only the shortlink and artwork requests, so the host's egress guard is the only thing between a steered yt-dlp and private, tailnet or metadata addresses. It is **not** a set of hand-typed rules any more: on botvps it is the systemd unit **`efm-music-egress.service`** (script `/usr/local/sbin/efm-music-egress.sh`, revision 3.1, 2026-09-29) plus **`efm-music-egress-check.timer`**, which re-checks every 5 min and rebuilds only on drift. The deployed script is kept in the vault (the portal Operations note and its tailnet-fix plan attachment). It keeps three chains, each rule matched by ingress bridge **and** source address:
 
-```sh
-SUBNET=172.31.251.0/24
-# Forwarded traffic from fetch containers to private, CGNAT and link-local/metadata space
-for NET in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16; do
-  iptables -I DOCKER-USER -s "$SUBNET" -d "$NET" -j DROP
-done
-# Traffic addressed to the HOST itself (the bridge gateway 172.31.251.1, the droplet's public IP,
-# docker0 and so on) goes through INPUT, not FORWARD, so DOCKER-USER never sees it. Block it too:
-iptables -I INPUT -i br-efm-fetch -j DROP
-```
+- `EFM-MUSIC-EGRESS` (first in `DOCKER-USER`): drops 10/8, 172.16/12, 192.168/16, 100.64/10 and 169.254/16 from `br-efm-fetch` (172.31.251.0/24), from worker-egress and from music-web;
+- `EFM-MUSIC-TAILNET` (first in `mangle FORWARD`): drops the same sources routed out `tailscale+` (Tailscale's `ts-forward` accepts container → tailnet traffic before `DOCKER-USER`);
+- `EFM-MUSIC-INPUT` (first in `INPUT`): drops NEW connections to the host itself from `br-efm-fetch`, the worker-egress and `music-int` bridges and music-web.
 
-- **DNS.** Container DNS goes to Docker's embedded resolver at 127.0.0.11, inside the container's namespace. If the droplet's upstream resolver is itself an RFC1918 or CGNAT address, add an `ACCEPT` for exactly that resolver's IP and port 53 **above** the DROP rules, then re-check. DigitalOcean's default resolvers (67.207.67.2 and .3) are public.
+**Before music-fetch starts**, run the four pre-deploy checks in the portal's `music/README.md` ("Pre-deploy: the host egress guard") and `systemctl is-enabled efm-music-egress.service efm-music-egress-check.timer`.
+
+- **DNS.** Container DNS goes to Docker's embedded resolver at 127.0.0.11, inside the container's namespace. If the droplet's upstream resolver is itself an RFC1918 or CGNAT address, the guard needs an `ACCEPT` for exactly that resolver's IP and port 53 above its drops. DigitalOcean's default resolvers (67.207.67.2 and .3) are public.
 - **IPv6.** The network is created with `enable_ipv6: false`, so no ip6tables rules are needed.
-- **Persistence.** DOCKER-USER survives Docker restarts but **not reboots**. Persist these rules with whatever mechanism P0b uses for the worker-egress rules, and record them in the vault.
-- **Verification** (plan §6 P5, "egress to RFC1918 and metadata is blocked"):
+- **Verification** (plan §6 P5, "egress to RFC1918, the tailnet and metadata is blocked"), after `up -d`:
 
 ```sh
 docker exec efm-music-music-fetch-1 python -I -c '
 import socket
-for h,p in [("169.254.169.254",80),("10.0.0.1",80),("172.31.251.1",22),("192.168.1.1",80),("100.100.100.100",53),("PUBLIC_IP",22),("1.1.1.1",443)]:
+for h,p in [("169.254.169.254",80),("10.0.0.1",80),("172.31.251.1",22),("192.168.1.1",80),
+            ("100.100.100.100",53),("TAILNET_PEER",22),("PUBLIC_IP",22),("1.1.1.1",443)]:
     s=socket.socket(); s.settimeout(3)
     try: s.connect((h,p)); print(h,"OPEN")
-    except OSError as e: print(h,"blocked:",type(e).__name__)
+    except TimeoutError: print(h,"blocked (timeout)")
+    except OSError as e: print(h,"REACHED:",type(e).__name__)
     finally: s.close()'
 ```
 
-Replace `PUBLIC_IP` with the droplet's own public address (the INPUT rule's case). Only `1.1.1.1` may print `OPEN`.
+Replace `PUBLIC_IP` with the droplet's own public address (the INPUT case) and `TAILNET_PEER` with the 100.x address of another node on the tailnet. Only `1.1.1.1` may print `OPEN`, and every other line must say **`blocked (timeout)`**: `REACHED: ConnectionRefusedError` means the packet got to a host that answered, so it is a failure too. On any failure: stop music-fetch, turn the kill switch off, `systemctl restart efm-music-egress`, re-verify.
 
 ## Version pins and the monthly bump
 
@@ -289,7 +287,7 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,uid=1000,gid=1000 --cap-drop A
 |---|---|
 | `test_urls.py` | Every accept and reject case. Includes `soundcloud.com.evil.com`, `evil.com/soundcloud.com`, `@` tricks, ports, IDN, punycode and fullwidth lookalikes, IP literals, encodings, query-parameter trickery, sets, likes, reposts and secret tokens. |
 | `test_shortlink.py` | A **local redirect server**: chains, a relative `Location`, exactly 5 redirects allowed and a 6th never requested, and foreign, userinfo, port, http, metadata, IDN and api hosts refused before they are requested. Also covers 404, 200, 500, a timeout, and the connect-time public-IP guard (the production opener refuses `localhost`). |
-| `test_spool_e2e.py` | The spool protocol end to end with `stub_ytdlp.py`, which emits fixture files. Covers every container type, timeout, too_large (directory cap, RLIMIT and yt-dlp's message), too_long (stopped early), playlists and foreign extractors, magic-byte rejects (HTML, HLS, MPEG-TS, mismatch, symlink, hard link), the artwork allowlist (no request made) and artwork skips, request-document validation, no clobbering, recovery, SIGTERM abort, grandchild kill, the staging sweep, and release markers (portal v0.4.0). The stub also asserts the **exact pinned flags**. |
+| `test_spool_e2e.py` | The spool protocol end to end with `stub_ytdlp.py`, which emits fixture files. Covers every container type, timeout, too_large (directory cap, RLIMIT and yt-dlp's message), too_long (stopped early), playlists and foreign extractors, magic-byte rejects (HTML, HLS, MPEG-TS, mismatch, symlink, hard link), the artwork allowlist (no request made) and artwork skips, request-document validation, no clobbering, recovery (and a claim whose job was already answered, portal v0.4.1), SIGTERM abort, grandchild kill, the staging sweep and the spool sweep (old results, `.tmp-*`), the heartbeat, and release markers (portal v0.4.0). The stub also asserts the **exact pinned flags**. |
 | `test_runner.py` | The pinned argv, the directory-cap kill, the timeout kill, the RLIMIT_FSIZE backstop, the bounded output tail, and stdin being closed. |
 | `test_artwork.py` | The host allowlist and the capped, redirect-free download. |
 | `test_magic.py` | Allowed and rejected containers. |

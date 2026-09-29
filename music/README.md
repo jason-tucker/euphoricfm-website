@@ -120,20 +120,21 @@ Owner request: "Direct SoundCloud links auto-download the MP3 plus info, which t
 6. The worker collects the result like an upload's: the item becomes `pending` with the pre-fill, the upload row is charged the MP3's size, and it writes `/spool/fetch/in/<id>.release`: music-fetch deletes the raw download at once. A rejected link gets the marker too; for a job music-fetch has not started, the marker cancels it, and for the job it is fetching, the marker waits for that job's result. The worker re-issues the markers of the last 28 h's finished SoundCloud items at start-up and every 30 min, so a marker lost to a restart only delays the cleanup.
 7. The member edits the fields and submits with the rights attestation. Reviewers see **From SoundCloud (<license>)** and the source URL (review queue, item page, batch page, the ticket card).
 
-**Limits.** Per member: 10 attempts a minute, `caps.fetchesPerUserPerDay` links a day (default 20, Admin → Settings; every link counts), 3 in progress. Globally: one link at a time (a link waits at most 3 h for its turn). Duration 30 s – 24 min (the fit ladder's floor), media ≤ 60 MiB (music-fetch). music-fetch gives up after 10 min (`sc_timeout`); the worker gives up 15 min after its request with no answer (`sc_fetch_unanswered`, alerted). Every failure code has a message (`components/messages.ts`, `sc_*`).
+**Limits.** Per member: 10 attempts a minute, `caps.fetchesPerUserPerDay` links a day (default 20, Admin → Settings; every link counts, a failed one too, except one the portal itself never sent: `sc_disabled` / `sc_queue_timeout`, v0.4.1), 3 in progress. Globally: one link at a time (a link waits at most 3 h for its turn; the next queued link is woken as soon as the current one leaves *fetching*). A member can **cancel** a link that is waiting, fetching or converting (the card's *Cancel*, `POST /api/items/:id/withdraw`, v0.4.1): its 60 MiB reserve is released at once and music-fetch is told to drop the job. Duration 30 s – 24 min (the fit ladder's floor), media ≤ 60 MiB (music-fetch). music-fetch gives up after 10 min (`sc_timeout`); the worker gives up 15 min after its request with no answer (`sc_fetch_unanswered`, alerted). Every failure code has a message (`components/messages.ts`, `sc_*`).
 
 **Turn it off quickly** (kill switch), any of:
 
-- Admin → Settings → untick **Allow "Add from a SoundCloud link"** → Save. New links get `503 sc_disabled`; queued links are rejected instead of being fetched; songs already fetched are unaffected.
+- Admin → Settings → untick **Allow "Add from a SoundCloud link"** → Save. New links get `503 sc_disabled` and the submit page shows one muted line instead of the box. **Queued links wait** (v0.4.1; they were rejected before): each re-checks every 60 s and goes as soon as the switch is on again, or is rejected `sc_queue_timeout` once it has waited 3 h (neither counts against the daily cap). So OFF is a pause of at most 3 h for links already queued, not a cancel. Links already sent to music-fetch and songs already fetched are unaffected.
 - The same from the database (owner): `INSERT INTO settings (key, value) VALUES ('soundcloud_fetch_enabled', 'false') ON CONFLICT (key) DO UPDATE SET value = 'false';` (turn it on again with `'true'`, or delete the row).
-- Stop the container: `docker compose -p efm-music stop music-fetch`. Links already sent are rejected after 15 min (`sc_fetch_unanswered`); use the setting too, or new links pile up in the queue until then.
+- Stop the container: `docker compose -p efm-music stop music-fetch`. v0.4.1: the worker checks music-fetch's heartbeat (`/spool/fetch/out/.alive`, refreshed every 30 s) before it writes a request, so with the container stopped **queued links wait** (no request is written, one alert an hour: *music-fetch is not running*) and go once it is back, or time out after 3 h. A link already sent before the stop is still rejected 15 min after its request (`sc_fetch_unanswered`). Use the setting too if new links should not be accepted meanwhile.
 
 **Operations.**
 
-- **Egress.** `music-fetch` is alone on `fetch-egress` (172.31.251.0/24, bridge `br-efm-fetch`, no IPv6) and on no other network, so it cannot reach `music-db` or any container. yt-dlp talks to SoundCloud's API and CDN **directly** (only the shortlink and artwork requests go through music-fetch's in-process address guard), so the host rules are the only guard for yt-dlp's own connections, and they are **required**: see [Pre-deploy: fetch-egress host rules](#pre-deploy-fetch-egress-host-rules-v040-required). music-fetch must not run on a host where they are missing.
+- **Egress.** `music-fetch` is alone on `fetch-egress` (172.31.251.0/24, bridge `br-efm-fetch`, no IPv6) and on no other network, so it cannot reach `music-db` or any container. yt-dlp talks to SoundCloud's API and CDN **directly** (only the shortlink and artwork requests go through music-fetch's in-process address guard), so the host rules are the only guard for yt-dlp's own connections, and they are **required**: see [Pre-deploy: the host egress guard](#pre-deploy-the-host-egress-guard-revision-31-required). music-fetch must not run on a host where they are missing.
 - **The monthly yt-dlp bump** (next review 2026-10-27; sooner for a yt-dlp security release or when SoundCloud extraction breaks): follow `fetch/README.md` → "Version pins and the monthly bump" (new version and wheel hash from PyPI, OSV check, `requirements.txt`, re-pin the base image digest, rebuild, run the test stage under the runtime constraints, check the pinned flags offline, `fetch/CHANGELOG.md`). Dependabot opens monthly PRs for `music/fetch` (pip + docker). A bump ships like any release: CI tests it and pushes `fetch-<sha7>`; set `MUSIC_TAG`, `up -d`.
 - **Memory** (v0.4.0 measurements in `CHANGELOG.md`): `mem_limit: 160m`. Check `memory.peak` of the container after the first real fetches (only a loopback HLS origin was measured).
-- **Logs.** `docker compose -p efm-music logs music-fetch`: one line per job (`<uuid> ok mp4 <bytes> <s>` or `<uuid> error <code>`), `released`, `swept`. The worker alerts on `sc_fetch_unanswered`.
+- **Logs.** `docker compose -p efm-music logs music-fetch`: one line per job (`<uuid> ok mp4 <bytes> <s>` or `<uuid> error <code>`), `released`, `swept`. The worker alerts on `sc_fetch_unanswered` and (at most hourly) on a missing music-fetch heartbeat.
+- **Spool housekeeping** (v0.4.1): music-fetch and the probe remove results older than 24 h from their `out/` directories and `.tmp-*` files a crash left behind (the worker reads every result within minutes of its request). The probe takes the in-worker inbox oldest first, with `finalize` / `cleanup_final` ahead of SoundCloud conversions, so an approved song's ingest never waits behind a conversion queue; a finalize that still times out (30 min) is withdrawn or cleaned up after, so nothing is left in `/staging/final`.
 
 ## Unreleased songs: the UNRELEASED folder import (v0.3.6)
 
@@ -170,7 +171,7 @@ docker compose -p efm-music up -d
 
 - **Roll back:** set the previous `MUSIC_TAG`, then `up -d`.
 - **Images:** CI pushes `ghcr.io/jason-tucker/euphoricfm-website-music:{web,worker,probe,fetch}-<sha7>` and `-latest`. Only images that passed `test/run.sh` are pushed.
-- **v0.4.0:** `compose.yml` creates `fetch-egress` itself (172.31.251.0/24): check that the subnet is free on botvps first (`docker network inspect`). **Do not `up -d` v0.4.0 before the [fetch-egress host rules](#pre-deploy-fetch-egress-host-rules-v040-required) are in place and verified.**
+- **v0.4.0:** `compose.yml` creates `fetch-egress` itself (172.31.251.0/24): check that the subnet is free on botvps first (`docker network inspect`). **Do not `up -d` v0.4.0 or later before the [host egress guard](#pre-deploy-the-host-egress-guard-revision-31-required) is in place and verified.**
 - **Networks:** `efm-music-hooks` must exist first. The main session creates it at P1-net/Deploy-1:
 
   ```sh
@@ -179,31 +180,36 @@ docker compose -p efm-music up -d
 
   `efm-public-net` already exists.
 
-### Pre-deploy: fetch-egress host rules (v0.4.0, REQUIRED)
+### Pre-deploy: the host egress guard (revision 3.1, REQUIRED)
 
-`music-fetch` is the only container with internet egress, and yt-dlp inside it connects to whatever SoundCloud's API, a redirect or a playlist names (only shortlink resolution and the artwork request go through music-fetch's own public-address check). Two host rules keep a steered or compromised yt-dlp away from everything that is not the public internet; both are **required before music-fetch starts**, and a deploy that cannot show them stops here (leave `soundcloud_fetch_enabled` false and `music-fetch` stopped).
+`music-fetch` is the only container with internet egress, and yt-dlp inside it connects to whatever SoundCloud's API, a redirect or a playlist names (only shortlink resolution and the artwork request go through music-fetch's own public-address check). The host's egress guard keeps a steered or compromised yt-dlp, and the worker and web, away from everything that is not the public internet. It is **required before `up -d`**; a deploy that cannot show it stops here (leave `soundcloud_fetch_enabled` false and `music-fetch` stopped). This repo does not install or persist any iptables rule: the guard is `efm-music-egress.service` plus `efm-music-egress-check.timer` on botvps (script `/usr/local/sbin/efm-music-egress.sh`; the deployed text is kept in the vault's Operations note and its tailnet-fix plan attachment). What it keeps:
 
-1. **DOCKER-USER** (forwarded traffic): `efm-music-egress.service` runs `/usr/local/sbin/efm-music-egress.sh`, whose `EFM-MUSIC-EGRESS` chain DROPs 10/8, 172.16/12, 192.168/16, 100.64/10 and 169.254/16 from `172.31.251.0/24` (and from worker-egress and music-web; see "Host firewall on botvps" below).
-2. **INPUT** (traffic to the host itself: the bridge gateway `172.31.251.1`, the droplet's public IP, `docker0`, any host-bound service; DOCKER-USER never sees it): the same script keeps an `EFM-MUSIC-INPUT` chain, jumped from `INPUT`, with `-i br-efm-fetch -m conntrack --ctstate NEW -j DROP`. Applied on botvps 2026-09-28; the interface need not exist yet. Container DNS is unaffected: Docker's embedded resolver answers inside the container's own namespace and forwards from the host.
+1. **`EFM-MUSIC-EGRESS`**, jumped first from `DOCKER-USER` (forwarded traffic): drops 10/8, 172.16/12, 192.168/16, 100.64/10 and 169.254/16 from `fetch-egress` (172.31.251.0/24, `br-efm-fetch`), `worker-egress` (172.31.252.0/24) and music-web (pinned **172.31.250.10** on `efm-music-hooks`; the rest of that /24, tickets-web, stays reachable). Each rule matches the **ingress bridge and the source address**, so a multi-homed container cannot `bind()` its way around it.
+2. **`EFM-MUSIC-TAILNET`**, jumped first from `mangle FORWARD`: drops the same sources when they are routed out `tailscale+`. Tailscale's own `ts-forward` chain ACCEPTs container → tailnet traffic before `DOCKER-USER` is consulted, so the filter-table rules alone never saw it.
+3. **`EFM-MUSIC-INPUT`**, jumped first from `INPUT` (traffic addressed to the host itself: a bridge gateway, the droplet's public IP, `docker0`, any host-bound service; `DOCKER-USER` never sees it): drops NEW connections from the `br-efm-fetch`, worker-egress and `music-int` bridges and from music-web. Container DNS is unaffected (Docker's embedded resolver answers inside the container's own namespace).
 
-**Verify, before `up -d`** (root on botvps):
+**The check timer** runs `efm-music-egress.sh check` every 5 min. It rebuilds the chains only on drift (a jump missing or not first, a stale `br-<id>` after a network was recreated, a partial chain), never starts Docker, and leaves the rules alone when Docker is unreachable. After recreating `worker-egress`, `efm-music-hooks` or `music-int`, the bridge-name rules are stale until its next pass (the source-address rules still hold): `systemctl restart efm-music-egress` right away.
+
+**Accepted residual** (tracked in the vault's Open Issues): the worker can still reach the host through its on-link `efm-public-net` gateway (172.27.0.1; a shared bridge whose address is not pinned).
+
+**Verify, before `up -d`** (root on botvps), the four checks:
 
 ```sh
-iptables -S EFM-MUSIC-EGRESS | grep -c -- '-s 172.31.251.0/24 .* -j DROP'   # 5
-iptables -S EFM-MUSIC-INPUT | grep -- '-i br-efm-fetch'                       # present
-iptables -S INPUT | grep -c -- '-j EFM-MUSIC-INPUT'                           # 1
-systemctl is-enabled efm-music-egress.service                                 # enabled
+iptables -S DOCKER-USER 1                              # the jump to EFM-MUSIC-EGRESS, first
+iptables -S INPUT 1                                    # the jump to EFM-MUSIC-INPUT, first
+iptables -t mangle -S FORWARD 1                        # the jump to EFM-MUSIC-TAILNET, first
+iptables-save | grep -cE 'br-efm-missing|192\.0\.2\.0/32'   # 0 (no inert stand-in rules)
+systemctl is-enabled efm-music-egress.service efm-music-egress-check.timer   # enabled, enabled
 ```
 
-**Verify, after `up -d`** (the subnet and bridge now exist): `docker network inspect efm-music_fetch-egress --format '{{(index .IPAM.Config 0).Subnet}} {{index .Options "com.docker.network.bridge.name"}}'` prints `172.31.251.0/24 br-efm-fetch`, then run the connect probe from `fetch/README.md` ("Only `1.1.1.1` may print `OPEN`"), adding the droplet's public IP (`("<public IP>",22)`) to its list. Anything else `OPEN` → `docker compose -p efm-music stop music-fetch`, set the kill switch, fix the rules, re-verify. Re-run both checks after every botvps reboot or Docker upgrade until the unit has been seen to restore them. Record the result in the vault's botvps note.
+**Verify, after `up -d`** (the subnet and bridge now exist): `docker network inspect efm-music_fetch-egress --format '{{(index .IPAM.Config 0).Subnet}} {{index .Options "com.docker.network.bridge.name"}}'` prints `172.31.251.0/24 br-efm-fetch`, then run the connect probe from `fetch/README.md` ("Host step"), which includes the droplet's public IP, `100.100.100.100:53` and a tailnet peer. Only `1.1.1.1` may connect; every other target must **time out**: a refused connection (`ConnectionRefusedError`) means the packet reached a host and counts as a failure. Anything else → `docker compose -p efm-music stop music-fetch`, set the kill switch, `systemctl restart efm-music-egress`, re-verify. Re-run both checks after every botvps reboot or Docker upgrade, and record the result in the vault's botvps note.
 
-### DOCKER-USER egress rules (applied on botvps by `efm-music-egress.service`, not by this repo)
+### Host egress guard and the compose pins
 
-`compose.yml` pins `worker-egress` to **172.31.252.0/24** (a plain bridge, not internal). On botvps the persistent systemd unit **`efm-music-egress.service`** installs the DOCKER-USER guard for that fixed subnet, and for **172.31.251.0/24** (`fetch-egress`, P5): traffic from those subnets to RFC1918 (10/8, 172.16/12, 192.168/16), 169.254.0.0/16 (cloud metadata) and 100.64.0.0/10 (CGNAT / Tailscale) is dropped, with established return traffic allowed first. This repo does not apply or persist any iptables rule.
+`compose.yml` pins what the guard targets: `worker-egress` **172.31.252.0/24**, `fetch-egress` **172.31.251.0/24** with bridge name `br-efm-fetch`, and music-web's `ipv4_address` **172.31.250.10** on `efm-music-hooks`. Change any of them only together with `efm-music-egress.sh`; otherwise that container runs without the guard.
 
-- Change the `worker-egress` subnet only together with that unit; otherwise the worker runs without the guard.
-- The worker reaches tickets-web over `efm-public-net`, whose traffic stays on its own bridge and is not affected.
-- The test harness (`test/compose.test.yml`) overrides `worker-egress` and `fetch-egress` without a fixed subnet or bridge name, so a test stack never takes the production range, and runs `music-fetch` with `network_mode: none`.
+- The worker reaches tickets-web over `efm-public-net`, whose traffic stays on its own bridge and is not affected (see the accepted residual above).
+- The test harness (`test/compose.test.yml`) overrides `worker-egress` and `fetch-egress` without a fixed subnet or bridge name, drops music-web's address pin, and runs `music-fetch` with `network_mode: none`, so a test stack never takes the production ranges.
 
 ## Tests
 
@@ -244,7 +250,4 @@ The mocks in `test/mocks/server.mjs` stand in for Discord OAuth and the member A
 
 ### Host firewall on botvps (efm-music-egress.service)
 
-`/usr/local/sbin/efm-music-egress.sh` (run by `efm-music-egress.service` after docker) keeps two chains:
-- `EFM-MUSIC-EGRESS` (from `DOCKER-USER`): drops RFC1918, 169.254.0.0/16 and 100.64.0.0/10 from worker-egress (172.31.252.0/24), fetch-egress (172.31.251.0/24) and music-web (pinned **172.31.250.10** on `efm-music-hooks`; its own /24 — tickets-web — stays reachable).
-- `EFM-MUSIC-INPUT` (from `INPUT`): drops NEW connections from `br-efm-fetch` to the host itself.
-Keep the compose pins (`worker-egress`/`fetch-egress` subnets, `br-efm-fetch` bridge name, music-web `ipv4_address`) in sync with that script.
+Revision 3.1 (2026-09-29): three chains (`EFM-MUSIC-EGRESS` from `DOCKER-USER`, `EFM-MUSIC-TAILNET` from `mangle FORWARD`, `EFM-MUSIC-INPUT` from `INPUT`), each rule matched by ingress bridge and source, and the 5-min `efm-music-egress-check.timer`. Details, the checks and the accepted residual: [Pre-deploy: the host egress guard](#pre-deploy-the-host-egress-guard-revision-31-required). Keep the compose pins (`worker-egress` / `fetch-egress` subnets, the `br-efm-fetch` bridge name, music-web's `ipv4_address`) in sync with that script.

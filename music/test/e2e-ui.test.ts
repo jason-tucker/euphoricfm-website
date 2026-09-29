@@ -102,6 +102,13 @@ describe.skipIf(!E2E_UI())('portal pages render (built server, mocked externals)
     expect(back.html).toContain('Sign in with Discord to continue to ask for a song’s removal.')
     expect(back.html).toContain('name="next" value="/library?intent=remove"')
     expect((await page(null, `/?next=${encodeURIComponent('https://evil.example/')}`)).html).not.toContain('name="next"')
+    // v0.4.1 (A5): share metadata and a robots.txt that backs the noindex
+    expect(home.html).toContain('<title>EuphoricFM Music Portal</title>')
+    expect(home.html).toContain('property="og:image" content="https://info.euphoric.fm/images/og.png"')
+    const robots = await req(null, '/robots.txt')
+    expect(robots.status).toBe(200)
+    const txt = await robots.text()
+    for (const d of ['/api/', '/review', '/admin', '/dashboard', '/submit']) expect(txt).toContain(`Disallow: ${d}`)
   })
 
   it('member flow: dashboard, submit, batch detail; staff notes hidden; no review/admin', async () => {
