@@ -1,14 +1,13 @@
 // Against the running music-web container + mock Discord / tickets.
 import { describe, expect, it } from 'vitest'
+import { idMaker, REVIEWER_ROLE } from './helpers/e2e'
 import { E2E } from './helpers/env'
 import { login, loginOk, mockUser } from './helpers/auth'
 import { ageMemberCache, ownerSql } from './helpers/db'
 import { control, freshIp, Jar, req } from './helpers/http'
 
-const REVIEWER_ROLE = '1144462744456794153'
 const OWNER = '117501528641634310'
-let seq = 0
-const newId = () => `4${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('4')
 
 async function sessionsOf(discordId: string) {
   const r = await ownerSql()`SELECT count(*)::int AS n FROM session s JOIN "user" u ON u.id = s."userId" WHERE u.discord_id = ${discordId}`

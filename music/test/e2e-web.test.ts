@@ -1,6 +1,7 @@
 // Headers, CSRF, body caps and tus against the built music-web container.
 import { describe, expect, it } from 'vitest'
 import { buildCsp } from '@/server/http/csp'
+import { idMaker } from './helpers/e2e'
 import { E2E } from './helpers/env'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
@@ -9,8 +10,7 @@ import { freshIp, req, reqFresh } from './helpers/http'
 import { tusCreate, tusHead, tusPatch, tusUpload } from './helpers/tus'
 import { waitFor } from './helpers/wait'
 
-let seq = 0
-const newId = () => `5${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('5')
 
 describe.skipIf(!E2E())('security headers on the built server', () => {
   it('pages carry exactly the plan CSP with a per-request nonce that matches every script tag', async () => {

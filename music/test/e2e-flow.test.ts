@@ -4,6 +4,7 @@ import { createHmac, randomUUID } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { idMaker, memberOf, REVIEWER_ROLE, settledItem } from './helpers/e2e'
 import { E2E } from './helpers/env'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
@@ -12,9 +13,7 @@ import { control, fetchRetrySocket, Jar, req } from './helpers/http'
 import { tusUpload } from './helpers/tus'
 import { waitFor } from './helpers/wait'
 
-const REVIEWER_ROLE = '1144462744456794153'
-let seq = 0
-const newId = () => `6${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('6')
 
 type Item = { id: number; status: string; title: string | null; probeError: string | null; hasCover: boolean }
 
@@ -31,12 +30,7 @@ async function addFile(jar: Jar, batchId: number, fixture: string): Promise<numb
   return ((await r.json()) as { id: number }).id
 }
 
-async function settled(jar: Jar, itemId: number): Promise<Item> {
-  return waitFor(async () => {
-    const it = (await (await req(jar, `/api/items/${itemId}`)).json()) as Item
-    return it.status !== 'probing' ? it : null
-  }, 45_000)
-}
+const settled = (jar: Jar, itemId: number) => settledItem<Item>(jar, itemId, 45_000)
 
 function sign(body: string, deliveryId: string, t = Math.floor(Date.now() / 1000)) {
   const secret = process.env.TICKETS_WEBHOOK_SECRET!
@@ -74,7 +68,7 @@ describe.skipIf(!E2E())('submission flow through the real containers', () => {
   beforeAll(async () => {
     ownerId = newId()
     owner = await loginOk({ id: ownerId })
-    await control('/__mock/tickets/member', { id: ownerId, member: true })
+    await memberOf(ownerId)
     other = await loginOk({ id: newId() })
     reviewer = await loginOk({ id: newId(), roles: [REVIEWER_ROLE] })
     batchId = await createBatch(owner)
@@ -222,7 +216,7 @@ describe.skipIf(!E2E())('submission flow through the real containers', () => {
   it('self-approval is allowed but flagged (after submit; never on the reviewer’s own draft)', async () => {
     const selfId = newId()
     const jar = await loginOk({ id: selfId, roles: [REVIEWER_ROLE] })
-    await control('/__mock/tickets/member', { id: selfId, member: true })
+    await memberOf(selfId)
     const b = await createBatch(jar)
     const item = await addFile(jar, b, 'raw35.mp3')
     await settled(jar, item)
@@ -235,7 +229,7 @@ describe.skipIf(!E2E())('submission flow through the real containers', () => {
   it('a public comment on a draft is stored but queued only at submit, then reaches the ticket', async () => {
     const id = newId()
     const jar = await loginOk({ id })
-    await control('/__mock/tickets/member', { id, member: true })
+    await memberOf(id)
     const b = await createBatch(jar)
     const item = await addFile(jar, b, 'raw35c.mp3')
     const body = `draft note ${randomUUID()}`

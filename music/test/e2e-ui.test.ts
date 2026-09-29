@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
+import { idMaker } from './helpers/e2e'
 import { has } from './helpers/env'
 import { fxBuf } from './helpers/fixtures'
 import { Jar, req } from './helpers/http'
@@ -20,8 +21,7 @@ const E2E_UI = () => has('E2E_WEB_URL', 'MOCKS_CONTROL', 'TEST_OWNER_DATABASE_UR
 const OWNER = '117501528641634310'
 // The web may run in the Portal-Test prefix profile (P4 harness sets it).
 const ROOT = process.env.PORTAL_TEST_PREFIX ?? '' // PORTAL_OWNER_IDS in test/compose.test.yml → admin
-let seq = 0
-const newId = () => `6${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('6')
 
 async function page(jar: Jar | null, path: string) {
   const r = await req(jar, path)

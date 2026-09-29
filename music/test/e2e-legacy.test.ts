@@ -6,17 +6,16 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
+import { idMaker, REVIEWER_ROLE } from './helpers/e2e'
 import { E2E } from './helpers/env'
 import { control, Jar, req } from './helpers/http'
 import { waitFor } from './helpers/wait'
 
 const PREFIX = 'Portal-Test/'
 const L = `${PREFIX}UNRELEASED-DO NOT ADD TO ROTATION`
-const REVIEWER_ROLE = '1144462744456794153' // seeded review + manage
 const ADMIN_ID = '117501528641634310'
 const RUN = Date.now().toString(36)
-let seq = 0
-const newId = () => `3${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('3')
 
 type Media = { id: number; path: string; title: string; playlists: { id: number }[] }
 type Plan = { id: string; status: string; plan?: { files: { mediaId: number; path: string; dest: string; playlistIds: number[]; action: string }[] } }
