@@ -24,6 +24,11 @@ export const site = {
     // excluded playlists below).
     breakTitle: 'Station break',
     breakArtist: 'EuphoricFM',
+    // Shown on the home card and /player/ while the station's API cannot be
+    // reached (network error, timeout, 5xx); the poller keeps retrying.
+    offline: 'Station offline — retrying',
+    // Toast when the browser refuses to start the stream.
+    playFailed: 'Couldn’t start the stream. Try again in a moment.',
     // Mirrors DEFAULT_EXCLUDE_PLAYLISTS in server/stats.mjs (ads + imaging);
     // test/site-build.test.mjs fails if the two lists drift apart.
     excludePlaylists: ['2Ads', '3EFM/Free Ads', '5Local Ads', 'Go Vote', '4EuphoricFM'],
@@ -93,6 +98,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       requested: 'Requested',
       history: 'Song history',
       empty: 'No requests right now',
+      offline: 'Recently played is back when the station is.',
       button: 'Request a song',
     },
     // Up next row on the player card (PlayerCard.astro). The next song shows
@@ -103,6 +109,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       choosing: 'Choosing the next song…',
       stationBreak: 'Station break next',
       live: 'Back to the playlist after the live set',
+      offline: 'Back when the station is',
     },
     about: {
       eyebrow: 'About',
@@ -186,7 +193,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
       items: [
         {
           q: 'How do I request a song?',
-          a: 'Press Request a song under the player, search the station library and pick a track. Requests join the queue and usually play within a few songs — you can see what’s waiting under Requested songs.',
+          a: 'Press Request a song under the player, search the station library and pick a track. Requests join the queue and usually play within a few songs — you can see what’s waiting on the Requested tab next to the player.',
         },
         {
           q: 'Can I listen on my in-game phone?',
@@ -220,9 +227,11 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     },
   },
 
-  // Music submission portal (music.euphoric.fm) — the homepage "Submit
-  // music" button links here, and info.euphoric.fm/music(/…) 302s here (see
+  // Music submission portal (music.euphoric.fm) — the portal's home (FAQ
+  // link, #music library links); info.euphoric.fm/music(/…) 302s here (see
   // the Caddyfile's "Music portal entry" block). No in-game special-casing.
+  // Every "Submit music" button goes to the upload page instead:
+  // shared/nav.json origins.portal + musicMenu.submit.path.
   music: {
     portalUrl: 'https://music.euphoric.fm/',
     button: 'Submit music',
@@ -365,7 +374,7 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     },
   },
 
-  // Euphoric FM Events — public /events page (src/pages/events.astro +
+  // EuphoricFM Events — public /events page (src/pages/events.astro +
   // EventsHero/EventsHowItWorks/EventsServices/EventStatus/EventInquiryModal).
   // EVERY user-visible string those components render comes from here, same
   // discipline as `stats` above. Discord payload copy (username, embed title/
@@ -374,46 +383,46 @@ San Andreas is not only our home; it's also the source of incredible talent wait
   events: {
     title: 'Events',
     description:
-      'Bring Euphoric FM to your next event — curated music and radio programming for grand openings, private parties, car meets, club nights, and more.',
+      'Bring EuphoricFM to your next event — curated music and radio programming for grand openings, private parties, car meets, club nights, and more.',
 
     hero: {
-      eyebrow: 'EUPHORIC FM EVENTS',
-      heading: 'Bring Euphoric FM to your next event.',
-      body: "Whether you're planning a grand opening, private party, car meet, club night, community gathering, or something entirely your own, Euphoric FM can help give your event its own sound. Work with our team to create curated music and radio programming tailored to your event.",
-      ctaPlan: 'Plan Your Event',
-      ctaListen: 'Listen to Euphoric FM',
+      eyebrow: 'EuphoricFM Events',
+      heading: 'Bring EuphoricFM to your next event.',
+      body: "Whether you're planning a grand opening, private party, car meet, club night, community gathering, or something entirely your own, EuphoricFM can help give your event its own sound. Work with our team to create curated music and radio programming tailored to your event.",
+      ctaPlan: 'Plan your event',
+      ctaListen: 'Listen to EuphoricFM',
     },
 
     howItWorks: {
-      title: 'How It Works',
+      title: 'How it works',
       steps: [
         {
           n: 1,
-          title: 'Tell Us About Your Event',
+          title: 'Tell us about your event',
           body: "Send us the details — what you're planning, when, and where. No detail is too small to include.",
         },
         {
           n: 2,
-          title: 'We Build the Sound',
+          title: 'We build the sound',
           body: "Our team puts together curated music and radio programming that matches the mood you're going for.",
         },
         {
           n: 3,
-          title: 'Tune In',
-          body: 'Set up Euphoric FM radios throughout your venue and let the programming carry the night.',
+          title: 'Tune in',
+          body: 'Set up EuphoricFM radios throughout your venue and let the programming carry the night.',
         },
       ],
     },
 
     services: {
-      title: 'Your Event. Your Sound.',
+      title: 'Your event, your sound.',
       items: [
         {
-          title: 'Curated Music',
+          title: 'Curated music',
           body: 'Hand-picked tracks that match the mood and pace of your event, start to finish.',
         },
         {
-          title: 'Event Radio Programming',
+          title: 'Event radio programming',
           body: 'A dedicated programming block built around your event — not just a playlist on shuffle.',
         },
         {
@@ -421,26 +430,26 @@ San Andreas is not only our home; it's also the source of incredible talent wait
           body: 'On-air shoutouts and updates woven into the broadcast — schedule changes, specials, whatever guests need to hear.',
         },
         {
-          title: 'Venue-Wide Radio',
-          body: 'Set up Euphoric FM radios throughout your venue so the sound follows guests wherever they go.',
+          title: 'Venue-wide radio',
+          body: 'Set up EuphoricFM radios throughout your venue so the sound follows guests wherever they go.',
         },
         {
-          title: 'Live Changes',
+          title: 'Live changes',
           body: "Want to shift the mood mid-event? We'll accommodate changes where practical.",
         },
       ],
     },
 
     goodFor: {
-      title: 'Good For',
+      title: 'Good for',
       items: [
-        'Grand Openings',
-        'Club Nights',
-        'Private Parties',
-        'Car Meets',
-        'Business Events',
-        'Community Events',
-        'Special Events',
+        'Grand openings',
+        'Club nights',
+        'Private parties',
+        'Car meets',
+        'Business events',
+        'Community events',
+        'Special events',
       ],
     },
 
@@ -449,12 +458,12 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     // ACTIVE shape is fully typed so a later runtime fetch can hydrate the
     // evst-* nodes without any component changes. No backend, no polling yet.
     status: {
-      title: 'Happening Now',
+      title: 'Happening now',
       offAir: {
         pill: 'OFF AIR',
         heading: 'Nothing on the calendar right now.',
-        body: "Euphoric FM Events isn't currently broadcasting for an event. Planning something? Let's change that.",
-        cta: 'Plan Your Event',
+        body: "EuphoricFM Events isn't currently broadcasting for an event. Planning something? Let's change that.",
+        cta: 'Plan your event',
       },
       onAir: {
         pill: 'ON AIR',
@@ -490,24 +499,24 @@ San Andreas is not only our home; it's also the source of incredible talent wait
     // "On the Calendar" — the upcoming-events list under the status card,
     // populated by events.ts from the schedule feed above.
     calendar: {
-      title: 'On the Calendar',
-      listen: 'Listen Live',
+      title: 'On the calendar',
+      listen: 'Listen live',
       today: 'Today',
       tomorrow: 'Tomorrow',
     },
 
     inquiry: {
-      button: 'Send Inquiry',
-      title: 'Plan an Event with Euphoric FM',
+      button: 'Send inquiry',
+      title: 'Plan an event with EuphoricFM',
       intro:
-        "Tell us what you're planning and what you'd like Euphoric FM to bring to it. You don't need to have every detail figured out yet.",
+        "Tell us what you're planning and what you'd like EuphoricFM to bring to it. You don't need to have every detail figured out yet.",
       eventTypes: [
-        'Grand Opening',
-        'Nightlife & Club',
-        'Private Party',
-        'Car Meet',
-        'Business Event',
-        'Community Event',
+        'Grand opening',
+        'Nightlife & club',
+        'Private party',
+        'Car meet',
+        'Business event',
+        'Community event',
         'Other',
       ],
       attendancePlaceholder: 'e.g., 30–50 guests',

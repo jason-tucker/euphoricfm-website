@@ -16,6 +16,8 @@ export interface StreamEngineOptions {
   card?: HTMLElement | null;
   /** Called whenever playback starts or stops. */
   onChange?: (playing: boolean) => void;
+  /** Called when the browser refuses to start the stream (audio.play() rejected). */
+  onPlayError?: (err: unknown) => void;
 }
 
 export interface StreamEngine {
@@ -140,12 +142,23 @@ export const createStreamEngine = (opts: StreamEngineOptions): StreamEngine => {
     stopReact();
   };
 
+  // A rejected play() (stream unreachable, autoplay policy, unsupported
+  // format) releases the half-opened connection, resets the transport and
+  // tells the caller, which shows a toast instead of failing silently. An
+  // AbortError only means the listener pressed stop before play() settled.
+  const failed = (err: unknown) => {
+    console.warn('[efm] audio play failed', err);
+    if ((err as { name?: string } | null)?.name === 'AbortError') return;
+    stop();
+    opts.onPlayError?.(err);
+  };
+
   const toggle = async () => {
     try {
       if (audio.paused) await play();
       else stop();
     } catch (err) {
-      console.warn('[efm] audio play failed', err);
+      failed(err);
     }
   };
 
@@ -154,8 +167,7 @@ export const createStreamEngine = (opts: StreamEngineOptions): StreamEngine => {
     try {
       await play();
     } catch (err) {
-      console.warn('[efm] audio restart failed', err);
-      stop();
+      failed(err);
     }
   };
 

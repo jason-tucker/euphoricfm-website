@@ -3,9 +3,13 @@
 // steps, the Submit music button, and links for artists already on the
 // station (the portal library, opened with its edit/remove intent). No file
 // size numbers here: the portal shows its live limits.
+import nav from '../../shared/nav.json';
 import { site } from '../site.config';
 const m = site.home.music;
 const portal = site.music.portalUrl;
+// Same destination as Submit music in the shared bar and the footer: the
+// portal's upload page (it sends a signed-out visitor through sign-in and back).
+const submitUrl = nav.origins.portal + nav.musicMenu.submit.path;
 ---
 
 <section id="music" class="hm-section" aria-labelledby="music-h">
@@ -16,7 +20,7 @@ const portal = site.music.portalUrl;
       <p class="hm-lede">{m.lede}</p>
     </div>
     <div class="hm-btnrow">
-      <a class="btn btn-sunburst" href={portal}>
+      <a class="btn btn-sunburst" href={submitUrl}>
         <svg class="hm-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 20h16"/></svg>{m.submit}
       </a>
     </div>

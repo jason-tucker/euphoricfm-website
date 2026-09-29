@@ -5,6 +5,37 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.22.2] — 2026-09-29 — Second pass: fresh pages after a deploy, offline state, copy
+
+### Fixed
+- **Returning visitors no longer get a broken page after a deploy.** Pages were served with no `Cache-Control`, so browsers guessed a freshness lifetime of hours and kept an HTML page whose `/_astro/*` files the deploy had already deleted; the SPA fallback then answered those missing scripts and stylesheets with the home page (refused under `nosniff`) — and marked it `immutable` for a year. Now pages carry `Cache-Control: no-cache` (revalidate every visit; the ETag makes it a cheap 304), a missing `/_astro`, `/fonts` or `/images` file is a plain uncached 404, and the immutable / max-age headers only apply to files that exist.
+- **Station offline state.** When the AzuraCast API can't be reached (network error, timeout, 5xx) the home card and `/player/` show **"Station offline — retrying"** with the OFFLINE pill instead of a live-looking "Loading…" and AUTO DJ forever; the stream is stopped, Up next and Recently played say so too, and the next good poll repaints everything. Each now-playing request times out after 8 s (`AbortSignal.timeout`), only one is ever in flight, and after three misses in a row the retry slows to every 30 s.
+- **A refused Play now says so**: when the browser rejects `audio.play()` the transport resets and a toast reads "Couldn't start the stream. Try again in a moment." (both players).
+- **Home card matches the Web Player:** ads and station imaging show as "Station break / EuphoricFM" and are left out of Recently played; the times row can no longer read "3:15 / 3:10".
+- **`/player/#history`** (the home card's Song history link) opens the full list on phones and tablets instead of three rows.
+- **Old section URLs:** `/stats`, `/stats/`, `/about`, `/listen` and `/contact` 301 to the one-page anchors (`/#stats` …) instead of the home page under the wrong URL or the stats API's JSON 404; `/stats/summary` and the rest of `/stats/*` still reach the sidecar.
+- **`/robots.txt` is a real file** (it was the whole home page via the SPA fallback).
+- **The shared top bar fits 320–359 px phones** (right gutter and the whole Menu button kept): tighter gap and Web Player padding below 360 px, a slightly smaller wordmark below 340 px. The portal picks it up through `music/src/shared/`.
+
+### Changed
+- **Copy:** the spelling is "EuphoricFM" everywhere (the events page, its meta / OG description, the event inquiry pop-up); `/events/` and the pop-up headings are in sentence case like the home ("Plan your event", "How it works", "Request a song", "Contact us", "Plan an event with EuphoricFM" …); the FAQ points at the **Requested** tab.
+- **Every Submit music button** (top bar, #music, footer) goes to `music.euphoric.fm/submit`; the footer's "Fix or remove a song" keeps `?intent=edit` like the #music links. The shared bar and phone menu name the product **EuphoricFM Music Portal** (`shared/nav.json`).
+- **Wordmark font:** the "FM" script face is served as a 18,992-byte WOFF2 subset (space, A–Z, a–z, with the `kern` + `calt` features the wordmark's contextual "M" needs) instead of the 521 KB TTF, which stays as the last fallback and for `docs/og/og-image.html`. Both wordmark fonts are preloaded. Made from `public/fonts/` with fontTools 4.66 (`pip install fonttools brotli`):
+  `pyftsubset CortadoScript-Regular.ttf --unicodes="U+0020,U+0041-005A,U+0061-007A" --layout-features="kern,calt" --no-hinting --flavor=woff2 --output-file=CortadoScript-Regular.woff2`
+  (the full basic-Latin range with `calt` came to 28.6 KB; glyph outlines and positions for "FM", "EuphoricFM" and a pangram were checked identical to the TTF with HarfBuzz).
+- **`og.png` is 99,895 bytes** (was 329,620): the same 1200×630 image as a dithered 192-colour palette PNG; the Pillow command is in `docs/og/og-image.html`. One `og:image`, still a PNG.
+- **Lighter polling:** `/requests/pending` refreshes on a track change, right after a request and every 30 s (skipped while hidden) instead of on every 5 s now-playing poll; `/efm-runtime-config.js` is loaded with `defer` so it no longer blocks the first paint.
+
+### Removed
+- The dead PWA files `public/manifest.webmanifest` and `public/icon.svg` (nothing links them since the CEF first-paint fix). `public/cef-test.html` stays as the in-game iframe diagnostic; its copy is corrected.
+
+### Dev
+- `@types/node` in devDependencies, so `astro check` is clean and can become a real CI gate.
+
+### Tests
+- `test/caddy-player.sh`: `/`, `/player/` and the fallback are `no-cache`; real `/_astro/*.css` and `.js` are immutable; `/_astro/nope.js`, `/_astro/nope.css`, `/fonts/nope.woff2`, `/images/nope.png` are 404 with no `immutable` and no HTML; the WOFF2 is served as `font/woff2`; `/robots.txt` is the file; the five section redirects, `/stats/summary` still proxied and `/aboutx` untouched.
+- `test/site-build.test.mjs`: no "Euphoric FM" on any built page; sentence-case headings and the Requested-tab FAQ; every Submit music → `/submit`; the product name in `nav.json`; the phone-bar row budget; the now-playing poller with a failing fetch (5xx, network, timeout → offline; slower retry; recovery) and its in-flight guard; the offline copy and play-failure toast wiring on both players; break filter, clamp and 30 s pending refresh on the home card; `/player/#history` expansion; deferred runtime config; `og.png` ≤ 100 KB; `dist/robots.txt` starts with `User-agent`; no manifest or `icon.svg`; the WOFF2 ≤ 20 KB, listed before the TTF and preloaded.
+
 ## [0.22.1] — 2026-09-28 — Up next all song long, one songs card
 
 ### Changed

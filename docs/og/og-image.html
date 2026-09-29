@@ -7,6 +7,16 @@
 
     chromium --headless --hide-scrollbars --window-size=1200,630 \
       --screenshot=public/images/og.png "file://$PWD/docs/og/og-image.html"
+
+  then shrink it to a dithered 192-colour palette PNG (keeps it under 100 KB,
+  test/site-build.test.mjs checks the size) with Pillow:
+
+    python3 -c "from PIL import Image as I; im=I.open('public/images/og.png').convert('RGB'); \
+      im.quantize(palette=im.quantize(192, method=I.Quantize.FASTOCTREE), \
+      dither=I.Dither.FLOYDSTEINBERG).save('public/images/og.png', optimize=True)"
+
+  The wordmark "FM" here uses the full CortadoScript TTF on purpose; the site
+  itself serves the letters-only WOFF2 subset (public/fonts/*.woff2).
 -->
 <html lang="en">
 <head>

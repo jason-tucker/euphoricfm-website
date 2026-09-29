@@ -69,10 +69,14 @@
   font-display: swap;
 }
 
-/* Cortado Script — used for the "FM" word in the wordmark. */
+/* Cortado Script — used for the "FM" word in the wordmark. The WOFF2 is a
+   subset (space + A–Z + a–z, kern + calt kept, ~19 KB instead of the 521 KB
+   TTF; the command is in CHANGELOG 0.22.2). The TTF stays last as the fallback
+   and for docs/og/og-image.html. */
 @font-face {
   font-family: 'Cortado Script';
-  src: url('/fonts/CortadoScript-Regular.ttf') format('truetype');
+  src: url('/fonts/CortadoScript-Regular.woff2') format('woff2'),
+       url('/fonts/CortadoScript-Regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -838,7 +842,7 @@ html.efm-cef .card {
 }
 
 /* ---------------------------------------------------------------------------
- * Euphoric FM Events (src/pages/events.astro + EventsHero/EventsHowItWorks/
+ * EuphoricFM Events (src/pages/events.astro + EventsHero/EventsHowItWorks/
  * EventsServices/EventStatus/EventInquiryModal). Tokens only — every colour
  * below resolves to the shared --efm-*-rgb channels in tokens.css, same
  * discipline as the rest of this file. No filter/backdrop-filter (CEF-safe
@@ -938,4 +942,34 @@ html.efm-fx-off .efm-eq span {
     animation: none !important;
     transform: scaleY(0.6);
   }
+}
+
+/* Status toast (scripts/toast.ts) — e.g. "Couldn't start the stream". Above
+   the sticky bar and the pop-ups (z 70); solid background, no blur, so it
+   paints in the in-game CEF too. */
+.efm-toast {
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 80;
+  max-width: min(calc(100vw - 32px), 420px);
+  padding: 10px 16px;
+  border-radius: 12px;
+  border: 1px solid rgb(var(--efm-ruby-rgb) / 0.5);
+  background: rgb(var(--efm-ink-rgb) / 0.96);
+  color: rgb(var(--efm-cream-rgb));
+  font-size: 14px;
+  line-height: 1.35;
+  text-align: center;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, 8px);
+  transition: opacity 200ms ease-out, transform 200ms ease-out, visibility 200ms;
+  pointer-events: none;
+}
+.efm-toast.is-open {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
 }

@@ -10,6 +10,12 @@
 #   - /player/ carries the site's security headers (CSP unchanged, framable)
 #   - /images/og.png is served as an image, and the runtime config hands the
 #     contact webhook out under the neutral `contact` key
+#   - cache policy: pages are `no-cache` (revalidate), real /_astro/* files are
+#     immutable, and a MISSING /_astro, /fonts or /images file is a plain 404
+#     (never the home page, never marked immutable)
+#   - /robots.txt is the real file, and the old section URLs (/stats, /stats/,
+#     /about, /listen, /contact) 301 to the one-page anchors while
+#     /stats/summary still goes to the stats sidecar
 # Exits non-zero if any check fails.
 #
 #   sh test/caddy-player.sh
@@ -67,6 +73,19 @@ check "events still 308s"            /events             308 /events/           
 check "home page"                    /                   200 -                   home
 check "unknown path → home fallback" /nope               200 -                   home
 check "under /player/ → home"        /player/nope        200 -                   home
+check "missing asset → 404"          /_astro/nope.js     404 -                   -
+check "missing font → 404"           /fonts/nope.woff2   404 -                   -
+check "missing image → 404"          /images/nope.png    404 -                   -
+check "/stats → #stats"              /stats              301 /#stats             -
+check "/stats/ → #stats"             /stats/             301 /#stats             -
+check "/about → #about"              /about              301 /#about             -
+check "/listen → #listen"            /listen             301 /#listen            -
+check "/contact → #contact"          /contact            301 /#contact           -
+check "/contact?x keeps no query"    '/contact?x=1'      301 /#contact           -
+# No sidecar in this test, so the proxied stats API answers 502 — the point is
+# that it is NOT one of the exact-path redirects above.
+check "/stats/summary → sidecar"     /stats/summary      502 -                   -
+check "/aboutx is not redirected"    /aboutx             200 -                   home
 
 echo
 echo "Headers on /player/:"
@@ -75,6 +94,32 @@ printf '%s\n' "$H" | grep -i -E '^(content-type|content-security-policy|x-frame-
 printf '%s\n' "$H" | grep -qi '^content-type: text/html' || { echo "FAIL content-type"; FAIL=1; }
 printf '%s\n' "$H" | grep -qi "^content-security-policy: .*media-src https://euphoric.fm;.*frame-ancestors \*" || { echo "FAIL CSP"; FAIL=1; }
 printf '%s\n' "$H" | grep -qi '^x-frame-options:' && { echo "FAIL X-Frame-Options present"; FAIL=1; }
+
+echo
+echo "Cache policy:"
+# hcheck <label> <path> <grep -E pattern the headers must match> [pattern they must NOT match]
+hcheck() {
+  H=$(curl -s -D - -o "$BODY" "http://127.0.0.1:$PORT$2" -H 'Host: info.euphoric.fm' | tr -d '\r')
+  ok=PASS
+  printf '%s\n' "$H" | grep -qiE "$3" || ok=FAIL
+  [ -z "${4:-}" ] || ! printf '%s\n' "$H" | grep -qiE "$4" || ok=FAIL
+  [ "$ok" = PASS ] || FAIL=1
+  printf '%-4s %-30s %-44s %s\n' "$ok" "$1" "$2" "$(printf '%s\n' "$H" | grep -i '^cache-control:' | tr '\n' ' ')"
+}
+CSS=$(cd dist && ls _astro/*.css | head -1)
+JS=$(cd dist && ls _astro/*.js | head -1)
+hcheck "home revalidates"        /                    '^cache-control: no-cache$'
+hcheck "player revalidates"      /player/             '^cache-control: no-cache$'
+hcheck "fallback revalidates"    /nope                '^cache-control: no-cache$'
+hcheck "real css is immutable"   "/$CSS"              '^cache-control: public, max-age=31536000, immutable$'
+hcheck "real js is immutable"    "/$JS"               '^cache-control: public, max-age=31536000, immutable$'
+hcheck "missing js: no immutable" /_astro/nope.js     '^HTTP/[0-9.]+ 404' 'immutable|^content-type: text/html'
+hcheck "missing css: no immutable" /_astro/nope.css   '^HTTP/[0-9.]+ 404' 'immutable|^content-type: text/html'
+hcheck "woff2 wordmark font"     /fonts/CortadoScript-Regular.woff2 '^content-type: font/woff2' 'no-cache'
+hcheck "font is immutable"       /fonts/CortadoScript-Regular.woff2 '^cache-control: public, max-age=31536000, immutable$'
+hcheck "sw.js stays uncached"    /sw.js               '^cache-control: no-cache, no-store, must-revalidate$'
+hcheck "robots.txt is the file"  /robots.txt          '^content-type: text/plain' 'no-cache'
+head -c 10 "$BODY" | grep -q '^User-agent' || { echo "FAIL robots.txt body is not a robots file"; FAIL=1; }
 
 echo
 echo "Share image and runtime config:"
