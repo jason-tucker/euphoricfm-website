@@ -1,6 +1,6 @@
 // Drives the real Auth.js flow against the mock Discord: csrf → signin POST →
 // mock authorize (as `discordId`) → callback on music-web.
-import { control, freshIp, Jar, req } from './http'
+import { control, fetchRetrySocket, freshIp, Jar, req } from './http'
 
 export type MockUser = { id: string; member?: boolean; pending?: boolean; roles?: string[]; revoked?: boolean; refreshFails?: boolean; memberError?: number; expiresIn?: number }
 
@@ -22,7 +22,7 @@ export async function login(discordId: string): Promise<{ jar: Jar; final: Respo
   if (signin.status !== 302 || !authorize) throw new Error(`signin: ${signin.status}`)
   const a = new URL(authorize)
   a.searchParams.set('mock_user', discordId)
-  const ar = await fetch(a, { redirect: 'manual' })
+  const ar = await fetchRetrySocket(a.toString(), { redirect: 'manual' })
   const cb = ar.headers.get('location')
   if (ar.status !== 302 || !cb) throw new Error(`authorize: ${ar.status} ${await ar.text()}`)
   const c = new URL(cb)
