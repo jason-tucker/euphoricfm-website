@@ -1,21 +1,27 @@
 ---
-// EuphoricFM Events — public marketing/inquiry page at /events. Composition
-// mirrors index.astro: BaseLayout > .phone > Header > sections > Footer,
-// with the page's one modal rendered outside .phone (same placement pattern
-// as index's modals). No ActionRow here — see EventInquiryModal.astro for
-// why that means the modal is fully self-contained.
+// EuphoricFM Events — /events explainer. Composition mirrors index.astro:
+// BaseLayout > .phone > Header > sections > Footer.
+//
+// Events (requests, calendar, event radio) live at events.euphoric.fm now.
+// A top-level visit here is sent there straight away; inside an iframe (the
+// in-game phone, whose browser can't load events.euphoric.fm) the page stays
+// and just explains events. The check compares this window with its parent
+// — it never reads or navigates window.top, so it can't break out of a frame.
 import BaseLayout from '../layouts/BaseLayout.astro';
 import Header from '../components/Header.astro';
 import EventsHero from '../components/EventsHero.astro';
 import EventsHowItWorks from '../components/EventsHowItWorks.astro';
 import EventsServices from '../components/EventsServices.astro';
 import EventStatus from '../components/EventStatus.astro';
-import EventInquiryModal from '../components/EventInquiryModal.astro';
 import Footer from '../components/Footer.astro';
 import { site } from '../site.config';
+const portal = site.events.portal;
 ---
 
 <BaseLayout title={site.events.title} description={site.events.description}>
+  <script is:inline slot="head" id="events-redirect" define:vars={{ eventsUrl: portal.url }}>
+    if (window.self === window.parent) location.replace(eventsUrl);
+  </script>
   <Header slot="header" current="events" />
   <div class="phone">
     <h1 class="sr-only">{site.name} {site.events.title}</h1>
@@ -24,8 +30,12 @@ import { site } from '../site.config';
     <EventsHowItWorks />
     <EventsServices />
     <EventStatus />
+
+    <noscript>
+      <p class="mt-4 text-center text-xs text-cream/50">
+        {portal.noscript} <a class="underline" href={portal.url}>{portal.label}</a>
+      </p>
+    </noscript>
   </div>
   <Footer />
-
-  <EventInquiryModal slot="overlays" />
 </BaseLayout>
