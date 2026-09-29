@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { writeSpoolResultNoClobber } from '@/server/spool/protocol'
 import { probeRequestIdForUpload } from '@/events/contract/paths'
 import { finalizeRequestIdFor } from '@/events/worker/jobs/audio'
+import { liquidsoapConfigErrors } from '@/events/worker/jobs/build'
 import { endWaitTarget } from '@/events/worker/jobs/kicks'
 import { eventsAlerter } from '@/events/worker/main'
 import { EVENTS_MUTATING_KINDS, runEventJob, tickPeriodic } from '@/events/worker/loop'
@@ -567,6 +568,59 @@ describe('events worker: kicks and teardown', () => {
     expect(h.store.job('off_air_restart')[0]!.status).toBe('dead')
     expect(h.az.calls.filter((c) => c.path.endsWith('/backend/restart'))).toHaveLength(3)
     expect(h.alerts.some((a) => a.includes('off-air restart FAILED for event #42') && a.includes('after its teardown'))).toBe(true)
+  })
+
+  it('verify after the start kick reads the liquidsoap log: a config-load error after the restart fails the build and alerts', async () => {
+    const { h } = await built()
+    // 20:00:05 EDT = 00:00:05Z; the log is in UTC here, with an older error before the restart
+    h.az.liquidsoapLog = [
+      '2026/10/10 23:40:00 [lang:2] Parse error: an old run, before this restart',
+      '2026/10/11 00:00:06 [main:3] Liquidsoap 2.2.5',
+      '2026/10/11 00:00:07 [lang:1] Error while loading playlist ~EVT42 s1',
+    ].join('\n')
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    h.clock.t += 61_000
+    await drain(h)
+    const build = h.store.buildRows[0]!
+    expect(build.status).toBe('failed')
+    expect(build.lastError).toContain('liquidsoap: 2026/10/11 00:00:07 [lang:1] Error while loading playlist')
+    expect(build.lastError).not.toContain('an old run')
+    expect(h.alerts.some((a) => a.includes('failed verification'))).toBe(true)
+    expect(h.az.calls.some((c) => c.path === '/api/station/14/log/liquidsoap_log')).toBe(true)
+  })
+
+  it('verify after the start kick: a clean log (or only errors from before the restart) passes', async () => {
+    const { h } = await built()
+    h.az.liquidsoapLog = ['2026/10/10 19:40:00 [lang:2] Parse error: before the restart (ET clock)', '2026/10/10 20:00:07 [main:3] Liquidsoap 2.2.5', '2026/10/10 20:00:08 [clock:3] Streaming loop starts'].join('\n')
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    h.clock.t += 61_000
+    await drain(h)
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    expect(h.alerts).toEqual([])
+    const verified = h.store.audits.filter((a) => a.action === 'events.build.verified').at(-1)!
+    expect(verified.detail).toMatchObject({ problems: [], backend: 'running', liquidsoapLog: 'clean' })
+  })
+
+  it('liquidsoap log scan: UTC or ET timestamps, continuation lines, nothing before the restart', () => {
+    const since = T('2026-10-10T20:00:05-04:00')
+    const now = since + 60_000
+    const log = [
+      'Error 5: before any timestamp (not counted)',
+      '2026/10/10 20:00:06 [lang:1] At line 12, char 3-10:',
+      'Error 5: this value has type string but it should be int',
+      '2026/10/10 23:59:00 [main:3] ok',
+      '2026-10-11 00:00:09 [lang:1] Script error: unknown variable',
+      '2026/10/10 15:00:00 [lang:1] Parse error: hours earlier',
+    ].join('\n')
+    expect(liquidsoapConfigErrors(log, since, now)).toEqual([
+      '2026/10/10 20:00:06 [lang:1] At line 12, char 3-10:',
+      'Error 5: this value has type string but it should be int',
+      '2026-10-11 00:00:09 [lang:1] Script error: unknown variable',
+    ])
+    expect(liquidsoapConfigErrors('', since, now)).toEqual([])
   })
 
   it('teardown of an event sent back for review only disables its playlists', async () => {

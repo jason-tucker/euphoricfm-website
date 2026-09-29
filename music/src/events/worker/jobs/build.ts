@@ -29,6 +29,7 @@ import { compile, CompileError, type CompileAnnouncement, type CompiledPlan, typ
 import { ARCHIVED_FILE_RE, eventUploadPathFor, LEGACY_PLAYLIST_IDS, LIBRARY_FILE_RE, PLAYLIST_ID_FLOOR, STINGER_FILE_RE, type ScheduleItem } from '../../azuracast/allowlist'
 import { backendOptionsOf, EventsAzuraCastError, type MediaRead, type PlaylistRead, type PlaylistScope } from '../../azuracast/client'
 import { applyFileMembership } from '../../azuracast/membership'
+import { etWallToUtc } from '../../azuracast/time'
 import { buildInputKey } from '../../contract/build-key'
 import type { EventJobPayload } from '../../contract/jobs'
 import { mainName } from '../../contract/paths'
@@ -524,6 +525,61 @@ export async function verifyBuild(ctx: EventsCtx, ev: EventRow, build: BuildRow)
   return problems
 }
 
+// ------------------------------------------------ liquidsoap log check ---
+
+// A log line's timestamp ("2026/10/10 20:00:07 [main:3] …", or with dashes /
+// brackets). Liquidsoap writes it in the container's local time, which may
+// be UTC or the station's zone: both readings are tried, and a line counts
+// as "after the restart" when either lands inside [kick − 1 min, now +
+// 1 min] (the two readings are 4–5 h apart, so at most one can).
+const LOG_TS_RE = /^\[?(\d{4})[/-](\d{2})[/-](\d{2})[ T](\d{2}):(\d{2}):(\d{2})/
+// What a config that did not load cleanly leaves in the log.
+export const LIQUIDSOAP_CONFIG_ERROR_RE = /Error while loading|Parse error|Script error|\bError \d+:|At line \d+, char/i
+const LOG_SLACK_MS = 60_000
+
+function logInstants(m: RegExpExecArray): number[] {
+  const [y, mo, d, h, mi, se] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number]
+  const out = [Date.UTC(y, mo - 1, d, h, mi, se)]
+  try {
+    for (const u of etWallToUtc(`${m[1]}-${m[2]}-${m[3]}`, h * 60 + mi)) out.push(u + se * 1000)
+  } catch {
+    // not a calendar date / minute: the UTC reading only
+  }
+  return out
+}
+
+/**
+ * Config-load errors logged after the restart at `sinceMs`. Lines without a
+ * timestamp (e.g. the "Error 5: …" under "At line 12, char 3-10:") belong to
+ * the timestamped line above them; lines before the first timestamp are
+ * never counted.
+ */
+export function liquidsoapConfigErrors(contents: string, sinceMs: number, nowMs: number): string[] {
+  const out: string[] = []
+  let after = false
+  for (const line of contents.split(/\r?\n/)) {
+    const m = LOG_TS_RE.exec(line)
+    if (m) after = logInstants(m).some((t) => t >= sinceMs - LOG_SLACK_MS && t <= nowMs + LOG_SLACK_MS)
+    if (after && LIQUIDSOAP_CONFIG_ERROR_RE.test(line)) out.push(line.trim().slice(0, 200))
+    if (out.length >= 10) break
+  }
+  return out
+}
+
+// Reads station 14's liquidsoap log through the wrapper's read routes. A
+// log that cannot be read is recorded, not a verify failure.
+async function liquidsoapLogCheck(ctx: EventsCtx, sinceMs: number): Promise<{ state: string; errors: string[] }> {
+  try {
+    const keys = (await ctx.az.listLogs()).map((l) => l.key)
+    const key = keys.includes('liquidsoap_log') ? 'liquidsoap_log' : keys.find((k) => /^liquidsoap[a-z0-9_]*log$/.test(k))
+    if (!key) return { state: 'no liquidsoap log', errors: [] }
+    const errors = liquidsoapConfigErrors((await ctx.az.getLog(key)).contents, sinceMs, ctx.now())
+    return { state: errors.length ? 'config errors' : 'clean', errors }
+  } catch (e) {
+    return { state: `unreadable (${e instanceof EventsAzuraCastError ? e.code : e instanceof Error ? e.name : 'error'})`, errors: [] }
+  }
+}
+
 export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): Promise<void> {
   const ev = await ctx.store.getEvent(p.eventId)
   if (!ev) throw new Permanent('event missing')
@@ -535,6 +591,7 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
   }
   const problems = await verifyBuild(ctx, ev, build)
   let backend = 'n/a'
+  let liquidsoapLog = 'n/a'
   if (ev.status === 'live') {
     try {
       const st = await ctx.az.getStatus()
@@ -543,8 +600,15 @@ export async function verifyJob(ctx: EventsCtx, p: EventJobPayload<'verify'>): P
     } catch {
       backend = 'unknown'
     }
+    // After a kick: the regenerated config must have loaded cleanly.
+    const since = await ctx.store.lastStartKickMs(ev.id)
+    if (since !== null) {
+      const log = await liquidsoapLogCheck(ctx, since)
+      liquidsoapLog = log.state
+      for (const e of log.errors) problems.push(`liquidsoap: ${e}`)
+    }
   }
-  await ctx.store.audit('events.build.verified', 'event', ev.id, { buildId: build.id, problems, backend })
+  await ctx.store.audit('events.build.verified', 'event', ev.id, { buildId: build.id, problems, backend, liquidsoapLog })
   if (problems.length > 0) {
     await ctx.store.setBuild(build.id, { status: 'failed', lastError: `verify: ${problems.slice(0, 5).join('; ')}` })
     await ctx.alert(`events build #${build.id} (event #${ev.id}) failed verification`, { problems: problems.slice(0, 20) })

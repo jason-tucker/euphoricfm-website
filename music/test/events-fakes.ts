@@ -47,6 +47,8 @@ export class FakeAz {
   restarts = 0
   failRestarts = 0
   np: unknown = { is_online: true, now_playing: null }
+  // station 14's liquidsoap log (GET /logs, /log/liquidsoap_log)
+  liquidsoapLog = ''
   nextPlaylistId = 101
   nextScheduleId = 1000
   nextMediaId = 9000
@@ -208,6 +210,8 @@ export class FakeAz {
       return this.json(200, { success: true })
     }
     if (rest === '/status') return this.json(200, { backend_running: true, frontend_running: true })
+    if (rest === '/logs' && method === 'GET') return this.json(200, [{ key: 'liquidsoap_log', name: 'Liquidsoap Log' }, { key: 'liquidsoap_liq', name: 'Liquidsoap Configuration' }])
+    if (rest === '/log/liquidsoap_log' && method === 'GET') return this.json(200, { contents: this.liquidsoapLog, eof: true })
     if (rest === '/backend/restart' && method === 'POST') {
       if (this.failRestarts > 0) {
         this.failRestarts--
