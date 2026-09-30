@@ -11,7 +11,8 @@
 //     its old changes over newer work from another device.
 //   - the question: when the server is newer than the (rebased) base and the
 //     merge would overwrite work done elsewhere (merge.ts restoreConflicts),
-//     nothing is saved until the member chooses.
+//     or when the copy is older than OLD_COPY_MS (the member may no longer
+//     want changes from yesterday), nothing is saved until the member chooses.
 // The live form applies the same two rules when a newer server copy comes
 // in while it is open (autosave.ts sortSaves, rebaseForm below): a hidden tab
 // whose keepalive arrived never re-applies it over newer work either.
@@ -39,13 +40,20 @@ export type FormCtx = { zone: string | undefined; audio: AudioItem[]; stingers: 
 
 export const formOfView = (v: FullView, c: FormCtx): FormState => ({ draft: draftFromView(v, c.zone), builder: builderFromView(v, c.audio, c.stingers) })
 
+/** A device copy saved longer ago than this is never restored without asking. */
+export const OLD_COPY_MS = 12 * 60 * 60 * 1000
+
 export type RestorePlan = {
   /** The server's form with every copy merged in. */
   form: FormState
   /** The copies hold changes the server does not have. */
   changed: boolean
-  /** Restoring would overwrite newer work done elsewhere: ask first. */
+  /** Ask first (`conflict`, or a copy older than OLD_COPY_MS: `oldAt`). */
   ask: boolean
+  /** Restoring would overwrite newer work done elsewhere. */
+  conflict: boolean
+  /** When the oldest copy past OLD_COPY_MS that holds changes was saved (ms), else null. */
+  oldAt: number | null
   /** Fields both sides changed (the copy's value is in `form`). */
   kept: string[]
   /** What restoring changes on the server, in plain words. */
@@ -68,11 +76,12 @@ export function rebaseForm(base: FormState, landed: readonly SentSave<FormData>[
   return out
 }
 
-export function planRestore(server: FullView, copies: readonly { key: string; backup: Backup<FormData> }[], c: FormCtx): RestorePlan {
+export function planRestore(server: FullView, copies: readonly { key: string; backup: Backup<FormData> }[], c: FormCtx, now = Date.now()): RestorePlan {
   const serverForm = formOfView(server, c)
   let cur = serverForm
   let changed = false
-  let ask = false
+  let conflict = false
+  let oldAt: number | null = null
   const kept: string[] = []
   const keys: string[] = []
   for (const { key, backup } of copies) {
@@ -89,10 +98,11 @@ export function planRestore(server: FullView, copies: readonly { key: string; ba
     const r = mergeForm(base, local, cur)
     if (r.local) {
       changed = true
-      if (server.version > version && restoreConflicts(base, local, cur, unconfirmed)) ask = true
+      if (server.version > version && restoreConflicts(base, local, cur, unconfirmed)) conflict = true
+      if (now - backup.savedAt > OLD_COPY_MS && (oldAt === null || backup.savedAt < oldAt)) oldAt = backup.savedAt
       for (const k of r.kept) if (!kept.includes(k)) kept.push(k)
     }
     cur = { draft: r.draft, builder: r.builder }
   }
-  return { form: cur, changed, ask, kept, changes: changed ? describeChanges(serverForm, cur) : [], keys }
+  return { form: cur, changed, ask: conflict || oldAt !== null, conflict, oldAt, kept, changes: changed ? describeChanges(serverForm, cur) : [], keys }
 }

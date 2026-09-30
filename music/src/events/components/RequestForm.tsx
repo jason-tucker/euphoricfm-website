@@ -11,7 +11,9 @@
 // copy (a 409, the tab coming back into view, the other tab saving) is merged
 // into the form (merge.ts) instead of being written over. A device copy left
 // behind is restored on the next load (restore.ts), or asked about when it
-// would overwrite newer work done elsewhere.
+// would overwrite newer work done elsewhere or is older than 12 hours; a
+// restore that has not saved yet is asked about too when a newer server copy
+// comes in that it would overwrite.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -34,14 +36,14 @@ import {
 import { api, ApiError, evMessage } from './ev-api'
 import { builderFromView, draftFromView, patchFor } from './fromView'
 import { rulesList } from './HomeParts'
-import { describeChanges, type FormState, listWords, mergeForm, mergeNote, restoreConflicts, undoRestore } from './merge'
+import { describeChanges, type FormState, listWords, mergeForm, mergeNote, restoreConflicts } from './merge'
 import { backupForm, EMPTY_BUILDER, type FormData, formOfView, planRestore, rebaseForm, type RestorePlan } from './restore'
 import { useEvConfig, useNow } from './hooks'
 import { EVENT_TYPE_LABEL } from './labels'
 import { AnnouncementsEditor, RowsNote, SongsEditor, useAudioSources } from './PlaylistBuilder'
 import { type Builder, builderProblems, runningLength, toPayload } from './playlist'
 import { DetailsFields, TimeFields, toInputs, useAvailability, VisibilityFields } from './RequestParts'
-import { formatDuration, formatIn, zoneLabel } from './time'
+import { dateKey, DAY, formatDuration, formatIn, type TzMode, zoneLabel, zoneOf } from './time'
 import type { AudioItem, FullView, Stinger } from './types'
 import { useTz, When } from './tz'
 import { checkDetails, checkTime, type Draft, EMPTY_DRAFT, enteredTz, withoutSelf } from './wizard'
@@ -118,8 +120,6 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   const [done, setDone] = useState<FullView | null>(null)
   const [discard, setDiscard] = useState<'ask' | 'busy' | null>(null)
   const [note, setNoteState] = useState<string | null>(null)
-  /** "Use the saved version instead" is catching up with the server first. */
-  const [undoBusy, setUndoBusy] = useState(false)
   /** What the restored device copy changed (named in the restore notice). */
   const [restoredWhat, setRestoredWhat] = useState<string[]>([])
   /** A device copy that would overwrite newer work: waiting for a choice. */
@@ -237,12 +237,12 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   /** Other tabs' device copies merged into this form at load (dropped once saved). */
   const absorbed = useRef<string[]>([])
   /**
-   * The last restore of device copies: the form before it and right after
-   * it. "Use the saved version instead" undoes what it changed, even once
-   * the restore has saved itself (the saved version is then the restored
-   * one), but only where nothing changed since (merge.ts undoRestore).
+   * Device copies were restored without asking (nothing newer to overwrite
+   * when the page loaded) and have not reached the server yet. A newer
+   * server copy that comes in meanwhile and that merging them would
+   * overwrite turns into the question, like on a load (adopt).
    */
-  const restoreUndo = useRef<{ before: FormState; after: FormState } | null>(null)
+  const restoreUnsaved = useRef(false)
   const adopted = useRef<(() => void) | null>(null)
   const [adoptN, setAdoptN] = useState(0)
   useEffect(() => {
@@ -306,11 +306,12 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
             const r = mergeForm(base, local, server)
             baseRef.current = fresh
             adopted.current?.()
-            if (saves.unknown.length && r.local && restoreConflicts(base, local, server, true)) {
-              // A save whose arrival cannot be told, and merging would
-              // overwrite work done elsewhere: show the saved version and ask
-              // (restore.ts does the same on a reopen). This tab's device copy
-              // is kept aside meanwhile, so closing the tab loses nothing.
+            if (r.local && (saves.unknown.length || restoreUnsaved.current) && restoreConflicts(base, local, server, saves.unknown.length > 0)) {
+              // A save whose arrival cannot be told, or restored device
+              // copies not saved yet, and merging would overwrite work done
+              // elsewhere: show the saved version and ask (restore.ts does
+              // the same on a reopen). This tab's device copy is kept aside
+              // meanwhile, so closing the tab loses nothing.
               const v = viewRef.current
               const keys: string[] = []
               if (v) {
@@ -318,7 +319,10 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
                 const aside = tabBackupKey(userKey, v.id, `${tab}-held`)
                 if (own && own.baseVersion === b.version && writeBackup(aside, own)) keys.push(aside)
               }
-              setAsk({ form: { draft: r.draft, builder: r.builder }, changed: true, ask: true, kept: r.kept, changes: describeChanges(server, r), keys })
+              setAsk({ form: { draft: r.draft, builder: r.builder }, changed: true, ask: true, conflict: true, oldAt: null, kept: r.kept, changes: describeChanges(server, r), keys })
+              restoreUnsaved.current = false
+              setRestored(false)
+              setRestoredWhat([])
               adopted.current = () => resolve('held')
               setDraft(server.draft)
               setBuilder(server.builder)
@@ -359,6 +363,8 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
         },
         onSynced: (key) => {
           synced.current = key
+          // the restore (made before any save) is on the server now
+          restoreUnsaved.current = false
           if (key === formKeyRef.current && viewRef.current) {
             clearBackup(tabBackupKey(userKey, viewRef.current.id, tab))
             for (const k of absorbed.current.splice(0)) clearBackup(k)
@@ -407,14 +413,14 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       return
     }
     if (p.ask) {
-      // It would overwrite newer work done elsewhere: nothing is sent until
-      // the member chooses (the copies stay until then).
+      // It would overwrite newer work done elsewhere, or it is old: nothing
+      // is sent until the member chooses (the copies stay until then).
       saver.hold()
       setAsk(p)
       return
     }
     absorbed.current.push(...p.keys)
-    restoreUndo.current = { before: formOfView(initial, { zone, audio, stingers }), after: p.form }
+    restoreUnsaved.current = true
     setDraft(p.form.draft)
     setBuilder(p.form.builder)
     setRestored(true)
@@ -536,64 +542,12 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
     absorbed.current = []
   }
 
-  const revertToSaved = async () => {
-    if (!initial) {
-      // a new request: start over with an empty form
-      clearBackup(backupKey(userKey, 'new'))
-      setResetN((n) => n + 1)
-      setDraft(EMPTY_DRAFT)
-      setBuilder(EMPTY_BUILDER)
-      setRestored(false)
-      return
-    }
-    if (restoreUndo.current) {
-      if (undoBusy) return
-      // First catch up with the server: what another device changed since
-      // the restore is then in the form, and stays (this tab may not have
-      // looked since: no focus / visibility change, no 409).
-      setUndoBusy(true)
-      const noteBefore = noteRef.current
-      const ok = await saver.catchUpNow()
-      setUndoBusy(false)
-      // what the catch-up merged in (its note stays, the undo's is added)
-      const caught = noteRef.current !== noteBefore ? noteRef.current : null
-      const u = restoreUndo.current
-      if (!u) return
-      if (!ok) {
-        // offline, or a question about a device copy is up: nothing undone
-        if (!saver.isHeld) setNote("Couldn't check the saved version for newer changes, so nothing was undone. Try again in a moment.")
-        return
-      }
-      restoreUndo.current = null
-      // Undo what the restore changed (it may have saved itself already)
-      // where the form still holds what the restore put there; whatever
-      // changed since (another device, or typed after the restore) stays.
-      // The result saves like any edit. (The form as it is after the catch-up.)
-      const { draft: d, builder: bl } = live.current
-      const r = undoRestore(u.before, u.after, { draft: d, builder: bl })
-      for (const k of absorbed.current.splice(0)) clearBackup(k)
-      setRestoredWhat([])
-      setDraft(r.draft)
-      setBuilder(r.builder)
-      setRestored(false)
-      if (r.kept.length) {
-        // stays up through the save of the undo
-        mergedThisSave.current = true
-        const kept = `Kept ${listWords(r.kept)} as ${r.kept.length > 1 ? 'they are' : 'it is'} now, because ${r.kept.length > 1 ? 'they' : 'it'} changed after the restore.`
-        setNote(caught ? `${caught} ${kept}` : kept)
-      } else {
-        mergedThisSave.current = !!caught
-        setNote(caught)
-      }
-      return
-    }
-    const v = viewRef.current ?? initial
-    clearDraftBackups(v.id)
+  /** A new request restored from this device: start over with an empty form. */
+  const startOver = () => {
+    clearBackup(backupKey(userKey, 'new'))
     setResetN((n) => n + 1)
-    setNote(null)
-    setRestoredWhat([])
-    setDraft(draftFromView(v, zone))
-    setBuilder(builderFromView(v, sources.audio.length ? sources.audio : audio, sources.stingers.length ? sources.stingers : stingers))
+    setDraft(EMPTY_DRAFT)
+    setBuilder(EMPTY_BUILDER)
     setRestored(false)
   }
 
@@ -608,7 +562,6 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       const server = formOfView(viewRef.current ?? initial!, { zone, audio: live.current.audio, stingers: live.current.stingers })
       const r = mergeForm(server, now, p.form)
       absorbed.current.push(...p.keys)
-      restoreUndo.current = { before: now, after: { draft: r.draft, builder: r.builder } }
       setDraft(r.draft)
       setBuilder(r.builder)
       setRestored(true)
@@ -703,9 +656,6 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   // form changed since: those changes are not saved either.
   const shownStatus: SaveStatus =
     status.kind === 'stopped' && status.moved !== undefined && formKey !== stopKey.current ? { ...status, reason: movedMessage(status.moved || undefined, true) } : status
-  // "Use the saved version instead" only while the restore left something to undo.
-  const undo = restoreUndo.current
-  const undoable = !!undo && undoRestore(undo.before, undo.after, { draft, builder }).undone.length > 0
   const statusView = <SaveStatusText status={shownStatus} view={view} missing={missing} dirty={formKey !== synced.current} storageOk={storageOk} mode={mode} />
   const run = runningLength(builder.tracks)
   // Uploads that failed their check (My audio, or the server's refusal): marked in the lists.
@@ -741,8 +691,9 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
         <Notice tone="warn">
           <div className="space-y-2" data-testid="rf-restore-ask">
             <p>
-              This device has changes to this request that weren&apos;t saved, but the request was changed somewhere else since (another tab or device). Restoring them
-              would change:
+              This device has changes to this request{ask.oldAt !== null ? ` from ${copyAge(ask.oldAt, now, mode)}` : ''} that weren&apos;t saved
+              {ask.conflict ? `, ${ask.oldAt !== null ? 'and' : 'but'} the request was changed somewhere else since (another tab or device)` : ''}. Restoring them would
+              change:
             </p>
             <ul className="list-disc space-y-1 pl-4">
               {(ask.changes.length ? ask.changes : ['the saved request']).map((c) => (
@@ -764,11 +715,11 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       {restored ? (
         <Notice tone="info">
           We restored changes you made on this device that hadn&apos;t been saved yet{restoredWhat.length ? `: ${listWords(restoredWhat)}` : ''}. They save automatically now.
-          {(initial ? undoable : !view) ? (
+          {!initial && !view ? (
             <>
               {' '}
-              <button type="button" className="link" onClick={() => void revertToSaved()} disabled={undoBusy}>
-                {initial ? (undoBusy ? 'Checking the saved version…' : 'Use the saved version instead') : 'Start over'}
+              <button type="button" className="link" onClick={startOver}>
+                Start over
               </button>
             </>
           ) : null}
@@ -940,6 +891,16 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       </ConfirmDialog>
     </div>
   )
+}
+
+/** When a device copy was saved: "yesterday 9:14 PM", "today 1:05 AM", "Mon, Sep 28, 9:14 PM". */
+export function copyAge(at: number, now: number, mode: TzMode): string {
+  const zone = zoneOf(mode)
+  const time = formatIn(at, mode, 'time')
+  const day = dateKey(at, zone)
+  if (day === dateKey(now, zone)) return `today ${time}`
+  if (day === dateKey(now - DAY, zone)) return `yesterday ${time}`
+  return `${formatIn(at, mode, 'weekday-date')}, ${time}`
 }
 
 function SaveStatusText({

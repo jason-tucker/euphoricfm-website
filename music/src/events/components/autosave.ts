@@ -225,9 +225,6 @@ export class DraftSaver<T = unknown> {
   private ledger: SentSave<T>[] = []
   /** Ledger saveIds not yet checked against a server copy fetched after they were sent. */
   private unchecked = new Set<string>()
-  /** Server copies fetched (started) and merged, in order (catchUpNow). */
-  private checksStarted = 0
-  private checksMerged = 0
   private timer: ReturnType<typeof setTimeout> | null = null
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private running: Promise<Outcome> | null = null
@@ -312,19 +309,6 @@ export class DraftSaver<T = unknown> {
     return this.kick()
   }
 
-  /**
-   * Fetch the server copy NOW and merge it into the form (serialised with
-   * the saves, which also send this tab's own changes). True once a copy
-   * fetched after this call has been merged and the saver is not holding
-   * for a question; false when it could not be fetched.
-   */
-  async catchUpNow(): Promise<boolean> {
-    if (this.stopped || !this.view) return false
-    const want = this.checksStarted + 1
-    for (let i = 0; i < 2 && this.checksMerged < want && !this.stopped; i++) await this.refresh().catch(() => undefined)
-    return this.checksMerged >= want && !this.held && !this.stopped
-  }
-
   /** A retry is waiting (an upload being checked, a network blip): try now. */
   nudge(): void {
     if (this.retryTimer && !this.stopped) void this.kick()
@@ -345,10 +329,6 @@ export class DraftSaver<T = unknown> {
       this.heldWanted = false
       void this.kick()
     }
-  }
-
-  get isHeld(): boolean {
-    return this.held
   }
 
   /** Undo stop() (a remount, a failed discard) unless the event is no longer editable. */
@@ -441,9 +421,7 @@ export class DraftSaver<T = unknown> {
   /** Fetch the event and merge it (catchUp); the saves sent before the fetch are checked by it. */
   private async check(id: number): Promise<void> {
     const sentBefore = [...this.unchecked]
-    const seq = ++this.checksStarted
     await this.catchUp(await api<FullView>(`/api/ev/events/${id}`), sentBefore)
-    this.checksMerged = Math.max(this.checksMerged, seq)
   }
 
   /**

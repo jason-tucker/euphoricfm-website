@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetConfigCache } from '@/events/components/hooks'
-import { RequestForm } from '@/events/components/RequestForm'
+import { copyAge, RequestForm } from '@/events/components/RequestForm'
 import { HOUR, dateKey } from '@/events/components/time'
 import { TzProvider } from '@/events/components/tz'
 import { DEFAULT_CONFIG, type FullView } from '@/events/components/types'
@@ -1579,285 +1579,209 @@ describe('a save whose answer never came back is checked before anything counts 
   })
 })
 
-describe('"Use the saved version instead" after a restore', () => {
-  it('undoes what the restore changed even after it saved itself', async () => {
-    const v4 = () => view({ version: 4, tracks: [lib(701, 0), lib(703, 1)] })
-    // a device copy (host "PC host", Charlie removed) whose keepalive never arrived
-    const { routes: r0 } = fakeServer(v4())
-    mockApi(r0)
-    const pc = render(<Form initial={v4()} debounceMs={60_000} />)
-    fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'PC host' } })
-    fireEvent.click(await screen.findByRole('button', { name: 'Remove Charlie' }))
-    await waitFor(() => expect(draftBackup()?.data.builder.tracks).toHaveLength(1))
-    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
-    pc.unmount()
-    const { srv, routes } = fakeServer(v4())
-    const api = mockApi(routes)
-    render(<Form initial={v4()} />)
-    await screen.findByText(/We restored changes you made on this device/)
-    await waitFor(() => expect(srv.state).toMatchObject({ hostName: 'PC host', version: 6 }))
-    fireEvent.click(screen.getByRole('button', { name: 'Use the saved version instead' }))
-    await waitFor(() => expect(srv.state.version).toBe(8))
-    expect(srv.state.hostName).toBe(null)
-    expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha', 'Charlie'])
-    expect(screen.queryByText(/We restored changes/)).toBeNull()
-    expect((screen.getByLabelText(/Hosted by/) as HTMLInputElement).value).toBe('')
-    expect(api.writes()).toHaveLength(4)
-    await waitFor(() => expect(draftBackupKeys()).toEqual([]))
-  })
-
-  // A device copy made against v4 (the edit happens with timers frozen, then
-  // the page is killed with its keepalive hanging), restored on a reopen and
-  // saved by itself.
+describe('restoring device copies: no undo link, old copies ask first', () => {
   const v4 = () => view({ version: 4, tracks: [lib(701, 0), lib(703, 1)] })
   const field = (label: RegExp) => (screen.getByLabelText(label) as HTMLInputElement).value
-  const pinOf = (i: number) => within(screen.getAllByTestId('pb-track')[i]!).getByLabelText(/Pin to a time/) as HTMLSelectElement
-  async function restored(edit: () => Promise<void>, saved: (s: FullView) => boolean) {
-    const { routes: r0 } = fakeServer(v4())
-    mockApi(r0)
+  const noUndo = () => {
+    expect(screen.queryByRole('button', { name: /saved version instead/ })).toBeNull()
+    expect(screen.queryByText(/saved version instead/)).toBeNull()
+  }
+
+  /** A device copy made against v4 (the edit happens with timers frozen, then the page is killed with its keepalive hanging). */
+  async function copyLeftBehind(edit: () => Promise<void>) {
+    const { routes } = fakeServer(v4())
+    mockApi(routes)
     const pc = render(<Form initial={v4()} debounceMs={60_000} />)
     await screen.findAllByTestId('pb-track')
     await edit()
     await waitFor(() => expect(draftBackup()).not.toBeNull())
     vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
     pc.unmount()
+    expect(draftBackupKeys()).toHaveLength(1)
+  }
+  /** Moves the device copy's savedAt back by `ms`. */
+  const age = (ms: number) => {
+    const k = draftBackupKeys()[0]!
+    const b = JSON.parse(window.localStorage.getItem(k)!)
+    b.savedAt = Date.now() - ms
+    window.localStorage.setItem(k, JSON.stringify(b))
+    return b.savedAt as number
+  }
+  const pcEdit = async () => {
+    fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Charlie' }))
+  }
+
+  it('copyAge names the day in plain words', () => {
+    const now = Date.parse('2026-09-30T16:00:00Z') // 12:00 PM ET
+    expect(copyAge(Date.parse('2026-09-30T05:05:00Z'), now, 'et')).toBe('today 1:05 AM')
+    expect(copyAge(Date.parse('2026-09-30T01:14:00Z'), now, 'et')).toBe('yesterday 9:14 PM')
+    expect(copyAge(Date.parse('2026-09-28T13:00:00Z'), now, 'et')).toBe('Mon, Sep 28, 9:00 AM')
+  })
+
+  async function oldCopyAsks() {
+    await copyLeftBehind(pcEdit)
+    const savedAt = age(13 * HOUR)
     const { srv, routes } = fakeServer(v4())
     const api = mockApi(routes)
     render(<Form initial={v4()} />)
-    await screen.findByText(/We restored changes you made on this device/)
-    await waitFor(() => expect(saved(srv.state)).toBe(true))
-    await waitFor(() => expect(status()).toContain('All changes saved'))
-    const n = api.writes().length
-    /** Another device saves (one audit row), then this tab catches up. */
-    const phone = async (over: Partial<FullView>, until: () => void) => {
-      srv.state = { ...srv.state, ...over, version: srv.state.version + 1, recentSaveIds: [`phone-${srv.state.version}`, ...(srv.state.recentSaveIds ?? [])] }
-      act(() => {
-        window.dispatchEvent(new Event('focus'))
-      })
-      await waitFor(until)
-      await sleep(200)
-    }
-    /** Another device saves, and this tab does NOT catch up (no focus / visibility event). */
-    const quiet = (over: Partial<FullView>) => {
-      srv.state = { ...srv.state, ...over, version: srv.state.version + 1, recentSaveIds: [`phone-${srv.state.version}`, ...(srv.state.recentSaveIds ?? [])] }
-    }
-    return { srv, routes, phone, quiet, later: () => api.writes().slice(n) }
+    const ask = await screen.findByTestId('rf-restore-ask')
+    expect(ask.textContent).toContain(`This device has changes to this request from ${copyAge(savedAt, Date.now(), 'et')} that weren't saved. Restoring them would change:`)
+    expect(ask.textContent).not.toContain('somewhere else')
+    expect(within(ask).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['host name → "PC host"', 'removed "Charlie"'])
+    expect(status()).toContain('Not saving yet')
+    expect(screen.queryByText(/We restored changes/)).toBeNull()
+    // the form shows the saved version; nothing is sent (not even a catch-up) until a choice
+    expect(field(/Hosted by/)).toBe('')
+    expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    await sleep(400)
+    expect(api.calls.filter((c) => c.url.startsWith('/api/ev/events/42'))).toHaveLength(0)
+    return { srv, api }
   }
-  const useSaved = () => fireEvent.click(screen.getByRole('button', { name: 'Use the saved version instead' }))
 
-  it('VFY5-A: a field the restore set and another device changed since stays; only the untouched restored field goes back', async () => {
-    const t = await restored(
-      async () => {
-        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
-        fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'PC loc' } })
-      },
-      (s) => s.hostName === 'PC host' && s.location === 'PC loc',
-    )
-    await t.phone({ hostName: 'Phone host' }, () => expect(field(/Hosted by/)).toBe('Phone host'))
-    useSaved()
-    await waitFor(() => expect(t.srv.state.location).toBe(null))
+  it('a device copy older than 12 hours asks first (0 writes); "Keep the saved version" drops it and sends nothing', async () => {
+    const { srv, api } = await oldCopyAsks()
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the saved version' }))
     await sleep(300)
-    expect(t.srv.state.hostName).toBe('Phone host')
-    expect(field(/Hosted by/)).toBe('Phone host')
-    expect(field(/Where/)).toBe('')
-    expect(t.later().map((c) => c.body)).toEqual([{ location: null, version: 6 }])
-    expect(screen.getByTestId('rf-merge-note').textContent).toBe('Kept host name as it is now, because it changed after the restore.')
+    expect(screen.queryByTestId('rf-restore-ask')).toBeNull()
+    expect(api.writes()).toHaveLength(0)
+    expect(draftBackupKeys()).toEqual([])
+    expect(srv.state).toMatchObject({ hostName: null, version: 4 })
+    expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
+    await waitFor(() => expect(status()).toContain('All changes saved'))
+    noUndo()
+  })
+
+  it('a device copy older than 12 hours: "Restore these changes" restores and saves it, with no undo link', async () => {
+    const { srv, api } = await oldCopyAsks()
+    fireEvent.click(screen.getByRole('button', { name: 'Restore these changes' }))
+    expect((await screen.findByText(/We restored changes you made on this device/)).textContent).toContain('host name → "PC host" and removed "Charlie"')
+    await waitFor(() => expect(srv.state.version).toBe(6))
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+    expect(srv.state.hostName).toBe('PC host')
+    expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha'])
+    expect(api.writes()).toHaveLength(2)
     await waitFor(() => expect(draftBackupKeys()).toEqual([]))
+    noUndo()
   })
 
-  it('VFY5-A exact: the only restored field changed elsewhere since: the link goes (nothing left to undo) and nothing is written', async () => {
-    const t = await restored(
-      async () => {
-        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
-      },
-      (s) => s.hostName === 'PC host',
-    )
-    expect(screen.getByRole('button', { name: 'Use the saved version instead' })).toBeTruthy()
-    await t.phone({ hostName: 'Phone host' }, () => expect(field(/Hosted by/)).toBe('Phone host'))
-    expect(screen.queryByRole('button', { name: 'Use the saved version instead' })).toBeNull()
-    expect(t.later()).toHaveLength(0)
-    expect(t.srv.state.hostName).toBe('Phone host')
-  })
-
-  it('h9 (EDIT=loc): a field typed again after the restore stays; the rest of the restore is undone', async () => {
-    const t = await restored(
-      async () => {
-        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
-        fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'PC loc' } })
-      },
-      (s) => s.hostName === 'PC host' && s.location === 'PC loc',
-    )
-    fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'PC loc 2' } })
-    useSaved()
-    await waitFor(() => expect(t.srv.state.hostName).toBe(null))
+  it('a fresh copy (11 hours old) onto an unchanged server copy still restores by itself and saves, with no undo link', async () => {
+    await copyLeftBehind(pcEdit)
+    age(11 * HOUR)
+    const { srv, routes } = fakeServer(v4())
+    const api = mockApi(routes)
+    render(<Form initial={v4()} />)
+    expect((await screen.findByText(/We restored changes you made on this device/)).textContent).toContain('host name → "PC host" and removed "Charlie"')
+    expect(screen.queryByTestId('rf-restore-ask')).toBeNull()
+    noUndo()
+    await waitFor(() => expect(srv.state.version).toBe(6))
     await waitFor(() => expect(status()).toContain('All changes saved ✓'))
-    expect(t.srv.state.location).toBe('PC loc 2')
-    expect(field(/Where/)).toBe('PC loc 2')
-    expect(screen.getByTestId('rf-merge-note').textContent).toBe('Kept place as it is now, because it changed after the restore.')
+    expect(srv.state.hostName).toBe('PC host')
+    expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha'])
+    expect(api.writes()).toHaveLength(2)
+    noUndo()
   })
 
-  it('pins: a pin the restore set and another device moved since stays; the song the restore removed comes back', async () => {
-    let slots: string[] = []
-    const t = await restored(
-      async () => {
-        slots = [...pinOf(0).options].map((o) => o.value).filter(Boolean)
-        fireEvent.change(pinOf(0), { target: { value: slots[0] } })
-        fireEvent.click(screen.getByRole('button', { name: 'Remove Charlie' }))
-      },
-      (s) => s.tracks.length === 1 && s.tracks[0]!.pinAt !== null,
-    )
-    const phonePin = new Date(Number(slots[2])).toISOString()
-    await t.phone({ tracks: [lib(701, 0, phonePin)] }, () => expect(pinOf(0).value).toBe(slots[2]))
-    useSaved()
-    await waitFor(() => expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie']))
-    await sleep(300)
-    expect(Date.parse(t.srv.state.tracks[0]!.pinAt!)).toBe(Date.parse(phonePin))
-    expect(t.srv.state.tracks[1]!.pinAt).toBe(null)
-    expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
-    expect(screen.getByTestId('rf-merge-note').textContent).toBe('Kept pin of "Alpha" as it is now, because it changed after the restore.')
+  it('"Restore these changes" after a conflict question leaves no undo link either', async () => {
+    await copyLeftBehind(pcEdit)
+    const phone = view({ version: 6, hostName: 'Phone host', tracks: [lib(701, 0), lib(703, 1)], recentSaveIds: ['phone-save-2', 'phone-save-1'] })
+    const { srv, routes } = fakeServer(phone)
+    mockApi(routes)
+    render(<Form initial={phone} />)
+    const ask = await screen.findByTestId('rf-restore-ask')
+    expect(ask.textContent).toContain("that weren't saved, but the request was changed somewhere else since (another tab or device)")
+    fireEvent.click(screen.getByRole('button', { name: 'Restore these changes' }))
+    await screen.findByText(/We restored changes you made on this device/)
+    await waitFor(() => expect(srv.state.hostName).toBe('PC host'))
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+    noUndo()
   })
 
-  it('songs: a song the restore added and another device pinned since stays; a removed song comes back at its place; the host goes back', async () => {
-    let slots: string[] = []
-    const t = await restored(
-      async () => {
-        slots = [...pinOf(0).options].map((o) => o.value).filter(Boolean)
-        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
-        fireEvent.click(screen.getByRole('button', { name: 'Remove Charlie' }))
-        await addSong('Bravo')
-      },
-      (s) => s.hostName === 'PC host' && s.tracks.map((x) => x.mediaId).join() === '701,702',
-    )
-    const phonePin = new Date(Number(slots[1])).toISOString()
-    await t.phone({ tracks: [lib(701, 0), lib(702, 1, phonePin)] }, () => expect(pinOf(1).value).toBe(slots[1]))
-    useSaved()
-    await waitFor(() => expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie', 'Bravo']))
-    await waitFor(() => expect(t.srv.state.hostName).toBe(null))
+  // VFY7: the phone saves AFTER this page loaded (the copy was restored by
+  // itself: nothing newer then) and before the restore's own save arrives.
+  // That save gets 409; the newer copy is merged by the usual rules, and
+  // where merging would overwrite the phone's work, the member is asked.
+  async function restoredThenPhone(edit: () => Promise<void>, phoneOver: Partial<FullView>) {
+    await copyLeftBehind(edit)
+    const { srv, routes } = fakeServer(v4())
+    let phoneDone = false
+    for (const key of ['PATCH /api/ev/events/42', 'PUT /api/ev/events/42/playlist']) {
+      const real = routes[key] as (b: unknown, u: string) => Reply
+      routes[key] = (b, u) => {
+        if (!phoneDone) {
+          phoneDone = true
+          srv.state = { ...srv.state, ...phoneOver, version: srv.state.version + 1, recentSaveIds: ['phone-1', ...(srv.state.recentSaveIds ?? [])] }
+        }
+        return real(b, u)
+      }
+    }
+    const api = mockApi(routes)
+    render(<Form initial={v4()} />)
+    await screen.findByText(/We restored changes you made on this device/)
+    noUndo()
+    await waitFor(() => expect(phoneDone).toBe(true))
+    return { srv, api }
+  }
+
+  it('VFY7-A host: the phone set the host after the page loaded; the restore asks instead of writing over it', async () => {
+    const t = await restoredThenPhone(async () => {
+      fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+    }, { hostName: 'Phone host' })
+    const ask = await screen.findByTestId('rf-restore-ask')
+    expect(within(ask).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['host name → "PC host"'])
+    expect(screen.queryByText(/We restored changes/)).toBeNull()
+    expect(field(/Hosted by/)).toBe('Phone host')
+    const n = t.api.writes().length // the refused save only
+    expect(t.api.writes().map((c) => c.body)).toEqual([{ hostName: 'PC host', version: 4 }])
+    await sleep(400)
+    expect(t.api.writes()).toHaveLength(n)
+    expect(t.srv.state).toMatchObject({ hostName: 'Phone host', version: 5 })
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the saved version' }))
+    await waitFor(() => expect(status()).toContain('All changes saved'))
     await sleep(300)
-    expect(Date.parse(t.srv.state.tracks[2]!.pinAt!)).toBe(Date.parse(phonePin))
-    expect(trackTitles()).toEqual(['Alpha', 'Charlie', 'Bravo'])
-    expect(screen.getByTestId('rf-merge-note').textContent).toBe('Kept "Bravo" as it is now, because it changed after the restore.')
-    expect(screen.queryByRole('button', { name: 'Use the saved version instead' })).toBeNull()
+    expect(t.api.writes()).toHaveLength(n)
+    expect(t.srv.state).toMatchObject({ hostName: 'Phone host', version: 5 })
+    expect(field(/Hosted by/)).toBe('Phone host')
+    await waitFor(() => expect(draftBackupKeys()).toEqual([]))
+    noUndo()
   })
 
-  it('a song the restore removed and another device added back is not added twice', async () => {
-    const t = await restored(
-      async () => {
-        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
-        fireEvent.click(screen.getByRole('button', { name: 'Remove Charlie' }))
-      },
-      (s) => s.hostName === 'PC host' && s.tracks.length === 1,
-    )
-    await t.phone({ tracks: [lib(701, 0), lib(703, 1)] }, () => expect(trackTitles()).toEqual(['Alpha', 'Charlie']))
-    useSaved()
-    await waitFor(() => expect(t.srv.state.hostName).toBe(null))
-    await sleep(300)
-    expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie'])
-    expect(t.later().map((c) => `${c.method} ${c.url}`)).toEqual(['PATCH /api/ev/events/42'])
-    expect(screen.queryByTestId('rf-merge-note')).toBeNull()
+  it('VFY7-B date: the phone moved the date after the page loaded; the restore asks, and "Restore these changes" is the member\'s own choice', async () => {
+    const newDay = dateKey(Date.now() + 20 * 24 * HOUR, 'America/New_York')
+    const phoneStart = new Date(Date.now() + 30 * 24 * HOUR)
+    phoneStart.setUTCMinutes(0, 0, 0)
+    const phoneEnd = new Date(phoneStart.getTime() + 2 * HOUR).toISOString()
+    const t = await restoredThenPhone(async () => {
+      fireEvent.change(screen.getByLabelText(/^Date \(/), { target: { value: newDay } })
+    }, { startsAt: phoneStart.toISOString(), endsAt: phoneEnd })
+    const ask = await screen.findByTestId('rf-restore-ask')
+    expect(within(ask).getAllByRole('listitem')[0]!.textContent).toMatch(/^date and time/)
+    await sleep(400)
+    expect(t.api.writes()).toHaveLength(1)
+    expect(Date.parse(t.srv.state.startsAt)).toBe(phoneStart.getTime())
+    expect(field(/^Date \(/)).toBe(dateKey(phoneStart, 'America/New_York'))
+    fireEvent.click(screen.getByRole('button', { name: 'Restore these changes' }))
+    await waitFor(() => expect(dateKey(t.srv.state.startsAt, 'America/New_York')).toBe(newDay))
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+    noUndo()
   })
 
-  // No catch-up before the click (the window stayed focused while the phone saved):
-  // the link fetches the saved version first, so the phone's work stays.
-  it('nocatch host: the phone changed the restored host while this tab did not look; the click keeps it', async () => {
-    const t = await restored(
-      async () => {
-        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
-        fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'PC loc' } })
-      },
-      (s) => s.hostName === 'PC host' && s.location === 'PC loc',
-    )
-    t.quiet({ hostName: 'Phone host' })
-    expect(field(/Hosted by/)).toBe('PC host')
-    useSaved()
-    await waitFor(() => expect(t.srv.state.location).toBe(null))
+  it('VFY7-C songs: both removed Charlie and the phone set the host: merged without a question, the phone\'s host stays and the note names it', async () => {
+    const t = await restoredThenPhone(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Charlie' }))
+    }, { tracks: [lib(701, 0)], hostName: 'Phone host' })
+    await waitFor(() => expect(status()).toContain('All changes saved'))
     await sleep(300)
+    expect(screen.queryByTestId('rf-restore-ask')).toBeNull()
+    expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha'])
     expect(t.srv.state.hostName).toBe('Phone host')
     expect(field(/Hosted by/)).toBe('Phone host')
-    expect(t.later().map((c) => c.body)).toEqual([{ location: null, version: 6 }])
-    const note = screen.getByTestId('rf-merge-note').textContent ?? ''
-    expect(note).toContain('Merged changes made in another tab or device')
-    expect(note).toContain('Kept host name as it is now, because it changed after the restore.')
-  })
-
-  it('nocatch pin: the phone moved the restored pin; the click keeps the phone\'s pin and removes only the untouched added song', async () => {
-    let slots: string[] = []
-    const t = await restored(
-      async () => {
-        slots = [...pinOf(0).options].map((o) => o.value).filter(Boolean)
-        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
-        fireEvent.change(pinOf(0), { target: { value: slots[0] } })
-        await addSong('Bravo')
-      },
-      (s) => s.hostName === 'PC host' && s.tracks.length === 3 && s.tracks[0]!.pinAt !== null,
-    )
-    const phonePin = new Date(Number(slots[2])).toISOString()
-    t.quiet({ tracks: [lib(701, 0, phonePin), lib(703, 1), lib(702, 2)] })
-    useSaved()
-    await waitFor(() => expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie']))
-    await waitFor(() => expect(t.srv.state.hostName).toBe(null))
-    await sleep(300)
-    expect(Date.parse(t.srv.state.tracks[0]!.pinAt!)).toBe(Date.parse(phonePin))
-    expect(pinOf(0).value).toBe(slots[2])
-    expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
-    expect(screen.getByTestId('rf-merge-note').textContent).toContain('Kept pin of "Alpha" as it is now, because it changed after the restore.')
-  })
-
-  it('nocatch songpin: the phone pinned the song the restore added; the click keeps that song and its pin', async () => {
-    let slots: string[] = []
-    const t = await restored(
-      async () => {
-        slots = [...pinOf(0).options].map((o) => o.value).filter(Boolean)
-        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
-        fireEvent.change(pinOf(0), { target: { value: slots[0] } })
-        await addSong('Bravo')
-      },
-      (s) => s.hostName === 'PC host' && s.tracks.length === 3 && s.tracks[0]!.pinAt !== null,
-    )
-    const alphaPin = t.srv.state.tracks[0]!.pinAt
-    const phonePin = new Date(Number(slots[1])).toISOString()
-    t.quiet({ tracks: [lib(701, 0, alphaPin), lib(703, 1), lib(702, 2, phonePin)] })
-    useSaved()
-    await waitFor(() => expect(t.srv.state.hostName).toBe(null))
-    await waitFor(() => expect(t.srv.state.tracks[0]!.pinAt).toBe(null))
-    await sleep(300)
-    expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie', 'Bravo'])
-    expect(Date.parse(t.srv.state.tracks[2]!.pinAt!)).toBe(Date.parse(phonePin))
-    expect(trackTitles()).toEqual(['Alpha', 'Charlie', 'Bravo'])
-    expect(screen.getByTestId('rf-merge-note').textContent).toContain('Kept "Bravo" as it is now, because it changed after the restore.')
-  })
-
-  it('the undo\'s own save gets a 409 (another device saved in between): the "Kept" note stays and the merge note is added to it', async () => {
-    const t = await restored(
-      async () => {
-        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
-        fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'PC loc' } })
-      },
-      (s) => s.hostName === 'PC host' && s.location === 'PC loc',
-    )
-    fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'PC loc 2' } })
-    await waitFor(() => expect(t.srv.state.location).toBe('PC loc 2'))
-    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
-    // the phone adds Bravo just before the undo's PATCH arrives
-    const real = t.routes['PATCH /api/ev/events/42'] as (b: unknown, u: string) => Reply
-    let armed = true
-    t.routes['PATCH /api/ev/events/42'] = (b, u) => {
-      if (armed && (b as { hostName?: unknown }).hostName === null) {
-        armed = false
-        t.quiet({ tracks: [...t.srv.state.tracks, lib(702, t.srv.state.tracks.length)] })
-      }
-      return real(b, u)
-    }
-    useSaved()
-    await waitFor(() => expect(t.srv.state.hostName).toBe(null))
-    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
-    expect(armed).toBe(false)
-    expect(t.srv.state.location).toBe('PC loc 2')
-    expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie', 'Bravo'])
-    const note = screen.getByTestId('rf-merge-note').textContent ?? ''
-    expect(note).toContain('Kept place as it is now, because it changed after the restore.')
-    expect(note).toContain('Merged changes made in another tab or device')
-    expect(note).toContain('"Bravo"')
+    expect(trackTitles()).toEqual(['Alpha'])
+    expect(screen.getByTestId('rf-merge-note').textContent).toContain('host name → "Phone host"')
+    noUndo()
   })
 })
 
