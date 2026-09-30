@@ -24,6 +24,18 @@ services:
     build:
       cache_from: ["type=gha,scope=music-probe"]
       cache_to: ["type=gha,scope=music-probe,mode=max,ignore-error=true"]
+  # v0.5.0 events services: the same web/worker/probe images (and tags) as
+  # music-web/-worker/-probe, so they read those scopes; the music-* targets
+  # write them.
+  events-web:
+    build:
+      cache_from: ["type=gha,scope=music-web"]
+  events-worker:
+    build:
+      cache_from: ["type=gha,scope=music-worker"]
+  events-probe:
+    build:
+      cache_from: ["type=gha,scope=music-probe"]
   music-fetch:
     build:
       cache_from: ["type=gha,scope=music-fetch"]
