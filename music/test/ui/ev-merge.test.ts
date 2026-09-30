@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { builderKey, describeChanges, type FormState, mergeForm, mergeNote, restoreConflicts } from '@/events/components/merge'
+import { builderKey, describeChanges, type FormState, mergeForm, mergeNote, restoreConflicts, undoRestore } from '@/events/components/merge'
 import type { BAnn, BTrack, Builder } from '@/events/components/playlist'
 import { EMPTY_DRAFT, type Draft } from '@/events/components/wizard'
 
@@ -22,14 +22,14 @@ describe('mergeForm: details', () => {
     const r = mergeForm(base, form({ location: 'The Pier' }), form({ hostName: 'Host From A' }))
     expect(r.draft).toMatchObject({ hostName: 'Host From A', location: 'The Pier' })
     expect(r).toMatchObject({ merged: true, kept: [], local: true })
-    expect(mergeNote(describeChanges(form({ location: 'The Pier' }), r), r.kept)).toBe('Merged changes made in another tab: host name → "Host From A".')
+    expect(mergeNote(describeChanges(form({ location: 'The Pier' }), r), r.kept)).toBe('Merged changes made in another tab or device: host name → "Host From A".')
   })
   it('both sides changed a field to different values: this side wins and it is named', () => {
     const r = mergeForm(form(), form({ hostName: 'Mine', title: 'My title' }), form({ hostName: 'Theirs', title: 'Their title', description: 'x' }))
     expect(r.draft).toMatchObject({ hostName: 'Mine', title: 'My title', description: 'x' })
     expect(r.kept).toEqual(['title', 'host name'])
     expect(mergeNote(describeChanges(form({ hostName: 'Mine', title: 'My title' }), r), r.kept)).toBe(
-      'Merged changes made in another tab: description → "x". Kept this tab\'s title and host name.',
+      'Merged changes made in another tab or device: description → "x". Kept this tab\'s title and host name.',
     )
   })
   it('the same change on both sides is not a conflict; the date/time moves as one unit', () => {
@@ -171,5 +171,57 @@ describe('restoreConflicts: a device copy onto a newer server copy', () => {
     }
     // the server holds this side's value (it landed): nothing to ask
     expect(restoreConflicts(b, form({ hostName: 'PC host' }, { tracks: [song(1), song(2)] }), form({ hostName: 'PC host' }, { tracks: [song(1), song(2)] }), true)).toBe(false)
+  })
+})
+
+describe('undoRestore: "Use the saved version instead" undoes only what nothing changed since', () => {
+  it('fields and the date/time go back where the form still holds the restored value; changed ones are kept', () => {
+    const before = form()
+    const after = form({ hostName: 'PC host', location: 'PC loc', time: '21:00' })
+    const r = undoRestore(before, after, form({ hostName: 'Phone host', location: 'PC loc', time: '21:00', description: 'typed later' }))
+    expect(r.draft).toMatchObject({ hostName: 'Phone host', location: '', time: '20:00', description: 'typed later' })
+    expect(r.kept).toEqual(['host name'])
+    expect(r.undone).toEqual(['place', 'date and time'])
+  })
+
+  it('a field set back elsewhere is neither undone nor kept; nothing left gives an empty undone list', () => {
+    const r = undoRestore(form(), form({ hostName: 'PC host' }), form())
+    expect(r.undone).toEqual([])
+    expect(r.kept).toEqual([])
+  })
+
+  it('songs: added ones go if unchanged, removed ones come back at their place, pins and the order go back', () => {
+    const [a, b, c] = [song(1), song(2), song(3)]
+    const before: FormState = form({}, { tracks: [a, b, c], order: 'shuffle' })
+    const d = song(4)
+    const after: FormState = form({}, { tracks: [c, { ...a, pinAt: T1 }, d], order: 'sequential' })
+    const r = undoRestore(before, after, form({}, { tracks: [c, { ...a, pinAt: T1 }, d, song(5)], order: 'sequential' }))
+    expect(ids(r.builder)).toEqual([1, 2, 3, 5])
+    expect(r.builder.tracks[0]!.pinAt).toBe(null)
+    expect(r.builder.order).toBe('shuffle')
+    expect(r.kept).toEqual([])
+  })
+
+  it('songs changed since stay: a pin moved elsewhere, an added song pinned elsewhere, a reorder elsewhere', () => {
+    const [a, b, c] = [song(1), song(2), song(3)]
+    const before: FormState = form({}, { tracks: [a, b, c] })
+    const after: FormState = form({}, { tracks: [b, { ...a, pinAt: T1 }, c, song(4)] })
+    const now: FormState = form({}, { tracks: [c, { ...a, pinAt: T2 }, b, song(4, T2)], order: 'sequential' })
+    const r = undoRestore(before, after, now)
+    expect(ids(r.builder)).toEqual([3, 1, 2, 4])
+    expect(r.builder.tracks[1]!.pinAt).toBe(T2)
+    expect(r.builder.tracks[3]!.pinAt).toBe(T2)
+    expect(r.builder.order).toBe('sequential')
+    expect(r.kept).toEqual(['"Song 4"', 'pin of "Song 1"', 'song order'])
+  })
+
+  it('announcements: copies it added or removed, only while the count is what it left', () => {
+    const [x, y] = [ann(9, T1), ann(9, T2)]
+    const before: FormState = form({}, { anns: [x] })
+    const after: FormState = form({}, { anns: [y] })
+    expect(undoRestore(before, after, form({}, { anns: [y] })).builder.anns.map((a) => a.at)).toEqual([T1])
+    const r = undoRestore(before, after, form({}, { anns: [y, y] }))
+    expect(r.builder.anns.map((a) => a.at)).toEqual([T2, T2, T1])
+    expect(r.kept).toEqual(['announcement "ID"'])
   })
 })

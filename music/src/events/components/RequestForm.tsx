@@ -34,7 +34,7 @@ import {
 import { api, ApiError, evMessage } from './ev-api'
 import { builderFromView, draftFromView, patchFor } from './fromView'
 import { rulesList } from './HomeParts'
-import { describeChanges, type FormState, listWords, mergeForm, mergeNote, restoreConflicts } from './merge'
+import { describeChanges, type FormState, listWords, mergeForm, mergeNote, restoreConflicts, undoRestore } from './merge'
 import { backupForm, EMPTY_BUILDER, type FormData, formOfView, planRestore, rebaseForm, type RestorePlan } from './restore'
 import { useEvConfig, useNow } from './hooks'
 import { EVENT_TYPE_LABEL } from './labels'
@@ -228,9 +228,9 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   const absorbed = useRef<string[]>([])
   /**
    * The last restore of device copies: the form before it and right after
-   * it. "Use the saved version instead" undoes exactly what it changed, even
-   * once the restore has saved itself (the saved version is then the
-   * restored one).
+   * it. "Use the saved version instead" undoes what it changed, even once
+   * the restore has saved itself (the saved version is then the restored
+   * one), but only where nothing changed since (merge.ts undoRestore).
    */
   const restoreUndo = useRef<{ before: FormState; after: FormState } | null>(null)
   const adopted = useRef<(() => void) | null>(null)
@@ -536,15 +536,21 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
     const u = restoreUndo.current
     restoreUndo.current = null
     if (u) {
-      // Undo what the restore changed (it may have saved itself already), on
-      // top of whatever the form holds now; the result saves like any edit.
-      const r = mergeForm(u.after, u.before, { draft, builder })
+      // Undo what the restore changed (it may have saved itself already)
+      // where the form still holds what the restore put there; whatever
+      // changed since (another device, or typed after the restore) stays.
+      // The result saves like any edit.
+      const r = undoRestore(u.before, u.after, { draft, builder })
       for (const k of absorbed.current.splice(0)) clearBackup(k)
-      setNote(null)
       setRestoredWhat([])
       setDraft(r.draft)
       setBuilder(r.builder)
       setRestored(false)
+      if (r.kept.length) {
+        // stays up through the save of the undo
+        mergedThisSave.current = true
+        setNote(`Kept ${listWords(r.kept)} as ${r.kept.length > 1 ? 'they are' : 'it is'} now, because ${r.kept.length > 1 ? 'they' : 'it'} changed after the restore.`)
+      } else setNote(null)
       return
     }
     const v = viewRef.current ?? initial
@@ -663,6 +669,9 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   // form changed since: those changes are not saved either.
   const shownStatus: SaveStatus =
     status.kind === 'stopped' && status.moved !== undefined && formKey !== stopKey.current ? { ...status, reason: movedMessage(status.moved || undefined, true) } : status
+  // "Use the saved version instead" only while the restore left something to undo.
+  const undo = restoreUndo.current
+  const undoable = !!undo && undoRestore(undo.before, undo.after, { draft, builder }).undone.length > 0
   const statusView = <SaveStatusText status={shownStatus} view={view} missing={missing} dirty={formKey !== synced.current} storageOk={storageOk} mode={mode} />
   const run = runningLength(builder.tracks)
   // Uploads that failed their check (My audio, or the server's refusal): marked in the lists.
@@ -721,7 +730,7 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       {restored ? (
         <Notice tone="info">
           We restored changes you made on this device that hadn&apos;t been saved yet{restoredWhat.length ? `: ${listWords(restoredWhat)}` : ''}. They save automatically now.
-          {initial || !view ? (
+          {(initial ? undoable : !view) ? (
             <>
               {' '}
               <button type="button" className="link" onClick={revertToSaved}>
@@ -965,6 +974,12 @@ function SaveStatusText({
               </a>
             </>
           ) : null}
+        </span>
+      )
+    case 'checking':
+      return (
+        <span className="ev-save" data-state="saving">
+          Checking your last change…
         </span>
       )
     case 'held':

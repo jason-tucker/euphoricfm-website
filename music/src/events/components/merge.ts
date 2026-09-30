@@ -264,14 +264,152 @@ export function restoreConflicts(base: FormState, local: FormState, server: Form
   return false
 }
 
+export type UndoResult = FormState & {
+  /** What goes back to how it was before the restore, in plain words (empty: nothing left to undo). */
+  undone: string[]
+  /** What the restore changed that has changed again since (from elsewhere, or typed after it): left as it is now. */
+  kept: string[]
+}
+
 /**
- * The note after another tab's work was merged into this form: what came in
+ * Undo a restore of device copies ("Use the saved version instead"). The
+ * restore turned the form `before` into `after`; `now` is the form now (the
+ * restore may have saved itself, other devices may have saved since, the
+ * member may have typed). Each thing the restore changed goes back ONLY
+ * where the form still holds exactly what the restore put there; anything
+ * changed since stays as it is now and is named in `kept`. Nothing the
+ * restore did not touch changes.
+ *   - details fields, date and time, play order: by value;
+ *   - songs the restore added are removed (if still there with the pin it
+ *     gave them); songs it removed come back (at their old place) unless
+ *     they are in the list again; pins it changed go back;
+ *   - the relative order of songs it reordered goes back when unchanged;
+ *   - announcements (a multiset by content): the copies it added or removed,
+ *     when the count is still what it left.
+ */
+export function undoRestore(before: FormState, after: FormState, now: FormState): UndoResult {
+  const undone: string[] = []
+  const kept: string[] = []
+  const draft: Draft = { ...now.draft }
+  for (const [f, label] of FIELDS) {
+    const [b, a, n] = [norm(before.draft[f] as string), norm(after.draft[f] as string), norm(now.draft[f] as string)]
+    if (a === b || n === b) continue
+    if (n === a) {
+      ;(draft as Record<string, unknown>)[f] = before.draft[f]
+      undone.push(label)
+    } else kept.push(label)
+  }
+  {
+    const [b, a, n] = [whenKey(before.draft), whenKey(after.draft), whenKey(now.draft)]
+    if (a !== b && n !== b) {
+      if (n === a) {
+        draft.date = before.draft.date
+        draft.time = before.draft.time
+        draft.lengthMin = before.draft.lengthMin
+        undone.push('date and time')
+      } else kept.push('date and time')
+    }
+  }
+
+  const bt = new Map(before.builder.tracks.map((t) => [trackId(t), t]))
+  const at = new Map(after.builder.tracks.map((t) => [trackId(t), t]))
+  let tracks = [...now.builder.tracks]
+  const song = (t: BTrack) => `"${clip(t.title)}"`
+  // songs the restore added
+  for (const [id, a] of at) {
+    if (bt.has(id)) continue
+    const n = tracks.find((t) => trackId(t) === id)
+    if (!n) continue
+    if (ms(n.pinAt) === ms(a.pinAt)) {
+      tracks = tracks.filter((t) => t !== n)
+      undone.push(`added ${song(a)}`)
+    } else kept.push(song(n))
+  }
+  // pins the restore changed
+  for (const [id, a] of at) {
+    const b = bt.get(id)
+    if (!b || ms(b.pinAt) === ms(a.pinAt)) continue
+    const i = tracks.findIndex((t) => trackId(t) === id)
+    if (i < 0 || ms(tracks[i]!.pinAt) === ms(b.pinAt)) continue
+    if (ms(tracks[i]!.pinAt) === ms(a.pinAt)) {
+      tracks[i] = { ...tracks[i]!, pinAt: b.pinAt }
+      undone.push(`pin of ${song(b)}`)
+    } else kept.push(`pin of ${song(b)}`)
+  }
+  // the order of the songs before, after and now all hold
+  {
+    const common = (l: BTrack[]) => l.filter((t) => bt.has(trackId(t)) && at.has(trackId(t)) && tracks.some((x) => trackId(x) === trackId(t))).map(trackId)
+    const [b, a, n] = [common(before.builder.tracks), common(after.builder.tracks), common(tracks)]
+    if (a.join('|') !== b.join('|') && n.join('|') !== b.join('|')) {
+      if (n.join('|') === a.join('|')) {
+        // the same slots, filled in the old order
+        const slot = new Set(b)
+        const byId = new Map(tracks.map((t) => [trackId(t), t]))
+        let k = 0
+        tracks = tracks.map((t) => (slot.has(trackId(t)) ? byId.get(b[k++]!)! : t))
+        undone.push('song order')
+      } else kept.push('song order')
+    }
+  }
+  // songs the restore removed: back at their old place unless in the list again
+  for (const [i, b] of before.builder.tracks.entries()) {
+    const id = trackId(b)
+    if (at.has(id) || tracks.some((t) => trackId(t) === id)) continue
+    // after the nearest song that came before it and is still in the list
+    let j = 0
+    for (let p = i - 1; p >= 0; p--) {
+      const q = tracks.findIndex((t) => trackId(t) === trackId(before.builder.tracks[p]!))
+      if (q >= 0) {
+        j = q + 1
+        break
+      }
+    }
+    tracks = [...tracks.slice(0, j), b, ...tracks.slice(j)]
+    undone.push(`removed ${song(b)}`)
+  }
+
+  let order = now.builder.order
+  if (after.builder.order !== before.builder.order && order !== before.builder.order) {
+    if (order === after.builder.order) {
+      order = before.builder.order
+      undone.push('play order')
+    } else kept.push('play order')
+  }
+
+  let anns = [...now.builder.anns]
+  const cb = countBy(before.builder.anns, annKey)
+  const ca = countBy(after.builder.anns, annKey)
+  const cn = countBy(anns, annKey)
+  for (const k of new Set([...cb.keys(), ...ca.keys()])) {
+    const [b, a, n] = [cb.get(k)?.n ?? 0, ca.get(k)?.n ?? 0, cn.get(k)?.n ?? 0]
+    if (a === b || n === b) continue
+    const first = (cb.get(k) ?? ca.get(k))!.first
+    const label = `announcement "${clip(first.title)}"`
+    if (n !== a) {
+      kept.push(label)
+      continue
+    }
+    if (a > b) {
+      // take away the copies it added (the last ones)
+      let drop = a - b
+      anns = anns.reverse().filter((x) => (drop > 0 && annKey(x) === k ? (drop--, false) : true)).reverse()
+      undone.push(`added ${label}`)
+    } else {
+      for (let c = a; c < b; c++) anns = [...anns, { ...first, key: `${first.key}~u${c}` }]
+      undone.push(`removed ${label}`)
+    }
+  }
+  return { draft, builder: { tracks, anns, order }, undone, kept }
+}
+
+/**
+ * The note after another tab's (or device's) work was merged into this form: what came in
  * (`incoming`, from describeChanges(form before, form after)) and the fields
  * where this tab's value was kept. Null when nothing visible came in (e.g.
  * this tab's own keepalive save arriving).
  */
 export function mergeNote(incoming: string[], kept: string[]): string | null {
   if (!incoming.length && !kept.length) return null
-  const what = incoming.length ? `Merged changes made in another tab: ${listWords(incoming)}.` : 'Merged changes made in another tab.'
+  const what = incoming.length ? `Merged changes made in another tab or device: ${listWords(incoming)}.` : 'Merged changes made in another tab or device.'
   return `${what}${kept.length ? ` Kept this tab's ${listWords(kept)}.` : ''}`
 }
