@@ -28,6 +28,19 @@ export async function parseBody<S extends z.ZodType>(req: Request, schema: S): P
   return r.data
 }
 
+/**
+ * An action route's optional body: none (or a non-JSON one, as parseEmpty
+ * allows) is `{}`; a JSON body is parsed with the schema.
+ */
+export async function parseOptionalBody<S extends z.ZodType>(req: Request, schema: S): Promise<z.infer<S>> {
+  const len = req.headers.get('content-length')
+  const ct = req.headers.get('content-type') ?? ''
+  const raw = !req.body || len === '0' || !/^application\/json/i.test(ct) ? null : await readJsonLimited(req)
+  const r = schema.safeParse(raw ?? {})
+  if (!r.success) throw badRequest('invalid_body', { issues: issuesOf(r.error) })
+  return r.data
+}
+
 /** An empty body ({} or none) for the action routes. */
 export async function parseEmpty(req: Request): Promise<void> {
   const len = req.headers.get('content-length')

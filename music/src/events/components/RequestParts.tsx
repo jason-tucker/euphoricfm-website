@@ -1,6 +1,6 @@
 'use client'
 
-// Form sections shared by the request wizard, the owner's edit page and
+// Form sections shared by the one-page request form, the owner's edit page and
 // staff booking: details, time (with live rule feedback and the day's
 // availability), visibility.
 

@@ -7,121 +7,104 @@
 // `version`: a 409 version_conflict reloads the event and says why. A change
 // to a LIVE event that the server answers with 409 restart_required opens a
 // staff confirmation, and only then is it re-sent with confirmRestart.
+// 0.5.3: the owner's own DRAFT opens in the one-page autosaving request form
+// (RequestForm); everything else keeps explicit saves here (an autosave of a
+// pending/approved event would post a ticket diff, or send it back to
+// re-approval, on every keystroke).
+// A draft's device copies (unsaved autosave changes) left on this device are
+// never applied to an event that is no longer a draft: the page says what
+// they were and discards them (restore.ts works out what they would change).
 
 import { useEffect, useMemo, useState } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useJson } from '@/components/hooks'
 import { Notice } from '@/components/ui'
-import type { EventTrack } from '@/events/contract/types'
-import { api, evMessage, isRestartRequired, isVersionConflict } from './ev-api'
+import { clearBackup, readDraftBackups } from './autosave'
+import { api, evMessage, isRestartRequired, isStatusChanged, isVersionConflict } from './ev-api'
 import { StatusChip } from './EventViewCard'
 import { useEvConfig, useNow } from './hooks'
 import { EVENT_TYPE_LABEL, statusOf } from './labels'
-import { newKey, PlaylistBuilder, recallTitle } from './PlaylistBuilder'
-import { type BAnn, type BTrack, type Builder, builderProblems, toPayload } from './playlist'
+import { builderFromView, draftFromView, patchFor, patchNeedsReapproval } from './fromView'
+import { PlaylistBuilder } from './PlaylistBuilder'
+import { listWords } from './merge'
+import { RequestForm } from './RequestForm'
+import { type FormData, planRestore } from './restore'
+import { type Builder, builderProblems, toPayload } from './playlist'
 import { DetailsFields, TimeFields, toInputs, useAvailability, VisibilityFields } from './RequestParts'
-import { MIN } from './time'
 import { type AudioItem, type FullView, listOf, type Stinger } from './types'
 import { useTz, When } from './tz'
 import { checkDetails, checkTime, type Draft, enteredTz, withoutSelf } from './wizard'
 
+const DEFAULT_CHUNK = 8 * 1024 * 1024
 const RE_APPROVAL_STATUSES = new Set(['approved', 'built'])
 const WITHDRAWABLE = new Set(['draft', 'pending', 'approved', 'built'])
 
-/**
- * Rebuild the playlist builder from a saved event. The server resolves a
- * display `label` (title, artist, length) on every track and announcement, so
- * staff and fresh sessions see real names; the viewer's own audio list, the
- * stinger list and this browser's library-search memory are only fallbacks.
- */
-export function builderFromView(v: FullView, audio: AudioItem[], stingers: Stinger[]): Builder {
-  const tracks: BTrack[] = [...v.tracks]
-    .sort((a: EventTrack, b: EventTrack) => a.position - b.position)
-    .map((t) => {
-      const l = t.label
-      if (t.source === 'upload') {
-        const a = l ? null : audio.find((x) => x.id === t.audioId)
-        return { key: newKey(), source: 'upload', mediaId: null, audioId: t.audioId, title: l?.title ?? a?.title ?? `Upload #${t.audioId}`, artist: l ? l.artist : (a?.artist ?? null), lengthS: l ? l.lengthS : (a?.durationS ?? null), pinAt: t.pinAt }
-      }
-      const r = !l && t.mediaId ? recallTitle(t.mediaId) : null
-      return { key: newKey(), source: 'library', mediaId: t.mediaId, audioId: null, title: l?.title ?? r?.title ?? `Library song #${t.mediaId}`, artist: l ? l.artist : (r?.artist ?? null), lengthS: l ? l.lengthS : (r?.lengthS ?? null), pinAt: t.pinAt }
-    })
-  const anns: BAnn[] = v.announcements.map((a) => {
-    const l = a.label
-    const st = !l && a.source === 'stinger' ? stingers.find((s) => s.mediaId === a.mediaId) : null
-    const up = !l && a.source === 'upload' ? audio.find((x) => x.id === a.audioId) : null
-    return {
-      key: newKey(),
-      source: a.source,
-      mediaId: a.mediaId,
-      audioId: a.audioId,
-      title: l?.title ?? st?.title ?? up?.title ?? (a.source === 'stinger' ? `Announcement #${a.mediaId}` : `Upload #${a.audioId}`),
-      lengthS: l ? l.lengthS : (st?.lengthS ?? up?.durationS ?? null),
-      mode: a.mode,
-      at: a.at,
-      everyMin: a.everyMin,
-      from: a.from,
-      until: a.until,
-    }
-  })
-  return { tracks, anns, order: v.playlistOrder }
-}
+export { patchFor, patchNeedsReapproval } from './fromView'
 
-function draftFromView(v: FullView, zone: string | undefined): Draft {
-  const s = toInputs(v.startsAt, zone)
-  return {
-    title: v.title,
-    hostName: v.hostName ?? '',
-    description: v.description ?? '',
-    location: v.location ?? '',
-    eventType: v.eventType,
-    date: s.date,
-    time: s.time,
-    lengthMin: Math.round((Date.parse(v.endsAt) - Date.parse(v.startsAt)) / MIN),
-    visibility: v.visibility,
-  }
-}
-
-/** The PATCH body: only fields that changed. */
-export function patchFor(v: FullView, d: Draft, startsAt: string | null, endsAt: string | null, tz: string): Record<string, unknown> {
-  const p: Record<string, unknown> = {}
-  const nul = (s: string) => (s.trim() ? s.trim() : null)
-  if (d.title.trim() !== v.title) p.title = d.title.trim()
-  if (nul(d.hostName) !== v.hostName) p.hostName = nul(d.hostName)
-  if (nul(d.description) !== v.description) p.description = nul(d.description)
-  if (nul(d.location) !== v.location) p.location = nul(d.location)
-  if (d.eventType && d.eventType !== v.eventType) p.eventType = d.eventType
-  if (d.visibility && d.visibility !== v.visibility) p.visibility = d.visibility
-  if (startsAt && endsAt && (Date.parse(startsAt) !== Date.parse(v.startsAt) || Date.parse(endsAt) !== Date.parse(v.endsAt))) {
-    p.startsAt = startsAt
-    p.endsAt = endsAt
-    p.enteredTz = tz
-  }
-  return p
-}
-
-/** Does a patch touch anything that needs re-approval (title, time, visibility)? */
-export const patchNeedsReapproval = (p: Record<string, unknown>) => 'title' in p || 'startsAt' in p || 'visibility' in p
-
-export function EventEditor({ id, staff, viewerDiscordId }: { id: number; staff: boolean; viewerDiscordId: string }) {
+export function EventEditor({ id, staff, viewerDiscordId, chunkBytes }: { id: number; staff: boolean; viewerDiscordId: string; chunkBytes?: number }) {
   const [reload, setReload] = useState(0)
   const ev = useJson<FullView>(`/api/ev/events/${id}?r=${reload}`)
   const audio = useJson<unknown>('/api/ev/audio')
   const stingers = useJson<unknown>('/api/ev/stingers')
   const [view, setView] = useState<FullView | null>(null)
   const [flash, setFlash] = useState<string | null>(null)
+  /** Unsaved draft changes found on this device for an event that is no longer a draft (discarded). */
+  const [lost, setLost] = useState<string[] | null>(null)
+  const { zone } = useTz()
   useEffect(() => {
     if (ev.data) setView(ev.data)
   }, [ev.data])
+  const full = view?.kind === 'full' ? view : null
+  const ownNonDraft = !!full && full.status !== 'draft' && full.ownerDiscordId === viewerDiscordId
+  useEffect(() => {
+    if (!full || !ownNonDraft) return
+    const found = readDraftBackups<FormData>(viewerDiscordId, full.id)
+    if (!found.length) return
+    const p = planRestore(full, found, { zone, audio: listOf<AudioItem>(audio.data), stingers: listOf<Stinger>(stingers.data) })
+    for (const { key } of found) clearBackup(key)
+    if (p.changed) setLost(p.changes.length ? p.changes : ['some changes'])
+    // once per event and status
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [full?.id, full?.status, ownNonDraft])
   if (ev.error) return <Notice tone="error">This event doesn&apos;t exist, or you don&apos;t have access to it.</Notice>
   if (!view || (!audio.data && audio.loading) || (!stingers.data && stingers.loading)) return <p className="text-sm text-cream/60">Loading…</p>
   if (view.kind !== 'full') return <Notice tone="error">You can only change your own events.</Notice>
+  const own = view.ownerDiscordId === viewerDiscordId
+  if (own && view.status === 'draft' && view.canEdit) {
+    return (
+      <div className="space-y-4">
+        <header className="space-y-1">
+          <p className="eyebrow">Draft request</p>
+          <h1 className="text-2xl font-bold text-cream">{view.title}</h1>
+          <p className="text-sm text-cream/75">Changes save automatically. Submit at the bottom when it&apos;s ready.</p>
+        </header>
+        <RequestForm
+          staff={staff}
+          userKey={viewerDiscordId}
+          chunkBytes={chunkBytes ?? DEFAULT_CHUNK}
+          initial={view}
+          audio={listOf<AudioItem>(audio.data)}
+          stingers={listOf<Stinger>(stingers.data)}
+        />
+      </div>
+    )
+  }
   return (
+    <>
+      {lost ? (
+        <Notice tone="warn">
+          <span data-testid="ev-lost-changes">
+            Some changes made on this device had not reached the draft when the request was submitted, so they weren&apos;t saved: {listWords(lost)}. They have been discarded. If you still want them, make them again
+            below.
+          </span>
+        </Notice>
+      ) : null}
     <EditorBody
       key={`${view.id}-${reload}`}
       view={view}
       staff={staff}
-      own={view.ownerDiscordId === viewerDiscordId}
+      own={own}
+      chunkBytes={own ? chunkBytes : undefined}
       audio={listOf<AudioItem>(audio.data)}
       stingers={listOf<Stinger>(stingers.data)}
       flash={flash}
@@ -135,6 +118,7 @@ export function EventEditor({ id, staff, viewerDiscordId }: { id: number; staff:
         setReload((n) => n + 1)
       }}
     />
+    </>
   )
 }
 
@@ -142,6 +126,7 @@ function EditorBody({
   view,
   staff,
   own,
+  chunkBytes,
   audio,
   stingers,
   flash,
@@ -151,6 +136,7 @@ function EditorBody({
   view: FullView
   staff: boolean
   own: boolean
+  chunkBytes?: number
   audio: AudioItem[]
   stingers: Stinger[]
   flash: string | null
@@ -197,7 +183,9 @@ function EditorBody({
       setMsg({ tone: 'ok', text: okText })
       onChanged(v)
     } catch (e) {
-      if (isVersionConflict(e)) onConflict(evMessage(e))
+      // The event changed under this page (a newer version, or it was
+      // submitted/approved/withdrawn elsewhere): nothing was saved; reload it.
+      if (isVersionConflict(e) || isStatusChanged(e)) onConflict(evMessage(e))
       else if (staff && isRestartRequired(e) && (label === 'details' || label === 'playlist')) setRestart(label)
       else setMsg({ tone: 'error', text: evMessage(e) })
     } finally {
@@ -207,7 +195,10 @@ function EditorBody({
   }
 
   // confirmRestart is only ever sent from the restart confirmation dialog.
-  const guard = (confirmRestart: boolean) => ({ version: view.version, ...(confirmRestart ? { confirmRestart: true } : {}) })
+  // expectStatus: an edit confirmed against this status (e.g. "pending",
+  // no re-approval warning) never lands on an event approved meanwhile
+  // (status changes do not bump the version).
+  const guard = (confirmRestart: boolean) => ({ version: view.version, expectStatus: view.status, ...(confirmRestart ? { confirmRestart: true } : {}) })
   const saveDetails = (confirmRestart = false) =>
     run('details', async () => (await api<{ event: FullView }>(`/api/ev/events/${view.id}`, { method: 'PATCH', json: { ...patch, ...guard(confirmRestart) } })).event, 'Saved.')
   const savePlaylist = (confirmRestart = false) =>
@@ -304,7 +295,7 @@ function EditorBody({
             <h2 id="ed-playlist" className="text-lg font-bold text-cream">
               Playlist
             </h2>
-            <PlaylistBuilder value={builder} onChange={setBuilder} start={view.startsAt} end={view.endsAt} maxRows={config.maxRows} uploadsEnabled={config.uploadsEnabled} />
+            <PlaylistBuilder value={builder} onChange={setBuilder} start={view.startsAt} end={view.endsAt} maxRows={config.maxRows} uploadsEnabled={config.uploadsEnabled} chunkBytes={chunkBytes} />
             {problems.length ? (
               <Notice tone="warn">
                 <ul className="list-disc space-y-1 pl-4">

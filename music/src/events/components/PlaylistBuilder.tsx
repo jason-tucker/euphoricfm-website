@@ -4,10 +4,16 @@
 // audio, explicit Up/Down reordering, no duplicates, shuffle/sequential,
 // optional pin time per song, and announcements (EFM stingers or My audio)
 // "at" a time or "every N min" between two times. Pure rules: playlist.ts.
+// 0.5.3: split into SongsEditor and AnnouncementsEditor (the one-page request
+// form shows them as separate sections), both able to upload a file inline
+// (InlineUpload) when the page passes `chunkBytes`; PlaylistBuilder keeps the
+// combined layout for the approved-event editor.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDebounced, useJson } from '@/components/hooks'
-import { EVERY_MIN_OPTIONS } from '@/events/contract/rules'
+import { AUDIO_USABLE_STATUSES, EVERY_MIN_OPTIONS } from '@/events/contract/rules'
+import { api } from './ev-api'
+import { InlineUpload } from './InlineUpload'
 import type { EveryMin } from '@/events/contract/types'
 import {
   addTrack,
@@ -74,6 +80,51 @@ function SlotSelect({ id, label, value, slots, onChange, allowNone, noneLabel = 
   )
 }
 
+/** My audio (all rows, for the cap) and the EFM stingers, with a reload and a local add. */
+export function useAudioSources() {
+  const [audio, setAudio] = useState<AudioItem[]>([])
+  const [n, setN] = useState(0)
+  useEffect(() => {
+    let live = true
+    api<unknown>('/api/ev/audio')
+      .then((b) => live && setAudio(listOf<AudioItem>(b)))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [n])
+  const stingersRes = useJson<unknown>('/api/ev/stingers')
+  const stingers = useMemo(() => listOf<Stinger>(stingersRes.data), [stingersRes.data])
+  const usable = useMemo(() => audio.filter((a) => AUDIO_USABLE_STATUSES.includes(a.status)), [audio])
+  const counted = audio.filter((a) => a.status !== 'rejected' && a.status !== 'failed').length
+  const add = useCallback((a: AudioItem) => setAudio((l) => [a, ...l.filter((x) => x.id !== a.id)]), [])
+  const reload = useCallback(() => setN((x) => x + 1), [])
+  return { audio, usable, counted, stingers, add, reload }
+}
+export type AudioSources = ReturnType<typeof useAudioSources>
+
+type EditorProps = {
+  value: Builder
+  onChange: (b: Builder) => void
+  /** The event window; null while the date/time is not chosen yet. */
+  start: string | null
+  end: string | null
+  sources: AudioSources
+  uploadsEnabled: boolean
+  /** Enables the inline upload (own events only: an upload belongs to the uploader). */
+  chunkBytes?: number
+  /** Uploads that failed their check: marked "Upload failed — remove it". */
+  failedAudio?: ReadonlySet<number>
+}
+
+function FailedMark() {
+  return (
+    <span className="mt-1 block text-xs font-semibold text-rose-300" role="alert" data-testid="pb-failed">
+      Upload failed — remove it
+    </span>
+  )
+}
+
 export function PlaylistBuilder({
   value,
   onChange,
@@ -81,6 +132,7 @@ export function PlaylistBuilder({
   end,
   maxRows,
   uploadsEnabled,
+  chunkBytes,
 }: {
   value: Builder
   onChange: (b: Builder) => void
@@ -88,8 +140,36 @@ export function PlaylistBuilder({
   end: string
   maxRows: number
   uploadsEnabled: boolean
+  chunkBytes?: number
 }) {
+  const sources = useAudioSources()
+  const props = { value, onChange, start, end, sources, uploadsEnabled, chunkBytes }
+  return (
+    <div className="space-y-6">
+      <SongsEditor {...props} />
+      <AnnouncementsEditor {...props} />
+      <RowsNote value={value} start={start} end={end} maxRows={maxRows} />
+    </div>
+  )
+}
+
+/** "Schedule entries: about N of M" + the screen-reader summary. */
+export function RowsNote({ value, start, end, maxRows }: { value: Builder; start: string; end: string; maxRows: number }) {
   const { mode } = useTz()
+  const rows = estimateRows(value, start, end)
+  return (
+    <>
+      <p className={`text-xs ${rows > maxRows ? 'text-rose-300' : 'text-cream/60'}`} data-testid="pb-rows">
+        Schedule entries: about {rows} of {maxRows}.{rows > maxRows ? ' That is too many: remove some pins or announcements, or repeat them less often.' : ''}
+      </p>
+      <p className="sr-only" aria-live="polite">
+        {value.tracks.length} songs, {value.anns.length} announcements, times in {mode === 'et' ? 'Eastern' : 'your'} time.
+      </p>
+    </>
+  )
+}
+
+export function SongsEditor({ value, onChange, start, end, sources, uploadsEnabled, chunkBytes, failedAudio }: EditorProps) {
   const [q, setQ] = useState('')
   const dq = useDebounced(q.trim(), 350)
   const [msg, setMsg] = useState<string | null>(null)
@@ -98,10 +178,7 @@ export function PlaylistBuilder({
   useEffect(() => {
     if (results.length) rememberTitles(results)
   }, [results])
-  const audio = useJson<unknown>('/api/ev/audio')
-  const myAudio = useMemo(() => listOf<AudioItem>(audio.data).filter((a) => a.status === 'ready' || a.status === 'live'), [audio.data])
-  const stingersRes = useJson<unknown>('/api/ev/stingers')
-  const stingers = useMemo(() => listOf<Stinger>(stingersRes.data), [stingersRes.data])
+  const mySongs = sources.usable.filter((a) => a.kind === 'song')
 
   const ids = new Set(value.tracks.map(trackId))
   const set = (patch: Partial<Builder>) => onChange({ ...value, ...patch })
@@ -115,10 +192,9 @@ export function PlaylistBuilder({
     add({ key: newKey(), source: 'library', mediaId: s.mediaId, audioId: null, title: s.title, artist: s.artist, lengthS: s.lengthS, pinAt: null })
   const addUpload = (a: AudioItem) => add({ key: newKey(), source: 'upload', mediaId: null, audioId: a.id, title: a.title, artist: a.artist, lengthS: a.durationS, pinAt: null })
 
-  const pins = useMemo(() => pinSlots(start, end), [start, end])
+  const pins = useMemo(() => (start && end ? pinSlots(start, end) : []), [start, end])
   const run = runningLength(value.tracks)
-  const eventS = (Date.parse(end) - Date.parse(start)) / 1000
-  const rows = estimateRows(value, start, end)
+  const eventS = start && end ? (Date.parse(end) - Date.parse(start)) / 1000 : null
 
   return (
     <div className="space-y-6">
@@ -174,29 +250,27 @@ export function PlaylistBuilder({
         ) : (
           <p className="text-xs text-cream/60">Type at least 2 letters.</p>
         )}
-        {myAudio.some((a) => a.kind === 'song') ? (
+        {mySongs.length ? (
           <details className="disclosure">
             <summary>Add your own songs (My audio)</summary>
             <ul className="mt-2 space-y-1">
-              {myAudio
-                .filter((a) => a.kind === 'song')
-                .map((a) => {
-                  const added = ids.has(`upload:${a.id}`)
-                  return (
-                    <li key={a.id} className="flex items-center gap-2 rounded-xl border border-cream/10 px-3 py-2">
-                      <span className="min-w-0 flex-1 truncate text-sm">
-                        {a.artist ? `${a.artist} – ` : ''}
-                        {a.title} · {formatLength(a.durationS)}
-                      </span>
-                      <button type="button" className="btn btn-secondary btn-sm min-h-[44px]" onClick={() => addUpload(a)} disabled={added}>
-                        {added ? 'Added' : 'Add'}
-                      </button>
-                    </li>
-                  )
-                })}
+              {mySongs.map((a) => {
+                const added = ids.has(`upload:${a.id}`)
+                return (
+                  <li key={a.id} className="flex items-center gap-2 rounded-xl border border-cream/10 px-3 py-2">
+                    <span className="min-w-0 flex-1 truncate text-sm">
+                      {a.artist ? `${a.artist} – ` : ''}
+                      {a.title} · {formatLength(a.durationS)}
+                    </span>
+                    <button type="button" className="btn btn-secondary btn-sm min-h-[44px]" onClick={() => addUpload(a)} disabled={added}>
+                      {added ? 'Added' : 'Add'}
+                    </button>
+                  </li>
+                )
+              })}
             </ul>
           </details>
-        ) : uploadsEnabled ? (
+        ) : uploadsEnabled && chunkBytes === undefined ? (
           <p className="text-xs text-cream/60">
             Want to play your own recordings?{' '}
             <a className="link" href="/my/audio">
@@ -204,6 +278,17 @@ export function PlaylistBuilder({
             </a>
             .
           </p>
+        ) : null}
+        {chunkBytes !== undefined ? (
+          <InlineUpload
+            kind="song"
+            chunkBytes={chunkBytes}
+            audioCount={sources.counted}
+            onReady={(a) => {
+              sources.add(a)
+              addUpload(a)
+            }}
+          />
         ) : null}
         {msg ? (
           <p className="notice notice-warn" role="alert">
@@ -219,25 +304,28 @@ export function PlaylistBuilder({
           </h3>
           <p className="text-xs text-cream/70" data-testid="pb-length">
             Songs: {formatDuration(run.seconds * 1000)}
-            {run.unknown ? ` + ${run.unknown} of unknown length` : ''} · Event: {formatDuration(eventS * 1000)}
+            {run.unknown ? ` + ${run.unknown} of unknown length` : ''}
+            {eventS !== null ? ` · Event: ${formatDuration(eventS * 1000)}` : ''}
           </p>
         </div>
         {value.tracks.length ? (
-          <>
-            <progress className="progress" max={Math.max(eventS, 1)} value={Math.min(run.seconds, eventS)} aria-label="Songs compared with the event length" />
-            <p className="text-xs text-cream/60">
-              {run.seconds < eventS
-                ? 'Your songs are shorter than the event, so the list plays again from the top.'
-                : 'Your songs fill the event. Songs that do not fit before the end will not play.'}{' '}
-              {value.order === 'shuffle' ? 'Shuffle plays them in a random order.' : 'They play in the order below.'}
-            </p>
-          </>
+          eventS !== null ? (
+            <>
+              <progress className="progress" max={Math.max(eventS, 1)} value={Math.min(run.seconds, eventS)} aria-label="Songs compared with the event length" />
+              <p className="text-xs text-cream/60">
+                {run.seconds < eventS
+                  ? 'Your songs are shorter than the event, so the list plays again from the top.'
+                  : 'Your songs fill the event. Songs that do not fit before the end will not play.'}{' '}
+                {value.order === 'shuffle' ? 'Shuffle plays them in a random order.' : 'They play in the order below.'}
+              </p>
+            </>
+          ) : null
         ) : (
           <p className="notice notice-info">No songs yet. Search the library above and press Add.</p>
         )}
         <ol className="space-y-2">
           {value.tracks.map((t, i) => {
-            const pinErr = checkPin(t.pinAt, start, end)
+            const pinErr = start && end ? checkPin(t.pinAt, start, end) : null
             return (
               <li key={t.key} className="rounded-xl border border-cream/15 bg-cream/[0.03] p-3" data-testid="pb-track">
                 <div className="flex items-start gap-2">
@@ -248,6 +336,7 @@ export function PlaylistBuilder({
                       {t.source === 'upload' ? 'My audio · ' : ''}
                       {t.artist ?? 'Unknown artist'} · {formatLength(t.lengthS)}
                     </span>
+                    {t.audioId !== null && failedAudio?.has(t.audioId) ? <FailedMark /> : null}
                   </span>
                   <button type="button" className="ev-iconbtn" onClick={() => set({ tracks: moveTrack(value.tracks, i, -1) })} disabled={i === 0} aria-label={`Move ${t.title} up`}>
                     ↑ Up
@@ -259,41 +348,35 @@ export function PlaylistBuilder({
                     ✕
                   </button>
                 </div>
-                <div className="mt-2 max-w-xs">
-                  <SlotSelect
-                    id={`pin-${t.key}`}
-                    label="Pin to a time (optional)"
-                    value={t.pinAt}
-                    slots={pins}
-                    allowNone
-                    onChange={(v) => set({ tracks: value.tracks.map((x, k) => (k === i ? { ...x, pinAt: v } : x)) })}
-                  />
-                  {t.pinAt && !pinErr ? <p className="ev-field-hint">Plays at the first song break after this time.</p> : null}
-                  {pinErr ? (
-                    <p className="mt-1 text-xs text-rose-300" role="alert">
-                      {pinErr}
-                    </p>
-                  ) : null}
-                </div>
+                {start && end ? (
+                  <div className="mt-2 max-w-xs">
+                    <SlotSelect
+                      id={`pin-${t.key}`}
+                      label="Pin to a time (optional)"
+                      value={t.pinAt}
+                      slots={pins}
+                      allowNone
+                      onChange={(v) => set({ tracks: value.tracks.map((x, k) => (k === i ? { ...x, pinAt: v } : x)) })}
+                    />
+                    {t.pinAt && !pinErr ? <p className="ev-field-hint">Plays at the first song break after this time.</p> : null}
+                    {pinErr ? (
+                      <p className="mt-1 text-xs text-rose-300" role="alert">
+                        {pinErr}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
               </li>
             )
           })}
         </ol>
+        {!(start && end) && value.tracks.length ? <p className="text-xs text-cream/60">Pick the date and time above to pin songs to a time.</p> : null}
       </section>
-
-      <AnnouncementsEditor value={value} onChange={onChange} start={start} end={end} stingers={stingers} myAudio={myAudio.filter((a) => a.kind === 'announcement')} />
-
-      <p className={`text-xs ${rows > maxRows ? 'text-rose-300' : 'text-cream/60'}`} data-testid="pb-rows">
-        Schedule entries: about {rows} of {maxRows}.{rows > maxRows ? ' That is too many: remove some pins or announcements, or repeat them less often.' : ''}
-      </p>
-      <p className="sr-only" aria-live="polite">
-        {value.tracks.length} songs, {value.anns.length} announcements, times in {mode === 'et' ? 'Eastern' : 'your'} time.
-      </p>
     </div>
   )
 }
 
-function AnnouncementsEditor({ value, onChange, start, end, stingers, myAudio }: { value: Builder; onChange: (b: Builder) => void; start: string; end: string; stingers: Stinger[]; myAudio: AudioItem[] }) {
+export function AnnouncementsEditor({ value, onChange, start, end, sources, uploadsEnabled, chunkBytes, failedAudio }: EditorProps) {
   const { mode } = useTz()
   const [src, setSrc] = useState('')
   const [annMode, setAnnMode] = useState<'at' | 'every'>('at')
@@ -302,24 +385,30 @@ function AnnouncementsEditor({ value, onChange, start, end, stingers, myAudio }:
   const [from, setFrom] = useState<string | null>(null)
   const [until, setUntil] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const slots = useMemo(() => annSlots(start, end), [start, end])
-  const untilSlots = useMemo(() => slots5((from ? Date.parse(from) : Date.parse(start)) + 5 * MIN, Date.parse(end)), [from, start, end])
+  const stingers = sources.stingers
+  const myAudio = sources.usable.filter((a) => a.kind === 'announcement')
+  const slots = useMemo(() => (start && end ? annSlots(start, end) : []), [start, end])
+  const untilSlots = useMemo(() => (start && end ? slots5((from ? Date.parse(from) : Date.parse(start)) + 5 * MIN, Date.parse(end)) : []), [from, start, end])
 
   const fmtAnn = (a: BAnn) =>
     a.mode === 'at'
       ? `at ${a.at ? `${formatIn(a.at, mode, 'short')} ${zoneLabel(a.at, mode)}` : '?'}`
       : `every ${a.everyMin} min, ${a.from ? formatIn(a.from, mode, 'short') : '?'} – ${a.until ? formatIn(a.until, mode, 'time') : '?'} ${a.from ? zoneLabel(a.from, mode) : ''}`
 
-  const addAnn = () => {
+  // `known`: a just-uploaded file that is not in the (re-rendered) list yet.
+  // `quiet`: an automatic add after an upload; a timing problem then just
+  // leaves the file selected instead of showing an error.
+  const addAnn = (srcValue = src, known?: AudioItem, quiet = false) => {
     setErr(null)
-    const [kind, idStr] = src.split(':')
+    if (!start || !end) return
+    const [kind, idStr] = srcValue.split(':')
     const id = Number(idStr)
     if (!kind || !id) {
       setErr('Choose which announcement to play.')
       return
     }
     const st = kind === 'stinger' ? stingers.find((s) => s.mediaId === id) : null
-    const up = kind === 'upload' ? myAudio.find((a) => a.id === id) : null
+    const up = kind === 'upload' ? (known?.id === id ? known : myAudio.find((a) => a.id === id)) : null
     const a: BAnn = {
       key: newKey(),
       source: kind === 'stinger' ? 'stinger' : 'upload',
@@ -335,7 +424,7 @@ function AnnouncementsEditor({ value, onChange, start, end, stingers, myAudio }:
     }
     const problem = checkAnnouncement(a, start, end)
     if (problem) {
-      setErr(problem)
+      if (!quiet) setErr(problem)
       return
     }
     onChange({ ...value, anns: [...value.anns, a] })
@@ -351,7 +440,7 @@ function AnnouncementsEditor({ value, onChange, start, end, stingers, myAudio }:
       {value.anns.length ? (
         <ul className="space-y-2">
           {value.anns.map((a, i) => {
-            const problem = checkAnnouncement(a, start, end)
+            const problem = start && end ? checkAnnouncement(a, start, end) : null
             return (
               <li key={a.key} className="flex items-start gap-2 rounded-xl border border-cream/15 bg-cream/[0.03] p-3" data-testid="pb-ann">
                 <span className="min-w-0 flex-1 text-sm">
@@ -364,6 +453,7 @@ function AnnouncementsEditor({ value, onChange, start, end, stingers, myAudio }:
                       {problem}
                     </span>
                   ) : null}
+                  {a.audioId !== null && failedAudio?.has(a.audioId) ? <FailedMark /> : null}
                 </span>
                 <button type="button" className="ev-iconbtn ev-iconbtn-danger" onClick={() => onChange({ ...value, anns: removeAt(value.anns, i) })} aria-label={`Remove announcement ${a.title}`}>
                   ✕
@@ -399,35 +489,62 @@ function AnnouncementsEditor({ value, onChange, start, end, stingers, myAudio }:
             ) : null}
           </select>
         </label>
-        <div className="ev-seg" role="group" aria-label="When it plays">
-          <button type="button" aria-pressed={annMode === 'at'} onClick={() => setAnnMode('at')}>
-            At a time
-          </button>
-          <button type="button" aria-pressed={annMode === 'every'} onClick={() => setAnnMode('every')}>
-            On repeat
-          </button>
-        </div>
-        {annMode === 'at' ? (
-          <SlotSelect id="ann-at" label="Plays at" value={at} slots={slots} onChange={setAt} />
+        {chunkBytes !== undefined ? (
+          <InlineUpload
+            kind="announcement"
+            chunkBytes={chunkBytes}
+            audioCount={sources.counted}
+            onReady={(a) => {
+              sources.add(a)
+              const v = `upload:${a.id}`
+              setSrc(v)
+              addAnn(v, a, true)
+            }}
+          />
+        ) : uploadsEnabled && !myAudio.length ? (
+          <p className="text-xs text-cream/60">
+            Have your own recording?{' '}
+            <a className="link" href="/my/audio">
+              Upload it in My audio
+            </a>
+            .
+          </p>
+        ) : null}
+        {start && end ? (
+          <>
+            <div className="ev-seg" role="group" aria-label="When it plays">
+              <button type="button" aria-pressed={annMode === 'at'} onClick={() => setAnnMode('at')}>
+                At a time
+              </button>
+              <button type="button" aria-pressed={annMode === 'every'} onClick={() => setAnnMode('every')}>
+                On repeat
+              </button>
+            </div>
+            {annMode === 'at' ? (
+              <SlotSelect id="ann-at" label="Plays at" value={at} slots={slots} onChange={setAt} />
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-3">
+                <label htmlFor="ann-every" className="block">
+                  <span className="label">Every</span>
+                  <select id="ann-every" className="input ev-select" value={every} onChange={(e) => setEvery(Number(e.target.value) as EveryMin)}>
+                    {EVERY_MIN_OPTIONS.map((m) => (
+                      <option key={m} value={m}>
+                        {m} minutes
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <SlotSelect id="ann-from" label="From" value={from} slots={slots} onChange={setFrom} />
+                <SlotSelect id="ann-until" label="Until" value={until} slots={untilSlots} onChange={setUntil} />
+              </div>
+            )}
+            <button type="button" className="btn btn-secondary" onClick={() => addAnn()}>
+              Add announcement
+            </button>
+          </>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-3">
-            <label htmlFor="ann-every" className="block">
-              <span className="label">Every</span>
-              <select id="ann-every" className="input ev-select" value={every} onChange={(e) => setEvery(Number(e.target.value) as EveryMin)}>
-                {EVERY_MIN_OPTIONS.map((m) => (
-                  <option key={m} value={m}>
-                    {m} minutes
-                  </option>
-                ))}
-              </select>
-            </label>
-            <SlotSelect id="ann-from" label="From" value={from} slots={slots} onChange={setFrom} />
-            <SlotSelect id="ann-until" label="Until" value={until} slots={untilSlots} onChange={setUntil} />
-          </div>
+          <p className="text-xs text-cream/60">Pick the date and time above to choose when announcements play.</p>
         )}
-        <button type="button" className="btn btn-secondary" onClick={addAnn}>
-          Add announcement
-        </button>
         {err ? (
           <p className="text-xs text-rose-300" role="alert">
             {err}

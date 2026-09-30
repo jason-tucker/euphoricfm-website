@@ -40,7 +40,11 @@ export const EV_ERROR_TEXT: Record<string, string> = {
   empty_playlist: 'Add at least one song before you submit.',
   nothing_to_submit: 'Add at least one song before you submit.',
   media_not_allowed: "One of the songs isn't available any more. Remove it and pick another.",
-  audio_not_ready: "One of your uploads isn't ready yet. Wait until it shows Ready.",
+  audio_not_ready: "One of your uploads is still being checked, so it can't be used yet. Wait until it shows Ready, or remove it.",
+  audio_failed: "One of your uploads failed its check, so it can't be used. Remove it (My audio says why).",
+  changed_elsewhere: 'This request was submitted or withdrawn in another tab or window. Reload the page to see it.',
+  status_changed:
+    'This event was submitted, approved or otherwise changed while you were editing it, so your change was NOT saved. The latest version has been loaded: check it and make your change again.',
   audio_limit: "You've reached the limit for My audio. Delete an old upload first.",
   audio_in_use: 'That upload is part of an upcoming event, so it cannot be deleted now.',
   staging_full: 'Upload space is full right now. Try again later.',
@@ -63,6 +67,8 @@ export const EV_ERROR_TEXT: Record<string, string> = {
 
 /** A 409 version_conflict: the event changed since this page loaded it. */
 export const isVersionConflict = (err: unknown) => err instanceof ApiError && err.code === 'version_conflict'
+/** A 409 status_changed: the event's status changed (submitted, approved, …) since this page loaded it. */
+export const isStatusChanged = (err: unknown) => err instanceof ApiError && err.code === 'status_changed'
 /** A 409 restart_required: a change to a live event needs staff to confirm the station restart. */
 export const isRestartRequired = (err: unknown) => err instanceof ApiError && err.code === 'restart_required'
 

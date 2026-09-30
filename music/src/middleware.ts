@@ -1,5 +1,6 @@
 // Edge-of-app controls (plan §3.2): CSP nonce, CSRF, 1 MB body cap on
-// non-upload routes, rate limits keyed on cf-connecting-ip.
+// non-upload routes, rate limits keyed on cf-connecting-ip (an event PATCH /
+// PUT's second bucket is picked from its body: ratelimit.ts).
 //
 // This is NOT the authorization layer: every route handler re-checks CSRF
 // and does its own session + permission + ownership checks, so a middleware
@@ -30,7 +31,7 @@ import { checkCsrf, SAFE_METHODS } from './server/http/csrf'
 import { buildCsp, MEDIA_CSP } from './server/http/csp'
 import { NOT_FOUND_PATH, siteGate } from './server/http/site-gate'
 import { portalSite } from './server/env'
-import { clientKey, LIMITS, RateLimiter } from './server/http/ratelimit'
+import { clientKey, limitAfterBody, limitFor, limitNeedsBody, RateLimiter } from './server/http/ratelimit'
 
 const limiter = new RateLimiter()
 
@@ -67,7 +68,7 @@ export async function middleware(req: NextRequest) {
   }
 
   const key = clientKey(req.headers)
-  const limit = pathname.startsWith('/api/auth/') ? LIMITS.auth : unsafe && !isHook ? LIMITS.mutation : null
+  const limit = limitFor(pathname, method, unsafe, isHook)
   if (limit) {
     const r = limiter.hit(limit, key)
     if (!r.ok) return json(429, 'rate_limited', { 'Retry-After': String(r.retryAfterS) })
@@ -77,10 +78,22 @@ export async function middleware(req: NextRequest) {
   if (!csrf.ok) return json(403, `csrf_${csrf.reason}`)
 
   // After the cheap refusals, so a refused request's body is never read.
+  // A PATCH / PUT event edit keeps its bytes: only draft autosave (body
+  // expectStatus 'draft') stays on the 120/min edit bucket alone; any other
+  // edit (a pending or approved event's, which posts to its ticket) is also
+  // held to the 30/min mutation bucket (ratelimit.ts).
+  const kept: Buffer[] | null = limitNeedsBody(pathname, method) ? [] : null
   if (unsafe && req.body) {
-    const b = await checkBodyLimited(req)
+    const b = await checkBodyLimited(req, undefined, kept)
     if (b === 'too_large') return json(413, 'payload_too_large', { Connection: 'close' })
     if (b === 'bad_body') return json(400, 'bad_body', { Connection: 'close' })
+  }
+  if (kept) {
+    const second = limitAfterBody(Buffer.concat(kept))
+    if (second) {
+      const r = limiter.hit(second, key)
+      if (!r.ok) return json(429, 'rate_limited', { 'Retry-After': String(r.retryAfterS) })
+    }
   }
 
   const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('base64')

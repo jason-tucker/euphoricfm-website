@@ -3,9 +3,10 @@
 
 import { and, asc, desc, eq, gt, gte, ilike, inArray, isNull, lt, or, sql } from 'drizzle-orm'
 import type { DB } from '../../server/db/client'
-import { archive, eventAnnouncements, eventAudio, eventBuilds, events, eventStingers, eventTracks, libraryCache, users } from '../../server/db/schema'
+import { archive, auditLog, eventAnnouncements, eventAudio, eventBuilds, events, eventStingers, eventTracks, libraryCache, users } from '../../server/db/schema'
 import { escapeLike } from '../../server/ui/library'
 import { isLibraryFile } from '../contract/paths'
+import { RECENT_SAVE_IDS } from '../contract/rules'
 import type { EventsSettings } from '../contract/settings'
 import type { AudioKind, AudioStatus, EventAnnouncement, EventStatus, EventTrack, EveryMin } from '../contract/types'
 import type { AudioInfo, LibraryInfo, Lookup, SlotRow, StingerInfo } from './rules'
@@ -22,6 +23,20 @@ export async function getEvent(q: Q, id: number, lock = false): Promise<EventRow
   const base = q.select().from(events).where(eq(events.id, id))
   const rows = lock ? await base.for('update') : await base
   return rows[0] ?? null
+}
+
+/** Audit actions that record a client `saveId` (service.ts patchEvent / putPlaylist / saveDraft's seal). */
+export const SAVE_AUDIT_ACTIONS = ['events.event.edit', 'events.playlist.save', 'events.draft.seal'] as const
+
+/** The latest recorded client save ids of an event, newest first (audit_log detail.saveId). */
+export async function recentSaveIds(q: Q, id: number, limit = RECENT_SAVE_IDS): Promise<string[]> {
+  const rows = await q
+    .select({ saveId: sql<string | null>`${auditLog.detail} ->> 'saveId'` })
+    .from(auditLog)
+    .where(and(eq(auditLog.targetType, 'event'), eq(auditLog.targetId, String(id)), inArray(auditLog.action, [...SAVE_AUDIT_ACTIONS]), sql`(${auditLog.detail} ->> 'saveId') IS NOT NULL`))
+    .orderBy(desc(auditLog.id))
+    .limit(limit)
+  return rows.map((r) => r.saveId).filter((x): x is string => typeof x === 'string')
 }
 
 /** Events with the given statuses overlapping [from, to). */

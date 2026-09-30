@@ -107,6 +107,11 @@ export type EventView =
       denyReason: string | null
       ownerName: string | null
       ticketNumber: number | null
+      // 0.5.3: the client save ids (`saveId` on PATCH / PUT playlist) of the
+      // latest recorded edits, newest first. Only on GET /api/ev/events/:id
+      // for the owner or staff: the autosave form checks whether a save it
+      // sent as the page closed (keepalive) arrived.
+      recentSaveIds?: string[]
     }
 
 export type EventViewKind = EventView['kind']

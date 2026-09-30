@@ -4,7 +4,9 @@ import { describe, expect, it } from 'vitest'
 import { decryptField, deriveSubkey, encryptField, parseEncKey } from '@/server/crypto'
 import { checkCsrf } from '@/server/http/csrf'
 import { buildCsp } from '@/server/http/csp'
-import { clientKey, LIMITS, RateLimiter } from '@/server/http/ratelimit'
+import { clientKey, LIMITS, limitAfterBody, limitFor, limitNeedsBody, RateLimiter } from '@/server/http/ratelimit'
+import { middleware } from '@/middleware'
+import { NextRequest } from 'next/server'
 import { checkBodyLimited, readBodyLimited } from '@/server/http/body'
 import { computePerms } from '@/server/authz/permissions'
 import { canComment, canSeeComment, canViewOwned, type Viewer } from '@/server/authz/predicates'
@@ -57,6 +59,117 @@ describe('rate limiter', () => {
     rl.hit(LIMITS.auth, 'c', 0)
     rl.hit(LIMITS.auth, 'd', 0)
     expect((rl as unknown as { buckets: Map<string, unknown> }).buckets.size).toBe(3)
+  })
+  it('event edits (event PATCH, playlist PUT, combined draft POST) are counted on their own 120/min bucket first; every other mutation stays at 30', () => {
+    expect(LIMITS.eventEdit.max).toBe(120)
+    expect(LIMITS.mutation.max).toBe(30)
+    expect(limitFor('/api/ev/events/13', 'PATCH', true, false)).toBe(LIMITS.eventEdit)
+    expect(limitFor('/api/ev/events/13/playlist', 'PUT', true, false)).toBe(LIMITS.eventEdit)
+    expect(limitFor('/api/ev/events/13/draft', 'POST', true, false)).toBe(LIMITS.eventEdit)
+    // everything else on the same resources stays on the mutation bucket
+    for (const [path, method] of [
+      ['/api/ev/events', 'POST'],
+      ['/api/ev/events/13', 'DELETE'],
+      ['/api/ev/events/13/playlist', 'PATCH'],
+      ['/api/ev/events/13/draft', 'PUT'],
+      ['/api/ev/events/13', 'POST'],
+      ['/api/ev/events/13/submit', 'POST'],
+      ['/api/ev/events/13/withdraw', 'POST'],
+      ['/api/ev/events/13/approve', 'POST'],
+      ['/api/ev/events/13x', 'PATCH'],
+      ['/api/ev/events/13/playlist/x', 'PUT'],
+      ['/api/submissions', 'POST'],
+    ] as const)
+      expect(limitFor(path, method, true, false), `${method} ${path}`).toBe(LIMITS.mutation)
+    expect(limitFor('/api/auth/signin', 'POST', true, false)).toBe(LIMITS.auth)
+    expect(limitFor('/api/ev/events/13', 'GET', false, false)).toBeNull()
+    expect(limitFor('/api/hooks/tickets', 'POST', true, true)).toBeNull()
+    // the buckets are separate: 30 mutations do not use up the edit budget
+    const rl = new RateLimiter()
+    for (let i = 0; i < 30; i++) rl.hit(LIMITS.mutation, 'k', 0)
+    expect(rl.hit(LIMITS.mutation, 'k', 0).ok).toBe(false)
+    for (let i = 0; i < 120; i++) expect(rl.hit(LIMITS.eventEdit, 'k', 0).ok).toBe(true)
+    expect(rl.hit(LIMITS.eventEdit, 'k', 0).ok).toBe(false)
+  })
+  it('only draft autosave stays on the edit bucket alone: a PATCH / PUT whose body does not expect a draft is also held to 30/min', () => {
+    // the body decides for PATCH event and PUT playlist only (POST /draft is drafts-only on the server)
+    expect(limitNeedsBody('/api/ev/events/13', 'PATCH')).toBe(true)
+    expect(limitNeedsBody('/api/ev/events/13/playlist', 'PUT')).toBe(true)
+    for (const [path, method] of [
+      ['/api/ev/events/13/draft', 'POST'],
+      ['/api/ev/events/13', 'DELETE'],
+      ['/api/ev/events/13/playlist', 'PATCH'],
+      ['/api/ev/events/13/submit', 'POST'],
+      ['/api/ev/events', 'POST'],
+      ['/api/submissions/13', 'PATCH'],
+    ] as const)
+      expect(limitNeedsBody(path, method), `${method} ${path}`).toBe(false)
+    expect(limitAfterBody(JSON.stringify({ hostName: 'x', version: 3, expectStatus: 'draft', saveId: 'abcdefgh' }))).toBeNull()
+    expect(limitAfterBody(Buffer.from(JSON.stringify({ tracks: [], expectStatus: 'draft' })))).toBeNull()
+    // an explicit edit of a pending / approved event, no guard, not JSON, not an object: mutation
+    for (const b of [
+      JSON.stringify({ hostName: 'x', version: 3, expectStatus: 'pending' }),
+      JSON.stringify({ hostName: 'x', version: 3 }),
+      JSON.stringify({ expectStatus: 'DRAFT' }),
+      JSON.stringify(['draft']),
+      JSON.stringify('draft'),
+      '{"expectStatus":"draft"',
+      '',
+    ])
+      expect(limitAfterBody(b), b).toBe(LIMITS.mutation)
+    // duplicate keys: the last one wins, exactly as in the route's JSON.parse
+    expect(limitAfterBody('{"expectStatus":"draft","expectStatus":"pending"}')).toBe(LIMITS.mutation)
+    expect(limitAfterBody('{"expectStatus":"pending","expectStatus":"draft"}')).toBeNull()
+  })
+  it('the middleware: draft autosave PATCH / PUT and POST /draft sustain 120/min; any other PATCH / PUT is refused after 30/min', async () => {
+    const prev = { origin: process.env.PORTAL_ORIGIN, site: process.env.PORTAL_SITE }
+    process.env.PORTAL_ORIGIN = 'https://portal.test'
+    process.env.PORTAL_SITE = 'events'
+    try {
+      let ip = 0
+      /** n requests from one fresh client: how many passed (no 429). */
+      const run = async (n: number, method: string, path: string, body: unknown) => {
+        const addr = `198.51.100.${++ip}`
+        let passed = 0
+        for (let i = 0; i < n; i++) {
+          const req = new NextRequest(`https://portal.test${path}`, {
+            method,
+            headers: { origin: 'https://portal.test', 'sec-fetch-site': 'same-origin', 'content-type': 'application/json', 'cf-connecting-ip': addr },
+            body: JSON.stringify(body),
+          })
+          const res = await middleware(req)
+          if (res.status === 429) expect(await res.json()).toEqual({ error: 'rate_limited' })
+          else passed++
+        }
+        return passed
+      }
+      const draft = { hostName: 'x', version: 3, expectStatus: 'draft', saveId: 'abcdefgh' }
+      expect(await run(125, 'PATCH', '/api/ev/events/13', draft)).toBe(120)
+      expect(await run(125, 'PUT', '/api/ev/events/13/playlist', { tracks: [], announcements: [], playlistOrder: 'shuffle', version: 3, expectStatus: 'draft' })).toBe(120)
+      expect(await run(125, 'POST', '/api/ev/events/13/draft', draft)).toBe(120)
+      // a pending / approved event's edit (it posts to the ticket), or no guard at all: 30/min
+      expect(await run(40, 'PATCH', '/api/ev/events/13', { hostName: 'x', version: 3, expectStatus: 'pending' })).toBe(30)
+      expect(await run(40, 'PATCH', '/api/ev/events/13', { hostName: 'x' })).toBe(30)
+      expect(await run(40, 'PUT', '/api/ev/events/13/playlist', { tracks: [], announcements: [], playlistOrder: 'shuffle', expectStatus: 'approved' })).toBe(30)
+      // mixed on one client: explicit edits share the 30/min mutation budget with other mutations
+      const addr = `198.51.100.${++ip}`
+      const hit = (method: string, path: string, body: unknown) =>
+        middleware(
+          new NextRequest(`https://portal.test${path}`, {
+            method,
+            headers: { origin: 'https://portal.test', 'sec-fetch-site': 'same-origin', 'content-type': 'application/json', 'cf-connecting-ip': addr },
+            body: JSON.stringify(body),
+          }),
+        )
+      for (let i = 0; i < 30; i++) expect((await hit('POST', '/api/ev/events/13/submit', {})).status).not.toBe(429)
+      expect((await hit('PATCH', '/api/ev/events/13', { hostName: 'x', expectStatus: 'pending' })).status).toBe(429)
+      expect((await hit('PATCH', '/api/ev/events/13', draft)).status).not.toBe(429)
+    } finally {
+      for (const [k, v] of [['PORTAL_ORIGIN', prev.origin], ['PORTAL_SITE', prev.site]] as const) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
   })
   it('keys on cf-connecting-ip only when it looks like an IP', () => {
     expect(clientKey(H({ 'cf-connecting-ip': '203.0.113.9', 'x-forwarded-for': '1.1.1.1' }))).toBe('203.0.113.9')
