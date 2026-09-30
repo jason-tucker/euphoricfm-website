@@ -1079,6 +1079,188 @@ describe('keepalive leftovers never overwrite newer work', () => {
   })
 })
 
+describe('a save that already reached the server is never merged again (live tab)', () => {
+  const v4 = () => view({ version: 4, tracks: [lib(701, 0), lib(703, 1)] })
+  /** Another device changes the host and adds Charlie back (two saves). */
+  const phoneEdits = (s: FullView, ids: string[] = ['phone-2', 'phone-1', ...(s.recentSaveIds ?? [])]): FullView => ({
+    ...s,
+    hostName: 'Phone host',
+    tracks: [lib(701, 0), lib(703, 1)],
+    version: s.version + 2,
+    recentSaveIds: ids,
+  })
+  const hostField = () => (screen.getByLabelText(/Hosted by/) as HTMLInputElement).value
+
+  /** A tab sets "PC host" and removes Charlie; its timers are frozen (debounce 60 s), then it is hidden. */
+  async function hiddenTab(keepaliveArrives: boolean) {
+    let vis: DocumentVisibilityState = 'visible'
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => vis)
+    const { srv, routes } = fakeServer(v4())
+    if (!keepaliveArrives) routes['POST /api/ev/events/42/draft'] = { status: 503, body: { error: 'unavailable' } }
+    const api = mockApi(routes)
+    render(<Form initial={v4()} debounceMs={60_000} />)
+    fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Charlie' }))
+    await waitFor(() => expect(draftBackup()?.data.builder.tracks).toHaveLength(1))
+    vis = 'hidden'
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await sleep(50)
+    expect(api.calls.filter((c) => c.keepalive).map((c) => `${c.method} ${c.url}`)).toEqual(['POST /api/ev/events/42/draft'])
+    const show = async () => {
+      vis = 'visible'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      await sleep(600)
+    }
+    return { srv, api, show, restore: () => spy.mockRestore() }
+  }
+
+  it("hidden tab whose keepalive LANDED, then another device edits, then the tab is shown: the other device's host and Charlie stay, nothing is written", async () => {
+    const t = await hiddenTab(true)
+    try {
+      expect(t.srv.state).toMatchObject({ hostName: 'PC host', version: 6 })
+      expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha'])
+      t.srv.state = phoneEdits(t.srv.state)
+      await t.show()
+      expect(t.srv.state).toMatchObject({ hostName: 'Phone host', version: 8 })
+      expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie'])
+      expect(t.api.writes()).toHaveLength(0)
+      expect(hostField()).toBe('Phone host')
+      expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
+      // the note names only what the other device did (nothing "kept" from this tab)
+      expect(screen.getByTestId('rf-merge-note').textContent).toBe('Merged changes made in another tab: host name → "Phone host" and added "Charlie".')
+      expect(screen.queryByTestId('rf-restore-ask')).toBeNull()
+      expect(status()).toContain('All changes saved')
+      // nothing left on the device for a reopen to apply again
+      expect(draftBackupKeys()).toEqual([])
+    } finally {
+      t.restore()
+    }
+  })
+
+  it('hidden tab whose keepalive did NOT land: its changes still merge on top of the other device\'s work and save', async () => {
+    const t = await hiddenTab(false)
+    try {
+      expect(t.srv.state).toMatchObject({ hostName: null, version: 4 })
+      // another device sets the place (the keepalive's saveId is not listed)
+      t.srv.state = { ...t.srv.state, location: 'Phone place', version: 5, recentSaveIds: ['phone-1'] }
+      await t.show()
+      await waitFor(() => expect(status()).toContain('All changes saved ✓'), { timeout: 3000 })
+      expect(t.srv.state).toMatchObject({ hostName: 'PC host', location: 'Phone place' })
+      expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha'])
+      expect(t.api.writes().map((c) => `${c.method} ${c.url}`)).toEqual(['PATCH /api/ev/events/42', 'PUT /api/ev/events/42/playlist'])
+      expect(t.api.writes()[0]!.body).toEqual({ hostName: 'PC host', version: 5 })
+      expect(screen.queryByTestId('rf-restore-ask')).toBeNull()
+    } finally {
+      t.restore()
+    }
+  })
+
+  it('hidden tab whose keepalive cannot be told (the saveId list is full) and the merge would overwrite: asks, sends nothing; "Keep the saved version" keeps the other device\'s work', async () => {
+    const t = await hiddenTab(true)
+    try {
+      // 20 later saves elsewhere: the keepalive's saveId scrolled out of the list
+      const full = Array.from({ length: 20 }, (_, i) => `phone-${String(i).padStart(4, '0')}`)
+      t.srv.state = { ...phoneEdits(t.srv.state, full), version: 26 }
+      await t.show()
+      const ask = await screen.findByTestId('rf-restore-ask')
+      expect(within(ask).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['host name → "PC host"', 'removed "Charlie"'])
+      expect(status()).toContain('Not saving yet')
+      // the form shows the saved version meanwhile; this tab's copy is kept aside
+      expect(hostField()).toBe('Phone host')
+      expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
+      expect(draftBackupKeys().some((k) => k.endsWith('-held'))).toBe(true)
+      act(() => {
+        window.dispatchEvent(new Event('focus'))
+      })
+      await sleep(300)
+      expect(t.api.writes()).toHaveLength(0)
+      fireEvent.click(screen.getByRole('button', { name: 'Keep the saved version' }))
+      await sleep(300)
+      expect(screen.queryByTestId('rf-restore-ask')).toBeNull()
+      expect(t.api.writes()).toHaveLength(0)
+      expect(t.srv.state).toMatchObject({ hostName: 'Phone host', version: 26 })
+      expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie'])
+      await waitFor(() => expect(draftBackupKeys()).toEqual([]))
+    } finally {
+      t.restore()
+    }
+  })
+
+  it('the same undecidable case: "Restore these changes" applies this tab\'s changes and saves them', async () => {
+    const t = await hiddenTab(true)
+    try {
+      const full = Array.from({ length: 20 }, (_, i) => `phone-${String(i).padStart(4, '0')}`)
+      t.srv.state = { ...phoneEdits(t.srv.state, full), version: 26 }
+      await t.show()
+      fireEvent.click(await screen.findByRole('button', { name: 'Restore these changes' }))
+      expect(hostField()).toBe('PC host')
+      // (this tab's timers are frozen: the save goes at the next save round, here a focus)
+      act(() => {
+        window.dispatchEvent(new Event('focus'))
+      })
+      await waitFor(() => expect(t.srv.state.version).toBe(28))
+      expect(t.srv.state.hostName).toBe('PC host')
+      expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha'])
+      await waitFor(() => expect(draftBackupKeys()).toEqual([]))
+    } finally {
+      t.restore()
+    }
+  })
+
+  it('a PATCH that landed but whose answer was lost, then another device edits: the retry merges instead of writing this tab\'s host back', async () => {
+    const { srv, routes } = fakeServer(v4())
+    const patch = routes['PATCH /api/ev/events/42'] as (b: unknown, url: string) => Reply
+    let lost = 0
+    routes['PATCH /api/ev/events/42'] = (b, url) => {
+      if (lost) return patch(b, url)
+      lost++
+      const r = patch(b, url) // written…
+      expect(r.status).toBe(200)
+      srv.state = phoneEdits(srv.state) // …then the other device saves
+      throw new Error('connection reset') // …and the answer never arrives
+    }
+    const api = mockApi(routes)
+    render(<Form initial={v4()} />)
+    fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'), { timeout: 3000 })
+    await sleep(200)
+    expect(srv.state).toMatchObject({ hostName: 'Phone host', version: 7 })
+    expect(hostField()).toBe('Phone host')
+    // the lost PATCH, then its retry (refused: version_conflict); nothing after the merge
+    expect(api.writes().map((c) => c.body)).toEqual([
+      { hostName: 'PC host', version: 4 },
+      { hostName: 'PC host', version: 4 },
+    ])
+    expect(screen.getByTestId('rf-merge-note').textContent).toBe('Merged changes made in another tab: host name → "Phone host".')
+  })
+
+  it('a playlist PUT that landed but whose answer was lost, then another device adds the song back: it stays', async () => {
+    const { srv, routes } = fakeServer(v4())
+    const put = routes['PUT /api/ev/events/42/playlist'] as (b: unknown, url: string) => Reply
+    let lost = 0
+    routes['PUT /api/ev/events/42/playlist'] = (b, url) => {
+      if (lost) return put(b, url)
+      lost++
+      expect(put(b, url).status).toBe(200)
+      srv.state = { ...srv.state, tracks: [lib(701, 0), lib(703, 1)], version: srv.state.version + 1, recentSaveIds: ['phone-1', ...(srv.state.recentSaveIds ?? [])] }
+      throw new Error('connection reset')
+    }
+    const api = mockApi(routes)
+    render(<Form initial={v4()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Charlie' }))
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'), { timeout: 3000 })
+    await sleep(200)
+    expect(srv.state.version).toBe(6)
+    expect(srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie'])
+    expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
+    expect(api.writes().map((c) => `${c.method} ${(c.body as { version: number }).version}`)).toEqual(['PUT 4', 'PUT 4'])
+  })
+})
+
 describe('an upload that failed its check', () => {
   const broken = { id: 91, kind: 'song', title: 'Broken mix', artist: 'Me', durationS: 200, status: 'failed', lastError: 'too quiet', usedAt: null, expiresAt: null, createdAt: new Date().toISOString() }
   const withBroken = () =>

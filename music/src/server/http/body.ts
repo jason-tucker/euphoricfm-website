@@ -67,7 +67,9 @@ export async function readBodyLimited(req: Request, limit = DEFAULT_BODY_LIMIT):
 // counting and discarding, and says whether it fits the cap. Same rules as
 // readBodyLimited, but nothing is kept. See the middleware for why the body
 // must have ended before a route handler runs.
-export async function checkBodyLimited(req: Request, limit = DEFAULT_BODY_LIMIT): Promise<'ok' | 'too_large' | 'bad_body'> {
+// `keep`: the bytes are also collected there (the middleware reads the body
+// of a draft autosave edit to pick its rate-limit bucket).
+export async function checkBodyLimited(req: Request, limit = DEFAULT_BODY_LIMIT, keep: Buffer[] | null = null): Promise<'ok' | 'too_large' | 'bad_body'> {
   let cl: number | null
   try {
     cl = declaredLength(req, limit)
@@ -75,7 +77,7 @@ export async function checkBodyLimited(req: Request, limit = DEFAULT_BODY_LIMIT)
     return e instanceof HttpError && e.status === 413 ? 'too_large' : 'bad_body'
   }
   if (!req.body) return 'ok'
-  const c = await consumeBody(req.body, limit, null)
+  const c = await consumeBody(req.body, limit, keep)
   if (c.over) return 'too_large'
   if (c.failed || (cl !== null && c.total !== cl)) return 'bad_body'
   return 'ok'

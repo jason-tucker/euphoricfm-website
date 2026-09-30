@@ -34,8 +34,8 @@ import {
 import { api, ApiError, evMessage } from './ev-api'
 import { builderFromView, draftFromView, patchFor } from './fromView'
 import { rulesList } from './HomeParts'
-import { describeChanges, type FormState, listWords, mergeForm, mergeNote } from './merge'
-import { backupForm, EMPTY_BUILDER, type FormData, formOfView, planRestore, type RestorePlan } from './restore'
+import { describeChanges, type FormState, listWords, mergeForm, mergeNote, restoreConflicts } from './merge'
+import { backupForm, EMPTY_BUILDER, type FormData, formOfView, planRestore, rebaseForm, type RestorePlan } from './restore'
 import { useEvConfig, useNow } from './hooks'
 import { EVENT_TYPE_LABEL } from './labels'
 import { AnnouncementsEditor, RowsNote, SongsEditor, useAudioSources } from './PlaylistBuilder'
@@ -244,9 +244,10 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
 
   const saver = useMemo(
     () =>
-      new DraftSaver({
+      new DraftSaver<FormData>({
         initial: initial ?? null,
         plan: (v) => planRef.current(v),
+        snapshot: (v) => sentRef.current(v),
         onView: (v) => {
           const first = !viewRef.current
           viewRef.current = v
@@ -263,12 +264,38 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
             }
           }
         },
-        adopt: (b, fresh) =>
-          new Promise<void>((resolve) => {
+        adopt: (b, fresh, saves) =>
+          new Promise<void | 'held'>((resolve) => {
             const { draft: d, builder: bl, zone: z, audio: au, stingers: st } = live.current
-            const r = mergeForm({ draft: draftFromView(b, z), builder: builderFromView(b, au, st) }, { draft: d, builder: bl }, { draft: draftFromView(fresh, z), builder: builderFromView(fresh, au, st) })
+            const c = { zone: z, audio: au, stingers: st }
+            // This tab's saves the fresh copy already holds (a keepalive sent
+            // as the tab was hidden, a save whose answer was lost) are part
+            // of the base: never merged again over newer work (restore.ts).
+            const base = rebaseForm(formOfView(b, c), saves.landed, z)
+            const local: FormState = { draft: d, builder: bl }
+            const server = formOfView(fresh, c)
+            const r = mergeForm(base, local, server)
             baseRef.current = fresh
             adopted.current?.()
+            if (saves.unknown.length && r.local && restoreConflicts(base, local, server, true)) {
+              // A save whose arrival cannot be told, and merging would
+              // overwrite work done elsewhere: show the saved version and ask
+              // (restore.ts does the same on a reopen). This tab's device copy
+              // is kept aside meanwhile, so closing the tab loses nothing.
+              const v = viewRef.current
+              const keys: string[] = []
+              if (v) {
+                const own = readBackup<FormData>(tabBackupKey(userKey, v.id, tab))
+                const aside = tabBackupKey(userKey, v.id, `${tab}-held`)
+                if (own && own.baseVersion === b.version && writeBackup(aside, own)) keys.push(aside)
+              }
+              setAsk({ form: { draft: r.draft, builder: r.builder }, changed: true, ask: true, kept: r.kept, changes: describeChanges(server, r), keys })
+              adopted.current = () => resolve('held')
+              setDraft(server.draft)
+              setBuilder(server.builder)
+              setAdoptN((x) => x + 1)
+              return
+            }
             adopted.current = resolve
             setDraft(r.draft)
             setBuilder(r.builder)
@@ -424,11 +451,12 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       lastSent = once
       if (!sent || !v) return
       // Note what was sent in this tab's device copy: a reopened page can
-      // then tell whether it arrived (the event's recentSaveIds).
+      // then tell whether it arrived (the event's recentSaveIds). The live
+      // saver keeps the same record (its ledger) for when the tab comes back.
       const k = tabBackupKey(userKey, v.id, tab)
       const b = readBackup<FormData>(k)
       if (!b || b.baseVersion !== sent.baseVersion) return
-      writeBackup(k, { ...b, keepalive: [...(b.keepalive ?? []), { ...sent, sent: sentRef.current(v) }].slice(-MAX_KEEPALIVES) })
+      writeBackup(k, { ...b, keepalive: [...(b.keepalive ?? []), sent].slice(-MAX_KEEPALIVES) })
     }
     const onVis = () => {
       if (document.visibilityState === 'hidden') flush()

@@ -21,9 +21,19 @@
 //     (the server lists the latest ones on the event, so a reopened page can
 //     tell whether a keepalive save arrived). A copy of the event that is no
 //     longer a draft, or status_changed, stops the saver for good.
+//   - The ledger: every save sent whose answer has not come back (the
+//     keepalive, whose answer is never read; a PATCH/PUT whose answer was
+//     lost) is kept with what it sent. A newer server copy that lists its
+//     saveId has it: the merge base moves onto what it sent first
+//     (sortSaves + restore.ts rebaseForm, the same rule a reopened page
+//     uses), so this tab's changes that already reached the server are never
+//     merged again over newer work from elsewhere. When that cannot be told
+//     (the list is full) and the merge would overwrite work done elsewhere,
+//     the form asks instead (adopt answers 'held').
 // The form supplies `plan(view)`: what the server is missing, computed from
 // its latest state every time (so a retry always sends the newest data).
 
+import { RECENT_SAVE_IDS } from '@/events/contract/rules'
 import { api, ApiError, evMessage } from './ev-api'
 import type { EventAnnouncement, EventStatus, EventTrack, FullView, PlaylistOrder } from './types'
 
@@ -100,9 +110,9 @@ export function newSaveId(): string {
   return out.slice(0, 32)
 }
 
-/** What a keepalive save sent (recorded in the tab's device copy). */
+/** What a save sent (a keepalive is also recorded in the tab's device copy). */
 export type KeepaliveSent = {
-  /** The saveId of the combined save (POST /draft). */
+  /** The saveId of the save (POST /draft, PATCH or PUT). */
   saveId: string
   /** What it carried: the details, the playlist. */
   details: boolean
@@ -111,11 +121,55 @@ export type KeepaliveSent = {
   /** The server version it was made against (it lands only on that version). */
   baseVersion: number
 }
+/** A save and the form the server holds once it lands (`sent`). */
+export type SentSave<T> = KeepaliveSent & { sent: T }
+
+/** What became of saves sent from a base (sortSaves). */
+export type SaveFates<R> = {
+  /** Arrived (their saveId is listed), in order: rebase onto what they sent. */
+  landed: R[]
+  /** Cannot be told (arrived on a base this side does not describe, or may have scrolled out of the list). */
+  unknown: R[]
+  /** Did not arrive and never will (or are already part of the base): their changes count as unsaved. */
+  lost: R[]
+  /** Not arrived yet, but still may (the server is not past their version). */
+  pending: R[]
+  /** The base version once the landed saves are applied. */
+  version: number
+}
+
+/**
+ * Sort saves sent from the base at `version` (oldest first) by what the
+ * server copy `server` says about them. The ONE rule used by a reopened page
+ * (restore.ts planRestore) and by the live saver (DraftSaver.catchUp). A save
+ * lands only on the version it was made against, whole or not at all; each
+ * part that changed something is one audit row (one version bump) listing
+ * its saveId among the event's recentSaveIds (newest RECENT_SAVE_IDS).
+ */
+export function sortSaves<R extends Pick<KeepaliveSent, 'saveId' | 'baseVersion'>>(records: readonly R[], version: number, server: Pick<FullView, 'version' | 'recentSaveIds'>): SaveFates<R> {
+  const recent = server.recentSaveIds ?? []
+  // A saveId missing from a list that is not full was never recorded. From a
+  // full list (or none) it may have scrolled out: unknown.
+  const listComplete = !!server.recentSaveIds && server.recentSaveIds.length < RECENT_SAVE_IDS
+  const out: SaveFates<R> = { landed: [], unknown: [], lost: [], pending: [], version }
+  for (const r of records) {
+    const n = recent.filter((id) => id === r.saveId).length
+    if (r.baseVersion < out.version) out.lost.push(r) // the base already has it, or it can no longer land
+    else if (n && r.baseVersion === out.version) {
+      out.landed.push(r)
+      out.version += n
+    } else if (n) out.unknown.push(r)
+    else if (server.version <= r.baseVersion) out.pending.push(r)
+    else if (listComplete) out.lost.push(r)
+    else out.unknown.push(r)
+  }
+  return out
+}
 /** A save waiting for an upload that is still being checked (it becomes usable by itself). */
 const MAX_UPLOAD_WAITS = 20
 export const WAITING_FOR_UPLOAD = "One of your uploads is still being checked. It's added to the draft by itself once it's ready."
 
-export type SaverOptions = {
+export type SaverOptions<T = unknown> = {
   initial: FullView | null
   plan: (view: FullView | null) => SavePlan
   onView: (v: FullView) => void
@@ -123,8 +177,13 @@ export type SaverOptions = {
    * A newer server copy than `base` (the current view): merge it into the
    * form (this tab's changes against `base` stay) and resolve once the form
    * shows the merge, so the next plan() diffs the merged form against it.
+   * `saves`: this tab's saves that reached the server (landed: rebase `base`
+   * onto what they sent before merging) or may have (unknown). Resolves
+   * 'held' when the form asks the member first (the saver then holds).
    */
-  adopt: (base: FullView, fresh: FullView) => Promise<void>
+  adopt: (base: FullView, fresh: FullView, saves: { landed: SentSave<T>[]; unknown: SentSave<T>[] }) => Promise<void | 'held'>
+  /** The form the server holds once plan(view) is saved (the ledger's `sent`). */
+  snapshot?: (view: FullView) => T
   onStatus: (s: SaveStatus) => void
   /** The server now holds exactly the form with this key. */
   onSynced: (key: string) => void
@@ -135,8 +194,15 @@ export type SaverOptions = {
   retryMaxMs?: number
 }
 
-export class DraftSaver {
+/** Saves kept in the ledger at most (older ones are dropped first). */
+const MAX_LEDGER = 20
+/** A save answered like this may still have been written (the answer was lost). */
+const MAYBE_WRITTEN = (e: unknown) => !(e instanceof ApiError) || e.status === 0 || e.status === 408 || e.status >= 500
+
+export class DraftSaver<T = unknown> {
   view: FullView | null
+  /** Saves sent whose answer has not come back (see the top of the file). */
+  private ledger: SentSave<T>[] = []
   private timer: ReturnType<typeof setTimeout> | null = null
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private running: Promise<Outcome> | null = null
@@ -153,7 +219,7 @@ export class DraftSaver {
   private readonly retryBaseMs: number
   private readonly retryMaxMs: number
 
-  constructor(private readonly o: SaverOptions) {
+  constructor(private readonly o: SaverOptions<T>) {
     this.view = o.initial
     this.debounceMs = o.debounceMs ?? 1500
     this.retryBaseMs = o.retryBaseMs ?? 2000
@@ -259,7 +325,7 @@ export class DraftSaver {
    * form records it in its device copy: a reopened page checks the saveIds
    * against the event's recentSaveIds), or null when nothing was sent.
    */
-  flushKeepalive(): KeepaliveSent | null {
+  flushKeepalive(): SentSave<T> | null {
     if (this.stopped || this.held || !this.view) return null
     const plan = this.o.plan(this.view)
     const details = Object.keys(plan.patch).length ? plan.patch : undefined
@@ -282,12 +348,42 @@ export class DraftSaver {
     } catch {
       // keepalive quota or no fetch: the local backup still has it
     }
-    return { saveId, details: !!details, playlist: !!playlist, sentAt: Date.now(), baseVersion: this.view.version }
+    const rec: SentSave<T> = { saveId, details: !!details, playlist: !!playlist, sentAt: Date.now(), baseVersion: this.view.version, sent: this.o.snapshot?.(this.view) as T }
+    this.record(rec)
+    return rec
+  }
+
+  /** Saves sent whose answer has not come back (tests). */
+  get unanswered(): readonly SentSave<T>[] {
+    return this.ledger
+  }
+
+  private record(r: SentSave<T>) {
+    if (!this.o.snapshot) return
+    this.ledger = [...this.ledger, r].slice(-MAX_LEDGER)
   }
 
   private setView(v: FullView) {
     this.view = v
+    // saves made against an older version can no longer land (or are in it)
+    this.ledger = this.ledger.filter((r) => r.baseVersion >= v.version)
     this.o.onView(v)
+  }
+
+  /** Send one save (PATCH or PUT) with a ledger entry until its answer comes back. */
+  private async send(url: string, method: 'PATCH' | 'PUT', json: Record<string, unknown>, part: 'details' | 'playlist', snap: T, base: number): Promise<FullView> {
+    const saveId = newSaveId()
+    const rec: SentSave<T> = { saveId, details: part === 'details', playlist: part === 'playlist', sentAt: Date.now(), baseVersion: base, sent: snap }
+    this.record(rec)
+    try {
+      const r = await api<{ event: FullView }>(url, { method, json: { ...json, version: base, expectStatus: 'draft', saveId } })
+      this.ledger = this.ledger.filter((x) => x !== rec)
+      return r.event
+    } catch (e) {
+      // refused: it was not written. Otherwise it may have been (kept).
+      if (!MAYBE_WRITTEN(e)) this.ledger = this.ledger.filter((x) => x !== rec)
+      throw e
+    }
   }
 
   /** Merge a server copy into the form when it is newer than the base. */
@@ -299,8 +395,20 @@ export class DraftSaver {
     // a request that is no longer a draft. No more autosaves then.
     if (fresh.status !== 'draft') throw new ApiError(409, 'status_changed', [], { status: fresh.status })
     if (fresh.version <= base.version) return
-    await this.o.adopt(base, fresh)
+    // This tab's saves the fresh copy already holds move the merge base
+    // first: their changes are the server's now, not this tab's to re-apply.
+    const fates = sortSaves(this.ledger, base.version, fresh)
+    this.ledger = fates.pending
+    const r = await this.o.adopt(base, fresh, { landed: fates.landed, unknown: fates.unknown })
     this.setView(fresh)
+    if (r === 'held') this.hold()
+  }
+
+  /** catchUp left the saver on hold (the form asks first): save nothing now. */
+  private heldNow(): boolean {
+    if (!this.held) return false
+    this.heldWanted = true
+    return true
   }
 
   private async loop(): Promise<Outcome> {
@@ -319,6 +427,10 @@ export class DraftSaver {
             break
           }
         }
+        if (this.heldNow()) {
+          out = 'blocked'
+          break
+        }
       }
       try {
         out = await this.saveOnce()
@@ -332,6 +444,10 @@ export class DraftSaver {
             await this.catchUp(await api<FullView>(`/api/ev/events/${this.view.id}`))
           } catch (e2) {
             out = this.fail(e2)
+            break
+          }
+          if (this.heldNow()) {
+            out = 'blocked'
             break
           }
           this.again = true
@@ -413,16 +529,16 @@ export class DraftSaver {
     const v0 = this.view!
     const wrote = !!(plan.create || Object.keys(plan.patch).length || plan.playlist)
     if (Object.keys(plan.patch).length || plan.playlist) this.o.onStatus({ kind: 'saving' })
+    // What the server holds once this plan is saved (taken with the plan).
+    const snap = this.o.snapshot?.(v0) as T
     // Details first: a playlist the server refuses (an upload that failed
     // its check) never holds back the details.
     if (Object.keys(plan.patch).length) {
-      const json = { ...plan.patch, version: v0.version, expectStatus: 'draft', saveId: newSaveId() }
-      this.setView((await api<{ event: FullView }>(`/api/ev/events/${v0.id}`, { method: 'PATCH', json })).event)
+      this.setView(await this.send(`/api/ev/events/${v0.id}`, 'PATCH', plan.patch, 'details', snap, v0.version))
     }
     if (plan.playlist) {
       const v = this.view!
-      const json = { ...plan.playlist, version: v.version, expectStatus: 'draft', saveId: newSaveId() }
-      this.setView((await api<{ event: FullView }>(`/api/ev/events/${v.id}/playlist`, { method: 'PUT', json })).event)
+      this.setView(await this.send(`/api/ev/events/${v.id}/playlist`, 'PUT', plan.playlist, 'playlist', snap, v.version))
     }
     if (plan.blocked.length) {
       this.o.onStatus({ kind: 'partial', reason: plan.blocked.join(' ') })
@@ -456,7 +572,7 @@ export type Backup<T> = {
    * event lists a record's saveIds knows it arrived, and restores only what
    * changed after it (restore.ts).
    */
-  keepalive?: (KeepaliveSent & { sent: T })[]
+  keepalive?: SentSave<T>[]
 }
 
 export const backupKey = (user: string, id: number | 'new') => `efm_ev_form:${user}:${id}`

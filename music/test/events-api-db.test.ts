@@ -223,6 +223,16 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
     const s1 = await snap()
     await expectRefused('pending')
     expect(await snap()).toEqual(s1)
+    // The rate limiter trusts expectStatus 'draft' (the 120/min draft-autosave
+    // bucket, ratelimit.ts): such a request on the pending event queues no
+    // ticket post ('edited' note) and writes nothing, however many arrive.
+    for (let i = 0; i < 5; i++) {
+      expect(await errOf(svc.patchEvent(db(), m, d.id, { hostName: `Spam ${i}`, version: stale, expectStatus: 'draft', saveId: `spam-000${i}` }))).toEqual({ http: 409, code: 'status_changed', status: 'pending' })
+      expect(await errOf(svc.putPlaylist(db(), m, d.id, { tracks: two, announcements: [], playlistOrder: 'shuffle', expectStatus: 'draft', saveId: `spam-100${i}` }))).toEqual({ http: 409, code: 'status_changed', status: 'pending' })
+    }
+    const s1b = await snap()
+    expect(s1b).toEqual(s1)
+    expect(s1b.jobs.filter((j) => j.startsWith('ticket_post'))).toEqual(s1.jobs.filter((j) => j.startsWith('ticket_post')))
     // staff approve (does not bump the version either): the exact event-16 flow
     d = await svc.transition(db(), staff, d.id, 'approve')
     expect(d).toMatchObject({ status: 'approved', version: stale })

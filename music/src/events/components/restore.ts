@@ -11,9 +11,11 @@
 //   - the question: when the server is newer than the (rebased) base and the
 //     merge would overwrite work done elsewhere (merge.ts restoreConflicts),
 //     nothing is saved until the member chooses.
+// The live form applies the same two rules when a newer server copy comes
+// in while it is open (autosave.ts sortSaves, rebaseForm below): a hidden tab
+// whose keepalive arrived never re-applies it over newer work either.
 
-import { RECENT_SAVE_IDS } from '@/events/contract/rules'
-import type { Backup } from './autosave'
+import { type Backup, type SentSave, sortSaves } from './autosave'
 import { builderFromView, draftFromView } from './fromView'
 import { describeChanges, type FormState, mergeForm, restoreConflicts } from './merge'
 import type { Builder } from './playlist'
@@ -51,13 +53,22 @@ export type RestorePlan = {
   keys: string[]
 }
 
+/**
+ * The base with saves that arrived applied, oldest first: each part a save
+ * carried (details, playlist) becomes what it sent. Used by planRestore and
+ * by the live form's merge (RequestForm adopt), so both rebase the same way.
+ */
+export function rebaseForm(base: FormState, landed: readonly SentSave<FormData>[], zone: string | undefined): FormState {
+  let out = base
+  for (const k of landed) {
+    const sent = backupForm(k.sent, zone)
+    out = { draft: k.details ? sent.draft : out.draft, builder: k.playlist ? sent.builder : out.builder }
+  }
+  return out
+}
+
 export function planRestore(server: FullView, copies: readonly { key: string; backup: Backup<FormData> }[], c: FormCtx): RestorePlan {
   const serverForm = formOfView(server, c)
-  const recent = server.recentSaveIds ?? []
-  // A saveId missing from a list that is not full was never recorded: that
-  // keepalive did not arrive. From a full list (or none) it may have
-  // scrolled out: unknown.
-  const listComplete = !!server.recentSaveIds && server.recentSaveIds.length < RECENT_SAVE_IDS
   let cur = serverForm
   let changed = false
   let ask = false
@@ -66,24 +77,13 @@ export function planRestore(server: FullView, copies: readonly { key: string; ba
   for (const { key, backup } of copies) {
     keys.push(key)
     if (!backup.base) continue
-    let base = formOfView(backup.base, c)
-    let version = backup.baseVersion ?? backup.base.version
-    let unconfirmed = false
-    for (const k of backup.keepalive ?? []) {
-      // The keepalive (one combined save, POST /draft) lands only on the
-      // version it was made against, whole or not at all; each part that
-      // changed something is one audit row (one version bump) with its saveId.
-      const n = recent.filter((id) => id === k.saveId).length
-      if (n && k.baseVersion === version) {
-        const sent = backupForm(k.sent, c.zone)
-        base = { draft: k.details ? sent.draft : base.draft, builder: k.playlist ? sent.builder : base.builder }
-        version += n
-      } else if (n || !listComplete) {
-        // arrived on a base this copy does not describe, or may have
-        // scrolled out of the list: the question decides
-        unconfirmed = true
-      }
-    }
+    // Keepalives that arrived: only what changed after them counts. One that
+    // arrived on a base this copy does not describe, or may have scrolled
+    // out of the list, is unknown: the question decides.
+    const fates = sortSaves(backup.keepalive ?? [], backup.baseVersion ?? backup.base.version, server)
+    const base = rebaseForm(formOfView(backup.base, c), fates.landed, c.zone)
+    const version = fates.version
+    const unconfirmed = fates.unknown.length > 0
     const local = backupForm(backup.data, c.zone)
     const r = mergeForm(base, local, cur)
     if (r.local) {
