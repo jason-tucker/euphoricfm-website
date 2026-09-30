@@ -358,35 +358,61 @@ describe.skipIf(!E2E())('album-art in-flight gate (real container)', () => {
     return () => `7${String(Date.now()).slice(-9)}${String(++n).padStart(8, '0')}`
   })()
 
+  // The gate is in-memory and cannot be observed, so "the held uploads are
+  // inside the handler" is proven by the refusal itself: each round holds the
+  // upload(s) open, then probes once; a probe that is not refused within 1 s
+  // means the held ones were not admitted yet, so the round is torn down
+  // (aborted sockets release their slots) and retried with a longer head
+  // start. Bounded (20 s); no fixed sleep decides the outcome.
+  const settle = <T,>(p: Promise<T>, ms: number) => Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))])
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  async function whileHeld(open: () => ReturnType<typeof openUpload>[], probe: () => ReturnType<typeof openUpload>, want: number) {
+    const end = Date.now() + 20_000
+    for (let headStart = 250; ; headStart = Math.min(headStart * 2, 4000)) {
+      const held = open()
+      await pause(headStart)
+      // (a socket error counts as "no answer": the round is retried)
+      const early = await settle(Promise.race(held.map((h) => h.response.catch(() => ({ status: -1, text: '', at: 0 })))), 0)
+      const p = early ? null : probe()
+      const r = p ? await settle(p.response.catch(() => null), 1000) : null
+      if (r?.status === want) return { held, probe: p!, r }
+      p?.abort()
+      for (const h of held) h.abort()
+      if (Date.now() > end) throw new Error(`no ${want} while held (last: ${r?.status ?? (early ? `held one answered ${early.status}` : 'no answer')})`)
+      await pause(250)
+    }
+  }
+
   it('a second upload by the same member is 429 while the first body is still arriving; the first then succeeds', async () => {
     const jar = await loginOk({ id: seqId() })
     const { body, ct } = await encode([['art', fxBuf('art.png'), 'a.png']])
-    const first = openUpload(jar, body, ct, 1024)
-    await new Promise((r) => setTimeout(r, 1500)) // the first request is inside the handler, reading
-    const second = openUpload(jar, body, ct, 1024) // never finished: the refusal must not wait for its body
-    const r2 = await Promise.race([second.response, new Promise<null>((r) => setTimeout(() => r(null), 10_000))])
-    expect(r2?.status).toBe(429)
-    expect(r2?.text).toContain('art_upload_in_progress')
-    second.abort()
-    first.finish()
-    const r1 = await first.response
+    // the second is never finished: the refusal must not wait for its body
+    const { held, probe, r } = await whileHeld(() => [openUpload(jar, body, ct, 1024)], () => openUpload(jar, body, ct, 1024), 429)
+    expect(r.text).toContain('art_upload_in_progress')
+    probe.abort()
+    held[0]!.finish()
+    const r1 = await held[0]!.response
     expect(r1.status).toBe(202)
   })
 
   it('a fourth member is 503 while three uploads are in flight; the gate frees up afterwards', async () => {
     const jars = await Promise.all([0, 1, 2, 3].map(() => loginOk({ id: seqId() })))
     const { body, ct } = await encode([['art', fxBuf('art.jpg'), 'a.jpg']])
-    const held = jars.slice(0, 3).map((j) => openUpload(j, body, ct, 512))
-    await new Promise((r) => setTimeout(r, 1500))
-    const fourth = openUpload(jars[3]!, body, ct, 512)
-    const r4 = await Promise.race([fourth.response, new Promise<null>((r) => setTimeout(() => r(null), 10_000))])
-    expect(r4?.status).toBe(503)
-    expect(r4?.text).toContain('art_uploads_busy')
-    fourth.abort()
+    const { held, probe, r } = await whileHeld(() => jars.slice(0, 3).map((j) => openUpload(j, body, ct, 512)), () => openUpload(jars[3]!, body, ct, 512), 503)
+    expect(r.text).toContain('art_uploads_busy')
+    probe.abort()
     for (const h of held) h.abort() // aborted mid-body: each slot is released in finally
-    await new Promise((r) => setTimeout(r, 1500))
-    const again = openUpload(jars[3]!, body, ct, body.length)
-    again.finish()
-    expect((await again.response).status).toBe(202)
+    // freed: a complete upload is accepted (retried while the aborted slots
+    // are still being released, bounded)
+    const end = Date.now() + 10_000
+    for (;;) {
+      const again = openUpload(jars[3]!, body, ct, body.length)
+      again.finish()
+      const st = (await again.response).status
+      if (st === 202) break
+      expect([429, 503], `status ${st}`).toContain(st)
+      if (Date.now() > end) throw new Error('the gate did not free up within 10 s')
+      await pause(250)
+    }
   })
 })

@@ -3,6 +3,7 @@
 // worker applying approved edits, the new-artist parking, manager library
 // actions, and the admin settings / role-binding APIs.
 import { beforeAll, describe, expect, it } from 'vitest'
+import { idMaker, memberOf, REVIEWER_ROLE } from './helpers/e2e'
 import { E2E } from './helpers/env'
 import { loginOk } from './helpers/auth'
 import { insertArt, ownerSql } from './helpers/db'
@@ -10,11 +11,9 @@ import { control, Jar, req } from './helpers/http'
 import { waitFor } from './helpers/wait'
 
 const PREFIX = 'Portal-Test/'
-const REVIEWER_ROLE = '1144462744456794153' // seeded review + manage
 const ADMIN_ID = '117501528641634310' // PORTAL_OWNER_IDS in the test env
 const RUN = Date.now().toString(36)
-let seq = 0
-const newId = () => `4${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('4')
 
 type Media = { id: number; path: string; title: string; artist: string; genre: string | null; playlists: { id: number }[] }
 type Ticket = { externalRef: string; categoryKey: string; opener: string; card: { title: string; lines: string[]; link: { url: string } } }
@@ -68,11 +67,11 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
 
     memberId = newId()
     member = await loginOk({ id: memberId })
-    await control('/__mock/tickets/member', { id: memberId, member: true })
+    await memberOf(memberId)
     other = await loginOk({ id: newId() })
     reviewerId = newId()
     reviewer = await loginOk({ id: reviewerId, roles: [REVIEWER_ROLE] })
-    await control('/__mock/tickets/member', { id: reviewerId, member: true })
+    await memberOf(reviewerId)
     admin = await loginOk({ id: ADMIN_ID })
   })
 
@@ -148,7 +147,7 @@ describe.skipIf(!E2E())('P4 requests and library management through the real con
   it('daily caps: 10 edits and 10 removals per member per day', async () => {
     const capId = newId()
     const jar = await loginOk({ id: capId })
-    await control('/__mock/tickets/member', { id: capId, member: true })
+    await memberOf(capId)
     for (let i = 2; i <= 11; i++) expect((await file(jar, { kind: 'edit', mediaId: songs[i]!.id, proposed: { genre: `G${i}` } })).status).toBe(201)
     const over = await file(jar, { kind: 'edit', mediaId: songs[12]!.id, proposed: { genre: 'G12' } })
     expect(over.status).toBe(429)

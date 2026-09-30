@@ -6,17 +6,16 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
+import { idMaker, REVIEWER_ROLE } from './helpers/e2e'
 import { E2E } from './helpers/env'
 import { control, Jar, req } from './helpers/http'
 import { waitFor } from './helpers/wait'
 
 const PREFIX = 'Portal-Test/'
 const L = `${PREFIX}UNRELEASED-DO NOT ADD TO ROTATION`
-const REVIEWER_ROLE = '1144462744456794153' // seeded review + manage
 const ADMIN_ID = '117501528641634310'
 const RUN = Date.now().toString(36)
-let seq = 0
-const newId = () => `3${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('3')
 
 type Media = { id: number; path: string; title: string; playlists: { id: number }[] }
 type Plan = { id: string; status: string; plan?: { files: { mediaId: number; path: string; dest: string; playlistIds: number[]; action: string }[] } }
@@ -154,11 +153,13 @@ describe.skipIf(!E2E())('v0.3.6 UNRELEASED import and Archived songs through the
     expect((await req(manager, `/api/archive/${archiveId}/release`, { json: { artist: `Nobody ${RUN}`, playlistIds: [] } })).status).toBe(409) // artist_unknown
     const r = await req(manager, `/api/archive/${archiveId}/release`, { json: { artist: folder, playlistIds: [2] } })
     expect(r.status).toBe(202)
-    const moved = await waitFor(async () => {
-      const f = await byId(a.id)
-      return f?.path === `${PREFIX}Music/Artists/${folder}/a-e2e-${RUN}.m4a` ? f : null
-    }, 200_000, 1000)
+    // The worker moves the file, THEN writes the playlists (two AzuraCast
+    // calls, worker/requests/jobs.ts releaseMedia steps 2 and 3), and marks
+    // the row 'restored' only after verifying both. Waiting for the path
+    // alone could read the file between the two writes (playlists []).
+    await waitFor(async () => (await ownerSql()`SELECT status FROM archive WHERE id = ${archiveId}`)[0]!.status === 'restored', 230_000, 1000)
+    const moved = (await byId(a.id))!
+    expect(moved.path).toBe(`${PREFIX}Music/Artists/${folder}/a-e2e-${RUN}.m4a`)
     expect(moved.playlists.map((p) => p.id)).toEqual([2])
-    await waitFor(async () => (await ownerSql()`SELECT status FROM archive WHERE id = ${archiveId}`)[0]!.status === 'restored', 30_000)
   })
 })

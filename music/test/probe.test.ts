@@ -18,6 +18,7 @@ import { checkMp3Magic } from '@/probe/magic'
 import { dimsAcceptable, ffmpegCoverArgs, imageDims, reencodeCover, sniffImage } from '@/probe/cover'
 import { readSpoolResult, writeSpoolRequest } from '@/server/spool/protocol'
 import { fx, fxBuf } from './helpers/fixtures'
+import { waitFor } from './helpers/wait'
 
 const MM = resolve('dist/probe/mm-child.mjs')
 let root: string
@@ -215,6 +216,10 @@ describe('probe inbox rules', () => {
 
 // ------------------------------------------------ probe containment ---
 
+// Killed processes are reaped asynchronously: poll (bounded) instead of a
+// fixed 200 ms sleep, which was both slow and a guess on a busy runner.
+const reaped = (pid: number) => waitFor(async () => !alive(pid), 3000, 20)
+
 function alive(pid: number): boolean {
   try {
     const st = readFileSync(`/proc/${pid}/stat`, 'utf8')
@@ -273,8 +278,7 @@ describe('probe containment: parser children cannot outlive their job', () => {
     expect(Date.now() - t0).toBeLessThan(8000)
     const grandchild = Number(r.stdout.toString().trim())
     expect(grandchild).toBeGreaterThan(1)
-    await new Promise((res) => setTimeout(res, 200))
-    expect(alive(grandchild)).toBe(false)
+    await reaped(grandchild)
   })
 
   it('a background grandchild left behind by a child that exits normally dies with the job (and does not hold the call open)', async () => {
@@ -283,22 +287,23 @@ describe('probe containment: parser children cannot outlive their job', () => {
     expect(Date.now() - t0).toBeLessThan(5000)
     expect(r.code).toBe(0)
     const grandchild = Number(r.stdout.toString().trim())
-    await new Promise((res) => setTimeout(res, 200))
-    expect(alive(grandchild)).toBe(false)
+    await reaped(grandchild)
   })
 
   it('a process that escapes the group (setsid) is found by the post-job check; processOne refuses the result and throws', async () => {
     const baseline = await snapshotBaseline()
     await runLimited('sh', ['-c', 'setsid sleep 45 </dev/null >/dev/null 2>&1 & sleep 1'], { timeoutS: 5, vmemKb: 1 << 20 })
-    await new Promise((res) => setTimeout(res, 200))
-    const strays = (await findStrays(baseline)).filter((p) => p.cmd === 'sleep')
+    // the setsid'd sleep shows up in the process table (bounded poll, not a fixed wait)
+    const strays = await waitFor(async () => {
+      const s = (await findStrays(baseline)).filter((p) => p.cmd === 'sleep')
+      return s.length ? s : null
+    }, 2000, 25)
     expect(strays.length).toBe(1)
     const id = randomUUID()
     await writeSpoolRequest(join(dirs.spool, 'in-worker'), { v: 1, id, type: 'probe', upload: 'c'.repeat(32), expectedSize: 5 })
     await expect(processOne('in-worker', id, { ...dirs, spool: dirs.spool }, async () => strays)).rejects.toBeInstanceOf(ContainmentBreach)
     expect(await readSpoolResult(join(dirs.spool, 'out'), id)).toMatchObject({ ok: false, error: 'containment_breach' })
-    await new Promise((res) => setTimeout(res, 200))
-    expect(alive(strays[0]!.pid)).toBe(false) // killed
+    await reaped(strays[0]!.pid) // killed
   })
 })
 
@@ -400,8 +405,7 @@ describe('cover decode bounds (crafted headers)', () => {
     expect(await reencodeCover(join(w, 'fake.png'), fake, w, join(w, 'o1.jpg'))).toBeNull()
     expect(Date.now() - t0).toBeLessThan(500)
     expect(existsSync(join(w, 'o1.jpg'))).toBe(false)
-    const { execFileSync } = await import('node:child_process')
-    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=3440x3440', '-frames:v', '1', join(w, 'big.png')])
+    copyFileSync(fx('big-3440.png'), join(w, 'big.png')) // made by the global setup
     const big = readFileSync(join(w, 'big.png'))
     expect(await reencodeCover(join(w, 'big.png'), big, w, join(w, 'o2.jpg'))).not.toBeNull()
     expect(imageDims(readFileSync(join(w, 'o2.jpg')), 'jpeg')).toEqual({ w: 1000, h: 1000 })

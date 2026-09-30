@@ -61,6 +61,22 @@ describe.skipIf(!ready())('compose.yml: music-fetch (v0.4.0)', () => {
     expect(c.networks['music-int']).toMatchObject({ internal: true })
   })
 
+  // The botvps host firewall (efm-music-egress: EFM-MUSIC-EGRESS /
+  // EFM-MUSIC-TAILNET) keys on these addresses; the test overlay drops them,
+  // so only this static check sees them.
+  it('address pins the host firewall keys on: music-web 172.31.250.10 on efm-music-hooks, worker-egress 172.31.252.0/24 with exactly its current members', () => {
+    const c = cfg()
+    expect(c.services['music-web']!.networks?.['efm-music-hooks']).toMatchObject({ ipv4_address: '172.31.250.10' })
+    expect(c.networks['worker-egress']!.ipam?.config?.[0]?.subnet).toBe('172.31.252.0/24')
+    const onEgress = Object.entries(c.services)
+      .filter(([, s]) => Object.keys(s.networks ?? {}).includes('worker-egress'))
+      .map(([name]) => name)
+    // The botvps egress guard matches the bridge, so every member gets the
+    // same private-range / tailnet / INPUT drops; a new member is a review
+    // point, hence the exact list.
+    expect(onEgress.sort()).toEqual(['events-web', 'events-worker', 'music-worker'])
+  })
+
   it('pinned mounts: fetch rw on its spool + staging; worker in rw / out ro; probe staging/fetch ro; web none', () => {
     const s = cfg().services
     expect(mounts(s['music-fetch']!)).toEqual(['spool/fetch:/spool/fetch:rw', 'staging/fetch:/staging/fetch:rw'])

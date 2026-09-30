@@ -9,21 +9,20 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
+import { ATTEST, idMaker, memberOf, REVIEWER_ROLE, waitIngested } from './helpers/e2e'
 import { E2E } from './helpers/env'
 import { fxBuf } from './helpers/fixtures'
 import { control, req } from './helpers/http'
 import { tusUpload } from './helpers/tus'
 import { waitFor } from './helpers/wait'
 
-const REVIEWER_ROLE = '1144462744456794153'
-let seq = 0
-const newId = () => `4${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('4')
 
 describe.skipIf(!E2E())('P3 ingest through the real worker + probe', () => {
   it('edit → submit → approve new artist + song → finalize → window upload → verifying → summary', async () => {
     const ownerId = newId()
     const owner = await loginOk({ id: ownerId })
-    await control('/__mock/tickets/member', { id: ownerId, member: true })
+    await memberOf(ownerId)
     const reviewer = await loginOk({ id: newId(), roles: [REVIEWER_ROLE] })
 
     const b = (await (await req(owner, '/api/batches', { method: 'POST' })).json()) as { id: number }
@@ -35,7 +34,7 @@ describe.skipIf(!E2E())('P3 ingest through the real worker + probe', () => {
     const patched = await req(owner, `/api/items/${added.id}`, { method: 'PATCH', json: { artist, title: 'E2E Song' } })
     expect(patched.status).toBe(200)
     expect(await patched.json()).toMatchObject({ artist, title: 'E2E Song' })
-    expect((await req(owner, `/api/batches/${b.id}/submit`, { json: { attest: true, attestVersion: '2026-09-27' } })).status).toBe(200)
+    expect((await req(owner, `/api/batches/${b.id}/submit`, { json: ATTEST })).status).toBe(200)
     expect((await req(owner, `/api/items/${added.id}`, { method: 'PATCH', json: { title: 'too late' } })).status).toBe(409)
 
     const [na] = await ownerSql()`SELECT id, prefill FROM items WHERE batch_id = ${b.id} AND kind = 'new_artist'`
@@ -44,15 +43,7 @@ describe.skipIf(!E2E())('P3 ingest through the real worker + probe', () => {
     expect((await req(reviewer, `/api/items/${added.id}/decision`, { json: { decision: 'approve' } })).status).toBe(200)
 
     // Up to ~2 min for the scan window, plus the probe's finalize.
-    const it1 = await waitFor(
-      async () => {
-        const r = (await ownerSql()`SELECT status, target_path, media_id, final_sha256 FROM items WHERE id = ${added.id}`)[0]!
-        if (r.status === 'failed') throw new Error(`ingest failed: ${JSON.stringify((await ownerSql()`SELECT last_error FROM ingest_runs WHERE item_id = ${added.id}`)[0])}`)
-        return r.status === 'verifying' || r.status === 'live' ? r : null
-      },
-      240_000,
-      1000,
-    )
+    const it1 = await waitIngested(added.id, 240_000)
     const path = `Portal-Test/Music/Artists/${artist}/${artist} - E2E Song.mp3`
     expect(it1.target_path).toBe(path)
     const files = (await control('/__mock/az/files')) as { id: number; path: string; playlists: { id: number }[] }[]

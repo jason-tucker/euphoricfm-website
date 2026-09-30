@@ -17,15 +17,14 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { AUDIO_BUDGET_BYTES, MAX_UPLOAD_BYTES } from '@/lib/fit'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
+import { ATTEST, html, idMaker, memberOf, REVIEWER_ROLE, settledItem, waitIngested } from './helpers/e2e'
 import { E2E, has } from './helpers/env'
 import { control, type Jar, req } from './helpers/http'
 import { mkArtist } from './helpers/p3'
 import { scFx, scInfo } from './helpers/soundcloud'
 import { waitFor } from './helpers/wait'
 
-const REVIEWER_ROLE = '1144462744456794153'
-let seq = 0
-const newId = () => `7${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('7')
 const run = Date.now().toString(36)
 const FX = () => process.env.FETCH_FIXTURES_DIR!
 const data = (p: string) => join(process.env.TEST_DATA_DIR!, p)
@@ -58,26 +57,11 @@ function fixture(slug: string, fx: Record<string, unknown>, media?: { name: stri
   writeFileSync(join(FX(), `${slug}.json`), JSON.stringify({ ...(media ? { audio: `${slug}.${media.ext}`, ext: media.ext } : {}), ...fx }))
 }
 
-async function html(jar: Jar, path: string): Promise<string> {
-  const r = await req(jar, path)
-  expect(r.status, path).toBe(200)
-  return (await r.text()).replace(/<!-- -->/g, '')
-}
-
 async function addLink(jar: Jar, batch: number, url: string) {
   return req(jar, `/api/batches/${batch}/soundcloud`, { json: { url } })
 }
 
-async function settled(jar: Jar, id: number, ms = 300_000): Promise<Item> {
-  return waitFor(
-    async () => {
-      const x = (await (await req(jar, `/api/items/${id}`)).json()) as Item
-      return x.status !== 'probing' ? x : null
-    },
-    ms,
-    1000,
-  )
-}
+const settled = (jar: Jar, id: number, ms = 300_000) => settledItem<Item>(jar, id, ms, 1000)
 
 describe.skipIf(!E2E() || !has('FETCH_FIXTURES_DIR'))('SoundCloud links through the real containers (v0.4.0)', () => {
   let owner: Jar
@@ -87,7 +71,7 @@ describe.skipIf(!E2E() || !has('FETCH_FIXTURES_DIR'))('SoundCloud links through 
   beforeAll(async () => {
     ownerId = newId()
     owner = await loginOk({ id: ownerId })
-    await control('/__mock/tickets/member', { id: ownerId, member: true })
+    await memberOf(ownerId)
     batch = ((await (await req(owner, '/api/batches', { method: 'POST' })).json()) as { id: number }).id
   })
 
@@ -156,7 +140,7 @@ describe.skipIf(!E2E() || !has('FETCH_FIXTURES_DIR'))('SoundCloud links through 
 
     // Submit WITH the rights attestation (still required).
     expect((await req(owner, `/api/batches/${batch}/submit`, { json: { attest: false } })).status).toBe(400)
-    expect((await req(owner, `/api/batches/${batch}/submit`, { json: { attest: true, attestVersion: '2026-09-27' } })).status).toBe(200)
+    expect((await req(owner, `/api/batches/${batch}/submit`, { json: ATTEST })).status).toBe(200)
     const ticket = await waitFor(async () => {
       const all = (await control('/__mock/tickets/tickets')) as { externalRef: string; card: { lines: string[] } }[]
       return all.find((x) => x.externalRef === `batch:${batch}`)
@@ -171,15 +155,7 @@ describe.skipIf(!E2E() || !has('FETCH_FIXTURES_DIR'))('SoundCloud links through 
     expect(await html(reviewer, '/review')).toContain('From SoundCloud (CC BY-NC)')
 
     expect((await req(reviewer, `/api/items/${itemId}/decision`, { json: { decision: 'approve' } })).status).toBe(200)
-    const done = await waitFor(
-      async () => {
-        const r = (await ownerSql()`SELECT status, target_path, media_id, final_sha256 FROM items WHERE id = ${itemId}`)[0]!
-        if (r.status === 'failed') throw new Error(`ingest failed: ${JSON.stringify((await ownerSql()`SELECT last_error FROM ingest_runs WHERE item_id = ${itemId}`)[0])}`)
-        return r.status === 'verifying' || r.status === 'live' ? r : null
-      },
-      600_000,
-      1000,
-    )
+    const done = await waitIngested(itemId, 600_000)
     const path = `Portal-Test/Music/Artists/${artist}/${artist} - Edited SC Title ${run}.mp3`
     expect(done.target_path).toBe(path)
     const run2 = (await ownerSql()`SELECT final_file FROM ingest_runs WHERE item_id = ${itemId}`)[0]!
@@ -219,14 +195,17 @@ describe.skipIf(!E2E() || !has('FETCH_FIXTURES_DIR'))('SoundCloud links through 
 
     it('longer than 24 min (SoundCloud says 25) → stopped on the info JSON alone → sc_too_long', async () => {
       const slug = `e2e-long-${run}`
-      fixture(slug, { info: scInfo({ duration: 1500 }), sleep: 30 }, { name: 'sc-aac-40s.m4a', ext: 'm4a' })
+      const FAKE_SLEEP_S = 30
+      fixture(slug, { info: scInfo({ duration: 1500 }), sleep: FAKE_SLEEP_S }, { name: 'sc-aac-40s.m4a', ext: 'm4a' })
       const t0 = Date.now()
       const x = await settled(owner, await link(slug))
+      // The status is the proof: without the early stop the fake's sleep runs
+      // into the stack's 10 s fetch timeout and the link ends sc_timeout.
       expect(x).toMatchObject({ status: 'rejected', probeError: 'sc_too_long' })
-      // The fake would sleep 30 s: well under that proves the early stop. The
-      // worker's idle poll (2 → 5 s, v0.4.1) can add ≤ 3 s at the job claim
-      // and at the result, hence 28 s (was 25 s at a fixed 2 s poll).
-      expect(Date.now() - t0).toBeLessThan(28_000)
+      // And it never waited out the fake's sleep. Not a tight bound: the
+      // real path is the worker's idle poll (≤ 5 s, v0.4.1) at the job claim
+      // and again at the result, plus music-fetch's own poll.
+      expect(Date.now() - t0).toBeLessThan(FAKE_SLEEP_S * 1000)
     })
 
     it('a fetch that runs past music-fetch’s timeout → sc_timeout (the test stack runs it at 10 s)', async () => {
@@ -247,9 +226,13 @@ describe.skipIf(!E2E() || !has('FETCH_FIXTURES_DIR'))('SoundCloud links through 
     })
 
     it('the staging charge of a rejected link is released', async () => {
-      const rows = await ownerSql()`SELECT u.status FROM items i JOIN uploads u ON u.id = i.upload_id WHERE i.batch_id = ${b} AND i.status = 'rejected'`
-      expect(rows.length).toBeGreaterThanOrEqual(3)
-      expect(new Set(rows.map((r) => r.status))).toEqual(new Set(['expired']))
+      // its own rejected link (self-contained: runs alone with -t, too)
+      const slug = `e2e-charge-${run}`
+      fixture(slug, { stderr: `ERROR: [soundcloud] ${slug}: This track is private or not available`, exit: 1 })
+      const id = await link(slug)
+      expect(await settled(owner, id)).toMatchObject({ status: 'rejected' })
+      const upload = async () => (await ownerSql()`SELECT u.status FROM items i JOIN uploads u ON u.id = i.upload_id WHERE i.id = ${id}`)[0]?.status
+      expect(await waitFor(async () => ((await upload()) === 'expired' ? 'expired' : null), 30_000, 500)).toBe('expired')
     })
 
     it('limits: the kill switch, then the daily cap (admin-lowered)', async () => {
@@ -261,11 +244,19 @@ describe.skipIf(!E2E() || !has('FETCH_FIXTURES_DIR'))('SoundCloud links through 
       } finally {
         await ownerSql()`DELETE FROM settings WHERE key = 'soundcloud_fetch_enabled'`
       }
+      // A fresh member with exactly one link today, and a cap of 1
+      // (self-contained: no count carried over from the tests above).
+      const memberId = newId()
+      const member = await loginOk({ id: memberId })
+      await memberOf(memberId)
+      const mb = ((await (await req(member, '/api/batches', { method: 'POST' })).json()) as { id: number }).id
+      const slug = `e2e-cap-${run}`
+      fixture(slug, { stderr: `ERROR: [soundcloud] ${slug}: This track is private or not available`, exit: 1 })
+      expect((await addLink(member, mb, `https://soundcloud.com/e2e-user/${slug}`)).status).toBe(201)
       const prev = (await ownerSql()`SELECT value FROM settings WHERE key = 'caps'`)[0]?.value as Record<string, unknown>
-      await ownerSql()`UPDATE settings SET value = value || ${ownerSql().json({ fetchesPerUserPerDay: 4 })} WHERE key = 'caps'`
+      await ownerSql()`UPDATE settings SET value = value || ${ownerSql().json({ fetchesPerUserPerDay: 1 })} WHERE key = 'caps'`
       try {
-        // this member added 5 links today (1 happy path + 4 rejections)
-        const r = await addLink(owner, b, `https://soundcloud.com/e2e-user/capped-${run}`)
+        const r = await addLink(member, mb, `https://soundcloud.com/e2e-user/capped-${run}`)
         expect(r.status).toBe(429)
         expect(await r.json()).toEqual({ error: 'sc_daily_cap' })
         expect(r.headers.get('retry-after')).toBeTruthy()

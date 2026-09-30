@@ -4,7 +4,7 @@
 #
 # The full DEFAULT ruleset stays active; nothing here disables a rule. The only
 # additions are allowlists for known false positives, scoped twice: to EXACT
-# file paths, and only on the two rules that misfire on them
+# file paths, and only on the rule(s) that misfire on each
 # (generic-api-key, discord-client-id). Every other rule (AWS, GitHub, Slack,
 # Discord client secret, private keys, ...) still fires on these same files,
 # and these two rules still fire on every other file in the repo.
@@ -37,7 +37,14 @@
 #   music/src/server/azuracast/contract-baseline.json
 #                             sha256 digests of AzuraCast OpenAPI contract
 #                             slices (drift detection), not keys.
-# Keep the two path lists below identical. Do not widen them to directories.
+#   music/test/ui/archive-legacy.test.tsx   (discord-client-id ONLY)
+#                             a dummy Discord snowflake in a UI test
+#                             fixture (added 2026-09-28).
+# The two lists are NOT identical on purpose: each rule lists only the files
+# it actually misfired on (verified), so neither allowlist is wider than its
+# evidence. The first four paths are in both lists; archive-legacy only
+# tripped discord-client-id. Add a path to a list only after seeing that
+# rule fire on it. Never widen a list to a directory.
 
 [extend]
 useDefault = true

@@ -1011,6 +1011,15 @@ async function handleControl(req, res, url) {
     reset()
     return send(res, 200, { ok: true })
   }
+  // Request histories only (test/setup/per-file.ts, before every file): the
+  // stateful parts (users, members, library, tickets) stay.
+  if (p === '/__mock/reset-history' && req.method === 'POST') {
+    state.discord.log.length = 0
+    state.tickets.calls.length = 0
+    state.az.calls.length = 0
+    state.canary.length = 0
+    return send(res, 200, { ok: true })
+  }
   if (p === '/__mock/discord/user' && req.method === 'POST') {
     const prev = state.discord.users.get(body.id) ?? {}
     state.discord.users.set(body.id, { username: `user${body.id.slice(-4)}`, member: true, pending: false, roles: [], ...prev, ...body })
@@ -1141,11 +1150,21 @@ async function handleControl(req, res, url) {
   return send(res, 404, { error: 'unknown control path' })
 }
 
+// keepAliveTimeout 0: the mocks never idle-close a keep-alive socket. Node's
+// default (5 s, the same as music-web's: Next's standalone server keeps Node's
+// default unless KEEP_ALIVE_TIMEOUT is set, and compose sets none) let the
+// server close a pooled socket just as a client (undici in the tests, the
+// worker's AzuraCast/tickets clients) wrote the next request to it: "other side
+// closed" (UND_ERR_SOCKET). With no server timeout the CLIENT always closes
+// first (undici's own idle timeout, 4 s with no Keep-Alive hint), so that race
+// cannot happen on any mock-bound request.
 function serve(port, handler) {
-  createServer((req, res) => {
+  const server = createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)
     handler(req, res, url).catch((e) => send(res, 500, { error: String(e?.message ?? e) }))
-  }).listen(port, '0.0.0.0')
+  })
+  server.keepAliveTimeout = 0
+  server.listen(port, '0.0.0.0')
 }
 
 serve(4100, handleControl)

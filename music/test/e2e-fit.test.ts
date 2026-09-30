@@ -8,7 +8,6 @@
 // production caps row (maxUploadBytes 35 MB, no maxMp3UploadBytes) no longer
 // keeps the submit page or the tus admission at 35 MB.
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import NodeID3 from 'node-id3'
@@ -16,34 +15,20 @@ import { describe, expect, it } from 'vitest'
 import { AUDIO_BUDGET_BYTES, MAX_UPLOAD_BYTES } from '@/lib/fit'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
+import { ATTEST, ffprobe, html, idMaker, memberOf, REVIEWER_ROLE, waitIngested } from './helpers/e2e'
 import { E2E } from './helpers/env'
 import { fxBuf } from './helpers/fixtures'
 import { apicV3, frameV3, tag, textV3 } from './helpers/id3'
-import { control, type Jar, req } from './helpers/http'
+import { control, req } from './helpers/http'
 import { mkArtist } from './helpers/p3'
 import { declare, tusCreate, tusUpload } from './helpers/tus'
 import { waitFor } from './helpers/wait'
 
 const MB = 1024 * 1024
-const REVIEWER_ROLE = '1144462744456794153'
-let seq = 0
-const newId = () => `6${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('6')
 const uploadsDir = () => join(process.env.TEST_DATA_DIR!, 'staging/uploads')
 
 type Item = { id: number; status: string; title: string | null; artist: string | null; probeError: string | null; hasCover: boolean; inputFormat: string | null; transcodeKbps: number | null; bitrate: number | null; durationS: number | null }
-
-async function html(jar: Jar, path: string): Promise<string> {
-  const r = await req(jar, path)
-  expect(r.status, path).toBe(200)
-  return (await r.text()).replace(/<!-- -->/g, '')
-}
-
-function ffprobe(file: string) {
-  return JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', file]).toString()) as {
-    format: { format_name: string; duration: string }
-    streams: { codec_type: string; codec_name: string; bit_rate?: string; sample_rate?: string; channels?: number }[]
-  }
-}
 
 describe.skipIf(!E2E())('fit-to-size through the real containers (v0.3.5)', () => {
   it('the stale production caps row (maxUploadBytes 36700160, no maxMp3UploadBytes) does not hold MP3 uploads at 35 MB', async () => {
@@ -71,7 +56,7 @@ describe.skipIf(!E2E())('fit-to-size through the real containers (v0.3.5)', () =
   it('a 38 MB MP3: upload → probe re-encodes to CBR 256k → prefill → submit (ticket says so) → review page says so → approve → finalize (ID3 + APIC) → AzuraCast gets ≤ 35 MiB', async () => {
     const ownerId = newId()
     const owner = await loginOk({ id: ownerId })
-    await control('/__mock/tickets/member', { id: ownerId, member: true })
+    await memberOf(ownerId)
     const reviewer = await loginOk({ id: newId(), roles: [REVIEWER_ROLE] })
     const artist = `E2E Fit Artist ${Date.now().toString(36)}`
     await mkArtist(artist)
@@ -106,7 +91,7 @@ describe.skipIf(!E2E())('fit-to-size through the real containers (v0.3.5)', () =
     expect(row.probe_sha256).toBe(createHash('sha256').update(staged).digest('hex'))
 
     // The member's card data + submit; the ticket card tells the managers.
-    expect((await req(owner, `/api/batches/${b}/submit`, { json: { attest: true, attestVersion: '2026-09-27' } })).status).toBe(200)
+    expect((await req(owner, `/api/batches/${b}/submit`, { json: ATTEST })).status).toBe(200)
     const ticket = await waitFor(async () => {
       const all = (await control('/__mock/tickets/tickets')) as { externalRef: string; card: { lines: string[] } }[]
       return all.find((x) => x.externalRef === `batch:${b}`)
@@ -118,15 +103,7 @@ describe.skipIf(!E2E())('fit-to-size through the real containers (v0.3.5)', () =
     expect(await html(reviewer, '/review')).toContain('Re-encoded to 256 kbps to fit')
 
     expect((await req(reviewer, `/api/items/${itemId}/decision`, { json: { decision: 'approve' } })).status).toBe(200)
-    const done = await waitFor(
-      async () => {
-        const r = (await ownerSql()`SELECT status, target_path, media_id, final_sha256 FROM items WHERE id = ${itemId}`)[0]!
-        if (r.status === 'failed') throw new Error(`ingest failed: ${JSON.stringify((await ownerSql()`SELECT last_error FROM ingest_runs WHERE item_id = ${itemId}`)[0])}`)
-        return r.status === 'verifying' || r.status === 'live' ? r : null
-      },
-      600_000,
-      1000,
-    )
+    const done = await waitIngested(itemId, 600_000)
     const path = `Portal-Test/Music/Artists/${artist}/${artist} - E2E Fit Title.mp3`
     expect(done.target_path).toBe(path)
 

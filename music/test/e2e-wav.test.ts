@@ -7,13 +7,13 @@
 // never decide the format: a WAV named .mp3 is converted, an MP3 named .wav
 // stays an MP3, and a >100 MB MP3 admitted as a WAV is refused and released.
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import NodeID3 from 'node-id3'
 import { describe, expect, it } from 'vitest'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
+import { ATTEST, ffprobe, idMaker, memberOf, REVIEWER_ROLE, settledItem, waitIngested } from './helpers/e2e'
 import { E2E } from './helpers/env'
 import { fxBuf } from './helpers/fixtures'
 import { apicV3, frameV3, tag, textV3 } from './helpers/id3'
@@ -24,9 +24,7 @@ import { waitFor } from './helpers/wait'
 import { chunk, simpleWav } from './helpers/wav'
 
 const MB = 1024 * 1024
-const REVIEWER_ROLE = '1144462744456794153'
-let seq = 0
-const newId = () => `7${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('7')
 const uploadsDir = () => join(process.env.TEST_DATA_DIR!, 'staging/uploads')
 
 type Item = { id: number; status: string; title: string | null; artist: string | null; probeError: string | null; hasCover: boolean; inputFormat: string | null; transcodeKbps: number | null; bitrate: number | null; durationS: number | null }
@@ -44,19 +42,7 @@ async function add(jar: Jar, batchId: number, data: Buffer, filetype: string): P
   return { itemId: ((await r.json()) as { id: number }).id, uploadId }
 }
 
-async function settled(jar: Jar, itemId: number, ms = 120_000): Promise<Item> {
-  return waitFor(async () => {
-    const it = (await (await req(jar, `/api/items/${itemId}`)).json()) as Item
-    return it.status !== 'probing' ? it : null
-  }, ms, 1000)
-}
-
-function ffprobe(file: string) {
-  return JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', file]).toString()) as {
-    format: { format_name: string }
-    streams: { codec_type: string; codec_name: string; bit_rate?: string; sample_rate?: string; channels?: number }[]
-  }
-}
+const settled = (jar: Jar, itemId: number, ms = 120_000) => settledItem<Item>(jar, itemId, ms, 1000)
 
 describe.skipIf(!E2E())('WAV uploads through the real containers (v0.3.0)', () => {
   it('tus creation caps by the declared type: WAV ≤ 250 MB, MP3 / undeclared ≤ 100 MB', async () => {
@@ -89,7 +75,7 @@ describe.skipIf(!E2E())('WAV uploads through the real containers (v0.3.0)', () =
   it('a >35 MB WAV: upload → probe converts to 320k MP3 → prefill → submit → approve → finalize (ID3 + APIC) → AzuraCast → ticket', async () => {
     const ownerId = newId()
     const owner = await loginOk({ id: ownerId })
-    await control('/__mock/tickets/member', { id: ownerId, member: true })
+    await memberOf(ownerId)
     const reviewer = await loginOk({ id: newId(), roles: [REVIEWER_ROLE] })
     const artist = `E2E Wav Artist ${Date.now().toString(36)}`
     await mkArtist(artist)
@@ -129,18 +115,10 @@ describe.skipIf(!E2E())('WAV uploads through the real containers (v0.3.0)', () =
 
     // edit + submit + approve
     expect((await req(owner, `/api/items/${itemId}`, { method: 'PATCH', json: { title: 'E2E Wav Song' } })).status).toBe(200)
-    expect((await req(owner, `/api/batches/${b}/submit`, { json: { attest: true, attestVersion: '2026-09-27' } })).status).toBe(200)
+    expect((await req(owner, `/api/batches/${b}/submit`, { json: ATTEST })).status).toBe(200)
     expect((await req(reviewer, `/api/items/${itemId}/decision`, { json: { decision: 'approve' } })).status).toBe(200)
 
-    const done = await waitFor(
-      async () => {
-        const r = (await ownerSql()`SELECT status, target_path, media_id, final_sha256 FROM items WHERE id = ${itemId}`)[0]!
-        if (r.status === 'failed') throw new Error(`ingest failed: ${JSON.stringify((await ownerSql()`SELECT last_error FROM ingest_runs WHERE item_id = ${itemId}`)[0])}`)
-        return r.status === 'verifying' || r.status === 'live' ? r : null
-      },
-      600_000,
-      1000,
-    )
+    const done = await waitIngested(itemId, 600_000)
     const path = `Portal-Test/Music/Artists/${artist}/${artist} - E2E Wav Song.mp3`
     expect(done.target_path).toBe(path)
 

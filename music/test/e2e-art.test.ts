@@ -2,6 +2,7 @@
 // containers: accepted types, refusals, the status IDOR and the signed preview.
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
+import { idMaker, REVIEWER_ROLE } from './helpers/e2e'
 import { E2E } from './helpers/env'
 import { loginOk } from './helpers/auth'
 import { ownerSql } from './helpers/db'
@@ -9,9 +10,7 @@ import { fxBuf } from './helpers/fixtures'
 import { Jar, req, reqFresh } from './helpers/http'
 import { waitFor } from './helpers/wait'
 
-const REVIEWER_ROLE = '1144462744456794153'
-let seq = 0
-const newId = () => `8${String(Date.now()).slice(-9)}${String(++seq).padStart(8, '0')}`
+const newId = idMaker('8')
 
 function form(fields: [string, Buffer | string, string?][]): FormData {
   const f = new FormData()
