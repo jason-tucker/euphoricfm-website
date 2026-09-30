@@ -89,6 +89,8 @@ function fitFixtures() {
   // v0.4.1 (second pass): 26 min that still FITS the 35 MiB cap (25 MB), so it
   // takes the kept-untouched path; with a forged Xing header it looked 10 min long
   loop('clip-128k-44k.mp3', 26 * 60, 'fit-26m-128k.mp3')
+  // 890 s of the 16-min file, stream-copied (fit-probe's final_too_large case)
+  ff(['-f', 'mp3', '-i', join(DIR, 'fit-16m-320k.mp3'), '-t', '890', '-c', 'copy', '-id3v2_version', '0', '-write_id3v1', '0', '-f', 'mp3', join(DIR, 'fit-890s-320k.mp3')])
 }
 
 // Every fixture into DIR (~55 ffmpeg runs): the base MP3 / tag / art set, the
@@ -134,6 +136,10 @@ async function buildAll() {
   ff(['-f', 'lavfi', '-i', 'testsrc2=s=800x800', '-frames:v', '1', '-q:v', '3', join(DIR, 'art.jpg')])
   ff(['-f', 'lavfi', '-i', 'testsrc2=s=640x480', '-frames:v', '1', '-c:v', 'libwebp', join(DIR, 'art.webp')])
   ff(['-f', 'lavfi', '-i', 'testsrc2=s=64x64', '-frames:v', '1', join(DIR, 'art.gif')])
+  // a real 12 MP PNG cover (probe's decode-within-limits case) and a 320 px
+  // JPEG of cover.png (ingest's custom-art finalize case)
+  ff(['-f', 'lavfi', '-i', 'testsrc2=s=3440x3440', '-frames:v', '1', join(DIR, 'big-3440.png')])
+  ff(['-i', join(DIR, 'cover.png'), '-vf', 'scale=320:-1', join(DIR, 'cover-320.jpg')])
   wavFixtures()
   fitFixtures()
   await sc

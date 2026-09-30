@@ -405,8 +405,7 @@ describe('cover decode bounds (crafted headers)', () => {
     expect(await reencodeCover(join(w, 'fake.png'), fake, w, join(w, 'o1.jpg'))).toBeNull()
     expect(Date.now() - t0).toBeLessThan(500)
     expect(existsSync(join(w, 'o1.jpg'))).toBe(false)
-    const { execFileSync } = await import('node:child_process')
-    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=3440x3440', '-frames:v', '1', join(w, 'big.png')])
+    copyFileSync(fx('big-3440.png'), join(w, 'big.png')) // made by the global setup
     const big = readFileSync(join(w, 'big.png'))
     expect(await reencodeCover(join(w, 'big.png'), big, w, join(w, 'o2.jpg'))).not.toBeNull()
     expect(imageDims(readFileSync(join(w, 'o2.jpg')), 'jpeg')).toEqual({ w: 1000, h: 1000 })

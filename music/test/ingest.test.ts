@@ -1,7 +1,6 @@
 // P3: review → ingest (worker side). Postgres + the AzuraCast / tickets
 // mocks, a pinned far-future clock, and the test playing the probe.
 import { createHash, randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1251,7 +1250,7 @@ describe.skipIf(!DBENV() || !MOCKS())('album art (art contract): item art, final
     const artId = randomUUID()
     mkdirSync(join(dirs.art, artId))
     const jpg = join(dirs.art, artId, 'cover.jpg')
-    execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', fx('cover.png'), '-vf', 'scale=320:-1', jpg])
+    copyFileSync(fx('cover-320.jpg'), jpg) // made by the global setup
     const jpgBytes = readFileSync(jpg)
     const jpgSha = createHash('sha256').update(jpgBytes).digest('hex')
     const base = { v: 1 as const, type: 'finalize' as const, upload, approvedSha256: mp3Sha, tags: { title: 'Art Song', artist: 'Band', album: '', genre: '' } }

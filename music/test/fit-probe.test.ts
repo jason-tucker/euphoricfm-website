@@ -6,7 +6,7 @@
 // 192 kbps); a song too long even for 192 kbps is rejected.
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import NodeID3 from 'node-id3'
@@ -363,7 +363,7 @@ describe('MP3 inputs', () => {
 describe('finalize never publishes a file over MAX_UPLOAD_BYTES', () => {
   it('890 s of 320 kbps (35.6 MB, within finalize\'s input cap) + a 1.5 MiB cover → final_too_large, nothing published', async () => {
     const upload = randomUUID().replace(/-/g, '')
-    execFileSync('ffmpeg', ['-v', 'error', '-f', 'mp3', '-i', fx('fit-16m-320k.mp3'), '-t', '890', '-c', 'copy', '-id3v2_version', '0', '-write_id3v1', '0', '-f', 'mp3', join(dirs.uploads, upload)])
+    copyFileSync(fx('fit-890s-320k.mp3'), join(dirs.uploads, upload)) // made by the global setup
     const audio = readFileSync(join(dirs.uploads, upload))
     expect(audio.length).toBeLessThanOrEqual(MAX_UPLOAD_BYTES)
     const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(1.5 * MIB - 6, 0x55), Buffer.from([0xff, 0xd9])])
