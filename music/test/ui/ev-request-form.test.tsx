@@ -588,11 +588,13 @@ function fakeServer(start: FullView) {
     },
     // the keepalive: details + playlist in one transaction, against one version
     'POST /api/ev/events/42/draft': (b) => {
-      const d = b as { version: number; expectStatus: string; saveId: string; details?: Record<string, unknown>; playlist?: PlaylistBody }
+      const d = b as { version: number; expectStatus: string; saveId: string; details?: Record<string, unknown>; playlist?: PlaylistBody; seal?: true }
       const no = guard(d)
       if (no) return no
       if (d.details) patch(d.details, d.saveId)
       if (d.playlist) put(d.playlist, d.saveId)
+      // the seal: the version moves on although nothing changes
+      if (d.seal && !d.details && !d.playlist) patch({}, d.saveId)
       return { status: 200, body: { event: srv.state } }
     },
   }
@@ -1397,7 +1399,8 @@ describe('a save whose answer never came back is checked before anything counts 
     const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => vis)
     const { srv, routes } = fakeServer(v4())
     const real = routes['POST /api/ev/events/42/draft'] as (b: unknown, u: string) => Reply
-    routes['POST /api/ev/events/42/draft'] = typeof keepalive === 'function' ? (b, u) => keepalive(b, u) : keepalive
+    // the keepalive goes to `keepalive`; the form's seal (seal: true) to the server
+    routes['POST /api/ev/events/42/draft'] = (b, u) => ((b as { seal?: true }).seal ? real(b, u) : typeof keepalive === 'function' ? keepalive(b, u) : keepalive)
     const api = mockApi(routes)
     render(<Form initial={v4()} debounceMs={60_000} retryBaseMs={retryBaseMs} />)
     fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'PC host' } })
@@ -1412,10 +1415,38 @@ describe('a save whose answer never came back is checked before anything counts 
     act(() => {
       document.dispatchEvent(new Event('visibilitychange'))
     })
-    return { srv, api, real, restore: () => spy.mockRestore() }
+    return { srv, api, real, routes, restore: () => spy.mockRestore() }
   }
 
-  it('a keepalive still on its way when the member undoes its change: "Checking", never "all saved", the device copy stays; once it lands the undo is saved', async () => {
+  it('a keepalive still on its way when the member undoes its change: never settled by waiting; a seal moves the version on, so the late keepalive is refused', async () => {
+    let land: (() => void) | null = null
+    let landed: Reply | null = null
+    const t = await keepaliveOnItsWay(
+      (b, u) =>
+        new Promise<Reply>((resolve) => {
+          land = () => {
+            landed = t.real(b, u)
+            resolve(landed)
+          }
+        }),
+      200,
+    )
+    try {
+      await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+      // one write that changes nothing but the version (POST /draft seal, at the keepalive's base)
+      expect(t.api.writes().map((c) => [c.method, c.url, c.body])).toEqual([['POST', '/api/ev/events/42/draft', { version: 4, seal: true }]])
+      expect(t.srv.state).toMatchObject({ hostName: null, version: 5 })
+      await waitFor(() => expect(draftBackupKeys()).toEqual([]))
+      // the keepalive arrives late: refused (it was made against version 4)
+      act(() => land!())
+      expect(landed).toMatchObject({ status: 409 })
+      expect(t.srv.state).toMatchObject({ hostName: null, version: 5 })
+    } finally {
+      t.restore()
+    }
+  })
+
+  it('the keepalive lands between the check and the seal: the seal gets 409, the tab rebases onto the keepalive and saves the undo', async () => {
     let land: (() => void) | null = null
     const t = await keepaliveOnItsWay(
       (b, u) =>
@@ -1424,36 +1455,94 @@ describe('a save whose answer never came back is checked before anything counts 
         }),
       200,
     )
+    // the check sees version 4 (not arrived yet), then the keepalive lands before the seal
+    const get = t.routes['GET /api/ev/events/42'] as () => Reply
+    t.routes['GET /api/ev/events/42'] = () => {
+      const r = { ...get(), body: { ...t.srv.state } }
+      if (land) {
+        land()
+        land = null
+      }
+      return r
+    }
     try {
-      await waitFor(() => expect(status()).toContain('Checking your last change'))
-      await sleep(250)
-      expect(status()).not.toContain('All changes saved')
-      expect(draftBackupKeys()).toHaveLength(1)
-      expect(t.api.writes()).toHaveLength(0)
-      act(() => land!())
-      expect(t.srv.state).toMatchObject({ hostName: 'PC host', version: 5 })
-      await waitFor(() => expect(t.srv.state).toMatchObject({ hostName: null, version: 6 }), { timeout: 3000 })
       await waitFor(() => expect(status()).toContain('All changes saved ✓'))
-      expect(t.api.writes().map((c) => c.body)).toEqual([{ hostName: null, version: 5 }])
+      expect(t.srv.state.hostName).toBe(null)
+      const w = t.api.writes().map((c) => `${c.method} ${c.url} ${JSON.stringify(c.body)}`)
+      expect(w[w.length - 1]).toBe('PATCH /api/ev/events/42 {"hostName":null,"version":5}')
+      expect(screen.queryByTestId('rf-merge-note')).toBeNull()
       await waitFor(() => expect(draftBackupKeys()).toEqual([]))
     } finally {
       t.restore()
     }
   })
 
-  it('a keepalive that never arrives: after the bounded re-checks (server version unchanged) it counts as not arrived and nothing is written', async () => {
+  it('a keepalive that never arrives: one check, one seal, then saved (no waiting)', async () => {
     const t = await keepaliveOnItsWay(() => new Promise<Reply>(() => {}), 60)
     try {
-      await waitFor(() => expect(status()).toContain('Checking your last change'))
-      expect(draftBackupKeys()).toHaveLength(1)
       await waitFor(() => expect(status()).toContain('All changes saved ✓'), { timeout: 3000 })
-      expect(t.api.writes()).toHaveLength(0)
-      // the initial check + 3 re-checks
-      expect(t.api.calls.filter((c) => c.method === 'GET' && c.url === '/api/ev/events/42')).toHaveLength(4)
-      expect(t.srv.state).toMatchObject({ hostName: null, version: 4 })
+      expect(t.api.writes().map((c) => c.body)).toEqual([{ version: 4, seal: true }])
+      expect(t.api.calls.filter((c) => c.method === 'GET' && c.url === '/api/ev/events/42')).toHaveLength(1)
+      expect(t.srv.state).toMatchObject({ hostName: null, version: 5 })
       await waitFor(() => expect(draftBackupKeys()).toEqual([]))
     } finally {
       t.restore()
+    }
+  })
+
+  it('VFY6-A / k5: the member undoes during a slow check, the keepalive lands 12 s later, then Submit: the request holds the undo', async () => {
+    let land: (() => void) | null = null
+    let vis: DocumentVisibilityState = 'visible'
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => vis)
+    try {
+      const { srv, routes } = fakeServer(v4())
+      const real = routes['POST /api/ev/events/42/draft'] as (b: unknown, u: string) => Reply
+      routes['POST /api/ev/events/42/draft'] = (b, u) => {
+        if (!(b as { seal?: true }).seal && !land)
+          return new Promise<Reply>((resolve) => {
+            land = () => resolve(real(b, u))
+          })
+        return real(b, u)
+      }
+      const get = routes['GET /api/ev/events/42'] as () => Reply
+      let slow = true
+      routes['GET /api/ev/events/42'] = async () => {
+        if (slow) {
+          slow = false
+          await new Promise((r) => setTimeout(r, 400))
+        }
+        return get()
+      }
+      const submit = vi.fn(() => {
+        srv.state = { ...srv.state, status: 'pending' }
+        return { status: 200, body: { event: srv.state } }
+      })
+      routes['POST /api/ev/events/42/submit'] = submit
+      const api = mockApi(routes)
+      render(<Form initial={v4()} debounceMs={60_000} retryBaseMs={200} />)
+      fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+      await waitFor(() => expect(draftBackup()?.data.draft.hostName).toBe('PC host'))
+      vis = 'hidden'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      expect(api.calls.filter((c) => c.keepalive)).toHaveLength(1)
+      vis = 'visible'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      // the member clears the host while the check is slow
+      await sleep(150)
+      fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: '' } })
+      await waitFor(() => expect(status()).toContain('All changes saved ✓'), { timeout: 3000 })
+      expect(srv.state).toMatchObject({ hostName: null, version: 5 })
+      act(() => land!())
+      expect(srv.state).toMatchObject({ hostName: null, version: 5 })
+      fireEvent.click(screen.getByRole('button', { name: 'Submit request' }))
+      await waitFor(() => expect(submit).toHaveBeenCalled())
+      expect(srv.state).toMatchObject({ hostName: null, status: 'pending' })
+    } finally {
+      spy.mockRestore()
     }
   })
 
@@ -1548,7 +1637,11 @@ describe('"Use the saved version instead" after a restore', () => {
       await waitFor(until)
       await sleep(200)
     }
-    return { srv, phone, later: () => api.writes().slice(n) }
+    /** Another device saves, and this tab does NOT catch up (no focus / visibility event). */
+    const quiet = (over: Partial<FullView>) => {
+      srv.state = { ...srv.state, ...over, version: srv.state.version + 1, recentSaveIds: [`phone-${srv.state.version}`, ...(srv.state.recentSaveIds ?? [])] }
+    }
+    return { srv, routes, phone, quiet, later: () => api.writes().slice(n) }
   }
   const useSaved = () => fireEvent.click(screen.getByRole('button', { name: 'Use the saved version instead' }))
 
@@ -1662,6 +1755,109 @@ describe('"Use the saved version instead" after a restore', () => {
     expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie'])
     expect(t.later().map((c) => `${c.method} ${c.url}`)).toEqual(['PATCH /api/ev/events/42'])
     expect(screen.queryByTestId('rf-merge-note')).toBeNull()
+  })
+
+  // No catch-up before the click (the window stayed focused while the phone saved):
+  // the link fetches the saved version first, so the phone's work stays.
+  it('nocatch host: the phone changed the restored host while this tab did not look; the click keeps it', async () => {
+    const t = await restored(
+      async () => {
+        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+        fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'PC loc' } })
+      },
+      (s) => s.hostName === 'PC host' && s.location === 'PC loc',
+    )
+    t.quiet({ hostName: 'Phone host' })
+    expect(field(/Hosted by/)).toBe('PC host')
+    useSaved()
+    await waitFor(() => expect(t.srv.state.location).toBe(null))
+    await sleep(300)
+    expect(t.srv.state.hostName).toBe('Phone host')
+    expect(field(/Hosted by/)).toBe('Phone host')
+    expect(t.later().map((c) => c.body)).toEqual([{ location: null, version: 6 }])
+    const note = screen.getByTestId('rf-merge-note').textContent ?? ''
+    expect(note).toContain('Merged changes made in another tab or device')
+    expect(note).toContain('Kept host name as it is now, because it changed after the restore.')
+  })
+
+  it('nocatch pin: the phone moved the restored pin; the click keeps the phone\'s pin and removes only the untouched added song', async () => {
+    let slots: string[] = []
+    const t = await restored(
+      async () => {
+        slots = [...pinOf(0).options].map((o) => o.value).filter(Boolean)
+        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+        fireEvent.change(pinOf(0), { target: { value: slots[0] } })
+        await addSong('Bravo')
+      },
+      (s) => s.hostName === 'PC host' && s.tracks.length === 3 && s.tracks[0]!.pinAt !== null,
+    )
+    const phonePin = new Date(Number(slots[2])).toISOString()
+    t.quiet({ tracks: [lib(701, 0, phonePin), lib(703, 1), lib(702, 2)] })
+    useSaved()
+    await waitFor(() => expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie']))
+    await waitFor(() => expect(t.srv.state.hostName).toBe(null))
+    await sleep(300)
+    expect(Date.parse(t.srv.state.tracks[0]!.pinAt!)).toBe(Date.parse(phonePin))
+    expect(pinOf(0).value).toBe(slots[2])
+    expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
+    expect(screen.getByTestId('rf-merge-note').textContent).toContain('Kept pin of "Alpha" as it is now, because it changed after the restore.')
+  })
+
+  it('nocatch songpin: the phone pinned the song the restore added; the click keeps that song and its pin', async () => {
+    let slots: string[] = []
+    const t = await restored(
+      async () => {
+        slots = [...pinOf(0).options].map((o) => o.value).filter(Boolean)
+        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+        fireEvent.change(pinOf(0), { target: { value: slots[0] } })
+        await addSong('Bravo')
+      },
+      (s) => s.hostName === 'PC host' && s.tracks.length === 3 && s.tracks[0]!.pinAt !== null,
+    )
+    const alphaPin = t.srv.state.tracks[0]!.pinAt
+    const phonePin = new Date(Number(slots[1])).toISOString()
+    t.quiet({ tracks: [lib(701, 0, alphaPin), lib(703, 1), lib(702, 2, phonePin)] })
+    useSaved()
+    await waitFor(() => expect(t.srv.state.hostName).toBe(null))
+    await waitFor(() => expect(t.srv.state.tracks[0]!.pinAt).toBe(null))
+    await sleep(300)
+    expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie', 'Bravo'])
+    expect(Date.parse(t.srv.state.tracks[2]!.pinAt!)).toBe(Date.parse(phonePin))
+    expect(trackTitles()).toEqual(['Alpha', 'Charlie', 'Bravo'])
+    expect(screen.getByTestId('rf-merge-note').textContent).toContain('Kept "Bravo" as it is now, because it changed after the restore.')
+  })
+
+  it('the undo\'s own save gets a 409 (another device saved in between): the "Kept" note stays and the merge note is added to it', async () => {
+    const t = await restored(
+      async () => {
+        fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+        fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'PC loc' } })
+      },
+      (s) => s.hostName === 'PC host' && s.location === 'PC loc',
+    )
+    fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'PC loc 2' } })
+    await waitFor(() => expect(t.srv.state.location).toBe('PC loc 2'))
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+    // the phone adds Bravo just before the undo's PATCH arrives
+    const real = t.routes['PATCH /api/ev/events/42'] as (b: unknown, u: string) => Reply
+    let armed = true
+    t.routes['PATCH /api/ev/events/42'] = (b, u) => {
+      if (armed && (b as { hostName?: unknown }).hostName === null) {
+        armed = false
+        t.quiet({ tracks: [...t.srv.state.tracks, lib(702, t.srv.state.tracks.length)] })
+      }
+      return real(b, u)
+    }
+    useSaved()
+    await waitFor(() => expect(t.srv.state.hostName).toBe(null))
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+    expect(armed).toBe(false)
+    expect(t.srv.state.location).toBe('PC loc 2')
+    expect(t.srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie', 'Bravo'])
+    const note = screen.getByTestId('rf-merge-note').textContent ?? ''
+    expect(note).toContain('Kept place as it is now, because it changed after the restore.')
+    expect(note).toContain('Merged changes made in another tab or device')
+    expect(note).toContain('"Bravo"')
   })
 })
 

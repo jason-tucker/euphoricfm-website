@@ -38,12 +38,13 @@
 //     check only schedules the retry): the server may hold something the
 //     form no longer shows (an edit undone meanwhile). A save the check
 //     finds not arrived yet (the server not past its version: a keepalive
-//     still on its way) stays undecided: with nothing else to send, the
-//     saver re-checks (MAX_RECHECKS, retryBaseMs apart) saying "Checking";
-//     once the server has stayed at the save's base version through all
-//     of them (and MAX_RECHECKS × retryBaseMs have passed since it was sent), the save
-//     is taken as not arrived and dropped. Any write from the form at that
-//     base settles it at once (the save can no longer land after it).
+//     still on its way) stays undecided. It is never settled by waiting:
+//     the next write at that base decides it (a save lands only on the
+//     version it was made against), and with nothing else to send the saver
+//     sends one that changes nothing (POST /draft `seal`: the version moves
+//     on). Either the seal lands first (that save can never land after it)
+//     or it gets 409 because the save did (caught up and rebased onto it
+//     like any landed save, so the form's undo is then written on top).
 // The form supplies `plan(view)`: what the server is missing, computed from
 // its latest state every time (so a retry always sends the newest data).
 
@@ -78,10 +79,8 @@ export type SaveStatus =
   | { kind: 'offline' }
   | { kind: 'stopped'; reason: string; /** reload link (the event page) */ reloadHref?: string; /** the request left the draft state elsewhere (its status, or '' when unknown) */ moved?: string }
   | { kind: 'held' }
-  /** A save whose answer never came back has not arrived yet (nothing else to send): checking again. */
-  | { kind: 'checking' }
 
-type Outcome = 'synced' | 'blocked' | 'retry' | 'failed' | 'stopped' | 'checking'
+type Outcome = 'synced' | 'blocked' | 'retry' | 'failed' | 'stopped'
 
 const TRANSIENT = (e: unknown) =>
   e instanceof ApiError && e.code !== 'daily_cap' && (e.status === 0 || e.status === 408 || e.status === 425 || e.status === 429 || e.status >= 500)
@@ -217,11 +216,6 @@ export type SaverOptions<T = unknown> = {
 
 /** Saves kept in the ledger at most (older ones are dropped first). */
 const MAX_LEDGER = 20
-/**
- * Re-checks of a save the server is not past yet, before it counts as not
- * arrived (with the default retryBaseMs: 3 re-checks over ~6 s).
- */
-const MAX_RECHECKS = 3
 /** A save answered like this may still have been written (the answer was lost). */
 const MAYBE_WRITTEN = (e: unknown) => !(e instanceof ApiError) || e.status === 0 || e.status === 408 || e.status >= 500
 
@@ -231,8 +225,9 @@ export class DraftSaver<T = unknown> {
   private ledger: SentSave<T>[] = []
   /** Ledger saveIds not yet checked against a server copy fetched after they were sent. */
   private unchecked = new Set<string>()
-  /** Checks that found an unchecked save not arrived yet (the server not past its version). */
-  private pendingSeen = new Map<string, number>()
+  /** Server copies fetched (started) and merged, in order (catchUpNow). */
+  private checksStarted = 0
+  private checksMerged = 0
   private timer: ReturnType<typeof setTimeout> | null = null
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private running: Promise<Outcome> | null = null
@@ -295,12 +290,7 @@ export class DraftSaver<T = unknown> {
       this.timer = null
     }
     if (this.running) await this.running.catch(() => undefined)
-    for (;;) {
-      const out = await this.kick()
-      // a save still on its way: wait for the re-checks (bounded, see MAX_RECHECKS)
-      if (out !== 'checking') return out === 'synced'
-      await new Promise((r) => setTimeout(r, this.retryBaseMs))
-    }
+    return (await this.kick()) === 'synced'
   }
 
   stop(): void {
@@ -320,6 +310,19 @@ export class DraftSaver<T = unknown> {
     if (this.stopped || !this.view) return Promise.resolve('stopped')
     this.refreshWanted = true
     return this.kick()
+  }
+
+  /**
+   * Fetch the server copy NOW and merge it into the form (serialised with
+   * the saves, which also send this tab's own changes). True once a copy
+   * fetched after this call has been merged and the saver is not holding
+   * for a question; false when it could not be fetched.
+   */
+  async catchUpNow(): Promise<boolean> {
+    if (this.stopped || !this.view) return false
+    const want = this.checksStarted + 1
+    for (let i = 0; i < 2 && this.checksMerged < want && !this.stopped; i++) await this.refresh().catch(() => undefined)
+    return this.checksMerged >= want && !this.held && !this.stopped
   }
 
   /** A retry is waiting (an upload being checked, a network blip): try now. */
@@ -402,7 +405,6 @@ export class DraftSaver<T = unknown> {
   private setLedger(l: SentSave<T>[], sent?: SentSave<T>) {
     this.ledger = l
     for (const id of this.unchecked) if (!l.some((r) => r.saveId === id)) this.unchecked.delete(id)
-    for (const id of this.pendingSeen.keys()) if (!this.unchecked.has(id)) this.pendingSeen.delete(id)
     if (this.view) this.o.onLedger?.(l, this.view, sent)
   }
 
@@ -418,8 +420,8 @@ export class DraftSaver<T = unknown> {
     this.setLedger(this.ledger.filter((r) => r.baseVersion >= v.version))
   }
 
-  /** Send one save (PATCH or PUT) with a ledger entry until its answer comes back. */
-  private async send(url: string, method: 'PATCH' | 'PUT', json: Record<string, unknown>, part: 'details' | 'playlist', snap: T, base: number): Promise<FullView> {
+  /** Send one save (PATCH, PUT, or the seal) with a ledger entry until its answer comes back. */
+  private async send(url: string, method: 'PATCH' | 'PUT' | 'POST', json: Record<string, unknown>, part: 'details' | 'playlist' | 'seal', snap: T, base: number): Promise<FullView> {
     const saveId = newSaveId()
     const rec: SentSave<T> = { saveId, details: part === 'details', playlist: part === 'playlist', sentAt: Date.now(), baseVersion: base, sent: snap }
     this.record(rec)
@@ -439,24 +441,21 @@ export class DraftSaver<T = unknown> {
   /** Fetch the event and merge it (catchUp); the saves sent before the fetch are checked by it. */
   private async check(id: number): Promise<void> {
     const sentBefore = [...this.unchecked]
+    const seq = ++this.checksStarted
     await this.catchUp(await api<FullView>(`/api/ev/events/${id}`), sentBefore)
+    this.checksMerged = Math.max(this.checksMerged, seq)
   }
 
   /**
    * The saves in `sentBefore` (sent before `fresh` was fetched) are sorted
    * by it: each is decided, except one the server is not past yet (it may
-   * still arrive): that one stays unchecked (see MAX_RECHECKS).
+   * still arrive): that one stays unchecked (the next write decides it:
+   * saveOnce's seal).
    */
   private settle(sentBefore: readonly string[], baseVersion: number, fresh: FullView) {
     const recs = this.ledger.filter((r) => sentBefore.includes(r.saveId))
     const pending = new Set(sortSaves(recs, baseVersion, fresh).pending.map((r) => r.saveId))
-    for (const id of sentBefore) {
-      if (pending.has(id)) this.pendingSeen.set(id, (this.pendingSeen.get(id) ?? 0) + 1)
-      else {
-        this.unchecked.delete(id)
-        this.pendingSeen.delete(id)
-      }
-    }
+    for (const id of sentBefore) if (!pending.has(id)) this.unchecked.delete(id)
   }
 
   /** Merge a server copy into the form when it is newer than the base. */
@@ -541,7 +540,7 @@ export class DraftSaver<T = unknown> {
         }
         out = this.fail(e)
       }
-      if (!this.again || this.stopped || out === 'retry' || out === 'stopped' || out === 'checking') break
+      if (!this.again || this.stopped || out === 'retry' || out === 'stopped') break
     }
     return out
   }
@@ -601,24 +600,6 @@ export class DraftSaver<T = unknown> {
     return 'failed'
   }
 
-  /**
-   * Every undecided save has been re-checked MAX_RECHECKS times with the
-   * server still at its base version (so it did not arrive: a save lands
-   * only on its base version, and the version bump would show), and
-   * MAX_RECHECKS × retryBaseMs have passed since it was sent: drop it as not arrived.
-   * True when nothing is undecided any more.
-   */
-  private dropNotArrived(): boolean {
-    const v = this.view
-    if (!v) return false
-    const span = MAX_RECHECKS * this.retryBaseMs
-    const undecided = this.ledger.filter((r) => this.unchecked.has(r.saveId))
-    const done = (r: SentSave<T>) => r.baseVersion === v.version && (this.pendingSeen.get(r.saveId) ?? 0) > MAX_RECHECKS && Date.now() - r.sentAt >= span
-    if (!undecided.length || !undecided.every(done)) return false
-    this.setLedger(this.ledger.filter((r) => !undecided.includes(r)))
-    return !this.hasUnchecked()
-  }
-
   private async saveOnce(): Promise<Outcome> {
     let plan = this.o.plan(this.view)
     if (!this.view) {
@@ -644,21 +625,20 @@ export class DraftSaver<T = unknown> {
       const v = this.view!
       this.setView(await this.send(`/api/ev/events/${v.id}/playlist`, 'PUT', plan.playlist, 'playlist', snap, v.version))
     }
+    if (this.hasUnchecked()) {
+      // A save that may still land (the check just found the server not
+      // past its version: a keepalive on its way) and nothing else to send:
+      // the member undid what it sent (or it sent what the server holds).
+      // Never settled by waiting: a write that changes nothing moves the
+      // version on, so it can no longer land (or this gets 409 because it
+      // already did: caught up and rebased onto it, then the undo is sent).
+      const v = this.view!
+      this.o.onStatus({ kind: 'saving' })
+      this.setView(await this.send(`/api/ev/events/${v.id}/draft`, 'POST', { seal: true }, 'seal', snap, v.version))
+    }
     if (plan.blocked.length) {
       this.o.onStatus({ kind: 'partial', reason: plan.blocked.join(' ') })
       return 'blocked'
-    }
-    if (this.hasUnchecked() && !this.dropNotArrived()) {
-      // A save that may still land is undecided (the member may have undone
-      // what it sent): never "all saved" (nor the device copy cleared) until
-      // it is. Checked again shortly (bounded: dropNotArrived).
-      this.refreshWanted = true
-      this.o.onStatus({ kind: 'checking' })
-      this.retryTimer = setTimeout(() => {
-        this.retryTimer = null
-        void this.kick()
-      }, this.retryBaseMs)
-      return 'checking'
     }
     this.o.onSynced(plan.key)
     this.o.onStatus({ kind: 'saved', at: Date.now(), wrote })

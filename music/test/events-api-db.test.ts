@@ -304,6 +304,24 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
     const bad: EventTrack[] = [...tr(lib1), { position: 1, source: 'upload', mediaId: null, audioId: Number(fl!.id), pinAt: null }]
     expect(await codeOf(svc.saveDraft(db(), m, d.id, { ...ka, version: d.version, saveId: 'pc-ka-0003', details: { hostName: 'Other host' }, playlist: { ...ka.playlist, tracks: bad } }))).toBe('audio_failed')
     expect(await snap()).toEqual(s1)
+    // the seal: nothing changes but the version moves on (one audit row with its saveId, no jobs),
+    // so a keepalive made against the old version can no longer land
+    const s1b = await snap()
+    const sealed = await svc.saveDraft(db(), m, d.id, { version: d.version, expectStatus: 'draft', saveId: 'pc-seal-0001', seal: true })
+    expect(sealed).toMatchObject({ version: d.version + 1, hostName: 'PC host', status: 'draft' })
+    expect(sealed.tracks.map((t) => t.mediaId)).toEqual([lib2])
+    expect(((await svc.getEventView(db(), m, d.id)) as FullEventView).recentSaveIds![0]).toBe('pc-seal-0001')
+    const s1c = await snap()
+    expect(s1c.audits.slice(-1)).toEqual(['events.draft.seal'])
+    expect(s1c.jobs).toEqual(s1b.jobs)
+    expect(s1c.tracks).toEqual(s1b.tracks)
+    expect(await codeOf(svc.saveDraft(db(), m, d.id, { ...ka, version: d.version, saveId: 'pc-ka-late' }))).toBe('version_conflict')
+    expect(await codeOf(svc.saveDraft(db(), m, d.id, { version: d.version, expectStatus: 'draft', saveId: 'pc-seal-0002', seal: true }))).toBe('version_conflict')
+    // with a part that changes something, the seal adds no bump of its own
+    const withPart = await svc.saveDraft(db(), m, d.id, { version: sealed.version, expectStatus: 'draft', saveId: 'pc-seal-0003', seal: true, details: { hostName: 'Sealed host' } })
+    expect(withPart).toMatchObject({ version: sealed.version + 1, hostName: 'Sealed host' })
+    expect((await audits(d.id)).slice(-1)).toEqual(['events.event.edit'])
+    d = withPart
     // submitted elsewhere: status_changed, nothing written, no jobs
     d = await svc.transition(db(), m, d.id, 'submit')
     const s2 = await snap()

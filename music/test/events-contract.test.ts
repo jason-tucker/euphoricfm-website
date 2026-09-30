@@ -267,6 +267,11 @@ describe('API and job schemas', () => {
     expect(SaveDraftRequest.safeParse({ expectStatus: 'draft', saveId: 'abcdef12-3456', playlist: pl }).success).toBe(false)
     expect(SaveDraftRequest.safeParse({ ...g, details: { location: 'Pier', status: 'approved' } }).success).toBe(false)
     expect(SaveDraftRequest.safeParse({ ...g, playlist: { ...pl, version: 9 } }).success).toBe(false)
+    // the seal (the version moves on although nothing changes): alone, or with parts
+    expect(SaveDraftRequest.safeParse({ ...g, seal: true }).success).toBe(true)
+    expect(SaveDraftRequest.safeParse({ ...g, seal: true, playlist: pl }).success).toBe(true)
+    expect(SaveDraftRequest.safeParse({ ...g, seal: false }).success).toBe(false)
+    expect(SaveDraftRequest.safeParse({ version: 3, expectStatus: 'draft', seal: true }).success).toBe(false)
   })
 
   it('tracks and announcements: source and mode shapes', () => {

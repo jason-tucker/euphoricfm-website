@@ -25,8 +25,8 @@ export async function getEvent(q: Q, id: number, lock = false): Promise<EventRow
   return rows[0] ?? null
 }
 
-/** Audit actions that record a client `saveId` (service.ts patchEvent / putPlaylist). */
-export const SAVE_AUDIT_ACTIONS = ['events.event.edit', 'events.playlist.save'] as const
+/** Audit actions that record a client `saveId` (service.ts patchEvent / putPlaylist / saveDraft's seal). */
+export const SAVE_AUDIT_ACTIONS = ['events.event.edit', 'events.playlist.save', 'events.draft.seal'] as const
 
 /** The latest recorded client save ids of an event, newest first (audit_log detail.saveId). */
 export async function recentSaveIds(q: Q, id: number, limit = RECENT_SAVE_IDS): Promise<string[]> {

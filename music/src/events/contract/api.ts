@@ -309,6 +309,12 @@ export type PutPlaylistRequest = z.infer<typeof PutPlaylistRequest>
 // ONE transaction against one version (the autosave form's keepalive save:
 // it lands whole or not at all, whatever order the browser sends things
 // in). Drafts only; every guard is required.
+// `seal: true`: when nothing in the request changes the draft (or it carries
+// neither part), the version is still moved on by one (an audit row with the
+// saveId). The form sends it when it has undone a save whose fate it cannot
+// tell yet (a keepalive still on its way): after the seal that save can
+// never land (it only lands on the version it was made against), or the
+// seal gets 409 version_conflict because it already did.
 export const SaveDraftRequest = z
   .object({
     version: editGuards.version,
@@ -316,9 +322,10 @@ export const SaveDraftRequest = z
     saveId: editGuards.saveId,
     details: z.object(eventFields).partial().strict().refine(endsAfterStart, 'endsAt must be after startsAt').optional(),
     playlist: z.object(playlistFields).strict().refine(uniquePositions, 'duplicate track positions').optional(),
+    seal: z.literal(true).optional(),
   })
   .strict()
-  .refine((o) => o.details !== undefined || o.playlist !== undefined, 'empty save')
+  .refine((o) => o.details !== undefined || o.playlist !== undefined || o.seal === true, 'empty save')
 export type SaveDraftRequest = z.infer<typeof SaveDraftRequest>
 
 // Every event mutation responds with the updated full view.

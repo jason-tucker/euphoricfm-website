@@ -481,7 +481,9 @@ async function applyPlaylist(tx: Tx, actor: Actor, ev: EventRow, input: Playlist
  * requests arrive in any order, and a PUT sent at a guessed version+1 could
  * land on top of another device's save; this lands whole or not at all.
  * Drafts only (expectStatus 'draft' is required). The saveId is recorded
- * with each part that changed something.
+ * with each part that changed something. `seal`: the form's "no save made
+ * against this version may land any more" (it undid one whose fate it cannot
+ * tell): the version moves on even when nothing changed.
  */
 export async function saveDraft(db: DB, actor: Actor, id: number, input: SaveDraftRequest, clock?: Clock): Promise<FullEventView> {
   assertTitleAllowed(input.details?.title)
@@ -494,6 +496,13 @@ export async function saveDraft(db: DB, actor: Actor, id: number, input: SaveDra
     let cur = ev
     if (input.details) cur = await applyPatch(tx, actor, cur, { ...input.details, saveId: input.saveId }, s, now)
     if (input.playlist) cur = await applyPlaylist(tx, actor, cur, { ...input.playlist, saveId: input.saveId }, s, now)
+    if (input.seal && cur === ev) {
+      // Nothing changed, but the version still moves on: no other save made
+      // against this version can land after this one (contract: `seal`).
+      assertEditable(core(ev), actor, s, now)
+      cur = await writeEvent(tx, ev, { version: ev.version + 1 })
+      await auditEv(tx, actor, 'events.draft.seal', ev.id, { fromVersion: ev.version, saveId: input.saveId })
+    }
     return fullOf(tx, cur, actor, s, now)
   })
 }

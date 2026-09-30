@@ -118,6 +118,8 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   const [done, setDone] = useState<FullView | null>(null)
   const [discard, setDiscard] = useState<'ask' | 'busy' | null>(null)
   const [note, setNoteState] = useState<string | null>(null)
+  /** "Use the saved version instead" is catching up with the server first. */
+  const [undoBusy, setUndoBusy] = useState(false)
   /** What the restored device copy changed (named in the restore notice). */
   const [restoredWhat, setRestoredWhat] = useState<string[]>([])
   /** A device copy that would overwrite newer work: waiting for a choice. */
@@ -127,11 +129,19 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   // The merge note clears after NOTE_MS, and at the next save that merged nothing.
   const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mergedThisSave = useRef(false)
+  /** The note shown now (a merge during the same save adds to it). */
+  const noteRef = useRef<string | null>(null)
   /** The form when the saver stopped (a later change is not saved: say so). */
   const stopKey = useRef<string | null>(null)
   const setNote = (n: string | null) => {
     if (noteTimer.current) clearTimeout(noteTimer.current)
-    noteTimer.current = n ? setTimeout(() => setNoteState(null), NOTE_MS) : null
+    noteTimer.current = n
+      ? setTimeout(() => {
+          noteRef.current = null
+          setNoteState(null)
+        }, NOTE_MS)
+      : null
+    noteRef.current = n
     setNoteState(n)
   }
   useEffect(
@@ -322,8 +332,11 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
             // keepalive arriving changes nothing in the form: no note).
             const n = r.merged ? mergeNote(describeChanges({ draft: d, builder: bl }, r), r.kept) : null
             if (n) {
+              // a note from this same save (what an undo kept, an earlier
+              // merge) stays: this one is added to it
+              const prev = mergedThisSave.current ? noteRef.current : null
               mergedThisSave.current = true
-              setNote(n)
+              setNote(prev && !prev.includes(n) ? `${prev} ${n}` : n)
             }
             setAdoptN((x) => x + 1)
           }),
@@ -523,7 +536,7 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
     absorbed.current = []
   }
 
-  const revertToSaved = () => {
+  const revertToSaved = async () => {
     if (!initial) {
       // a new request: start over with an empty form
       clearBackup(backupKey(userKey, 'new'))
@@ -533,14 +546,31 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       setRestored(false)
       return
     }
-    const u = restoreUndo.current
-    restoreUndo.current = null
-    if (u) {
+    if (restoreUndo.current) {
+      if (undoBusy) return
+      // First catch up with the server: what another device changed since
+      // the restore is then in the form, and stays (this tab may not have
+      // looked since: no focus / visibility change, no 409).
+      setUndoBusy(true)
+      const noteBefore = noteRef.current
+      const ok = await saver.catchUpNow()
+      setUndoBusy(false)
+      // what the catch-up merged in (its note stays, the undo's is added)
+      const caught = noteRef.current !== noteBefore ? noteRef.current : null
+      const u = restoreUndo.current
+      if (!u) return
+      if (!ok) {
+        // offline, or a question about a device copy is up: nothing undone
+        if (!saver.isHeld) setNote("Couldn't check the saved version for newer changes, so nothing was undone. Try again in a moment.")
+        return
+      }
+      restoreUndo.current = null
       // Undo what the restore changed (it may have saved itself already)
       // where the form still holds what the restore put there; whatever
       // changed since (another device, or typed after the restore) stays.
-      // The result saves like any edit.
-      const r = undoRestore(u.before, u.after, { draft, builder })
+      // The result saves like any edit. (The form as it is after the catch-up.)
+      const { draft: d, builder: bl } = live.current
+      const r = undoRestore(u.before, u.after, { draft: d, builder: bl })
       for (const k of absorbed.current.splice(0)) clearBackup(k)
       setRestoredWhat([])
       setDraft(r.draft)
@@ -549,8 +579,12 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       if (r.kept.length) {
         // stays up through the save of the undo
         mergedThisSave.current = true
-        setNote(`Kept ${listWords(r.kept)} as ${r.kept.length > 1 ? 'they are' : 'it is'} now, because ${r.kept.length > 1 ? 'they' : 'it'} changed after the restore.`)
-      } else setNote(null)
+        const kept = `Kept ${listWords(r.kept)} as ${r.kept.length > 1 ? 'they are' : 'it is'} now, because ${r.kept.length > 1 ? 'they' : 'it'} changed after the restore.`
+        setNote(caught ? `${caught} ${kept}` : kept)
+      } else {
+        mergedThisSave.current = !!caught
+        setNote(caught)
+      }
       return
     }
     const v = viewRef.current ?? initial
@@ -733,8 +767,8 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
           {(initial ? undoable : !view) ? (
             <>
               {' '}
-              <button type="button" className="link" onClick={revertToSaved}>
-                {initial ? 'Use the saved version instead' : 'Start over'}
+              <button type="button" className="link" onClick={() => void revertToSaved()} disabled={undoBusy}>
+                {initial ? (undoBusy ? 'Checking the saved version…' : 'Use the saved version instead') : 'Start over'}
               </button>
             </>
           ) : null}
@@ -974,12 +1008,6 @@ function SaveStatusText({
               </a>
             </>
           ) : null}
-        </span>
-      )
-    case 'checking':
-      return (
-        <span className="ev-save" data-state="saving">
-          Checking your last change…
         </span>
       )
     case 'held':
