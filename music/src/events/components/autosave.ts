@@ -5,7 +5,8 @@
 //     and saves: PATCH details, PUT playlist, both with the loaded version.
 //     Saves are serialised (never two in flight) and coalesced; transient
 //     failures retry with backoff; flushKeepalive() sends the last changes
-//     with fetch keepalive when the page is hidden or left.
+//     with fetch keepalive when the page is hidden or left (one combined
+//     request, so it lands whole or not at all).
 //   - `view` is the form's base: the server copy the form last loaded, saved
 //     or merged. Every field of the form that this tab did not change equals
 //     it, so `plan(view)` (a plain diff) sends only this tab's changes.
@@ -47,11 +48,11 @@ export type SaveStatus =
   | { kind: 'idle' }
   | { kind: 'new'; missing: string[] }
   | { kind: 'saving' }
-  | { kind: 'saved'; at: number }
+  | { kind: 'saved'; at: number; /** this round sent a write (not only a check that all is saved) */ wrote?: boolean }
   | { kind: 'partial'; reason: string }
   | { kind: 'error'; reason: string; retrying: boolean; /** an upload that failed its check */ audioId?: number }
   | { kind: 'offline' }
-  | { kind: 'stopped'; reason: string; /** reload link (the event page) */ reloadHref?: string }
+  | { kind: 'stopped'; reason: string; /** reload link (the event page) */ reloadHref?: string; /** the request left the draft state elsewhere (its status, or '' when unknown) */ moved?: string }
   | { kind: 'held' }
 
 type Outcome = 'synced' | 'blocked' | 'retry' | 'failed' | 'stopped'
@@ -101,11 +102,13 @@ export function newSaveId(): string {
 
 /** What a keepalive save sent (recorded in the tab's device copy). */
 export type KeepaliveSent = {
-  /** The saveId of the PATCH / the PUT, when sent. */
-  patch?: string
-  playlist?: string
+  /** The saveId of the combined save (POST /draft). */
+  saveId: string
+  /** What it carried: the details, the playlist. */
+  details: boolean
+  playlist: boolean
   sentAt: number
-  /** The server version the requests were made against. */
+  /** The server version it was made against (it lands only on that version). */
   baseVersion: number
 }
 /** A save waiting for an upload that is still being checked (it becomes usable by itself). */
@@ -259,32 +262,27 @@ export class DraftSaver {
   flushKeepalive(): KeepaliveSent | null {
     if (this.stopped || this.held || !this.view) return null
     const plan = this.o.plan(this.view)
-    const send = (url: string, method: string, body: unknown) => {
-      try {
-        void fetch(url, {
-          method,
-          keepalive: true,
-          credentials: 'same-origin',
-          cache: 'no-store',
-          headers: { 'content-type': 'application/json', accept: 'application/json' },
-          body: JSON.stringify(body),
-        }).catch(() => undefined)
-      } catch {
-        // keepalive quota or no fetch: the local backup still has it
-      }
+    const details = Object.keys(plan.patch).length ? plan.patch : undefined
+    const playlist = plan.playlist ?? undefined
+    if (!details && !playlist) return null
+    // ONE request (POST /draft: details + playlist in one transaction, both
+    // against this base version). Two keepalive requests arrive in any
+    // order, and a playlist PUT at a guessed version+1 could land on top of
+    // another device's save; this one lands whole or not at all.
+    const saveId = newSaveId()
+    try {
+      void fetch(`/api/ev/events/${this.view.id}/draft`, {
+        method: 'POST',
+        keepalive: true,
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ version: this.view.version, expectStatus: 'draft', saveId, ...(details ? { details } : {}), ...(playlist ? { playlist } : {}) }),
+      }).catch(() => undefined)
+    } catch {
+      // keepalive quota or no fetch: the local backup still has it
     }
-    const out: KeepaliveSent = { sentAt: Date.now(), baseVersion: this.view.version }
-    let version = this.view.version
-    if (Object.keys(plan.patch).length) {
-      out.patch = newSaveId()
-      send(`/api/ev/events/${this.view.id}`, 'PATCH', { ...plan.patch, version, expectStatus: 'draft', saveId: out.patch })
-      version += 1 // each accepted edit bumps the version by one
-    }
-    if (plan.playlist) {
-      out.playlist = newSaveId()
-      send(`/api/ev/events/${this.view.id}/playlist`, 'PUT', { ...plan.playlist, version, expectStatus: 'draft', saveId: out.playlist })
-    }
-    return out.patch || out.playlist ? out : null
+    return { saveId, details: !!details, playlist: !!playlist, sentAt: Date.now(), baseVersion: this.view.version }
   }
 
   private setView(v: FullView) {
@@ -365,6 +363,7 @@ export class DraftSaver {
       this.o.onStatus({
         kind: 'stopped',
         reason: moved ? movedMessage(status, this.unsaved()) : evMessage(e),
+        ...(moved ? { moved: status ?? '' } : {}),
         ...(this.view && (moved || e.code === 'not_editable') ? { reloadHref: `/my/events/${this.view.id}` } : {}),
       })
       return 'stopped'
@@ -412,6 +411,7 @@ export class DraftSaver {
       plan = this.o.plan(this.view)
     }
     const v0 = this.view!
+    const wrote = !!(plan.create || Object.keys(plan.patch).length || plan.playlist)
     if (Object.keys(plan.patch).length || plan.playlist) this.o.onStatus({ kind: 'saving' })
     // Details first: a playlist the server refuses (an upload that failed
     // its check) never holds back the details.
@@ -429,7 +429,7 @@ export class DraftSaver {
       return 'blocked'
     }
     this.o.onSynced(plan.key)
-    this.o.onStatus({ kind: 'saved', at: Date.now() })
+    this.o.onStatus({ kind: 'saved', at: Date.now(), wrote })
     return 'synced'
   }
 }

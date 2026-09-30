@@ -2,7 +2,7 @@
 // playlist-name sanitizer, settings resolution, API/job schemas and the
 // env forbidden-key lists both ways. No DB, no network.
 import { describe, expect, it } from 'vitest'
-import { CreateEventRequest, EventAnnouncementSchema, EventTrackSchema, EventViewSchema, PatchEventRequest, PutPlaylistRequest } from '@/events/contract/api'
+import { CreateEventRequest, EventAnnouncementSchema, EventTrackSchema, EventViewSchema, PatchEventRequest, PutPlaylistRequest, SaveDraftRequest } from '@/events/contract/api'
 import { EVENT_JOB_KINDS, EVENT_JOB_PAYLOADS, eventJobDedupeKey, parseEventJobPayload } from '@/events/contract/jobs'
 import {
   annName,
@@ -256,6 +256,17 @@ describe('API and job schemas', () => {
     expect(PatchEventRequest.safeParse({ title: 'New', saveId: 'bad id!' }).success).toBe(false)
     expect(PutPlaylistRequest.safeParse({ tracks: [], announcements: [], playlistOrder: 'shuffle', expectStatus: 'pending', saveId: 'x'.repeat(64) }).success).toBe(true)
     expect(PutPlaylistRequest.safeParse({ tracks: [], announcements: [], playlistOrder: 'shuffle', saveId: 'x'.repeat(65) }).success).toBe(false)
+    // 0.5.3 combined keepalive save: drafts only, every guard required, something to save
+    const pl = { tracks: [], announcements: [], playlistOrder: 'shuffle' }
+    const g = { version: 3, expectStatus: 'draft', saveId: 'abcdef12-3456' }
+    expect(SaveDraftRequest.safeParse({ ...g, details: { location: 'Pier' }, playlist: pl }).success).toBe(true)
+    expect(SaveDraftRequest.safeParse({ ...g, playlist: pl }).success).toBe(true)
+    expect(SaveDraftRequest.safeParse(g).success).toBe(false)
+    expect(SaveDraftRequest.safeParse({ ...g, expectStatus: 'pending', playlist: pl }).success).toBe(false)
+    expect(SaveDraftRequest.safeParse({ version: 3, expectStatus: 'draft', playlist: pl }).success).toBe(false)
+    expect(SaveDraftRequest.safeParse({ expectStatus: 'draft', saveId: 'abcdef12-3456', playlist: pl }).success).toBe(false)
+    expect(SaveDraftRequest.safeParse({ ...g, details: { location: 'Pier', status: 'approved' } }).success).toBe(false)
+    expect(SaveDraftRequest.safeParse({ ...g, playlist: { ...pl, version: 9 } }).success).toBe(false)
   })
 
   it('tracks and announcements: source and mode shapes', () => {

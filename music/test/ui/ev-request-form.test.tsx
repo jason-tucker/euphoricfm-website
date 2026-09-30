@@ -363,6 +363,23 @@ describe('one-page request form', () => {
     expect(draftBackupKeys()).toEqual([])
   })
 
+  it("the 'not sent' submit message goes once the save that failed goes through", async () => {
+    const v = view()
+    let fail = true
+    const api = mockApi({
+      ...base(),
+      'PATCH /api/ev/events/42': (b) => (fail ? { status: 503, body: { error: 'unavailable' } } : { status: 200, body: { event: { ...v, ...(b as object), version: 4 } } }),
+    })
+    render(<Form initial={v} debounceMs={60_000} />)
+    fireEvent.change(await screen.findByLabelText(/Event title/), { target: { value: 'Final name' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit request' }))
+    expect(await screen.findByText(/so the request was not sent/)).toBeTruthy()
+    fail = false // the connection is back: the retry saves
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+    expect(screen.queryByText(/so the request was not sent/)).toBeNull()
+    expect(api.writes().filter((c) => c.url.endsWith('/submit'))).toHaveLength(0)
+  })
+
   it('Submit with missing fields shows readable messages and sends nothing', async () => {
     const api = mockApi(base())
     render(<Form />)
@@ -400,7 +417,9 @@ describe('one-page request form', () => {
     })
     const k = api.calls.filter((c) => c.keepalive)
     expect(k).toHaveLength(1)
-    expect(k[0]).toMatchObject({ method: 'PATCH', url: '/api/ev/events/42', body: { title: 'Last words', version: 3 } })
+    // one combined request (details + playlist land together or not at all)
+    expect(k[0]).toMatchObject({ method: 'POST', url: '/api/ev/events/42/draft', body: { details: { title: 'Last words' }, version: 3 }, raw: { expectStatus: 'draft' } })
+    expect(k[0]!.raw).not.toHaveProperty('playlist')
   })
 })
 
@@ -519,8 +538,30 @@ const lib = (mediaId: number, position: number, pinAt: string | null = null) => 
   label: SONGS[mediaId],
 })
 
+type PlaylistBody = { tracks: FullView['tracks']; announcements: FullView['announcements']; playlistOrder: FullView['playlistOrder'] }
+
+// A version- and status-checked fake of the draft endpoints (like the server:
+// each write bumps the version by one and records its saveId).
 function fakeServer(start: FullView) {
   const srv = { state: start }
+  const guard = (b: { version?: number; expectStatus?: string }): Reply | null => {
+    if (b.expectStatus !== undefined && b.expectStatus !== srv.state.status) return { status: 409, body: { error: 'status_changed', status: srv.state.status } }
+    if (b.version !== srv.state.version) return { status: 409, body: { error: 'version_conflict' } }
+    return null
+  }
+  const patch = (fields: Record<string, unknown>, saveId?: string) => {
+    srv.state = { ...srv.state, ...(fields as Partial<FullView>), version: srv.state.version + 1, recentSaveIds: [...(saveId ? [saveId] : []), ...(srv.state.recentSaveIds ?? [])] }
+  }
+  const put = (p: PlaylistBody, saveId?: string) => {
+    srv.state = {
+      ...srv.state,
+      recentSaveIds: [...(saveId ? [saveId] : []), ...(srv.state.recentSaveIds ?? [])],
+      tracks: p.tracks.map((t) => ({ ...t, label: t.mediaId ? SONGS[t.mediaId] : undefined })),
+      announcements: p.announcements,
+      playlistOrder: p.playlistOrder,
+      version: srv.state.version + 1,
+    }
+  }
   const routes: Record<string, Handler> = {
     ...base(),
     'GET /api/ev/library': (_b, url) => {
@@ -530,28 +571,31 @@ function fakeServer(start: FullView) {
     'GET /api/ev/events/42': () => ({ status: 200, body: srv.state }),
     'PATCH /api/ev/events/42': (b) => {
       const { version, expectStatus, saveId, ...fields } = b as { version: number; expectStatus?: string; saveId?: string } & Record<string, unknown>
-      if (expectStatus !== undefined && expectStatus !== srv.state.status) return { status: 409, body: { error: 'status_changed', status: srv.state.status } }
-      if (version !== srv.state.version) return { status: 409, body: { error: 'version_conflict' } }
-      srv.state = { ...srv.state, ...(fields as Partial<FullView>), version: srv.state.version + 1, recentSaveIds: [...(saveId ? [saveId] : []), ...(srv.state.recentSaveIds ?? [])] }
+      const no = guard({ version, expectStatus })
+      if (no) return no
+      patch(fields, saveId)
       return { status: 200, body: { event: srv.state } }
     },
     'PUT /api/ev/events/42/playlist': (b) => {
-      const p = b as { version: number; expectStatus?: string; saveId?: string; tracks: FullView['tracks']; announcements: FullView['announcements']; playlistOrder: FullView['playlistOrder'] }
-      if (p.expectStatus !== undefined && p.expectStatus !== srv.state.status) return { status: 409, body: { error: 'status_changed', status: srv.state.status } }
-      if (p.version !== srv.state.version) return { status: 409, body: { error: 'version_conflict' } }
-      srv.state = {
-        ...srv.state,
-        recentSaveIds: [...(p.saveId ? [p.saveId] : []), ...(srv.state.recentSaveIds ?? [])],
-        tracks: p.tracks.map((t) => ({ ...t, label: t.mediaId ? SONGS[t.mediaId] : undefined })),
-        announcements: p.announcements,
-        playlistOrder: p.playlistOrder,
-        version: srv.state.version + 1,
-      }
+      const p = b as { version: number; expectStatus?: string; saveId?: string } & PlaylistBody
+      const no = guard(p)
+      if (no) return no
+      put(p, saveId(p))
+      return { status: 200, body: { event: srv.state } }
+    },
+    // the keepalive: details + playlist in one transaction, against one version
+    'POST /api/ev/events/42/draft': (b) => {
+      const d = b as { version: number; expectStatus: string; saveId: string; details?: Record<string, unknown>; playlist?: PlaylistBody }
+      const no = guard(d)
+      if (no) return no
+      if (d.details) patch(d.details, d.saveId)
+      if (d.playlist) put(d.playlist, d.saveId)
       return { status: 200, body: { event: srv.state } }
     },
   }
   return { srv, routes }
 }
+const saveId = (b: { saveId?: string }) => b.saveId
 
 async function addSong(title: string) {
   fireEvent.change(screen.getByLabelText('Search the EuphoricFM library'), { target: { value: title.toLowerCase() } })
@@ -599,6 +643,26 @@ describe('two tabs on one draft', () => {
     // every save carried the draft status guard and its own saveId
     for (const c of bWrites) expect(c.raw).toMatchObject({ expectStatus: 'draft', saveId: expect.stringMatching(/^[A-Za-z0-9-]{8,64}$/) })
     expect(new Set(bWrites.map((c) => (c.raw as { saveId: string }).saveId)).size).toBe(bWrites.length)
+  })
+
+  it('the merge note stays up through a check that sends nothing, and goes at the next real save', async () => {
+    const { srv, routes } = fakeServer(v2())
+    const api = mockApi(routes)
+    render(<Form initial={v2()} />)
+    await screen.findAllByTestId('pb-track')
+    srv.state = { ...srv.state, hostName: 'Host From A', version: 3 }
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+    await waitFor(() => expect(screen.getByTestId('rf-merge-note').textContent).toBe('Merged changes made in another tab: host name → "Host From A".'))
+    // the merge re-renders the form (a save round that finds nothing to send): the note stays
+    await sleep(500)
+    expect(api.writes()).toHaveLength(0)
+    expect(screen.getByTestId('rf-merge-note')).toBeTruthy()
+    // a save of this tab's own change clears it
+    fireEvent.change(screen.getByLabelText(/Where/), { target: { value: 'The Pier' } })
+    await waitFor(() => expect(api.writes()).toHaveLength(1))
+    await waitFor(() => expect(screen.queryByTestId('rf-merge-note')).toBeNull())
   })
 
   it('a field both tabs changed keeps this tab\'s value and says so', async () => {
@@ -724,7 +788,7 @@ describe('two tabs on one draft', () => {
       window.dispatchEvent(new Event('pagehide'))
     })
     const k = api.calls.filter((c) => c.keepalive)
-    expect(k).toEqual([expect.objectContaining({ method: 'PATCH', body: { location: 'The Pier', version: 2 } })])
+    expect(k).toEqual([expect.objectContaining({ method: 'POST', url: '/api/ev/events/42/draft', body: { details: { location: 'The Pier' }, version: 2 } })])
     // the stale version is refused (409) and the device copy keeps the change for the next load's merge
     expect(srv.state.location).toBeNull()
     expect(draftBackup().data.draft.location).toBe('The Pier')
@@ -803,6 +867,9 @@ describe('status guard: a stale draft tab never edits a submitted request', () =
     expect(srv.state).toMatchObject({ status: 'approved', version: 2, title: 'Club night' })
     expect(srv.state.tracks).toHaveLength(1)
     expect(status()).not.toContain('All changes saved')
+    // the page changed after the stop: the status now says those changes were not saved
+    expect(status()).toContain('Your latest changes on this page were NOT saved.')
+    expect(status()).not.toContain('Nothing on this page was lost.')
   })
 
   it('fh: submitted elsewhere, no catch-up first: the server refuses (status_changed), the saver stops for good and says the change was NOT saved', async () => {
@@ -890,6 +957,84 @@ describe('keepalive leftovers never overwrite newer work', () => {
     expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha'])
     expect(api.writes()[0]!.body).toEqual({ hostName: 'PC host', version: 4 })
     await waitFor(() => expect(draftBackupKeys()).toEqual([]))
+  })
+
+  it('a keepalive with details AND a song lands both (one request, no order to get wrong)', async () => {
+    const { srv, routes } = fakeServer(view({ version: 2, tracks: [lib(701, 0)] }))
+    const api = mockApi(routes)
+    render(<Form initial={view({ version: 2, tracks: [lib(701, 0)] })} debounceMs={60_000} />)
+    fireEvent.change(await screen.findByLabelText(/Where/), { target: { value: 'PC loc' } })
+    await addSong('Charlie')
+    await waitFor(() => expect(draftBackup()?.data.builder.tracks).toHaveLength(2))
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    await sleep(50)
+    const k = api.calls.filter((c) => c.keepalive)
+    expect(k.map((c) => `${c.method} ${c.url}`)).toEqual(['POST /api/ev/events/42/draft'])
+    expect(srv.state).toMatchObject({ location: 'PC loc', version: 4 })
+    expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha', 'Charlie'])
+  })
+
+  /** Another device saved Bravo (v3) after this PC tab loaded v2; the PC tab has not caught up. */
+  async function phoneSavedFirst() {
+    const { srv, routes } = fakeServer(view({ version: 2, tracks: [lib(701, 0)] }))
+    const api = mockApi(routes)
+    const pc = render(<Form initial={view({ version: 2, tracks: [lib(701, 0)] })} debounceMs={60_000} />)
+    await screen.findAllByTestId('pb-track')
+    srv.state = { ...srv.state, tracks: [lib(701, 0), lib(702, 1)], version: 3, recentSaveIds: ['phone-0001'] }
+    fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+    await addSong('Charlie')
+    await waitFor(() => expect(draftBackup()?.data.builder.tracks).toHaveLength(2))
+    return { srv, api, pc }
+  }
+
+  it("another device saved once, then the tab closes: the keepalive is refused whole (Bravo is never replaced), and reopening merges this device's changes on top", async () => {
+    const { srv, api, pc } = await phoneSavedFirst()
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'))
+    })
+    await sleep(50)
+    expect(api.calls.filter((c) => c.keepalive)).toHaveLength(1)
+    // refused (version 2 is stale): nothing of it landed
+    expect(srv.state).toMatchObject({ version: 3, hostName: null })
+    expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha', 'Bravo'])
+    pc.unmount()
+    const api2 = mockApi(fakeServer(srv.state).routes)
+    const { srv: srv2 } = { srv: srv }
+    render(<Form initial={srv2.state} />)
+    const notice = await screen.findByText(/We restored changes you made on this device/)
+    expect(notice.textContent).toContain('host name → "PC host" and added "Charlie"')
+    expect(screen.queryByTestId('rf-restore-ask')).toBeNull()
+    await waitFor(() => expect(api2.writes()).toHaveLength(2))
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+    expect(trackTitles()).toEqual(['Alpha', 'Bravo', 'Charlie'])
+    expect(api2.writes().find((c) => c.method === 'PUT')!.body).toMatchObject({ tracks: [{ mediaId: 701 }, { mediaId: 702 }, { mediaId: 703 }] })
+  })
+
+  it('another device saved once, then the tab is hidden and shown again: Bravo stays and this tab\'s changes go on top', async () => {
+    let vis: DocumentVisibilityState = 'visible'
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => vis)
+    try {
+      const { srv, api } = await phoneSavedFirst()
+      vis = 'hidden'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      await sleep(50)
+      expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha', 'Bravo'])
+      vis = 'visible'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      await waitFor(() => expect(trackTitles()).toEqual(['Alpha', 'Bravo', 'Charlie']))
+      expect(screen.getByTestId('rf-merge-note').textContent).toContain('added "Bravo"')
+      await waitFor(() => expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha', 'Bravo', 'Charlie']))
+      expect(srv.state.hostName).toBe('PC host')
+      expect(api.writes().every((c) => c.method !== 'POST')).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   async function staleConflict() {

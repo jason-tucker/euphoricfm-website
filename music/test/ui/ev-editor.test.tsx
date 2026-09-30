@@ -266,7 +266,7 @@ describe('event editor: status guard (0.5.3 fix round 2)', () => {
       </TzProvider>,
     )
     const note = await screen.findByTestId('ev-lost-changes')
-    expect(note.textContent).toContain("Changes made on this device after the request was submitted weren't saved: place → \"Late place\"")
+    expect(note.textContent).toContain("Some changes made on this device had not reached the draft when the request was submitted, so they weren't saved: place → \"Late place\"")
     expect(window.localStorage.getItem(key)).toBeNull()
     expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(0)
   })

@@ -14,19 +14,21 @@ export const LIMITS = {
   uploadChunk: { name: 'upload-chunk', max: 240, windowMs: 60_000 },
   // v0.5.3: the events request form autosaves a draft (PATCH details + PUT
   // playlist, debounced), which under steady editing is more than 30/min.
-  // Only those two edits use this bucket; each is still authenticated,
-  // CSRF-checked and version-checked by its route.
+  // Only those edits (and the form's combined keepalive save, POST /draft)
+  // use this bucket; each is still authenticated, CSRF-checked and
+  // version-checked by its route.
   eventEdit: { name: 'event-edit', max: 120, windowMs: 60_000 },
 } as const satisfies Record<string, Limit>
 
-const EVENT_EDIT = /^\/api\/ev\/events\/\d+(\/playlist)?$/
+const EVENT_EDIT = /^\/api\/ev\/events\/\d+(\/playlist|\/draft)?$/
+const EDIT_METHOD: Record<string, string> = { '': 'PATCH', '/playlist': 'PUT', '/draft': 'POST' }
 
 /** The bucket for a request (null = not limited here). */
 export function limitFor(pathname: string, method: string, unsafe: boolean, isHook: boolean): Limit | null {
   if (pathname.startsWith('/api/auth/')) return LIMITS.auth
   if (!unsafe || isHook) return null
   const edit = EVENT_EDIT.exec(pathname)
-  if (edit && (edit[1] ? method === 'PUT' : method === 'PATCH')) return LIMITS.eventEdit
+  if (edit && EDIT_METHOD[edit[1] ?? ''] === method) return LIMITS.eventEdit
   return LIMITS.mutation
 }
 

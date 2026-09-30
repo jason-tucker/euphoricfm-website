@@ -58,16 +58,19 @@ describe('rate limiter', () => {
     rl.hit(LIMITS.auth, 'd', 0)
     expect((rl as unknown as { buckets: Map<string, unknown> }).buckets.size).toBe(3)
   })
-  it('draft autosave edits (event PATCH, playlist PUT) get their own 120/min bucket; every other mutation stays at 30', () => {
+  it('draft autosave edits (event PATCH, playlist PUT, combined draft POST) get their own 120/min bucket; every other mutation stays at 30', () => {
     expect(LIMITS.eventEdit.max).toBe(120)
     expect(LIMITS.mutation.max).toBe(30)
     expect(limitFor('/api/ev/events/13', 'PATCH', true, false)).toBe(LIMITS.eventEdit)
     expect(limitFor('/api/ev/events/13/playlist', 'PUT', true, false)).toBe(LIMITS.eventEdit)
+    expect(limitFor('/api/ev/events/13/draft', 'POST', true, false)).toBe(LIMITS.eventEdit)
     // everything else on the same resources stays on the mutation bucket
     for (const [path, method] of [
       ['/api/ev/events', 'POST'],
       ['/api/ev/events/13', 'DELETE'],
       ['/api/ev/events/13/playlist', 'PATCH'],
+      ['/api/ev/events/13/draft', 'PUT'],
+      ['/api/ev/events/13', 'POST'],
       ['/api/ev/events/13/submit', 'POST'],
       ['/api/ev/events/13/withdraw', 'POST'],
       ['/api/ev/events/13/approve', 'POST'],

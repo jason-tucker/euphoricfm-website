@@ -284,12 +284,17 @@ export const PatchEventRequest = z
   .refine(endsAfterStart, 'endsAt must be after startsAt')
 export type PatchEventRequest = z.infer<typeof PatchEventRequest>
 
+const playlistFields = {
+  tracks: z.array(EventTrackSchema).max(TRACKS_MAX),
+  announcements: z.array(EventAnnouncementSchema).max(ANNOUNCEMENTS_MAX),
+  playlistOrder: PlaylistOrderSchema,
+}
+const uniquePositions = (p: { tracks: { position: number }[] }) => new Set(p.tracks.map((t) => t.position)).size === p.tracks.length
+
 // PUT /api/ev/events/:id/playlist
 export const PutPlaylistRequest = z
   .object({
-    tracks: z.array(EventTrackSchema).max(TRACKS_MAX),
-    announcements: z.array(EventAnnouncementSchema).max(ANNOUNCEMENTS_MAX),
-    playlistOrder: PlaylistOrderSchema,
+    ...playlistFields,
     // Same meaning as on PATCH (a pin / announcement change to a LIVE event).
     version: editGuards.version.optional(),
     expectStatus: editGuards.expectStatus.optional(),
@@ -297,8 +302,24 @@ export const PutPlaylistRequest = z
     confirmRestart: editGuards.confirmRestart.optional(),
   })
   .strict()
-  .refine((p) => new Set(p.tracks.map((t) => t.position)).size === p.tracks.length, 'duplicate track positions')
+  .refine(uniquePositions, 'duplicate track positions')
 export type PutPlaylistRequest = z.infer<typeof PutPlaylistRequest>
+
+// POST /api/ev/events/:id/draft — a draft's details and playlist saved in
+// ONE transaction against one version (the autosave form's keepalive save:
+// it lands whole or not at all, whatever order the browser sends things
+// in). Drafts only; every guard is required.
+export const SaveDraftRequest = z
+  .object({
+    version: editGuards.version,
+    expectStatus: z.literal('draft'),
+    saveId: editGuards.saveId,
+    details: z.object(eventFields).partial().strict().refine(endsAfterStart, 'endsAt must be after startsAt').optional(),
+    playlist: z.object(playlistFields).strict().refine(uniquePositions, 'duplicate track positions').optional(),
+  })
+  .strict()
+  .refine((o) => o.details !== undefined || o.playlist !== undefined, 'empty save')
+export type SaveDraftRequest = z.infer<typeof SaveDraftRequest>
 
 // Every event mutation responds with the updated full view.
 export const EventMutationResponse = z.object({ event: FullEventViewSchema })

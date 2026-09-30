@@ -257,6 +257,54 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
     await svc.transition(db(), m, d.id, 'withdraw', { expectStatus: 'approved' })
   })
 
+  it('0.5.3 keepalive save (POST /draft): details + playlist land together at one version, or not at all', async () => {
+    const u = await mkUser()
+    const m: Actor = { userId: u.id, discordId: u.discordId, name: 'Keepalive', staff: false, manage: false }
+    const t0 = base + 13 * 24 * H
+    const tr = (...ids: number[]): EventTrack[] => ids.map((mediaId, position) => ({ position, source: 'library', mediaId, audioId: null, pinAt: null }))
+    let d = await svc.createEvent(db(), m, { ...draft, title: 'Keepalive draft', startsAt: iso(t0), endsAt: iso(t0 + 2 * H) })
+    d = await svc.putPlaylist(db(), m, d.id, { tracks: tr(lib1), announcements: [], playlistOrder: 'shuffle', version: d.version, expectStatus: 'draft', saveId: 'pc-save-0001' })
+    const pcBase = d.version
+    // the phone saves once (Bravo) after the PC tab loaded pcBase
+    d = await svc.putPlaylist(db(), m, d.id, { tracks: tr(lib1, lib2), announcements: [], playlistOrder: 'shuffle', version: d.version, expectStatus: 'draft', saveId: 'phone-0001' })
+    const snap = async () => ({
+      row: (await ownerSql()`SELECT status, version, host_name, updated_at FROM events WHERE id = ${d.id}`)[0],
+      tracks: (await ownerSql()`SELECT media_id FROM event_tracks WHERE event_id = ${d.id} ORDER BY position`).map((r) => Number(r.media_id)),
+      audits: await audits(d.id),
+      jobs: (await jobs(d.id)).map((j) => `${j.kind}:${j.dedupe_key}`),
+    })
+    const s0 = await snap()
+    // the PC's keepalive (stale base): refused whole — the PUT part can never land on the phone's version
+    const ka = { version: pcBase, expectStatus: 'draft' as const, saveId: 'pc-ka-0001', details: { hostName: 'PC host' }, playlist: { tracks: tr(lib1), announcements: [], playlistOrder: 'shuffle' as const } }
+    expect(await codeOf(svc.saveDraft(db(), m, d.id, ka))).toBe('version_conflict')
+    expect(await snap()).toEqual(s0)
+    expect(s0.tracks).toEqual([lib1, lib2])
+    expect(((await svc.getEventView(db(), m, d.id)) as FullEventView).recentSaveIds).toEqual(['phone-0001', 'pc-save-0001'])
+    // at the current version both parts apply in one go: two bumps, the saveId on both audit rows
+    const cur = d.version
+    d = await svc.saveDraft(db(), m, d.id, { ...ka, version: cur, saveId: 'pc-ka-0002', playlist: { ...ka.playlist, tracks: tr(lib2) } })
+    expect(d).toMatchObject({ version: cur + 2, hostName: 'PC host', status: 'draft' })
+    expect(d.tracks.map((t) => t.mediaId)).toEqual([lib2])
+    expect(((await svc.getEventView(db(), m, d.id)) as FullEventView).recentSaveIds!.slice(0, 3)).toEqual(['pc-ka-0002', 'pc-ka-0002', 'phone-0001'])
+    expect((await audits(d.id)).slice(-2)).toEqual(['events.event.edit', 'events.playlist.save'])
+    // a failed upload in the playlist rolls the details back too
+    const [fl] = await ownerSql()`INSERT INTO event_audio (owner_user_id, owner_discord_id, kind, title, artist, status, duration_s)
+      VALUES (${m.userId}, ${m.discordId}, 'song', 'Failed KA', 'Me', 'failed', NULL) RETURNING id`
+    const s1 = await snap()
+    const bad: EventTrack[] = [...tr(lib1), { position: 1, source: 'upload', mediaId: null, audioId: Number(fl!.id), pinAt: null }]
+    expect(await codeOf(svc.saveDraft(db(), m, d.id, { ...ka, version: d.version, saveId: 'pc-ka-0003', details: { hostName: 'Other host' }, playlist: { ...ka.playlist, tracks: bad } }))).toBe('audio_failed')
+    expect(await snap()).toEqual(s1)
+    // submitted elsewhere: status_changed, nothing written, no jobs
+    d = await svc.transition(db(), m, d.id, 'submit')
+    const s2 = await snap()
+    expect(await codeOf(svc.saveDraft(db(), m, d.id, { ...ka, version: d.version, saveId: 'pc-ka-0004' }))).toBe('status_changed')
+    expect(await snap()).toEqual(s2)
+    expect(s2.jobs.filter((j) => j.startsWith('ticket_post') || j.startsWith('teardown'))).toEqual([])
+    // a stranger cannot use it
+    expect(await codeOf(svc.saveDraft(db(), other, d.id, { ...ka, version: d.version, saveId: 'pc-ka-0005' }))).toBe('not_found')
+    await svc.transition(db(), m, d.id, 'withdraw')
+  })
+
   it('0.5.3: a failed or rejected upload is audio_failed (with its id); a probing one stays audio_not_ready', async () => {
     const [fl] = await ownerSql()`INSERT INTO event_audio (owner_user_id, owner_discord_id, kind, title, artist, status, duration_s)
       VALUES (${owner.userId}, ${owner.discordId}, 'song', 'Failed Upload', 'Me', 'failed', NULL) RETURNING id`

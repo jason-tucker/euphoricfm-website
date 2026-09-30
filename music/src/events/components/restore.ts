@@ -53,7 +53,7 @@ export type RestorePlan = {
 
 export function planRestore(server: FullView, copies: readonly { key: string; backup: Backup<FormData> }[], c: FormCtx): RestorePlan {
   const serverForm = formOfView(server, c)
-  const recent = new Set(server.recentSaveIds ?? [])
+  const recent = server.recentSaveIds ?? []
   // A saveId missing from a list that is not full was never recorded: that
   // keepalive did not arrive. From a full list (or none) it may have
   // scrolled out: unknown.
@@ -70,18 +70,18 @@ export function planRestore(server: FullView, copies: readonly { key: string; ba
     let version = backup.baseVersion ?? backup.base.version
     let unconfirmed = false
     for (const k of backup.keepalive ?? []) {
-      const sent = backupForm(k.sent, c.zone)
-      if (k.patch) {
-        if (recent.has(k.patch)) {
-          base = { ...base, draft: sent.draft }
-          version++
-        } else if (!listComplete) unconfirmed = true
-      }
-      if (k.playlist) {
-        if (recent.has(k.playlist)) {
-          base = { ...base, builder: sent.builder }
-          version++
-        } else if (!listComplete) unconfirmed = true
+      // The keepalive (one combined save, POST /draft) lands only on the
+      // version it was made against, whole or not at all; each part that
+      // changed something is one audit row (one version bump) with its saveId.
+      const n = recent.filter((id) => id === k.saveId).length
+      if (n && k.baseVersion === version) {
+        const sent = backupForm(k.sent, c.zone)
+        base = { draft: k.details ? sent.draft : base.draft, builder: k.playlist ? sent.builder : base.builder }
+        version += n
+      } else if (n || !listComplete) {
+        // arrived on a base this copy does not describe, or may have
+        // scrolled out of the list: the question decides
+        unconfirmed = true
       }
     }
     const local = backupForm(backup.data, c.zone)

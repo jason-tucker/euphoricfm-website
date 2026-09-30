@@ -74,6 +74,7 @@ const newTabId = () => `${Date.now().toString(36)}${Math.random().toString(36).s
 const STORAGE_REFRESH_MS = 800
 /** How long a merge note stays up (it also goes at the next save without a merge). */
 const NOTE_MS = 10_000
+const NOT_SAVED_SUBMIT = "Your latest changes aren't saved yet, so the request was not sent. Check the save status above and try again."
 /** Keepalive records kept in a device copy. */
 const MAX_KEEPALIVES = 5
 
@@ -128,6 +129,8 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   // The merge note clears after NOTE_MS, and at the next save that merged nothing.
   const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mergedThisSave = useRef(false)
+  /** The form when the saver stopped (a later change is not saved: say so). */
+  const stopKey = useRef<string | null>(null)
   const setNote = (n: string | null) => {
     if (noteTimer.current) clearTimeout(noteTimer.current)
     noteTimer.current = n ? setTimeout(() => setNoteState(null), NOTE_MS) : null
@@ -279,10 +282,16 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
             setAdoptN((x) => x + 1)
           }),
         onStatus: (st) => {
+          // The merge note stays until the next save that actually sent
+          // something without merging (a check that finds everything saved
+          // does not count), or NOTE_MS.
           if (st.kind === 'saved') {
-            if (!mergedThisSave.current) setNote(null)
+            if (st.wrote && !mergedThisSave.current) setNote(null)
             mergedThisSave.current = false
+            // a "not saved yet, so not sent" submit message is out of date now
+            setSubmitErr((e) => (e === NOT_SAVED_SUBMIT ? null : e))
           }
+          if (st.kind === 'stopped') stopKey.current = formKeyRef.current
           setStatus(st)
         },
         audioName: (id) => {
@@ -530,7 +539,7 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       const ok = await saver.flush()
       const v = saver.view
       if (!ok || !v) {
-        setSubmitErr("Your latest changes aren't saved yet, so the request was not sent. Check the save status above and try again.")
+        setSubmitErr(NOT_SAVED_SUBMIT)
         return
       }
       const r = await api<{ event: FullView }>(`/api/ev/events/${v.id}/submit`, { json: {} })
@@ -593,7 +602,11 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
     )
   }
 
-  const statusView = <SaveStatusText status={status} view={view} missing={missing} dirty={formKey !== synced.current} storageOk={storageOk} mode={mode} />
+  // Stopped because the request left the draft state elsewhere, and the
+  // form changed since: those changes are not saved either.
+  const shownStatus: SaveStatus =
+    status.kind === 'stopped' && status.moved !== undefined && formKey !== stopKey.current ? { ...status, reason: movedMessage(status.moved || undefined, true) } : status
+  const statusView = <SaveStatusText status={shownStatus} view={view} missing={missing} dirty={formKey !== synced.current} storageOk={storageOk} mode={mode} />
   const run = runningLength(builder.tracks)
   // Uploads that failed their check (My audio, or the server's refusal): marked in the lists.
   const failedAudio = new Set<number>(sources.audio.filter((a) => a.status === 'failed' || a.status === 'rejected').map((a) => a.id))

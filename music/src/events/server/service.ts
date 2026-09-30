@@ -15,7 +15,7 @@ import { buildInputKey } from '../contract/build-key'
 import { isReservedPlaylistName } from '../contract/paths'
 import { CALENDAR_MAX_WINDOW_DAYS, CALENDAR_STATUSES, SLOT_HOLDING_STATUSES } from '../contract/rules'
 import type { EventsSettings } from '../contract/settings'
-import type { CreateEventRequest, PatchEventRequest, PutPlaylistRequest, StaffBookRequest } from '../contract/api'
+import type { CreateEventRequest, PatchEventRequest, PutPlaylistRequest, SaveDraftRequest, StaffBookRequest } from '../contract/api'
 import type { EventAnnouncement, EventStatus, EventTrack, EventView, FullEventView, PlaylistOrder, Visibility } from '../contract/types'
 import * as repo from './repo'
 import type { EventRow, Q, Tx } from './repo'
@@ -365,53 +365,58 @@ export async function patchEvent(db: DB, actor: Actor, id: number, input: PatchE
     const ev = await loadOwned(tx, actor, id, true)
     checkStatus(ev, input.expectStatus)
     checkVersion(ev, input.version)
-    assertEditable(core(ev), actor, s, now)
-    const patch: Partial<DetailFields> = {}
-    for (const k of ['title', 'hostName', 'description', 'location', 'eventType', 'visibility', 'playlistOrder'] as const) {
-      if (input[k] !== undefined) (patch as Record<string, unknown>)[k] = input[k]
-    }
-    if (input.startsAt !== undefined) patch.startsAt = new Date(input.startsAt)
-    if (input.endsAt !== undefined) patch.endsAt = new Date(input.endsAt)
-    const changed = changedFields({ ...ev, visibility: ev.visibility as Visibility, playlistOrder: ev.playlistOrder as PlaylistOrder }, patch)
-    if (changed.length === 0 && input.enteredTz === undefined) return fullOf(tx, ev, actor, s, now)
-    const startsAt = patch.startsAt ?? ev.startsAt
-    const endsAt = patch.endsAt ?? ev.endsAt
-    const timeChanged = changed.includes('startsAt') || changed.includes('endsAt')
-    if (ev.status === 'live' && changed.some((k) => !LIVE_OK_WITHOUT_RESTART.has(k)) && input.confirmRestart !== true) throw clash('restart_required')
-
-    let shortNotice = ev.shortNotice
-    let adjacent: number[] = []
-    const tracks = (await repo.tracksOf(tx, [ev.id])).get(ev.id) ?? []
-    const anns = (await repo.announcementsOf(tx, [ev.id])).get(ev.id) ?? []
-    const lookup = await repo.loadLookup(tx, repo.lookupIds([{ tracks, announcements: anns }]))
-    if (timeChanged) {
-      ;({ shortNotice } = checkTiming({ startsAt: startsAt.getTime(), endsAt: endsAt.getTime() }, actor, s, now))
-      ;({ adjacent } = await slotCheck(tx, { id: ev.id, startsAt: startsAt.getTime(), endsAt: endsAt.getTime() }, s, actor))
-      // Existing pins / announcements must still fit the new window.
-      // A draft's timing rules wait for submit (0.5.3 autosave).
-      validatePlaylist({ startsAt, endsAt, ownerUserId: ev.ownerUserId }, { tracks, announcements: anns }, lookup, s, actor, { structuralOnly: ev.status === 'draft' })
-    }
-    const reapproval = !actor.staff && (ev.status === 'approved' || ev.status === 'built') && needsReapproval(changed, false)
-    const after = await writeEvent(tx, ev, {
-      ...patch,
-      ...(input.enteredTz !== undefined ? { enteredTz: input.enteredTz } : {}),
-      shortNotice,
-      version: ev.version + 1,
-      ...(reapproval ? { status: 'pending' } : {}),
-    })
-    const p = { tracks, announcements: anns }
-    const diff = diffLines(displaySide(ev, p, lookup), displaySide(after, p, lookup))
-    await enqueueAll(tx, editJobs(ev, after, actor, s, diff, reapproval, true, inputKey(ev, p) !== inputKey(after, p)))
-    await auditEv(tx, actor, 'events.event.edit', ev.id, {
-      changed,
-      reapproval,
-      fromVersion: ev.version,
-      adjacent,
-      ...(ev.status === 'live' ? { liveRestart: input.confirmRestart === true } : {}),
-      ...(input.saveId ? { saveId: input.saveId } : {}),
-    })
-    return fullOf(tx, after, actor, s, now)
+    return fullOf(tx, await applyPatch(tx, actor, ev, input, s, now), actor, s, now)
   })
+}
+
+/** A details edit of the locked row `ev` (status/version already checked): the row after it. */
+async function applyPatch(tx: Tx, actor: Actor, ev: EventRow, input: PatchEventRequest, s: EventsSettings, now: number): Promise<EventRow> {
+  assertEditable(core(ev), actor, s, now)
+  const patch: Partial<DetailFields> = {}
+  for (const k of ['title', 'hostName', 'description', 'location', 'eventType', 'visibility', 'playlistOrder'] as const) {
+    if (input[k] !== undefined) (patch as Record<string, unknown>)[k] = input[k]
+  }
+  if (input.startsAt !== undefined) patch.startsAt = new Date(input.startsAt)
+  if (input.endsAt !== undefined) patch.endsAt = new Date(input.endsAt)
+  const changed = changedFields({ ...ev, visibility: ev.visibility as Visibility, playlistOrder: ev.playlistOrder as PlaylistOrder }, patch)
+  if (changed.length === 0 && input.enteredTz === undefined) return ev
+  const startsAt = patch.startsAt ?? ev.startsAt
+  const endsAt = patch.endsAt ?? ev.endsAt
+  const timeChanged = changed.includes('startsAt') || changed.includes('endsAt')
+  if (ev.status === 'live' && changed.some((k) => !LIVE_OK_WITHOUT_RESTART.has(k)) && input.confirmRestart !== true) throw clash('restart_required')
+
+  let shortNotice = ev.shortNotice
+  let adjacent: number[] = []
+  const tracks = (await repo.tracksOf(tx, [ev.id])).get(ev.id) ?? []
+  const anns = (await repo.announcementsOf(tx, [ev.id])).get(ev.id) ?? []
+  const lookup = await repo.loadLookup(tx, repo.lookupIds([{ tracks, announcements: anns }]))
+  if (timeChanged) {
+    ;({ shortNotice } = checkTiming({ startsAt: startsAt.getTime(), endsAt: endsAt.getTime() }, actor, s, now))
+    ;({ adjacent } = await slotCheck(tx, { id: ev.id, startsAt: startsAt.getTime(), endsAt: endsAt.getTime() }, s, actor))
+    // Existing pins / announcements must still fit the new window.
+    // A draft's timing rules wait for submit (0.5.3 autosave).
+    validatePlaylist({ startsAt, endsAt, ownerUserId: ev.ownerUserId }, { tracks, announcements: anns }, lookup, s, actor, { structuralOnly: ev.status === 'draft' })
+  }
+  const reapproval = !actor.staff && (ev.status === 'approved' || ev.status === 'built') && needsReapproval(changed, false)
+  const after = await writeEvent(tx, ev, {
+    ...patch,
+    ...(input.enteredTz !== undefined ? { enteredTz: input.enteredTz } : {}),
+    shortNotice,
+    version: ev.version + 1,
+    ...(reapproval ? { status: 'pending' } : {}),
+  })
+  const p = { tracks, announcements: anns }
+  const diff = diffLines(displaySide(ev, p, lookup), displaySide(after, p, lookup))
+  await enqueueAll(tx, editJobs(ev, after, actor, s, diff, reapproval, true, inputKey(ev, p) !== inputKey(after, p)))
+  await auditEv(tx, actor, 'events.event.edit', ev.id, {
+    changed,
+    reapproval,
+    fromVersion: ev.version,
+    adjacent,
+    ...(ev.status === 'live' ? { liveRestart: input.confirmRestart === true } : {}),
+    ...(input.saveId ? { saveId: input.saveId } : {}),
+  })
+  return after
 }
 
 /** Pins and announcements are schedule rows (a restart); unpinned songs are membership only. */
@@ -422,43 +427,74 @@ function scheduleKey(p: { tracks: readonly EventTrack[]; announcements: readonly
 export async function putPlaylist(db: DB, actor: Actor, id: number, input: PutPlaylistRequest, clock?: Clock): Promise<FullEventView> {
   const now = nowOf(clock)
   const s = await loadEventsSettings(db)
-  const next = {
-    tracks: [...input.tracks].sort((a, b) => a.position - b.position).map(({ label: _l, ...t }) => t),
-    announcements: input.announcements.map(({ label: _l, id: _id, ...a }) => a),
-  }
   return db.transaction(async (tx) => {
     const ev = await loadOwned(tx, actor, id, true)
     checkStatus(ev, input.expectStatus)
     checkVersion(ev, input.version)
-    assertEditable(core(ev), actor, s, now)
-    const prev = {
-      tracks: (await repo.tracksOf(tx, [ev.id])).get(ev.id) ?? [],
-      announcements: (await repo.announcementsOf(tx, [ev.id])).get(ev.id) ?? [],
-    }
-    const same = playlistKey({ ...prev, playlistOrder: ev.playlistOrder as PlaylistOrder }) === playlistKey({ ...next, playlistOrder: input.playlistOrder })
-    if (same) return fullOf(tx, ev, actor, s, now)
-    if (ev.status === 'live' && scheduleKey(prev) !== scheduleKey(next) && input.confirmRestart !== true) throw clash('restart_required')
-    const lookup = await repo.loadLookup(tx, repo.lookupIds([prev, next]))
-    // A DRAFT stores any structurally valid playlist (the autosave keeps
-    // everything the member added); submit runs the full timing check.
-    const { rows } = validatePlaylist({ startsAt: ev.startsAt, endsAt: ev.endsAt, ownerUserId: ev.ownerUserId }, next, lookup, s, actor, { structuralOnly: ev.status === 'draft' })
-    await repo.replacePlaylist(tx, ev.id, next.tracks, next.announcements)
-    if (ev.status !== 'draft') await repo.markAudioUsed(tx, repo.audioIdsOf(next))
-    const reapproval = !actor.staff && (ev.status === 'approved' || ev.status === 'built')
-    const after = await writeEvent(tx, ev, { playlistOrder: input.playlistOrder, version: ev.version + 1, ...(reapproval ? { status: 'pending' } : {}) })
-    const diff = diffLines(displaySide(ev, prev, lookup), displaySide(after, next, lookup))
-    // A member's playlist change always needs re-approval; staff edits build.
-    await enqueueAll(tx, editJobs(ev, after, actor, s, diff, reapproval, actor.staff && next.tracks.some((t) => t.pinAt === null), inputKey(ev, prev) !== inputKey(after, next)))
-    await auditEv(tx, actor, 'events.playlist.save', ev.id, {
-      tracks: next.tracks.length,
-      announcements: next.announcements.length,
-      rows,
-      reapproval,
-      fromVersion: ev.version,
-      ...(ev.status === 'live' ? { liveRestart: input.confirmRestart === true } : {}),
-      ...(input.saveId ? { saveId: input.saveId } : {}),
-    })
-    return fullOf(tx, after, actor, s, now)
+    return fullOf(tx, await applyPlaylist(tx, actor, ev, input, s, now), actor, s, now)
+  })
+}
+
+type PlaylistEdit = Pick<PutPlaylistRequest, 'tracks' | 'announcements' | 'playlistOrder' | 'confirmRestart' | 'saveId'>
+
+/** A playlist save on the locked row `ev` (status/version already checked): the row after it. */
+async function applyPlaylist(tx: Tx, actor: Actor, ev: EventRow, input: PlaylistEdit, s: EventsSettings, now: number): Promise<EventRow> {
+  const next = {
+    tracks: [...input.tracks].sort((a, b) => a.position - b.position).map(({ label: _l, ...t }) => t),
+    announcements: input.announcements.map(({ label: _l, id: _id, ...a }) => a),
+  }
+  assertEditable(core(ev), actor, s, now)
+  const prev = {
+    tracks: (await repo.tracksOf(tx, [ev.id])).get(ev.id) ?? [],
+    announcements: (await repo.announcementsOf(tx, [ev.id])).get(ev.id) ?? [],
+  }
+  const same = playlistKey({ ...prev, playlistOrder: ev.playlistOrder as PlaylistOrder }) === playlistKey({ ...next, playlistOrder: input.playlistOrder })
+  if (same) return ev
+  if (ev.status === 'live' && scheduleKey(prev) !== scheduleKey(next) && input.confirmRestart !== true) throw clash('restart_required')
+  const lookup = await repo.loadLookup(tx, repo.lookupIds([prev, next]))
+  // A DRAFT stores any structurally valid playlist (the autosave keeps
+  // everything the member added); submit runs the full timing check.
+  const { rows } = validatePlaylist({ startsAt: ev.startsAt, endsAt: ev.endsAt, ownerUserId: ev.ownerUserId }, next, lookup, s, actor, { structuralOnly: ev.status === 'draft' })
+  await repo.replacePlaylist(tx, ev.id, next.tracks, next.announcements)
+  if (ev.status !== 'draft') await repo.markAudioUsed(tx, repo.audioIdsOf(next))
+  const reapproval = !actor.staff && (ev.status === 'approved' || ev.status === 'built')
+  const after = await writeEvent(tx, ev, { playlistOrder: input.playlistOrder, version: ev.version + 1, ...(reapproval ? { status: 'pending' } : {}) })
+  const diff = diffLines(displaySide(ev, prev, lookup), displaySide(after, next, lookup))
+  // A member's playlist change always needs re-approval; staff edits build.
+  await enqueueAll(tx, editJobs(ev, after, actor, s, diff, reapproval, actor.staff && next.tracks.some((t) => t.pinAt === null), inputKey(ev, prev) !== inputKey(after, next)))
+  await auditEv(tx, actor, 'events.playlist.save', ev.id, {
+    tracks: next.tracks.length,
+    announcements: next.announcements.length,
+    rows,
+    reapproval,
+    fromVersion: ev.version,
+    ...(ev.status === 'live' ? { liveRestart: input.confirmRestart === true } : {}),
+    ...(input.saveId ? { saveId: input.saveId } : {}),
+  })
+  return after
+}
+
+/**
+ * POST /api/ev/events/:id/draft — a draft's details AND playlist in one
+ * transaction, both against the same `version` (the autosave form's
+ * keepalive save as the page is hidden or left). Two separate keepalive
+ * requests arrive in any order, and a PUT sent at a guessed version+1 could
+ * land on top of another device's save; this lands whole or not at all.
+ * Drafts only (expectStatus 'draft' is required). The saveId is recorded
+ * with each part that changed something.
+ */
+export async function saveDraft(db: DB, actor: Actor, id: number, input: SaveDraftRequest, clock?: Clock): Promise<FullEventView> {
+  assertTitleAllowed(input.details?.title)
+  const now = nowOf(clock)
+  const s = await loadEventsSettings(db)
+  return db.transaction(async (tx) => {
+    const ev = await loadOwned(tx, actor, id, true)
+    checkStatus(ev, input.expectStatus)
+    checkVersion(ev, input.version)
+    let cur = ev
+    if (input.details) cur = await applyPatch(tx, actor, cur, { ...input.details, saveId: input.saveId }, s, now)
+    if (input.playlist) cur = await applyPlaylist(tx, actor, cur, { ...input.playlist, saveId: input.saveId }, s, now)
+    return fullOf(tx, cur, actor, s, now)
   })
 }
 

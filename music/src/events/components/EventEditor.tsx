@@ -94,7 +94,7 @@ export function EventEditor({ id, staff, viewerDiscordId, chunkBytes }: { id: nu
       {lost ? (
         <Notice tone="warn">
           <span data-testid="ev-lost-changes">
-            Changes made on this device after the request was submitted weren&apos;t saved: {listWords(lost)}. They have been discarded. If you still want them, make them again
+            Some changes made on this device had not reached the draft when the request was submitted, so they weren&apos;t saved: {listWords(lost)}. They have been discarded. If you still want them, make them again
             below.
           </span>
         </Notice>
