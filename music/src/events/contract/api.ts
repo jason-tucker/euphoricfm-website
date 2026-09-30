@@ -165,6 +165,7 @@ export const FullEventViewSchema = z.object({
   denyReason: z.string().nullable(),
   ownerName: z.string().nullable(),
   ticketNumber: z.number().int().nullable(),
+  recentSaveIds: z.array(z.string()).optional(),
 })
 export const EventViewSchema = z.discriminatedUnion('kind', [PublicEventViewSchema, PrivateEventViewSchema, PendingEventViewSchema, FullEventViewSchema])
 
@@ -255,15 +256,31 @@ const endsAfterStart = (o: { startsAt?: string; endsAt?: string }) =>
 export const CreateEventRequest = z.object(eventFields).strict().refine(endsAfterStart, 'endsAt must be after startsAt')
 export type CreateEventRequest = z.infer<typeof CreateEventRequest>
 
-// PATCH /api/ev/events/:id — any subset of the create fields. `version`
-// (optional) is the edit-conflict guard: when sent it must equal the row's
-// (409 version_conflict). `confirmRestart`: staff confirm that a time change
-// to a LIVE event restarts the Event station (409 restart_required without).
+/** A client's id for one save request (the autosave form's keepalive check). */
+export const SaveId = z.string().regex(/^[A-Za-z0-9-]{8,64}$/)
+
+// Guards every edit may carry (0.5.3):
+//   version       the edit-conflict guard: when sent it must equal the row's
+//                 (409 version_conflict);
+//   expectStatus  the status the edit was made against: when sent and the
+//                 event's status differs, 409 status_changed { status } and
+//                 nothing is written. Status transitions (submit, approve, …)
+//                 do NOT bump the version (the worker keys builds by version),
+//                 so without this a stale draft tab's autosave would land on a
+//                 submitted or approved event (and send it back to review);
+//   saveId        recorded with the edit's audit entry and listed (newest
+//                 first) as recentSaveIds on the owner's GET of the event.
+const editGuards = { version: z.number().int().positive(), expectStatus: EventStatusSchema, saveId: SaveId, confirmRestart: z.boolean() }
+const GUARD_KEYS: readonly string[] = Object.keys(editGuards)
+
+// PATCH /api/ev/events/:id — any subset of the create fields, plus the edit
+// guards above. `confirmRestart`: staff confirm that a time change to a LIVE
+// event restarts the Event station (409 restart_required without).
 export const PatchEventRequest = z
-  .object({ ...eventFields, version: z.number().int().positive(), confirmRestart: z.boolean() })
+  .object({ ...eventFields, ...editGuards })
   .partial()
   .strict()
-  .refine((o) => Object.keys(o).some((k) => k !== 'version' && k !== 'confirmRestart'), 'empty patch')
+  .refine((o) => Object.keys(o).some((k) => !GUARD_KEYS.includes(k)), 'empty patch')
   .refine(endsAfterStart, 'endsAt must be after startsAt')
 export type PatchEventRequest = z.infer<typeof PatchEventRequest>
 
@@ -274,8 +291,10 @@ export const PutPlaylistRequest = z
     announcements: z.array(EventAnnouncementSchema).max(ANNOUNCEMENTS_MAX),
     playlistOrder: PlaylistOrderSchema,
     // Same meaning as on PATCH (a pin / announcement change to a LIVE event).
-    version: z.number().int().positive().optional(),
-    confirmRestart: z.boolean().optional(),
+    version: editGuards.version.optional(),
+    expectStatus: editGuards.expectStatus.optional(),
+    saveId: editGuards.saveId.optional(),
+    confirmRestart: editGuards.confirmRestart.optional(),
   })
   .strict()
   .refine((p) => new Set(p.tracks.map((t) => t.position)).size === p.tracks.length, 'duplicate track positions')
@@ -286,6 +305,10 @@ export const EventMutationResponse = z.object({ event: FullEventViewSchema })
 
 // POST submit / withdraw / approve / build-now: no body (or {}).
 export const EmptyRequest = z.object({}).strict()
+// POST withdraw: {} or { expectStatus } (the draft form's "Discard draft"
+// must never withdraw a request that was submitted meanwhile).
+export const WithdrawRequest = z.object({ expectStatus: EventStatusSchema.optional() }).strict()
+export type WithdrawRequest = z.infer<typeof WithdrawRequest>
 // POST deny / cancel
 export const ReasonRequest = z.object({ reason: multiLine(1, REASON_MAX) }).strict()
 export const DenyRequest = ReasonRequest

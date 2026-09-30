@@ -113,6 +113,16 @@ type EditorProps = {
   uploadsEnabled: boolean
   /** Enables the inline upload (own events only: an upload belongs to the uploader). */
   chunkBytes?: number
+  /** Uploads that failed their check: marked "Upload failed — remove it". */
+  failedAudio?: ReadonlySet<number>
+}
+
+function FailedMark() {
+  return (
+    <span className="mt-1 block text-xs font-semibold text-rose-300" role="alert" data-testid="pb-failed">
+      Upload failed — remove it
+    </span>
+  )
 }
 
 export function PlaylistBuilder({
@@ -159,7 +169,7 @@ export function RowsNote({ value, start, end, maxRows }: { value: Builder; start
   )
 }
 
-export function SongsEditor({ value, onChange, start, end, sources, uploadsEnabled, chunkBytes }: EditorProps) {
+export function SongsEditor({ value, onChange, start, end, sources, uploadsEnabled, chunkBytes, failedAudio }: EditorProps) {
   const [q, setQ] = useState('')
   const dq = useDebounced(q.trim(), 350)
   const [msg, setMsg] = useState<string | null>(null)
@@ -326,6 +336,7 @@ export function SongsEditor({ value, onChange, start, end, sources, uploadsEnabl
                       {t.source === 'upload' ? 'My audio · ' : ''}
                       {t.artist ?? 'Unknown artist'} · {formatLength(t.lengthS)}
                     </span>
+                    {t.audioId !== null && failedAudio?.has(t.audioId) ? <FailedMark /> : null}
                   </span>
                   <button type="button" className="ev-iconbtn" onClick={() => set({ tracks: moveTrack(value.tracks, i, -1) })} disabled={i === 0} aria-label={`Move ${t.title} up`}>
                     ↑ Up
@@ -365,7 +376,7 @@ export function SongsEditor({ value, onChange, start, end, sources, uploadsEnabl
   )
 }
 
-export function AnnouncementsEditor({ value, onChange, start, end, sources, uploadsEnabled, chunkBytes }: EditorProps) {
+export function AnnouncementsEditor({ value, onChange, start, end, sources, uploadsEnabled, chunkBytes, failedAudio }: EditorProps) {
   const { mode } = useTz()
   const [src, setSrc] = useState('')
   const [annMode, setAnnMode] = useState<'at' | 'every'>('at')
@@ -442,6 +453,7 @@ export function AnnouncementsEditor({ value, onChange, start, end, sources, uplo
                       {problem}
                     </span>
                   ) : null}
+                  {a.audioId !== null && failedAudio?.has(a.audioId) ? <FailedMark /> : null}
                 </span>
                 <button type="button" className="ev-iconbtn ev-iconbtn-danger" onClick={() => onChange({ ...value, anns: removeAt(value.anns, i) })} aria-label={`Remove announcement ${a.title}`}>
                   ✕

@@ -249,6 +249,13 @@ describe('API and job schemas', () => {
     expect(CreateEventRequest.safeParse({ ...create, startsAt: '2026-10-10 20:00' }).success).toBe(false)
     expect(PatchEventRequest.safeParse({ title: 'New' }).success).toBe(true)
     expect(PatchEventRequest.safeParse({ version: 2 }).success).toBe(false)
+    // 0.5.3 edit guards: expectStatus + saveId alone are not a patch either
+    expect(PatchEventRequest.safeParse({ version: 2, expectStatus: 'draft', saveId: 'abcdef12-3456' }).success).toBe(false)
+    expect(PatchEventRequest.safeParse({ title: 'New', version: 2, expectStatus: 'draft', saveId: 'abcdef12-3456' }).success).toBe(true)
+    expect(PatchEventRequest.safeParse({ title: 'New', expectStatus: 'nope' }).success).toBe(false)
+    expect(PatchEventRequest.safeParse({ title: 'New', saveId: 'bad id!' }).success).toBe(false)
+    expect(PutPlaylistRequest.safeParse({ tracks: [], announcements: [], playlistOrder: 'shuffle', expectStatus: 'pending', saveId: 'x'.repeat(64) }).success).toBe(true)
+    expect(PutPlaylistRequest.safeParse({ tracks: [], announcements: [], playlistOrder: 'shuffle', saveId: 'x'.repeat(65) }).success).toBe(false)
   })
 
   it('tracks and announcements: source and mode shapes', () => {

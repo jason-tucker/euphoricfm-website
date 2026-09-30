@@ -185,6 +185,98 @@ describe.skipIf(!DBENV())('events API service (DB)', () => {
     await svc.transition(db(), owner, d.id, 'withdraw')
   })
 
+  it('0.5.3 status guard (event 16): a stale draft tab\'s PATCH / PUT after submit and after approve is 409 status_changed and changes nothing', async () => {
+    const u = await mkUser()
+    const m: Actor = { userId: u.id, discordId: u.discordId, name: 'Guard', staff: false, manage: false }
+    const t0 = base + 9 * 24 * H
+    const one: EventTrack[] = [{ position: 0, source: 'library', mediaId: lib1, audioId: null, pinAt: null }]
+    const two: EventTrack[] = [...one, { position: 1, source: 'library', mediaId: lib2, audioId: null, pinAt: null }]
+    let d = await svc.createEvent(db(), m, { ...draft, title: 'Guard draft', startsAt: iso(t0), endsAt: iso(t0 + 2 * H) })
+    // tab A autosaves (expectStatus draft + a saveId)
+    d = await svc.putPlaylist(db(), m, d.id, { tracks: one, announcements: [], playlistOrder: 'shuffle', version: d.version, expectStatus: 'draft', saveId: 'save-a-0001' })
+    const stale = d.version // tab B loaded this version
+    const errOf = async (p: Promise<unknown>) => {
+      try {
+        await p
+        return 'ok'
+      } catch (e) {
+        if (e instanceof HttpError) return { http: e.status, code: e.code, ...e.extra }
+        throw e
+      }
+    }
+    const snap = async () => ({
+      row: (await ownerSql()`SELECT status, version, title, location, updated_at FROM events WHERE id = ${d.id}`)[0],
+      tracks: (await ownerSql()`SELECT media_id FROM event_tracks WHERE event_id = ${d.id} ORDER BY position`).map((r) => Number(r.media_id)),
+      audits: await audits(d.id),
+      jobs: (await jobs(d.id)).map((j) => `${j.kind}:${j.dedupe_key}`),
+    })
+    const expectRefused = async (now: string) => {
+      const p = await errOf(svc.patchEvent(db(), m, d.id, { title: 'Changed in B', location: 'Place From B', version: stale, expectStatus: 'draft', saveId: 'save-b-0001' }))
+      const q = await errOf(svc.putPlaylist(db(), m, d.id, { tracks: two, announcements: [], playlistOrder: 'shuffle', version: stale, expectStatus: 'draft', saveId: 'save-b-0002' }))
+      const w = await errOf(svc.transition(db(), m, d.id, 'withdraw', { expectStatus: 'draft' }))
+      // 409, and the body names the status the event has now
+      for (const e of [p, q, w]) expect(e).toEqual({ http: 409, code: 'status_changed', status: now })
+    }
+    // submit (does not bump the version)
+    d = await svc.transition(db(), m, d.id, 'submit')
+    expect(d).toMatchObject({ status: 'pending', version: stale })
+    const s1 = await snap()
+    await expectRefused('pending')
+    expect(await snap()).toEqual(s1)
+    // staff approve (does not bump the version either): the exact event-16 flow
+    d = await svc.transition(db(), staff, d.id, 'approve')
+    expect(d).toMatchObject({ status: 'approved', version: stale })
+    const s2 = await snap()
+    await expectRefused('approved')
+    const s3 = await snap()
+    expect(s3).toEqual(s2)
+    expect(s3.row).toMatchObject({ status: 'approved', version: stale, title: 'Guard draft', location: 'Secret Place' })
+    expect(s3.tracks).toEqual([lib1])
+    expect(s3.jobs.some((j) => j.startsWith('teardown'))).toBe(false)
+    expect(s3.audits.filter((a) => a === 'events.event.edit')).toHaveLength(0)
+    // without a version too; and an edit confirmed against "pending" never lands on the approved event
+    expect(await errOf(svc.patchEvent(db(), m, d.id, { location: 'x', expectStatus: 'draft' }))).toEqual({ http: 409, code: 'status_changed', status: 'approved' })
+    expect(await errOf(svc.putPlaylist(db(), m, d.id, { tracks: two, announcements: [], playlistOrder: 'shuffle', version: stale, expectStatus: 'pending' }))).toEqual({
+      http: 409,
+      code: 'status_changed',
+      status: 'approved',
+    })
+    expect(await snap()).toEqual(s2)
+    // a matching expectStatus still works (the explicit editor on the approved event)
+    d = await svc.patchEvent(db(), m, d.id, { description: 'Explicit edit', version: stale, expectStatus: 'approved', saveId: 'save-c-0001' })
+    expect(d).toMatchObject({ status: 'approved', version: stale + 1, description: 'Explicit edit' })
+    // saveIds: recorded with the edit, newest first, owner and staff only; refused saves never appear
+    const own = await svc.getEventView(db(), m, d.id)
+    expect(own).toMatchObject({ kind: 'full', recentSaveIds: ['save-c-0001', 'save-a-0001'] })
+    expect(await svc.getEventView(db(), staff, d.id)).toMatchObject({ kind: 'full', recentSaveIds: ['save-c-0001', 'save-a-0001'] })
+    const stranger = await svc.getEventView(db(), other, d.id)
+    expect(stranger.kind).toBe('private')
+    expect(stranger).not.toHaveProperty('recentSaveIds')
+    // only the single-event GET carries them (lists stay lean)
+    expect((await svc.myEvents(db(), m)).find((e) => e.id === d.id)).not.toHaveProperty('recentSaveIds')
+    await svc.transition(db(), m, d.id, 'withdraw', { expectStatus: 'approved' })
+  })
+
+  it('0.5.3: a failed or rejected upload is audio_failed (with its id); a probing one stays audio_not_ready', async () => {
+    const [fl] = await ownerSql()`INSERT INTO event_audio (owner_user_id, owner_discord_id, kind, title, artist, status, duration_s)
+      VALUES (${owner.userId}, ${owner.discordId}, 'song', 'Failed Upload', 'Me', 'failed', NULL) RETURNING id`
+    const [rj] = await ownerSql()`INSERT INTO event_audio (owner_user_id, owner_discord_id, kind, title, artist, status, duration_s)
+      VALUES (${owner.userId}, ${owner.discordId}, 'announcement', 'Rejected Upload', NULL, 'rejected', NULL) RETURNING id`
+    const late = base + 11 * 24 * H
+    const d = await svc.createEvent(db(), owner, { ...draft, title: 'Failed upload', startsAt: iso(late), endsAt: iso(late + 2 * H) })
+    const t = (audioId: number): EventTrack[] => [{ position: 0, source: 'upload', mediaId: null, audioId, pinAt: null }]
+    try {
+      await svc.putPlaylist(db(), owner, d.id, { tracks: t(Number(fl!.id)), announcements: [], playlistOrder: 'shuffle', version: d.version })
+      expect.unreachable()
+    } catch (e) {
+      expect(e).toMatchObject({ status: 400, code: 'audio_failed', extra: { audioId: Number(fl!.id) } })
+    }
+    const annUp: EventAnnouncement = { source: 'upload', mediaId: null, audioId: Number(rj!.id), mode: 'at', at: iso(late + 30 * 60_000), everyMin: null, from: null, until: null }
+    expect(await codeOf(svc.putPlaylist(db(), owner, d.id, { tracks: [], announcements: [annUp], playlistOrder: 'shuffle', version: d.version }))).toBe('audio_failed')
+    expect((await svc.getEventView(db(), owner, d.id)) as FullEventView).toMatchObject({ version: d.version, tracks: [], announcements: [] })
+    await svc.transition(db(), owner, d.id, 'withdraw')
+  })
+
   it('a stranger cannot read, edit or act on the draft', async () => {
     expect(await codeOf(svc.getEventView(db(), other, ev.id))).toBe('not_found')
     expect(await codeOf(svc.getEventView(db(), null, ev.id))).toBe('not_found')

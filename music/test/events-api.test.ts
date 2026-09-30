@@ -2,6 +2,7 @@
 // the state machine, the privacy projection (every surface), the ICS feed
 // and the ticket copy. No DB (see events-api-db.test.ts for the flows).
 import { describe, expect, it } from 'vitest'
+import { HttpError } from '@/server/http/errors'
 import { EVENTS_SETTING_DEFAULTS, type EventsSettings } from '@/events/contract/settings'
 import { AUDIO_USABLE_STATUSES } from '@/events/contract/rules'
 import type { EventAnnouncement, EventStatus, EventTrack } from '@/events/contract/types'
@@ -86,6 +87,7 @@ function lookup(over: { library?: LibraryInfo[]; audio?: AudioInfo[]; stingers?:
     { id: 505, ownerUserId: OWNER.userId, kind: 'song', status: 'ingesting', deletedAt: null, title: 'Ingesting', artist: 'Me', durationS: 200 },
     { id: 506, ownerUserId: OWNER.userId, kind: 'announcement', status: 'ingesting', deletedAt: null, title: 'Hello', artist: null, durationS: 15 },
     { id: 507, ownerUserId: OWNER.userId, kind: 'song', status: 'failed', deletedAt: null, title: 'Broken', artist: 'Me', durationS: null },
+    { id: 508, ownerUserId: OWNER.userId, kind: 'announcement', status: 'rejected', deletedAt: null, title: 'Rejected', artist: null, durationS: null },
     { id: 504, ownerUserId: OWNER.userId, kind: 'song', status: 'live', deletedAt: new Date(), title: 'Deleted', artist: 'Me', durationS: 100 },
   ]
   const st = over.stingers ?? [{ mediaId: 900, title: 'EFM ID', lengthS: 12 }]
@@ -248,7 +250,20 @@ describe('validatePlaylist', () => {
     expect(ok([up(0, 77777)])).toBe('media_not_allowed')
     expect(ok([up(0, 504)])).toBe('media_not_allowed') // deleted
     expect(ok([up(0, 503)])).toBe('audio_not_ready') // probing
-    expect(ok([up(0, 507)])).toBe('audio_not_ready') // failed
+    expect(ok([up(0, 507)])).toBe('audio_failed') // failed
+  })
+  it('a failed or rejected upload is audio_failed with its id (never waited for); only a probing one is audio_not_ready', () => {
+    const err = (tracks: EventTrack[], announcements: EventAnnouncement[] = []) => {
+      try {
+        validatePlaylist(EV, { tracks, announcements }, lookup(), S, OWNER, { structuralOnly: true })
+        return null
+      } catch (e) {
+        return e instanceof HttpError ? { code: e.code, ...e.extra } : e
+      }
+    }
+    expect(err([up(0, 507)])).toEqual({ code: 'audio_failed', audioId: 507 })
+    expect(err([lib(0, 101)], [{ ...at(et(5, 21)), source: 'upload', mediaId: null, audioId: 508 }])).toEqual({ code: 'audio_failed', audioId: 508 })
+    expect(err([up(0, 503)])).toEqual({ code: 'audio_not_ready', audioId: 503 })
   })
   it("an upload being ingested into AzuraCast (ready's next state) is accepted at submit, as a song and as an announcement", () => {
     expect(AUDIO_USABLE_STATUSES).toEqual(['ready', 'ingesting', 'live'])
@@ -336,7 +351,7 @@ describe('validatePlaylist', () => {
     expect(draft([lib(0, 999)])).toBe('media_not_allowed')
     expect(draft([up(0, 601)])).toBe('media_not_allowed')
     expect(draft([up(0, 503)])).toBe('audio_not_ready')
-    expect(draft([up(0, 507)])).toBe('audio_not_ready')
+    expect(draft([up(0, 507)])).toBe('audio_failed')
     // ingesting (the worker moves ready → ingesting within seconds and holds
     // it there for minutes): a draft save accepts it
     expect(draft([up(0, 505)], [{ ...at(et(5, 21)), source: 'upload', mediaId: null, audioId: 506 }])).toBe('ok')

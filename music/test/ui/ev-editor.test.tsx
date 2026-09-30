@@ -227,3 +227,47 @@ describe('event editor: re-approval and rebuild notes', () => {
     expect(screen.queryByText(/Staff will reload your changes/)).toBeNull()
   })
 })
+
+describe('event editor: status guard (0.5.3 fix round 2)', () => {
+  beforeEach(() => {
+    resetConfigCache()
+    window.localStorage.clear()
+  })
+
+  it('every explicit save sends the status it loaded; 409 status_changed reloads and says the change was not saved', async () => {
+    const v = view({ status: 'pending' })
+    const calls = stubFetch({ ...base(v), 'PUT /api/ev/events/42/playlist': { status: 409, body: { error: 'status_changed', status: 'approved' } } })
+    render(
+      <TzProvider>
+        <EventEditor id={42} staff={false} viewerDiscordId={OWNER} />
+      </TzProvider>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Save playlist' }))
+    expect(await screen.findByText(/your change was NOT saved/)).toBeTruthy()
+    expect(calls.find((c) => c.method === 'PUT')!.body).toMatchObject({ version: 3, expectStatus: 'pending' })
+    await waitFor(() => expect(calls.filter((c) => c.method === 'GET' && c.url.startsWith('/api/ev/events/42')).length).toBe(2))
+  })
+
+  it('a draft device copy left on this device is never applied to a submitted request: named, discarded, nothing sent', async () => {
+    const draftV = view({ status: 'draft', version: 2 })
+    const key = `efm_ev_form:${OWNER}:42~staletab`
+    const data = {
+      draft: { title: 'Club night', hostName: '', description: '', location: 'Late place', eventType: 'club_night', date: '', time: '', lengthMin: 120, visibility: 'public' },
+      builder: { tracks: [], anns: [], order: 'shuffle' },
+      startsAt: draftV.startsAt,
+      key: 'k',
+    }
+    window.localStorage.setItem(key, JSON.stringify({ v: 2, savedAt: Date.now(), eventId: 42, baseVersion: 2, base: draftV, data }))
+    const approved = view({ status: 'approved', version: 2, recentSaveIds: [] })
+    const calls = stubFetch(base(approved))
+    render(
+      <TzProvider>
+        <EventEditor id={42} staff={false} viewerDiscordId={OWNER} />
+      </TzProvider>,
+    )
+    const note = await screen.findByTestId('ev-lost-changes')
+    expect(note.textContent).toContain("Changes made on this device after the request was submitted weren't saved: place → \"Late place\"")
+    expect(window.localStorage.getItem(key)).toBeNull()
+    expect(calls.filter((c) => c.method !== 'GET')).toHaveLength(0)
+  })
+})

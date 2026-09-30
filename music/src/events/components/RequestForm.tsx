@@ -9,7 +9,9 @@
 // structurally valid draft playlist); they are shown live and block Submit.
 // Two tabs on one draft: each keeps its own device copy, and a newer server
 // copy (a 409, the tab coming back into view, the other tab saving) is merged
-// into the form (merge.ts) instead of being written over.
+// into the form (merge.ts) instead of being written over. A device copy left
+// behind is restored on the next load (restore.ts), or asked about when it
+// would overwrite newer work done elsewhere.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -20,6 +22,7 @@ import {
   clearBackup,
   DraftSaver,
   isDraftBackupKey,
+  movedMessage,
   payloadKey,
   readBackup,
   readDraftBackups,
@@ -28,10 +31,11 @@ import {
   tabBackupKey,
   writeBackup,
 } from './autosave'
-import { api, evMessage } from './ev-api'
+import { api, ApiError, evMessage } from './ev-api'
 import { builderFromView, draftFromView, patchFor } from './fromView'
 import { rulesList } from './HomeParts'
-import { type FormState, listWords, mergeForm, mergeNote } from './merge'
+import { describeChanges, type FormState, listWords, mergeForm, mergeNote } from './merge'
+import { backupForm, EMPTY_BUILDER, type FormData, formOfView, planRestore, type RestorePlan } from './restore'
 import { useEvConfig, useNow } from './hooks'
 import { EVENT_TYPE_LABEL } from './labels'
 import { AnnouncementsEditor, RowsNote, SongsEditor, useAudioSources } from './PlaylistBuilder'
@@ -65,19 +69,13 @@ export function detailsBody(d: Draft, startsAt: string, endsAt: string, mode: 'e
   }
 }
 
-type FormData = { draft: Draft; builder: Builder; startsAt: string | null; key: string }
-
-const EMPTY_BUILDER: Builder = { tracks: [], anns: [], order: 'shuffle' }
-
-/** A backup's form, with the date/time inputs re-split in the viewer's zone. */
-function backupForm(data: FormData, zone: string | undefined): FormState {
-  const d = data.startsAt ? { ...data.draft, ...toInputs(data.startsAt, zone) } : data.draft
-  return { draft: { ...EMPTY_DRAFT, ...d }, builder: { ...EMPTY_BUILDER, ...data.builder } }
-}
-
 const newTabId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
 /** How long after another tab's device copy changes this tab re-reads the draft. */
 const STORAGE_REFRESH_MS = 800
+/** How long a merge note stays up (it also goes at the next save without a merge). */
+const NOTE_MS = 10_000
+/** Keepalive records kept in a device copy. */
+const MAX_KEEPALIVES = 5
 
 type Props = {
   staff: boolean
@@ -120,9 +118,27 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   const [submitErr, setSubmitErr] = useState<string | null>(null)
   const [done, setDone] = useState<FullView | null>(null)
   const [discard, setDiscard] = useState<'ask' | 'busy' | null>(null)
-  const [note, setNote] = useState<string | null>(null)
+  const [note, setNoteState] = useState<string | null>(null)
+  /** What the restored device copy changed (named in the restore notice). */
+  const [restoredWhat, setRestoredWhat] = useState<string[]>([])
+  /** A device copy that would overwrite newer work: waiting for a choice. */
+  const [ask, setAsk] = useState<RestorePlan | null>(null)
   const [tab] = useState(newTabId)
   const sources = useAudioSources()
+  // The merge note clears after NOTE_MS, and at the next save that merged nothing.
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const mergedThisSave = useRef(false)
+  const setNote = (n: string | null) => {
+    if (noteTimer.current) clearTimeout(noteTimer.current)
+    noteTimer.current = n ? setTimeout(() => setNoteState(null), NOTE_MS) : null
+    setNoteState(n)
+  }
+  useEffect(
+    () => () => {
+      if (noteTimer.current) clearTimeout(noteTimer.current)
+    },
+    [],
+  )
 
   const avail = useAvailability(draft.date, true)
   const detailErrors = checkDetails(draft)
@@ -178,6 +194,25 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   }
   const planRef = useRef(plan)
   planRef.current = plan
+  // What plan(v) sends, as the form the server then holds (a keepalive
+  // record): fields that are not valid yet, and a time that does not fit,
+  // stay at the saved value.
+  const sentData = (v: FullView): FormData => {
+    const vd = draftFromView(v, zone)
+    const d: Draft = {
+      ...draft,
+      title: detailErrors.title ? vd.title : draft.title,
+      hostName: detailErrors.hostName ? vd.hostName : draft.hostName,
+      location: detailErrors.location ? vd.location : draft.location,
+      description: detailErrors.description ? vd.description : draft.description,
+      eventType: draft.eventType || vd.eventType,
+      visibility: draft.visibility || vd.visibility,
+      ...(timeOk ? {} : { date: vd.date, time: vd.time, lengthMin: vd.lengthMin }),
+    }
+    return { draft: d, builder, startsAt: timeOk ? time.startsAt : v.startsAt, key: '' }
+  }
+  const sentRef = useRef(sentData)
+  sentRef.current = sentData
   const formKeyRef = useRef(formKey)
   formKeyRef.current = formKey
   const synced = useRef<string>(formKey)
@@ -234,10 +269,26 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
             adopted.current = resolve
             setDraft(r.draft)
             setBuilder(r.builder)
-            if (r.merged) setNote(mergeNote(r))
-            setAdoptN((n) => n + 1)
+            // Only what visibly came in from elsewhere (this tab's own
+            // keepalive arriving changes nothing in the form: no note).
+            const n = r.merged ? mergeNote(describeChanges({ draft: d, builder: bl }, r), r.kept) : null
+            if (n) {
+              mergedThisSave.current = true
+              setNote(n)
+            }
+            setAdoptN((x) => x + 1)
           }),
-        onStatus: setStatus,
+        onStatus: (st) => {
+          if (st.kind === 'saved') {
+            if (!mergedThisSave.current) setNote(null)
+            mergedThisSave.current = false
+          }
+          setStatus(st)
+        },
+        audioName: (id) => {
+          const b = live.current.builder
+          return b.tracks.find((t) => t.audioId === id)?.title ?? b.anns.find((a) => a.audioId === id)?.title ?? null
+        },
         onSynced: (key) => {
           synced.current = key
           if (key === formKeyRef.current && viewRef.current) {
@@ -277,31 +328,29 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
     }
     // A draft: every tab's device copy is merged, oldest first, into the
     // server copy this page loaded (never written over it): a field changed
-    // on the server since the copy was made stays unless the copy changed it.
+    // on the server since the copy was made stays unless the copy changed it,
+    // and a keepalive save that arrived is not applied again (restore.ts).
     const found = readDraftBackups<FormData>(userKey, initial.id)
     if (!found.length) return
-    let cur: FormState = { draft: draftFromView(initial, zone), builder: builderFromView(initial, audio, stingers) }
-    let changed = false
-    const kept: string[] = []
-    for (const { key, backup } of found) {
-      const base = backup.base!
-      const r = mergeForm({ draft: draftFromView(base, zone), builder: builderFromView(base, audio, stingers) }, backupForm(backup.data, zone), cur)
-      if (r.local) {
-        changed = true
-        for (const k of r.kept) if (!kept.includes(k)) kept.push(k)
-      }
-      cur = r
-      absorbed.current.push(key)
-    }
-    if (!changed) {
+    const p = planRestore(initial, found, { zone, audio, stingers })
+    if (!p.changed) {
       // everything in them is already saved
-      for (const k of absorbed.current.splice(0)) clearBackup(k)
+      for (const k of p.keys) clearBackup(k)
       return
     }
-    setDraft(cur.draft)
-    setBuilder(cur.builder)
+    if (p.ask) {
+      // It would overwrite newer work done elsewhere: nothing is sent until
+      // the member chooses (the copies stay until then).
+      saver.hold()
+      setAsk(p)
+      return
+    }
+    absorbed.current.push(...p.keys)
+    setDraft(p.form.draft)
+    setBuilder(p.form.builder)
     setRestored(true)
-    if (kept.length) setNote(`The saved copy had also changed since; this device's ${listWords(kept)} ${kept.length > 1 ? 'were' : 'was'} kept.`)
+    setRestoredWhat(p.changes)
+    if (p.kept.length) setNote(`The saved copy had also changed since; this device's ${listWords(p.kept)} ${p.kept.length > 1 ? 'were' : 'was'} kept.`)
     // mount only
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -319,7 +368,19 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       return
     }
     const base = view ? baseRef.current : null
-    const b: Backup<FormData> = { v: 2, savedAt: Date.now(), eventId: view?.id ?? null, baseVersion: base?.version ?? null, base, data: { draft, builder, startsAt: time.startsAt, key: formKey } }
+    // Keepalive records stay while the copy keeps the same base (they are
+    // relative to it).
+    const prev = view ? readBackup<FormData>(k) : null
+    const keepalive = prev?.keepalive?.length && base && prev.baseVersion === base.version ? prev.keepalive : undefined
+    const b: Backup<FormData> = {
+      v: 2,
+      savedAt: Date.now(),
+      eventId: view?.id ?? null,
+      baseVersion: base?.version ?? null,
+      base,
+      data: { draft, builder, startsAt: time.startsAt, key: formKey },
+      ...(keepalive ? { keepalive } : {}),
+    }
     setStorageOk(writeBackup(k, b))
     saver.touch()
     // formKey covers draft + builder; a new base (a save, a merge) is re-recorded
@@ -342,8 +403,23 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
         void saver.refresh()
       }, ms)
     }
+    // Closing a tab fires both visibilitychange and pagehide: send each form
+    // state once per base version.
+    let lastSent = ''
     const flush = () => {
-      if (dirtyRef.current) saver.flushKeepalive()
+      if (!dirtyRef.current) return
+      const v = saver.view
+      const once = v ? `${v.version}|${formKeyRef.current}` : ''
+      if (once && once === lastSent) return
+      const sent = saver.flushKeepalive()
+      lastSent = once
+      if (!sent || !v) return
+      // Note what was sent in this tab's device copy: a reopened page can
+      // then tell whether it arrived (the event's recentSaveIds).
+      const k = tabBackupKey(userKey, v.id, tab)
+      const b = readBackup<FormData>(k)
+      if (!b || b.baseVersion !== sent.baseVersion) return
+      writeBackup(k, { ...b, keepalive: [...(b.keepalive ?? []), { ...sent, sent: sentRef.current(v) }].slice(-MAX_KEEPALIVES) })
     }
     const onVis = () => {
       if (document.visibilityState === 'hidden') flush()
@@ -410,9 +486,31 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
     clearDraftBackups(v.id)
     setResetN((n) => n + 1)
     setNote(null)
+    setRestoredWhat([])
     setDraft(draftFromView(v, zone))
     setBuilder(builderFromView(v, sources.audio.length ? sources.audio : audio, sources.stingers.length ? sources.stingers : stingers))
     setRestored(false)
+  }
+
+  // The member's choice about a device copy that would overwrite newer work.
+  const answerRestore = (restore: boolean) => {
+    const p = ask
+    if (!p) return
+    setAsk(null)
+    if (restore) {
+      // Edits made while the question was up stay, on top of the restore.
+      const now: FormState = { draft, builder }
+      const server = formOfView(viewRef.current ?? initial!, { zone, audio: live.current.audio, stingers: live.current.stingers })
+      const r = mergeForm(server, now, p.form)
+      absorbed.current.push(...p.keys)
+      setDraft(r.draft)
+      setBuilder(r.builder)
+      setRestored(true)
+      setRestoredWhat(p.changes)
+    } else {
+      for (const k of p.keys) clearBackup(k)
+    }
+    saver.release()
   }
 
   // Everything that stops a submit (shown after the first Submit press).
@@ -454,12 +552,18 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
     setDiscard('busy')
     try {
       saver.stop()
-      await api(`/api/ev/events/${v.id}/withdraw`, { json: {} })
+      // expectStatus: never withdraw a request submitted meanwhile elsewhere
+      await api(`/api/ev/events/${v.id}/withdraw`, { json: { expectStatus: 'draft' } })
       clearDraftBackups(v.id)
       window.location.assign('/my')
     } catch (e) {
-      saver.revive()
-      setSubmitErr(evMessage(e))
+      if (e instanceof ApiError && e.code === 'status_changed') {
+        const st = typeof e.body?.status === 'string' ? e.body.status : undefined
+        setStatus({ kind: 'stopped', reason: `${movedMessage(st, formKey !== synced.current)} It was not discarded here.`, reloadHref: `/my/events/${v.id}` })
+      } else {
+        saver.revive()
+        setSubmitErr(evMessage(e))
+      }
       setDiscard(null)
     }
   }
@@ -491,7 +595,10 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
 
   const statusView = <SaveStatusText status={status} view={view} missing={missing} dirty={formKey !== synced.current} storageOk={storageOk} mode={mode} />
   const run = runningLength(builder.tracks)
-  const editors = { value: builder, onChange: setBuilder, start: time.startsAt, end: time.endsAt, sources, uploadsEnabled: config.uploadsEnabled, chunkBytes }
+  // Uploads that failed their check (My audio, or the server's refusal): marked in the lists.
+  const failedAudio = new Set<number>(sources.audio.filter((a) => a.status === 'failed' || a.status === 'rejected').map((a) => a.id))
+  if (status.kind === 'error' && status.audioId !== undefined) failedAudio.add(status.audioId)
+  const editors = { value: builder, onChange: setBuilder, start: time.startsAt, end: time.endsAt, sources, uploadsEnabled: config.uploadsEnabled, chunkBytes, failedAudio }
 
   return (
     <div className="space-y-5">
@@ -517,9 +624,33 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
         </nav>
       </div>
       {!config.eventsEnabled && staff ? <Notice tone="info">Requests are closed to members right now; you can book because you are staff.</Notice> : null}
+      {ask ? (
+        <Notice tone="warn">
+          <div className="space-y-2" data-testid="rf-restore-ask">
+            <p>
+              This device has changes to this request that weren&apos;t saved, but the request was changed somewhere else since (another tab or device). Restoring them
+              would change:
+            </p>
+            <ul className="list-disc space-y-1 pl-4">
+              {(ask.changes.length ? ask.changes : ['the saved request']).map((c) => (
+                <li key={c}>{c}</li>
+              ))}
+            </ul>
+            <p>Nothing is saved until you choose.</p>
+            <div className="flex flex-wrap gap-3">
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => answerRestore(true)}>
+                Restore these changes
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => answerRestore(false)}>
+                Keep the saved version
+              </button>
+            </div>
+          </div>
+        </Notice>
+      ) : null}
       {restored ? (
         <Notice tone="info">
-          We restored changes you made on this device that hadn&apos;t been saved yet. They save automatically now.
+          We restored changes you made on this device that hadn&apos;t been saved yet{restoredWhat.length ? `: ${listWords(restoredWhat)}` : ''}. They save automatically now.
           {initial || !view ? (
             <>
               {' '}
@@ -755,7 +886,21 @@ function SaveStatusText({
     case 'stopped':
       return (
         <span className="ev-save" data-state="error">
-          Not saved: {status.reason}
+          {status.reloadHref ? status.reason : `Not saved: ${status.reason}`}
+          {status.reloadHref ? (
+            <>
+              {' '}
+              <a className="link" href={status.reloadHref}>
+                Reload the request
+              </a>
+            </>
+          ) : null}
+        </span>
+      )
+    case 'held':
+      return (
+        <span className="ev-save" data-state="partial">
+          Not saving yet: choose what to do with the changes kept on this device (above).
         </span>
       )
     default:

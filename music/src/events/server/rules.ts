@@ -151,11 +151,15 @@ export function announcementLabel(a: Pick<EventAnnouncement, 'source' | 'mediaId
   return u ? { title: u.title, artist: u.artist, lengthS: u.durationS } : undefined
 }
 
-/** Custom audio usable in `owner`'s event: theirs, ready|ingesting|live, not deleted. */
+/** Custom audio usable in `owner`'s event: theirs, ready|ingesting|live, not deleted (else media_not_allowed / audio_failed / audio_not_ready). */
 function usableAudio(id: number, ownerUserId: string, lk: Lookup): AudioInfo {
   const a = lk.audio.get(id)
   // Someone else's audio answers exactly like a missing id (no probing).
   if (!a || a.ownerUserId !== ownerUserId || a.deletedAt) throw bad('media_not_allowed', { audioId: id })
+  // A failed / rejected check never becomes usable (0.5.3: its own code, so
+  // the autosave form asks for it to be removed instead of waiting for it);
+  // audio_not_ready is only "still being checked".
+  if (a.status === 'failed' || a.status === 'rejected') throw bad('audio_failed', { audioId: id })
   if (!AUDIO_USABLE_STATUSES.includes(a.status)) throw bad('audio_not_ready', { audioId: id })
   return a
 }

@@ -33,7 +33,7 @@ describe('DraftSaver: audio_not_ready', () => {
     await vi.waitFor(() => expect(statuses.at(-1)).toMatchObject({ kind: 'error', retrying: false }), { timeout: 5000 })
     expect(puts).toBe(21)
     expect(statuses.filter((s) => s.kind === 'error' && s.retrying && s.reason === WAITING_FOR_UPLOAD)).toHaveLength(20)
-    expect((statuses.at(-1) as { reason: string }).reason).toMatch(/still being checked, or the check failed/)
+    expect((statuses.at(-1) as { reason: string }).reason).toMatch(/still being checked/)
     saver.stop()
   })
 })

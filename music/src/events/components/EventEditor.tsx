@@ -11,18 +11,24 @@
 // (RequestForm); everything else keeps explicit saves here (an autosave of a
 // pending/approved event would post a ticket diff, or send it back to
 // re-approval, on every keystroke).
+// A draft's device copies (unsaved autosave changes) left on this device are
+// never applied to an event that is no longer a draft: the page says what
+// they were and discards them (restore.ts works out what they would change).
 
 import { useEffect, useMemo, useState } from 'react'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useJson } from '@/components/hooks'
 import { Notice } from '@/components/ui'
-import { api, evMessage, isRestartRequired, isVersionConflict } from './ev-api'
+import { clearBackup, readDraftBackups } from './autosave'
+import { api, evMessage, isRestartRequired, isStatusChanged, isVersionConflict } from './ev-api'
 import { StatusChip } from './EventViewCard'
 import { useEvConfig, useNow } from './hooks'
 import { EVENT_TYPE_LABEL, statusOf } from './labels'
 import { builderFromView, draftFromView, patchFor, patchNeedsReapproval } from './fromView'
 import { PlaylistBuilder } from './PlaylistBuilder'
+import { listWords } from './merge'
 import { RequestForm } from './RequestForm'
+import { type FormData, planRestore } from './restore'
 import { type Builder, builderProblems, toPayload } from './playlist'
 import { DetailsFields, TimeFields, toInputs, useAvailability, VisibilityFields } from './RequestParts'
 import { type AudioItem, type FullView, listOf, type Stinger } from './types'
@@ -42,9 +48,24 @@ export function EventEditor({ id, staff, viewerDiscordId, chunkBytes }: { id: nu
   const stingers = useJson<unknown>('/api/ev/stingers')
   const [view, setView] = useState<FullView | null>(null)
   const [flash, setFlash] = useState<string | null>(null)
+  /** Unsaved draft changes found on this device for an event that is no longer a draft (discarded). */
+  const [lost, setLost] = useState<string[] | null>(null)
+  const { zone } = useTz()
   useEffect(() => {
     if (ev.data) setView(ev.data)
   }, [ev.data])
+  const full = view?.kind === 'full' ? view : null
+  const ownNonDraft = !!full && full.status !== 'draft' && full.ownerDiscordId === viewerDiscordId
+  useEffect(() => {
+    if (!full || !ownNonDraft) return
+    const found = readDraftBackups<FormData>(viewerDiscordId, full.id)
+    if (!found.length) return
+    const p = planRestore(full, found, { zone, audio: listOf<AudioItem>(audio.data), stingers: listOf<Stinger>(stingers.data) })
+    for (const { key } of found) clearBackup(key)
+    if (p.changed) setLost(p.changes.length ? p.changes : ['some changes'])
+    // once per event and status
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [full?.id, full?.status, ownNonDraft])
   if (ev.error) return <Notice tone="error">This event doesn&apos;t exist, or you don&apos;t have access to it.</Notice>
   if (!view || (!audio.data && audio.loading) || (!stingers.data && stingers.loading)) return <p className="text-sm text-cream/60">Loading…</p>
   if (view.kind !== 'full') return <Notice tone="error">You can only change your own events.</Notice>
@@ -69,6 +90,15 @@ export function EventEditor({ id, staff, viewerDiscordId, chunkBytes }: { id: nu
     )
   }
   return (
+    <>
+      {lost ? (
+        <Notice tone="warn">
+          <span data-testid="ev-lost-changes">
+            Changes made on this device after the request was submitted weren&apos;t saved: {listWords(lost)}. They have been discarded. If you still want them, make them again
+            below.
+          </span>
+        </Notice>
+      ) : null}
     <EditorBody
       key={`${view.id}-${reload}`}
       view={view}
@@ -88,6 +118,7 @@ export function EventEditor({ id, staff, viewerDiscordId, chunkBytes }: { id: nu
         setReload((n) => n + 1)
       }}
     />
+    </>
   )
 }
 
@@ -152,7 +183,9 @@ function EditorBody({
       setMsg({ tone: 'ok', text: okText })
       onChanged(v)
     } catch (e) {
-      if (isVersionConflict(e)) onConflict(evMessage(e))
+      // The event changed under this page (a newer version, or it was
+      // submitted/approved/withdrawn elsewhere): nothing was saved; reload it.
+      if (isVersionConflict(e) || isStatusChanged(e)) onConflict(evMessage(e))
       else if (staff && isRestartRequired(e) && (label === 'details' || label === 'playlist')) setRestart(label)
       else setMsg({ tone: 'error', text: evMessage(e) })
     } finally {
@@ -162,7 +195,10 @@ function EditorBody({
   }
 
   // confirmRestart is only ever sent from the restart confirmation dialog.
-  const guard = (confirmRestart: boolean) => ({ version: view.version, ...(confirmRestart ? { confirmRestart: true } : {}) })
+  // expectStatus: an edit confirmed against this status (e.g. "pending",
+  // no re-approval warning) never lands on an event approved meanwhile
+  // (status changes do not bump the version).
+  const guard = (confirmRestart: boolean) => ({ version: view.version, expectStatus: view.status, ...(confirmRestart ? { confirmRestart: true } : {}) })
   const saveDetails = (confirmRestart = false) =>
     run('details', async () => (await api<{ event: FullView }>(`/api/ev/events/${view.id}`, { method: 'PATCH', json: { ...patch, ...guard(confirmRestart) } })).event, 'Saved.')
   const savePlaylist = (confirmRestart = false) =>

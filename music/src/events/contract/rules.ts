@@ -47,6 +47,9 @@ export const AUDIO_INFLIGHT_STATUSES: readonly AudioStatus[] = ['probing', 'read
  * waits for `live` and fails as audio_not_ready if it is still not there.
  * The client picks from the same list (components/PlaylistBuilder etc.).
  */
+/** How many client save ids the owner's GET of an event lists (recentSaveIds, newest first). */
+export const RECENT_SAVE_IDS = 20
+
 export const AUDIO_USABLE_STATUSES: readonly AudioStatus[] = ['ready', 'ingesting', 'live']
 
 // ---- playlist builder / compile ----

@@ -89,6 +89,19 @@ function checkVersion(ev: EventRow, version: number | undefined) {
   if (version !== undefined && version !== ev.version) throw new HttpError(409, 'version_conflict', { version: ev.version })
 }
 
+/**
+ * The status an edit was made against (`expectStatus`), checked under the
+ * row lock with the version. Status transitions (submit, approve, deny, …)
+ * deliberately leave the version alone: the worker keys builds by
+ * (event, version), and a bump would orphan or duplicate a build. So the
+ * version alone cannot tell a stale draft tab that its draft was submitted
+ * or approved meanwhile; without this guard its autosave would land on the
+ * pending/approved event (a ticket post, or re-approval + teardown).
+ */
+function checkStatus(ev: EventRow, expect: EventStatus | undefined) {
+  if (expect !== undefined && expect !== ev.status) throw new HttpError(409, 'status_changed', { status: ev.status })
+}
+
 /** Conditional write: the row must still have the status + version we decided on. */
 async function writeEvent(tx: Tx, ev: EventRow, set: Partial<typeof events.$inferInsert>): Promise<EventRow> {
   return oneOrConflict(
@@ -174,6 +187,8 @@ export async function getEventView(db: DB, actor: Actor | null, id: number, cloc
   if (!ev) throw notFound()
   const [v] = await projectAll(db, [ev], actor, nowOf(clock))
   if (!v) throw notFound()
+  // Owner/staff only (a full view): the autosave form's keepalive check.
+  if (v.kind === 'full') return { ...v, recentSaveIds: await repo.recentSaveIds(db, ev.id) }
   return v
 }
 
@@ -348,6 +363,7 @@ export async function patchEvent(db: DB, actor: Actor, id: number, input: PatchE
   const s = await loadEventsSettings(db)
   return db.transaction(async (tx) => {
     const ev = await loadOwned(tx, actor, id, true)
+    checkStatus(ev, input.expectStatus)
     checkVersion(ev, input.version)
     assertEditable(core(ev), actor, s, now)
     const patch: Partial<DetailFields> = {}
@@ -386,7 +402,14 @@ export async function patchEvent(db: DB, actor: Actor, id: number, input: PatchE
     const p = { tracks, announcements: anns }
     const diff = diffLines(displaySide(ev, p, lookup), displaySide(after, p, lookup))
     await enqueueAll(tx, editJobs(ev, after, actor, s, diff, reapproval, true, inputKey(ev, p) !== inputKey(after, p)))
-    await auditEv(tx, actor, 'events.event.edit', ev.id, { changed, reapproval, fromVersion: ev.version, adjacent, ...(ev.status === 'live' ? { liveRestart: input.confirmRestart === true } : {}) })
+    await auditEv(tx, actor, 'events.event.edit', ev.id, {
+      changed,
+      reapproval,
+      fromVersion: ev.version,
+      adjacent,
+      ...(ev.status === 'live' ? { liveRestart: input.confirmRestart === true } : {}),
+      ...(input.saveId ? { saveId: input.saveId } : {}),
+    })
     return fullOf(tx, after, actor, s, now)
   })
 }
@@ -405,6 +428,7 @@ export async function putPlaylist(db: DB, actor: Actor, id: number, input: PutPl
   }
   return db.transaction(async (tx) => {
     const ev = await loadOwned(tx, actor, id, true)
+    checkStatus(ev, input.expectStatus)
     checkVersion(ev, input.version)
     assertEditable(core(ev), actor, s, now)
     const prev = {
@@ -432,6 +456,7 @@ export async function putPlaylist(db: DB, actor: Actor, id: number, input: PutPl
       reapproval,
       fromVersion: ev.version,
       ...(ev.status === 'live' ? { liveRestart: input.confirmRestart === true } : {}),
+      ...(input.saveId ? { saveId: input.saveId } : {}),
     })
     return fullOf(tx, after, actor, s, now)
   })
@@ -439,11 +464,12 @@ export async function putPlaylist(db: DB, actor: Actor, id: number, input: PutPl
 
 // ------------------------------------------------------------ transitions
 
-export async function transition(db: DB, actor: Actor, id: number, action: Action, opts: { reason?: string } = {}, clock?: Clock): Promise<FullEventView> {
+export async function transition(db: DB, actor: Actor, id: number, action: Action, opts: { reason?: string; expectStatus?: EventStatus } = {}, clock?: Clock): Promise<FullEventView> {
   const now = nowOf(clock)
   const s = await loadEventsSettings(db)
   return db.transaction(async (tx) => {
     const ev = await loadOwned(tx, actor, id, true)
+    checkStatus(ev, opts.expectStatus)
     const to = nextStatus(action, { ownerUserId: ev.ownerUserId, status: ev.status as EventStatus }, actor)
     const set: Partial<typeof events.$inferInsert> = { status: to }
     const detail: Record<string, unknown> = { from: ev.status, to, version: ev.version }

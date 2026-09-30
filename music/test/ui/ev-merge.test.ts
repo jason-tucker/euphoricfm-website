@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { builderKey, type FormState, mergeForm, mergeNote } from '@/events/components/merge'
+import { builderKey, describeChanges, type FormState, mergeForm, mergeNote, restoreConflicts } from '@/events/components/merge'
 import type { BAnn, BTrack, Builder } from '@/events/components/playlist'
 import { EMPTY_DRAFT, type Draft } from '@/events/components/wizard'
 
@@ -22,13 +22,15 @@ describe('mergeForm: details', () => {
     const r = mergeForm(base, form({ location: 'The Pier' }), form({ hostName: 'Host From A' }))
     expect(r.draft).toMatchObject({ hostName: 'Host From A', location: 'The Pier' })
     expect(r).toMatchObject({ merged: true, kept: [], local: true })
-    expect(mergeNote(r)).toBe('Merged changes made in another tab.')
+    expect(mergeNote(describeChanges(form({ location: 'The Pier' }), r), r.kept)).toBe('Merged changes made in another tab: host name → "Host From A".')
   })
   it('both sides changed a field to different values: this side wins and it is named', () => {
     const r = mergeForm(form(), form({ hostName: 'Mine', title: 'My title' }), form({ hostName: 'Theirs', title: 'Their title', description: 'x' }))
     expect(r.draft).toMatchObject({ hostName: 'Mine', title: 'My title', description: 'x' })
     expect(r.kept).toEqual(['title', 'host name'])
-    expect(mergeNote(r)).toBe("Merged changes made in another tab. Kept this tab's title and host name.")
+    expect(mergeNote(describeChanges(form({ hostName: 'Mine', title: 'My title' }), r), r.kept)).toBe(
+      'Merged changes made in another tab: description → "x". Kept this tab\'s title and host name.',
+    )
   })
   it('the same change on both sides is not a conflict; the date/time moves as one unit', () => {
     const same = mergeForm(form(), form({ hostName: 'X' }), form({ hostName: 'X' }))
@@ -45,7 +47,7 @@ describe('mergeForm: details', () => {
     expect(r).toMatchObject({ merged: false, local: true })
     expect(r.draft.title).toBe('New')
     expect(r.builder).toBe(local.builder)
-    expect(mergeNote(r)).toBeNull()
+    expect(mergeNote(describeChanges(local, r), r.kept)).toBeNull()
   })
 })
 
@@ -103,5 +105,54 @@ describe('mergeForm: playlist', () => {
     expect(builderKey(twice.builder)).toBe(builderKey(once.builder))
     expect(twice.draft).toEqual(once.draft)
     expect(twice.local).toBe(false)
+  })
+})
+
+describe('describeChanges / mergeNote (0.5.3 fix round 2)', () => {
+  it('names fields, removals, additions, pins, order and announcements', () => {
+    const from = form({ hostName: 'Old' }, { tracks: [song(1), song(2)], anns: [ann(9, T1)] })
+    const to = form({ hostName: 'PC host', location: '' }, { tracks: [song(1, T2), song(3)], anns: [ann(9, T1), ann(9, T2)], order: 'sequential' })
+    expect(describeChanges(from, to)).toEqual([
+      'host name → "PC host"',
+      'removed "Song 2"',
+      'pin of "Song 1" changed',
+      'added "Song 3"',
+      'play order → in your order',
+      'added announcement "ID"',
+    ])
+    expect(describeChanges(to, to)).toEqual([])
+  })
+  it("this tab's own keepalive arriving (the server now equals the form) gives no note", () => {
+    const base = form()
+    const local = form({ hostName: 'Mine' }, { tracks: [song(1), song(2)] })
+    const r = mergeForm(base, local, local)
+    expect(mergeNote(describeChanges(local, r), r.kept)).toBeNull()
+  })
+})
+
+describe('restoreConflicts: a device copy onto a newer server copy', () => {
+  it('a field the server also changed (fd2: the host) is a conflict', () => {
+    expect(restoreConflicts(form(), form({ hostName: 'PC host' }), form({ hostName: 'Phone host' }), false)).toBe(true)
+  })
+  it('removing a song the server has (fd2: Charlie) is a conflict', () => {
+    const base = form({}, { tracks: [song(1), song(3)] })
+    expect(restoreConflicts(base, form({}, { tracks: [song(1)] }), form({ title: 'Other' }, { tracks: [song(1), song(3)] }), false)).toBe(true)
+  })
+  it('removing an announcement the server has is a conflict', () => {
+    const base = form({}, { anns: [ann(9, T1)] })
+    expect(restoreConflicts(base, form(), form({ title: 'x' }, { anns: [ann(9, T1)] }), false)).toBe(true)
+  })
+  it('an addition the server lacks is a conflict only when a keepalive may have sent it', () => {
+    const local = form({}, { tracks: [song(1), song(4)] })
+    const server = form({ title: 'Theirs' })
+    expect(restoreConflicts(form(), local, server, false)).toBe(false)
+    expect(restoreConflicts(form(), local, server, true)).toBe(true)
+  })
+  it('independent changes are not a conflict', () => {
+    expect(restoreConflicts(form(), form({ location: 'Pier' }, { tracks: [song(1), song(5)] }), form({ hostName: 'Other' }), false)).toBe(false)
+  })
+  it('an order only this side changed is not a conflict; a pin both changed differently is', () => {
+    expect(restoreConflicts(form({}, { order: 'shuffle' }), form({}, { order: 'sequential' }), form({ title: 'x' }, { order: 'shuffle', tracks: [song(1, T1)] }), false)).toBe(false)
+    expect(restoreConflicts(form(), form({}, { tracks: [song(1, T1)] }), form({}, { tracks: [song(1, T2)] }), false)).toBe(true)
   })
 })

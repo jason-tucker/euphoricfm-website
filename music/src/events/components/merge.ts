@@ -170,8 +170,94 @@ export function mergeForm(base: FormState, local: FormState, server: FormState):
 /** "title", "title and host name", "title, place and host name". */
 export const listWords = (w: string[]) => (w.length > 1 ? `${w.slice(0, -1).join(', ')} and ${w.at(-1)}` : (w[0] ?? ''))
 
-/** "Merged changes made in another tab. Kept this tab's host name and title." */
-export function mergeNote(r: Pick<MergeResult, 'merged' | 'kept'>): string | null {
-  if (!r.merged) return null
-  return `Merged changes made in another tab.${r.kept.length ? ` Kept this tab's ${listWords(r.kept)}.` : ''}`
+const clip = (v: string) => {
+  const t = v.trim().replace(/\s+/g, ' ')
+  return t.length > 40 ? `${t.slice(0, 39)}…` : t
+}
+
+function countBy<T>(list: readonly T[], key: (x: T) => string): Map<string, { n: number; first: T }> {
+  const m = new Map<string, { n: number; first: T }>()
+  for (const x of list) {
+    const k = key(x)
+    const c = m.get(k)
+    if (c) c.n++
+    else m.set(k, { n: 1, first: x })
+  }
+  return m
+}
+
+/**
+ * What changes from `from` to `to`, in plain words: `host name → "PC host"`,
+ * `place cleared`, `removed "Charlie"`, `added announcement "Welcome"`, …
+ * (the merge and restore notes, and the restore question).
+ */
+export function describeChanges(from: FormState, to: FormState): string[] {
+  const out: string[] = []
+  for (const [f, label] of FIELDS) {
+    const a = norm(from.draft[f] as string)
+    const b = norm(to.draft[f] as string)
+    if (a !== b) out.push(b ? `${label} → "${clip(b)}"` : `${label} cleared`)
+  }
+  if (whenKey(from.draft) !== whenKey(to.draft)) out.push(to.draft.date && to.draft.time ? `date and time → ${to.draft.date} ${to.draft.time}, ${to.draft.lengthMin} min` : 'date and time changed')
+  const ft = new Map(from.builder.tracks.map((t) => [trackId(t), t]))
+  const tt = new Map(to.builder.tracks.map((t) => [trackId(t), t]))
+  for (const [id, t] of ft) if (!tt.has(id)) out.push(`removed "${clip(t.title)}"`)
+  for (const [id, t] of tt) {
+    const f = ft.get(id)
+    if (!f) out.push(`added "${clip(t.title)}"`)
+    else if (ms(f.pinAt) !== ms(t.pinAt)) out.push(`pin of "${clip(t.title)}" changed`)
+  }
+  const common = (l: BTrack[], other: Map<string, BTrack>) => l.map(trackId).filter((id) => other.has(id))
+  if (common(from.builder.tracks, tt).join('|') !== common(to.builder.tracks, ft).join('|')) out.push('song order changed')
+  if (from.builder.order !== to.builder.order) out.push(`play order → ${to.builder.order === 'shuffle' ? 'shuffle' : 'in your order'}`)
+  const fa = countBy(from.builder.anns, annKey)
+  const ta = countBy(to.builder.anns, annKey)
+  for (const [k, c] of fa) for (let i = ta.get(k)?.n ?? 0; i < c.n; i++) out.push(`removed announcement "${clip(c.first.title)}"`)
+  for (const [k, c] of ta) for (let i = fa.get(k)?.n ?? 0; i < c.n; i++) out.push(`added announcement "${clip(c.first.title)}"`)
+  return out
+}
+
+/**
+ * Would restoring `local` (a device copy made against `base`) onto `server`
+ * (NEWER than base) undo work done elsewhere? True when the merge would
+ * overwrite a field (or a pin, or the play order) the server also changed,
+ * remove a song or announcement the server has, or — when the copy sent a
+ * keepalive that is not known to have arrived (`unconfirmed`) — add back one
+ * the server does not have (it may have been sent, then removed elsewhere).
+ * Such a restore waits for the member's choice instead of saving itself.
+ */
+export function restoreConflicts(base: FormState, local: FormState, server: FormState, unconfirmed: boolean): boolean {
+  if (mergeForm(base, local, server).kept.length) return true
+  const [b, l, s] = [base.builder, local.builder, server.builder]
+  if (l.order !== b.order && s.order !== b.order && l.order !== s.order) return true
+  const ib = new Map(b.tracks.map((t) => [trackId(t), t]))
+  const il = new Map(l.tracks.map((t) => [trackId(t), t]))
+  const is = new Map(s.tracks.map((t) => [trackId(t), t]))
+  for (const [id, t] of ib) {
+    const lt = il.get(id)
+    const st = is.get(id)
+    if (!lt && st) return true // removes a song the server has
+    if (lt && st && ms(lt.pinAt) !== ms(t.pinAt) && ms(st.pinAt) !== ms(t.pinAt) && ms(lt.pinAt) !== ms(st.pinAt)) return true
+  }
+  const cb = countBy(b.anns, annKey)
+  const cl = countBy(l.anns, annKey)
+  const cs = countBy(s.anns, annKey)
+  for (const [k, c] of cb) if ((cl.get(k)?.n ?? 0) < c.n && (cs.get(k)?.n ?? 0) > 0) return true
+  if (unconfirmed) {
+    for (const [id] of il) if (!ib.has(id) && !is.has(id)) return true
+    for (const [k, c] of cl) if (c.n > (cb.get(k)?.n ?? 0) && (cs.get(k)?.n ?? 0) < c.n) return true
+  }
+  return false
+}
+
+/**
+ * The note after another tab's work was merged into this form: what came in
+ * (`incoming`, from describeChanges(form before, form after)) and the fields
+ * where this tab's value was kept. Null when nothing visible came in (e.g.
+ * this tab's own keepalive save arriving).
+ */
+export function mergeNote(incoming: string[], kept: string[]): string | null {
+  if (!incoming.length && !kept.length) return null
+  const what = incoming.length ? `Merged changes made in another tab: ${listWords(incoming)}.` : 'Merged changes made in another tab.'
+  return `${what}${kept.length ? ` Kept this tab's ${listWords(kept)}.` : ''}`
 }
