@@ -155,4 +155,21 @@ describe('restoreConflicts: a device copy onto a newer server copy', () => {
     expect(restoreConflicts(form({}, { order: 'shuffle' }), form({}, { order: 'sequential' }), form({ title: 'x' }, { order: 'shuffle', tracks: [song(1, T1)] }), false)).toBe(false)
     expect(restoreConflicts(form(), form({}, { tracks: [song(1, T1)] }), form({}, { tracks: [song(1, T2)] }), false)).toBe(true)
   })
+  it('unconfirmed: a field, date/time, pin, song order or play order the server holds at the base value may have been undone there (a conflict)', () => {
+    const server = form({ location: 'Phone place' }, { tracks: [song(1), song(2)] })
+    const b = form({}, { tracks: [song(1), song(2)] })
+    const cases: FormState[] = [
+      form({ hostName: 'PC host' }, { tracks: [song(1), song(2)] }),
+      form({ time: '21:00' }, { tracks: [song(1), song(2)] }),
+      form({}, { tracks: [song(1, T1), song(2)] }),
+      form({}, { tracks: [song(2), song(1)] }),
+      form({}, { tracks: [song(1), song(2)], order: 'sequential' }),
+    ]
+    for (const local of cases) {
+      expect(restoreConflicts(b, local, server, false)).toBe(false)
+      expect(restoreConflicts(b, local, server, true)).toBe(true)
+    }
+    // the server holds this side's value (it landed): nothing to ask
+    expect(restoreConflicts(b, form({ hostName: 'PC host' }, { tracks: [song(1), song(2)] }), form({ hostName: 'PC host' }, { tracks: [song(1), song(2)] }), true)).toBe(false)
+  })
 })

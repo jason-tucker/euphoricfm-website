@@ -2,8 +2,9 @@
 // not saved yet, made against `base` (the server copy of that moment). On a
 // later load it is merged three-way into the server copy of now, never
 // written over it. Two things make that safe when the server moved on:
-//   - keepalive records: a copy notes the saves it sent as the page was
-//     hidden or left (their saveIds). When the event lists a saveId among its
+//   - save records: a copy notes every save it sent whose answer had not
+//     come back (a keepalive as the page was hidden or left, a PATCH/PUT in
+//     flight when the page was killed). When the event lists a saveId among its
 //     recentSaveIds the save arrived, so the copy is rebased onto what it sent
 //     and only changes made after it count (usually none: the copy is dropped
 //     silently). Without this, a copy whose keepalive arrived would re-apply

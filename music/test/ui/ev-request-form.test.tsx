@@ -124,10 +124,10 @@ const base = (c: typeof cfg = cfg): Record<string, Handler> => ({
   'GET /api/ev/library': { status: 200, body: [{ mediaId: 601, title: 'Neon Skyline', artist: 'Arc', lengthS: 240, artUrl: null }] },
 })
 
-function Form(p: { initial?: FullView; debounceMs?: number; staff?: boolean }) {
+function Form(p: { initial?: FullView; debounceMs?: number; retryBaseMs?: number; staff?: boolean }) {
   return (
     <TzProvider>
-      <RequestForm staff={!!p.staff} userKey={USER} chunkBytes={1024 * 1024} initial={p.initial} debounceMs={p.debounceMs ?? 60} retryBaseMs={30} />
+      <RequestForm staff={!!p.staff} userKey={USER} chunkBytes={1024 * 1024} initial={p.initial} debounceMs={p.debounceMs ?? 60} retryBaseMs={p.retryBaseMs ?? 30} />
     </TzProvider>
   )
 }
@@ -1230,11 +1230,9 @@ describe('a save that already reached the server is never merged again (live tab
     await sleep(200)
     expect(srv.state).toMatchObject({ hostName: 'Phone host', version: 7 })
     expect(hostField()).toBe('Phone host')
-    // the lost PATCH, then its retry (refused: version_conflict); nothing after the merge
-    expect(api.writes().map((c) => c.body)).toEqual([
-      { hostName: 'PC host', version: 4 },
-      { hostName: 'PC host', version: 4 },
-    ])
+    // only the lost PATCH: the retry fetches the event first (the save may
+    // have landed), finds it listed, and has nothing left to send
+    expect(api.writes().map((c) => c.body)).toEqual([{ hostName: 'PC host', version: 4 }])
     expect(screen.getByTestId('rf-merge-note').textContent).toBe('Merged changes made in another tab: host name → "Phone host".')
   })
 
@@ -1257,7 +1255,194 @@ describe('a save that already reached the server is never merged again (live tab
     expect(srv.state.version).toBe(6)
     expect(srv.state.tracks.map((x) => x.label?.title)).toEqual(['Alpha', 'Charlie'])
     expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
-    expect(api.writes().map((c) => `${c.method} ${(c.body as { version: number }).version}`)).toEqual(['PUT 4', 'PUT 4'])
+    expect(api.writes().map((c) => `${c.method} ${(c.body as { version: number }).version}`)).toEqual(['PUT 4'])
+  })
+})
+
+describe('a save whose answer never came back is checked before anything counts as saved', () => {
+  const v4 = () => view({ version: 4, tracks: [lib(701, 0), lib(703, 1)] })
+  const hostField = () => (screen.getByLabelText(/Hosted by/) as HTMLInputElement).value
+  /** A route that writes, then loses its answer (the first time only). */
+  function loseFirstAnswer(routes: Record<string, Handler>, key: string, hang = false) {
+    const real = routes[key] as (b: unknown, url: string) => Reply
+    let lost = 0
+    routes[key] = (b, url) => {
+      if (lost) return real(b, url)
+      lost++
+      expect(real(b, url).status).toBe(200) // written…
+      if (hang) return new Promise<Reply>(() => {}) // …and the page is gone before the answer
+      throw new Error('connection reset') // …and the answer is lost
+    }
+    return () => lost
+  }
+
+  it('a PATCH that landed while the page was killed, then the phone clears the host: reopening keeps it cleared and writes nothing', async () => {
+    const { srv, routes } = fakeServer(v4())
+    loseFirstAnswer(routes, 'PATCH /api/ev/events/42', true)
+    const api = mockApi(routes)
+    const pc = render(<Form initial={v4()} />)
+    fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+    await waitFor(() => expect(srv.state).toMatchObject({ hostName: 'PC host', version: 5 }))
+    // the device copy lists the PATCH in flight
+    expect(draftBackup().keepalive.map((r: { details: boolean; baseVersion: number }) => [r.details, r.baseVersion])).toEqual([[true, 4]])
+    pc.unmount() // (its keepalive at version 4 is refused: the PATCH got there first)
+    expect(api.calls.filter((c) => c.keepalive)).toHaveLength(1)
+    expect(srv.state.version).toBe(5)
+    // the phone clears the host again
+    srv.state = { ...srv.state, hostName: null, version: 6, recentSaveIds: ['phone-1', ...(srv.state.recentSaveIds ?? [])] }
+    const api2 = mockApi(fakeServer(srv.state).routes)
+    render(<Form initial={srv.state} />)
+    await screen.findAllByTestId('pb-track')
+    await sleep(400)
+    expect(screen.queryByText(/We restored changes/)).toBeNull()
+    expect(screen.queryByTestId('rf-restore-ask')).toBeNull()
+    expect(hostField()).toBe('')
+    expect(api2.writes()).toHaveLength(0)
+    expect(draftBackupKeys()).toEqual([])
+  })
+
+  it('a PUT that landed while the page was killed, then the phone removes the song: reopening keeps it removed', async () => {
+    const start = view({ version: 2, tracks: [lib(701, 0), lib(703, 1)] })
+    const { srv, routes } = fakeServer(start)
+    loseFirstAnswer(routes, 'PUT /api/ev/events/42/playlist', true)
+    mockApi(routes)
+    const pc = render(<Form initial={start} />)
+    await screen.findAllByTestId('pb-track')
+    await addSong('Bravo')
+    await waitFor(() => expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha', 'Charlie', 'Bravo']))
+    pc.unmount()
+    srv.state = { ...srv.state, tracks: [lib(701, 0), lib(703, 1)], version: srv.state.version + 1, recentSaveIds: ['phone-1', ...(srv.state.recentSaveIds ?? [])] }
+    const api2 = mockApi(fakeServer(srv.state).routes)
+    render(<Form initial={srv.state} />)
+    await screen.findAllByTestId('pb-track')
+    await sleep(400)
+    expect(screen.queryByText(/We restored changes/)).toBeNull()
+    expect(trackTitles()).toEqual(['Alpha', 'Charlie'])
+    expect(api2.writes()).toHaveLength(0)
+  })
+
+  it('a PATCH that landed with its answer lost, then the member undoes it during the retry wait: the undo is saved (never "all saved" over the landed value)', async () => {
+    const { srv, routes } = fakeServer(v4())
+    const lost = loseFirstAnswer(routes, 'PATCH /api/ev/events/42')
+    const api = mockApi(routes)
+    const r = render(<Form initial={v4()} retryBaseMs={5_000} />)
+    fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+    await waitFor(() => expect(lost()).toBe(1))
+    fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: '' } })
+    await waitFor(() => expect(srv.state).toMatchObject({ hostName: null, version: 6 }), { timeout: 3000 })
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+    expect(api.writes().map((c) => c.body)).toEqual([
+      { hostName: 'PC host', version: 4 },
+      { hostName: null, version: 5 },
+    ])
+    await waitFor(() => expect(draftBackupKeys()).toEqual([]))
+    r.unmount()
+    expect(srv.state.hostName).toBe(null)
+  })
+
+  it('a PUT that landed with its answer lost, the member adds the song back, then Submit: the request holds the song', async () => {
+    const { srv, routes } = fakeServer(v4())
+    const lost = loseFirstAnswer(routes, 'PUT /api/ev/events/42/playlist')
+    let submitted: FullView | null = null
+    routes['POST /api/ev/events/42/submit'] = () => {
+      srv.state = { ...srv.state, status: 'pending' }
+      submitted = srv.state
+      return { status: 200, body: { event: srv.state } }
+    }
+    mockApi(routes)
+    render(<Form initial={v4()} retryBaseMs={5_000} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Charlie' }))
+    await waitFor(() => expect(lost()).toBe(1))
+    expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha'])
+    await addSong('Charlie')
+    fireEvent.click(screen.getByRole('button', { name: 'Submit request' }))
+    await screen.findByRole('heading', { name: 'Request sent' }, { timeout: 3000 })
+    expect(submitted!.tracks.map((t) => t.label?.title)).toEqual(['Alpha', 'Charlie'])
+  })
+
+  it('the check cannot be made (offline): no "all saved", Submit is refused, and it saves once the event can be fetched', async () => {
+    const { srv, routes } = fakeServer(v4())
+    const lost = loseFirstAnswer(routes, 'PATCH /api/ev/events/42')
+    const get = routes['GET /api/ev/events/42']!
+    routes['GET /api/ev/events/42'] = () => {
+      throw new Error('offline')
+    }
+    const submit = vi.fn(() => ({ status: 200, body: { event: srv.state } }))
+    routes['POST /api/ev/events/42/submit'] = submit
+    mockApi(routes)
+    render(<Form initial={v4()} retryBaseMs={200} />)
+    fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+    await waitFor(() => expect(lost()).toBe(1))
+    fireEvent.change(screen.getByLabelText(/Hosted by/), { target: { value: '' } })
+    await sleep(600)
+    expect(status()).not.toContain('All changes saved')
+    fireEvent.click(screen.getByRole('button', { name: 'Submit request' }))
+    await screen.findByText(/aren't saved yet, so the request was not sent/, undefined, { timeout: 3000 })
+    expect(submit).not.toHaveBeenCalled()
+    expect(draftBackupKeys()).toHaveLength(1)
+    routes['GET /api/ev/events/42'] = get
+    await waitFor(() => expect(srv.state).toMatchObject({ hostName: null, version: 6 }), { timeout: 5000 })
+    await waitFor(() => expect(status()).toContain('All changes saved ✓'))
+  })
+
+  it('a keepalive that landed, then 20+ saves elsewhere that clear the host back to empty: asks (cannot tell), writes nothing', async () => {
+    let vis: DocumentVisibilityState = 'visible'
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => vis)
+    try {
+      const { srv, routes } = fakeServer(v4())
+      const api = mockApi(routes)
+      render(<Form initial={v4()} debounceMs={60_000} />)
+      fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+      await waitFor(() => expect(draftBackup()?.data.draft.hostName).toBe('PC host'))
+      vis = 'hidden'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      await sleep(50)
+      expect(srv.state).toMatchObject({ hostName: 'PC host', version: 5 })
+      const full = Array.from({ length: 20 }, (_, i) => `phone-${String(i).padStart(4, '0')}`)
+      srv.state = { ...srv.state, hostName: null, location: 'Phone place', version: 30, recentSaveIds: full }
+      vis = 'visible'
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'))
+      })
+      const ask = await screen.findByTestId('rf-restore-ask')
+      expect(within(ask).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['host name → "PC host"'])
+      expect(hostField()).toBe('')
+      await sleep(300)
+      expect(api.writes()).toHaveLength(0)
+      expect(srv.state.hostName).toBe(null)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
+
+describe('"Use the saved version instead" after a restore', () => {
+  it('undoes what the restore changed even after it saved itself', async () => {
+    const v4 = () => view({ version: 4, tracks: [lib(701, 0), lib(703, 1)] })
+    // a device copy (host "PC host", Charlie removed) whose keepalive never arrived
+    const { routes: r0 } = fakeServer(v4())
+    mockApi(r0)
+    const pc = render(<Form initial={v4()} debounceMs={60_000} />)
+    fireEvent.change(await screen.findByLabelText(/Hosted by/), { target: { value: 'PC host' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Charlie' }))
+    await waitFor(() => expect(draftBackup()?.data.builder.tracks).toHaveLength(1))
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
+    pc.unmount()
+    const { srv, routes } = fakeServer(v4())
+    const api = mockApi(routes)
+    render(<Form initial={v4()} />)
+    await screen.findByText(/We restored changes you made on this device/)
+    await waitFor(() => expect(srv.state).toMatchObject({ hostName: 'PC host', version: 6 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Use the saved version instead' }))
+    await waitFor(() => expect(srv.state.version).toBe(8))
+    expect(srv.state.hostName).toBe(null)
+    expect(srv.state.tracks.map((t) => t.label?.title)).toEqual(['Alpha', 'Charlie'])
+    expect(screen.queryByText(/We restored changes/)).toBeNull()
+    expect((screen.getByLabelText(/Hosted by/) as HTMLInputElement).value).toBe('')
+    expect(api.writes()).toHaveLength(4)
+    await waitFor(() => expect(draftBackupKeys()).toEqual([]))
   })
 })
 

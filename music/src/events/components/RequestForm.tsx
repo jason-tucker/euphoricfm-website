@@ -75,8 +75,6 @@ const STORAGE_REFRESH_MS = 800
 /** How long a merge note stays up (it also goes at the next save without a merge). */
 const NOTE_MS = 10_000
 const NOT_SAVED_SUBMIT = "Your latest changes aren't saved yet, so the request was not sent. Check the save status above and try again."
-/** Keepalive records kept in a device copy. */
-const MAX_KEEPALIVES = 5
 
 type Props = {
   staff: boolean
@@ -228,6 +226,13 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
   const baseRef = useRef<FullView | null>(initial ?? null)
   /** Other tabs' device copies merged into this form at load (dropped once saved). */
   const absorbed = useRef<string[]>([])
+  /**
+   * The last restore of device copies: the form before it and right after
+   * it. "Use the saved version instead" undoes exactly what it changed, even
+   * once the restore has saved itself (the saved version is then the
+   * restored one).
+   */
+  const restoreUndo = useRef<{ before: FormState; after: FormState } | null>(null)
   const adopted = useRef<(() => void) | null>(null)
   const [adoptN, setAdoptN] = useState(0)
   useEffect(() => {
@@ -248,6 +253,20 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
         initial: initial ?? null,
         plan: (v) => planRef.current(v),
         snapshot: (v) => sentRef.current(v),
+        onLedger: (ledger, v, sent) => {
+          // What the server holds is not known until the answer comes back:
+          // nothing counts as saved meanwhile (undoing the change while it is
+          // in flight, or after its answer was lost, is then saved too).
+          if (sent) synced.current = ''
+          // The tab's device copy lists every save not answered yet, made
+          // against the current base, so a reopened page can tell whether
+          // they arrived (restore.ts) even if this page is killed now.
+          const k = tabBackupKey(userKey, v.id, tab)
+          const b = readBackup<FormData>(k)
+          if (!b) return
+          const saves = ledger.filter((r) => r.baseVersion >= v.version)
+          writeBackup(k, { ...b, baseVersion: v.version, base: v, keepalive: saves.length ? saves : undefined })
+        },
         onView: (v) => {
           const first = !viewRef.current
           viewRef.current = v
@@ -382,6 +401,7 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       return
     }
     absorbed.current.push(...p.keys)
+    restoreUndo.current = { before: formOfView(initial, { zone, audio, stingers }), after: p.form }
     setDraft(p.form.draft)
     setBuilder(p.form.builder)
     setRestored(true)
@@ -404,10 +424,9 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       return
     }
     const base = view ? baseRef.current : null
-    // Keepalive records stay while the copy keeps the same base (they are
-    // relative to it).
-    const prev = view ? readBackup<FormData>(k) : null
-    const keepalive = prev?.keepalive?.length && base && prev.baseVersion === base.version ? prev.keepalive : undefined
+    // The saves not answered yet, relative to this base (see onLedger).
+    const pending = base ? saver.unanswered.filter((r) => r.baseVersion >= base.version) : []
+    const keepalive = pending.length ? [...pending] : undefined
     const b: Backup<FormData> = {
       v: 2,
       savedAt: Date.now(),
@@ -447,16 +466,11 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       const v = saver.view
       const once = v ? `${v.version}|${formKeyRef.current}` : ''
       if (once && once === lastSent) return
-      const sent = saver.flushKeepalive()
+      // The saver records what it sent in its ledger and (onLedger) in this
+      // tab's device copy: a reopened page, or this tab coming back, can then
+      // tell whether it arrived (the event's recentSaveIds).
+      saver.flushKeepalive()
       lastSent = once
-      if (!sent || !v) return
-      // Note what was sent in this tab's device copy: a reopened page can
-      // then tell whether it arrived (the event's recentSaveIds). The live
-      // saver keeps the same record (its ledger) for when the tab comes back.
-      const k = tabBackupKey(userKey, v.id, tab)
-      const b = readBackup<FormData>(k)
-      if (!b || b.baseVersion !== sent.baseVersion) return
-      writeBackup(k, { ...b, keepalive: [...(b.keepalive ?? []), sent].slice(-MAX_KEEPALIVES) })
     }
     const onVis = () => {
       if (document.visibilityState === 'hidden') flush()
@@ -519,6 +533,20 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       setRestored(false)
       return
     }
+    const u = restoreUndo.current
+    restoreUndo.current = null
+    if (u) {
+      // Undo what the restore changed (it may have saved itself already), on
+      // top of whatever the form holds now; the result saves like any edit.
+      const r = mergeForm(u.after, u.before, { draft, builder })
+      for (const k of absorbed.current.splice(0)) clearBackup(k)
+      setNote(null)
+      setRestoredWhat([])
+      setDraft(r.draft)
+      setBuilder(r.builder)
+      setRestored(false)
+      return
+    }
     const v = viewRef.current ?? initial
     clearDraftBackups(v.id)
     setResetN((n) => n + 1)
@@ -540,6 +568,7 @@ function FormBody({ staff, userKey, chunkBytes, initial, audio = [], stingers = 
       const server = formOfView(viewRef.current ?? initial!, { zone, audio: live.current.audio, stingers: live.current.stingers })
       const r = mergeForm(server, now, p.form)
       absorbed.current.push(...p.keys)
+      restoreUndo.current = { before: now, after: { draft: r.draft, builder: r.builder } }
       setDraft(r.draft)
       setBuilder(r.builder)
       setRestored(true)

@@ -222,8 +222,10 @@ export function describeChanges(from: FormState, to: FormState): string[] {
  * (NEWER than base) undo work done elsewhere? True when the merge would
  * overwrite a field (or a pin, or the play order) the server also changed,
  * remove a song or announcement the server has, or — when the copy sent a
- * keepalive that is not known to have arrived (`unconfirmed`) — add back one
- * the server does not have (it may have been sent, then removed elsewhere).
+ * save that is not known to have arrived (`unconfirmed`) — add back one the
+ * server does not have, or set a field, pin, song order or play order the
+ * server holds at the base value (it may have been sent, then undone
+ * elsewhere).
  * Such a restore waits for the member's choice instead of saving itself.
  */
 export function restoreConflicts(base: FormState, local: FormState, server: FormState, unconfirmed: boolean): boolean {
@@ -244,6 +246,18 @@ export function restoreConflicts(base: FormState, local: FormState, server: Form
   const cs = countBy(s.anns, annKey)
   for (const [k, c] of cb) if ((cl.get(k)?.n ?? 0) < c.n && (cs.get(k)?.n ?? 0) > 0) return true
   if (unconfirmed) {
+    const [bd, ld, sd] = [base.draft, local.draft, server.draft]
+    for (const [f] of FIELDS) if (norm(ld[f] as string) !== norm(bd[f] as string) && norm(sd[f] as string) === norm(bd[f] as string)) return true
+    if (whenKey(ld) !== whenKey(bd) && whenKey(sd) === whenKey(bd)) return true
+    if (l.order !== b.order && s.order === b.order) return true
+    for (const [id, lt] of il) {
+      const bt = ib.get(id)
+      const st = is.get(id)
+      if (bt && st && ms(lt.pinAt) !== ms(bt.pinAt) && ms(st.pinAt) === ms(bt.pinAt)) return true
+    }
+    // the relative order of the songs all three hold
+    const seq = (x: BTrack[]) => x.map(trackId).filter((id) => ib.has(id) && il.has(id) && is.has(id)).join('|')
+    if (seq(l.tracks) !== seq(b.tracks) && seq(s.tracks) === seq(b.tracks)) return true
     for (const [id] of il) if (!ib.has(id) && !is.has(id)) return true
     for (const [k, c] of cl) if (c.n > (cb.get(k)?.n ?? 0) && (cs.get(k)?.n ?? 0) < c.n) return true
   }

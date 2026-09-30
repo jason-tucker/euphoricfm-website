@@ -29,7 +29,13 @@
 //     uses), so this tab's changes that already reached the server are never
 //     merged again over newer work from elsewhere. When that cannot be told
 //     (the list is full) and the merge would overwrite work done elsewhere,
-//     the form asks instead (adopt answers 'held').
+//     the form asks instead (adopt answers 'held'). Every entry is also
+//     written into the tab's device copy (onLedger), so a page killed before
+//     an answer arrived is sorted the same way when it is reopened. A save
+//     whose answer was lost (or a keepalive) is checked against a fresh
+//     server copy before anything else is planned, and until that check
+//     succeeds the saver never reports "all saved": the server may hold
+//     something the form no longer shows (an edit undone meanwhile).
 // The form supplies `plan(view)`: what the server is missing, computed from
 // its latest state every time (so a retry always sends the newest data).
 
@@ -184,6 +190,11 @@ export type SaverOptions<T = unknown> = {
   adopt: (base: FullView, fresh: FullView, saves: { landed: SentSave<T>[]; unknown: SentSave<T>[] }) => Promise<void | 'held'>
   /** The form the server holds once plan(view) is saved (the ledger's `sent`). */
   snapshot?: (view: FullView) => T
+  /**
+   * The ledger changed (`sent`: the save just sent, if that is why): the
+   * form records it in the tab's device copy, made against `view`.
+   */
+  onLedger?: (ledger: readonly SentSave<T>[], view: FullView, sent?: SentSave<T>) => void
   onStatus: (s: SaveStatus) => void
   /** The server now holds exactly the form with this key. */
   onSynced: (key: string) => void
@@ -203,6 +214,8 @@ export class DraftSaver<T = unknown> {
   view: FullView | null
   /** Saves sent whose answer has not come back (see the top of the file). */
   private ledger: SentSave<T>[] = []
+  /** Ledger saveIds not yet checked against a server copy fetched after they were sent. */
+  private unchecked = new Set<string>()
   private timer: ReturnType<typeof setTimeout> | null = null
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private running: Promise<Outcome> | null = null
@@ -360,14 +373,26 @@ export class DraftSaver<T = unknown> {
 
   private record(r: SentSave<T>) {
     if (!this.o.snapshot) return
-    this.ledger = [...this.ledger, r].slice(-MAX_LEDGER)
+    this.unchecked.add(r.saveId)
+    this.setLedger([...this.ledger, r].slice(-MAX_LEDGER), r)
+  }
+
+  private setLedger(l: SentSave<T>[], sent?: SentSave<T>) {
+    this.ledger = l
+    for (const id of this.unchecked) if (!l.some((r) => r.saveId === id)) this.unchecked.delete(id)
+    if (this.view) this.o.onLedger?.(l, this.view, sent)
+  }
+
+  /** A save may have reached the server without this tab knowing: check before trusting the base. */
+  private hasUnchecked(): boolean {
+    return this.unchecked.size > 0
   }
 
   private setView(v: FullView) {
     this.view = v
-    // saves made against an older version can no longer land (or are in it)
-    this.ledger = this.ledger.filter((r) => r.baseVersion >= v.version)
     this.o.onView(v)
+    // saves made against an older version can no longer land (or are in it)
+    this.setLedger(this.ledger.filter((r) => r.baseVersion >= v.version))
   }
 
   /** Send one save (PATCH or PUT) with a ledger entry until its answer comes back. */
@@ -377,11 +402,13 @@ export class DraftSaver<T = unknown> {
     this.record(rec)
     try {
       const r = await api<{ event: FullView }>(url, { method, json: { ...json, version: base, expectStatus: 'draft', saveId } })
-      this.ledger = this.ledger.filter((x) => x !== rec)
+      this.setLedger(this.ledger.filter((x) => x !== rec))
       return r.event
     } catch (e) {
-      // refused: it was not written. Otherwise it may have been (kept).
-      if (!MAYBE_WRITTEN(e)) this.ledger = this.ledger.filter((x) => x !== rec)
+      // Refused: it was not written. Otherwise it may have been (kept, and
+      // checked against a fresh server copy before the next plan).
+      if (!MAYBE_WRITTEN(e)) this.setLedger(this.ledger.filter((x) => x !== rec))
+      else this.refreshWanted = true
       throw e
     }
   }
@@ -394,12 +421,20 @@ export class DraftSaver<T = unknown> {
     // not bump it, so an equal (or even older-looking) version may still be
     // a request that is no longer a draft. No more autosaves then.
     if (fresh.status !== 'draft') throw new ApiError(409, 'status_changed', [], { status: fresh.status })
-    if (fresh.version <= base.version) return
+    // Every save sent before this copy was fetched is now sorted by it (or,
+    // with the server not past the base, has not landed yet).
+    const checked = [...this.unchecked]
+    if (fresh.version <= base.version) {
+      for (const id of checked) this.unchecked.delete(id)
+      return
+    }
     // This tab's saves the fresh copy already holds move the merge base
     // first: their changes are the server's now, not this tab's to re-apply.
+    // (The device copy keeps every record until setView moves its base too.)
     const fates = sortSaves(this.ledger, base.version, fresh)
     this.ledger = fates.pending
     const r = await this.o.adopt(base, fresh, { landed: fates.landed, unknown: fates.unknown })
+    for (const id of checked) this.unchecked.delete(id)
     this.setView(fresh)
     if (r === 'held') this.hold()
   }
@@ -416,7 +451,9 @@ export class DraftSaver<T = unknown> {
     let conflicts = 0
     for (;;) {
       this.again = false
-      if (this.refreshWanted && this.view) {
+      // A save may have landed unseen (its answer was lost, a keepalive):
+      // catch up first, so the plan diffs against what the server holds.
+      if ((this.refreshWanted || this.hasUnchecked()) && this.view) {
         this.refreshWanted = false
         try {
           await this.catchUp(await api<FullView>(`/api/ev/events/${this.view.id}`))
@@ -544,6 +581,13 @@ export class DraftSaver<T = unknown> {
       this.o.onStatus({ kind: 'partial', reason: plan.blocked.join(' ') })
       return 'blocked'
     }
+    if (this.hasUnchecked()) {
+      // The catch-up could not fetch the event: a save that may have landed
+      // is still unchecked, so "all saved" cannot be promised (the member
+      // may have undone what it sent). Retried like a network blip.
+      this.refreshWanted = true
+      throw new ApiError(0, 'network')
+    }
     this.o.onSynced(plan.key)
     this.o.onStatus({ kind: 'saved', at: Date.now(), wrote })
     return 'synced'
@@ -567,10 +611,11 @@ export type Backup<T> = {
   base: FullView | null
   data: T
   /**
-   * Keepalive saves sent from this copy's base as the page was hidden or
-   * left, oldest first, each with the form it sent. A reopened page whose
-   * event lists a record's saveIds knows it arrived, and restores only what
-   * changed after it (restore.ts).
+   * Saves sent from this copy's base whose answer had not come back (a
+   * keepalive as the page was hidden or left, a PATCH/PUT in flight or whose
+   * answer was lost), oldest first, each with the form it sent. A reopened
+   * page whose event lists a record's saveId knows it arrived, and restores
+   * only what changed after it (restore.ts). The name is historical.
    */
   keepalive?: SentSave<T>[]
 }
