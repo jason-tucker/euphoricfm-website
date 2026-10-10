@@ -10,6 +10,9 @@ Since 2026-10-10 every sign-in failed: members came back from Discord to an erro
 ### Tests
 - `test/primitives.test.ts`: the web env defaults the issuer to `https://discord.com` and honours an explicit `AUTH_DISCORD_ISSUER`.
 
+### Dependencies
+- `next` 15.5.26 → 15.5.27 (GHSA-4jqv-mc3x-m676, GHSA-mcj8-r9mp-w47p) and `pnpm.overrides` for `sharp` ≥ 0.35.5 and `source-map-js` ≥ 1.2.2, all raised by the `pnpm audit --prod` gate since 2026-10-05; lockfile only, no code change.
+
 ## [0.5.3] — 2026-09-29 — Events: one-page request form that saves itself, inline uploads
 
 Member feedback on events.euphoric.fm: songs added to a draft were lost ("adding songs didn't stay in during a draft save"), announcements had to be uploaded on a separate page, and the form should be one page that saves automatically. Root cause of the lost songs: the step wizard saved the playlist only when leaving the playlist step with a fully valid playlist, so songs added before a valid Continue lived only in the page's memory (production draft 3: details saved, 0 tracks, no playlist-save audit row).
