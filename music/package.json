@@ -1,7 +1,7 @@
 {
   "name": "efm-music-portal",
   "private": true,
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "EFM Music Portal (music.euphoric.fm): Discord-gated music submission and review. Separate package from the Astro site; its own lockfile and Docker targets (web, worker, probe, fetch).",
   "type": "module",
   "packageManager": "pnpm@10.33.2",
@@ -25,7 +25,7 @@
     "@tus/server": "2.4.5",
     "drizzle-orm": "0.45.3",
     "music-metadata": "11.16.1",
-    "next": "15.5.26",
+    "next": "15.5.27",
     "next-auth": "5.0.0-beta.32",
     "node-id3": "0.2.9",
     "postgres": "3.4.9",
@@ -52,7 +52,9 @@
   },
   "pnpm": {
     "overrides": {
-      "postcss@<8.5.23": ">=8.5.23"
+      "postcss@<8.5.23": ">=8.5.23",
+      "sharp@<0.35.5": ">=0.35.5",
+      "source-map-js@<1.2.2": ">=1.2.2"
     }
   }
 }

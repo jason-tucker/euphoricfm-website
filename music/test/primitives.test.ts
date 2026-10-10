@@ -336,6 +336,10 @@ describe('service env isolation', () => {
     expect(() => loadWebEnv({ ...web, AUTH_URL: 'https://evil.example' })).toThrow(/AUTH_URL/)
     expect(() => loadWebEnv({ ...web, AUTH_URL: undefined })).toThrow(/AUTH_URL/)
   })
+  it('web Discord issuer defaults to https://discord.com and honours AUTH_DISCORD_ISSUER (0.5.4)', () => {
+    expect(loadWebEnv(web).AUTH_DISCORD_ISSUER).toBe('https://discord.com')
+    expect(loadWebEnv({ ...web, AUTH_DISCORD_ISSUER: 'https://discord.example' }).AUTH_DISCORD_ISSUER).toBe('https://discord.example')
+  })
   it('worker refuses web secrets', () => {
     const w = { DATABASE_URL: 'postgres://x', AZURACAST_API_KEY: 'k'.repeat(20), TICKETS_WRITE_KEY: 't' }
     expect(() => loadWorkerEnv(w)).not.toThrow()

@@ -74,6 +74,10 @@ const webSchema = z.object({
   AUTH_SECRET: z.string().min(32),
   AUTH_DISCORD_ID: z.string().min(1),
   AUTH_DISCORD_SECRET: z.string().min(1),
+  // Discord's OAuth issuer, compared against the `iss` Discord has sent on its
+  // authorization redirect since 2026-10 (RFC 9207). Never fetched. Auth.js
+  // reads the same env name itself (AUTH_<PROVIDER>_ISSUER).
+  AUTH_DISCORD_ISSUER: z.string().url().default('https://discord.com'),
   APP_ENC_KEY: z.string().min(43),
   PORTAL_ORIGIN: z
     .string()

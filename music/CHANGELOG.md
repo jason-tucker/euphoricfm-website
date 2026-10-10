@@ -1,5 +1,18 @@
 # Changelog — EFM Music Portal (`music/`)
 
+## [0.5.4] — 2026-10-10 — Discord sign-in: declare Discord's issuer
+
+Since 2026-10-10 every sign-in failed: members came back from Discord to an error page instead of the portal. Discord now sends `iss=https://discord.com` on its OAuth2 authorization redirect (RFC 9207), and our inline Discord provider declared no issuer, so Auth.js compared it against its placeholder `https://authjs.dev` and refused the callback (`CallbackRouteError: unexpected "iss" (issuer) response parameter value`). Production is hot-fixed without a rebuild by setting `AUTH_DISCORD_ISSUER=https://discord.com` in the web env files; this release makes it the default.
+
+### Fixed
+- The Discord provider (`src/server/auth/config.ts`) sets `issuer` from the new `AUTH_DISCORD_ISSUER` web env (default `https://discord.com`; the same name Auth.js reads itself, so the hot-fix env line keeps working and can be removed). The authorization, token and userinfo URLs stay explicit, so no discovery request is added.
+
+### Tests
+- `test/primitives.test.ts`: the web env defaults the issuer to `https://discord.com` and honours an explicit `AUTH_DISCORD_ISSUER`.
+
+### Dependencies
+- `next` 15.5.26 → 15.5.27 (GHSA-4jqv-mc3x-m676, GHSA-mcj8-r9mp-w47p) and `pnpm.overrides` for `sharp` ≥ 0.35.5 and `source-map-js` ≥ 1.2.2, all raised by the `pnpm audit --prod` gate since 2026-10-05; lockfile only, no code change.
+
 ## [0.5.3] — 2026-09-29 — Events: one-page request form that saves itself, inline uploads
 
 Member feedback on events.euphoric.fm: songs added to a draft were lost ("adding songs didn't stay in during a draft save"), announcements had to be uploaded on a separate page, and the form should be one page that saves automatically. Root cause of the lost songs: the step wizard saved the playlist only when leaving the playlist step with a fully valid playlist, so songs added before a valid Continue lived only in the page's memory (production draft 3: details saved, 0 tracks, no playlist-save audit row).
