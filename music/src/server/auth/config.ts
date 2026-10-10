@@ -69,6 +69,11 @@ function buildConfig(): NextAuthConfig {
         type: 'oauth',
         clientId: env.AUTH_DISCORD_ID,
         clientSecret: env.AUTH_DISCORD_SECRET,
+        // Without it Auth.js falls back to the placeholder https://authjs.dev
+        // and rejects Discord's `iss` with "unexpected iss (issuer) response
+        // parameter value". The authorization/token/userinfo URLs below stay
+        // explicit, so setting `issuer` adds no discovery request.
+        issuer: env.AUTH_DISCORD_ISSUER,
         checks: ['pkce', 'state'],
         authorization: { url: env.DISCORD_AUTHORIZE_URL, params: { scope: DISCORD_SCOPES } },
         token: env.DISCORD_TOKEN_URL,
