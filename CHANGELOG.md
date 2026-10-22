@@ -5,6 +5,11 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.22.6] — 2026-10-22 — Project-manager skill
+
+### Added
+- **Added `/project-manager` Claude Code skill** (`.claude/skills/project-manager/SKILL.md`). Delegates all requested work to agents with written prompts: Opus for planning, Sonnet for coding, Haiku for lookups and low-level tasks. Tooling only; no runtime change.
+
 ## [0.22.5] — 2026-09-29 — Events card hides the new helper playlist names
 
 ### Fixed
