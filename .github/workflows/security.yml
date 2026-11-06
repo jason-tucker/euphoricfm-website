@@ -34,12 +34,10 @@ jobs:
         run: node --test server/*.test.mjs
 
   # ---- Dependency vulnerability gate ---------------------------------------
-  # The info site (root package). NOT a required check while it is known red:
-  # astro 6.4.6 (critical GHSA-26w7-cxv4-gfx2, AVIF RCE; unreachable here: no
-  # astro:assets / Sharp image service in the site) plus sharp/svgo highs, all
-  # fixed by the Astro 7 upgrade in PR #25 (held). Once #25 merges this goes
-  # green; make it required again then. The portal has its own hard gate
-  # below (audit-music), so a portal advisory is never hidden behind this.
+  # The info site (root package), including development/build dependencies.
+  # The portal has its own production gate below (audit-music), so its
+  # advisories are never hidden behind the root audit. Keep both checks
+  # required in branch protection after the security upgrade is reviewed.
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -80,6 +78,8 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: pnpm audit, production dependencies (fail on High/Critical)
         run: pnpm audit --prod --audit-level=high
+      - name: pnpm audit, including development dependencies (fail on High/Critical)
+        run: pnpm audit --audit-level=high
 
   # ---- Static analysis (CodeQL) --------------------------------------------
   codeql:

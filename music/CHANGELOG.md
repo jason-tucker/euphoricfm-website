@@ -1,6 +1,14 @@
 # Changelog — EFM Music Portal (`music/`)
 
-## [0.5.4] — 2026-10-10 — Discord sign-in: declare Discord's issuer
+## [0.5.5] - 2026-11-06 - Patch production and test dependencies
+
+### Security
+- Next.js 15.5.27 -> 15.5.29 fixes the image optimization RCE (GHSA-2464-fhr4-w9xw) and Server Actions denial of service (GHSA-p3m5-59mp-jv5r).
+- Zod 4.6.5 -> 4.6.6 fixes oversized constrained-collection memory exhaustion (GHSA-mrhx-c7xc-m3w5).
+- Refresh transitive dependencies (including undici), update Vitest to 4.1.12, and declare patched Vite 8.3.3 explicitly so the React plugin's previously locked vulnerable peer is replaced. Existing production overrides remain in place.
+- Extend the security workflow to audit development dependencies at high severity as well as production. One moderate, development-only esbuild advisory remains through drizzle-kit's deprecated @esbuild-kit/esm-loader; it is not suppressed or included in the production audit.
+
+## [0.5.4] - 2026-10-10 - Discord sign-in: declare Discord's issuer
 
 Since 2026-10-10 every sign-in failed: members came back from Discord to an error page instead of the portal. Discord now sends `iss=https://discord.com` on its OAuth2 authorization redirect (RFC 9207), and our inline Discord provider declared no issuer, so Auth.js compared it against its placeholder `https://authjs.dev` and refused the callback (`CallbackRouteError: unexpected "iss" (issuer) response parameter value`). Production is hot-fixed without a rebuild by setting `AUTH_DISCORD_ISSUER=https://discord.com` in the web env files; this release makes it the default.
 

@@ -5,7 +5,19 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
-## [0.22.6] — 2026-10-22 — Project-manager skill
+## [0.22.7] - 2026-11-06 - Refresh the security upgrade
+
+### Security
+- Upgrade Astro 6 to 7.4.7 and refresh root dependencies and their lockfile to address the AVIF RCE and subsequent transitive advisories. Require Node >=22.23.4 to match Astro's engine floor; CI remains on Node 24.
+- Update the separate music portal's Next.js, Zod and development tooling; see music/CHANGELOG.md for its dependency changes.
+
+### Changed
+- Preserve Astro 6 HTML compression and esbuild CSS minification, and pin the Astro client environment to ES2020 so the new bundler does not emit logical assignment syntax unsupported by older in-game CEF. Add a build-output parser check to the existing site suite to guard that syntax floor.
+- Reconcile PR #25 with current main without reverting the subsequent site and music portal releases.
+- Pin the Astro checker's WASM runtime peer to stable @emnapi/runtime 1.11.3; automatically selecting 2.0.0-beta.2 crashes astro2tsx before diagnostics can run.
+- Match the schedule's developer comment to sentence case, because Astro 7 retains the HTML comment and the existing copy regression test scans generated HTML.
+
+## [0.22.6] - 2026-10-22 - Project-manager skill
 
 ### Added
 - **Added `/project-manager` Claude Code skill** (`.claude/skills/project-manager/SKILL.md`). Delegates all requested work to agents with written prompts: Opus for planning, Sonnet for coding, Haiku for lookups and low-level tasks. Tooling only; no runtime change.
