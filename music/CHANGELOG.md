@@ -1,5 +1,10 @@
 # Changelog — EFM Music Portal (`music/`)
 
+## [0.5.6] - 2026-11-06 - Remove a request-worker test race
+
+### Fixed
+- Verify the edit's library-cache write inside its transaction instead of after the background library sync can intentionally prune Portal-Test rows. Keep the real mock metadata, playlists and completed-request assertions.
+
 ## [0.5.5] - 2026-11-06 - Patch production and test dependencies
 
 ### Security

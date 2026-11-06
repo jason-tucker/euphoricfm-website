@@ -5,9 +5,10 @@
 # The full DEFAULT ruleset stays active; nothing here disables a rule. The only
 # additions are allowlists for known false positives, scoped twice: to EXACT
 # file paths, and only on the rule(s) that misfire on each
-# (generic-api-key, discord-client-id). Every other rule (AWS, GitHub, Slack,
-# Discord client secret, private keys, ...) still fires on these same files,
-# and these two rules still fire on every other file in the repo.
+# (generic-api-key, discord-client-id, discord-client-secret). The two
+# 2026-11-06 exceptions below additionally require an exact placeholder/fixture
+# value AND path; other values still fire in those files. Every other rule
+# (AWS, GitHub, Slack, private keys, ...) stays active in the same files.
 #
 # Why per-rule [[rules.allowlists]] (extending the default rule by id) instead
 # of a global [[allowlists]] with targetRules: gitleaks 8.24.3 silently
@@ -71,3 +72,23 @@ paths = [
   '''^music/test/ui/archive-legacy\.test\.tsx$''',
   '''^music/src/server/azuracast/contract-baseline\.json$''',
 ]
+
+# Historical events settings test: a deliberately sequential dummy snowflake,
+# not an OAuth credential. Keep other Discord IDs detectable in this file.
+[[rules.allowlists]]
+description = "Events settings test sequential dummy Discord ID (verified 2026-11-06)"
+condition = "AND"
+paths = ['''^music/test/events-db\.test\.ts$''']
+regexTarget = "secret"
+regexes = ['''^123456789012345678$''']
+
+[[rules]]
+id = "discord-client-secret"
+# This rule mistakes AUTH_DISCORD_ID's literal replacement instruction for a
+# secret. Exempt only that exact instruction in that exact example file.
+[[rules.allowlists]]
+description = "Events web OAuth client ID replacement instruction (verified 2026-11-06)"
+condition = "AND"
+paths = ['''^music/env/events-web\.env\.example$''']
+regexTarget = "secret"
+regexes = ['''^replace-with-the-music-client-id$''']

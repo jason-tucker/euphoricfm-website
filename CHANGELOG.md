@@ -5,6 +5,12 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.22.8] - 2026-11-06 - Stabilize music and historical secret checks
+
+### Fixed
+- Scope the request-worker cache assertion to its writing transaction so the background library sync cannot race the test; retain metadata, playlist and request-status verification.
+- Allow only the exact verified events example instruction and sequential test ID under their respective Gitleaks rules and file paths, including historical scans. Other values and files remain detectable.
+
 ## [0.22.7] - 2026-11-06 - Refresh the security upgrade
 
 ### Security

@@ -16,6 +16,7 @@ import { directEdit, listArchived, reconcileArchiveRow, restoreSong } from '@/se
 import { TicketsClient } from '@/server/tickets/client'
 import { RetryLater } from '@/worker/handlers'
 import { runJob } from '@/worker/main'
+import { syncLibrary } from '@/worker/library/sync'
 import {
   applyArt,
   applyEdit,
@@ -144,14 +145,21 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
     await closeDb()
   })
 
-  it('edits on a TXXX-mp3-like and an m4a-like row keep the DB values and playlists across scans', async () => {
+  it('edited tracks cache metadata and retain AzuraCast values and playlists after production library sync', async () => {
     const folder = `GRIM-${RUN}`
     await artist(`Grim ${RUN}`, folder)
     const mp3 = await seed(`${art(folder)}/luvusm.mp3`, { title: 'Luv U SM', artist: `Grim ${RUN}`, album: 'Identity Shift', genre: 'Dance', playlists: [2, 74] })
     const m4a = await seed(`${art(folder)}/kokoro_-_kokoro_-_touch.m4a`, { title: 'Touch', artist: `Grim ${RUN}`, album: 'KOKORO', playlists: [3] })
     for (const m of [mp3, m4a]) {
       const id = await request('edit', m, { title: `PT Edited ${m.id}`, album: 'PT Edited Album', genre: 'PT Edited Genre' })
-      await applyEdit(ctx, { requestId: id })
+      // Check the mutation's cache write in the same transaction. The live
+      // worker's production sync intentionally prunes Portal-Test/ paths,
+      // so a later cache SELECT would race that independent background job.
+      await ctx.db.transaction(async (tx) => {
+        await applyEdit({ ...ctx, db: tx }, { requestId: id })
+        const lib = await tx.query.libraryCache.findFirst({ where: (table, { eq }) => eq(table.mediaId, m.id) })
+        expect(lib).toMatchObject({ title: `PT Edited ${m.id}`, path: m.path })
+      })
       const put = (await azCalls()).filter((c) => c.method === 'PUT' && c.path === `/api/station/1/file/${m.id}`).at(-1)!
       expect(Object.keys(put.body!).sort()).toEqual(['album', 'artist', 'genre', 'title']) // strict body, no path/playlists
       expect(await reqRow(id)).toMatchObject({ status: 'verifying', error: null })
@@ -159,15 +167,16 @@ describe.skipIf(!ready())('P4 worker jobs (mock AzuraCast, Portal-Test/ root)', 
       expect(take('request_ticket_post').payload).toMatchObject({ requestId: id, event: 'applied' })
       const rv = take('reverify')
       expect(rv.opts.runAfter!.getTime()).toBe(Date.UTC(2026, 8, 27, 12, 11, 30)) // after the next two scans
-      // the mock (like AzuraCast) reported success; the DB is the truth
+      // Run production sync explicitly instead of depending on the scheduler's
+      // timing. It must never undo AzuraCast's persisted edit.
+      await syncLibrary({ ...ctx, now: () => clock, spoolInDir: '/nonexistent', finalDir: '/nonexistent' })
+      // The mock (like AzuraCast) reported success; its media DB is the truth.
       await reverify(ctx, rv.payload as never)
       await reverify(ctx, rv.payload as never)
       const after = await fileById(m.id)
       expect(after).toMatchObject({ title: `PT Edited ${m.id}`, album: 'PT Edited Album', genre: 'PT Edited Genre', path: m.path })
       expect(ids(after)).toEqual(ids(m))
       expect(await reqRow(id)).toMatchObject({ status: 'done' })
-      const lib = (await ownerSql()`SELECT title, path FROM library_cache WHERE media_id = ${m.id}`)[0]
-      expect(lib).toMatchObject({ title: `PT Edited ${m.id}`, path: m.path })
     }
   })
 
