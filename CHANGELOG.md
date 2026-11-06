@@ -5,6 +5,11 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
+## [0.22.8] - 2026-11-06 - Close the CEF syntax coverage gap
+
+### Fixed
+- Check inline scripts whose closing tags contain whitespace in the ES2020 CEF guard. Regression fixtures reject ES2021 logical assignment for each HTML whitespace character and verify that skipped external/data scripts do not hide a following inline script.
+
 ## [0.22.7] - 2026-11-06 - Refresh the security upgrade
 
 ### Security

@@ -15,6 +15,39 @@ function files(dir) {
   });
 }
 
+function checkInlineScripts(html, path) {
+  let scripts = 0;
+  // HTML permits whitespace before the closing tag's >, including newlines.
+  for (const [, attrs, code] of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+    if (/\bsrc\s*=/i.test(attrs) || !code.trim()) continue;
+    const type = attrs.match(/\btype\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (type && !['module', 'text/javascript', 'application/javascript'].includes(type)) continue;
+    scripts++;
+    assert.doesNotThrow(() => parse(code, {
+      ecmaVersion: 2020, sourceType: type === 'module' ? 'module' : 'script',
+    }), `${path}: inline script ${scripts}`);
+  }
+  return scripts;
+}
+
+test('inline CEF guard checks scripts with whitespace in their closing tags', () => {
+  for (const whitespace of ['', ' ', '\t', '\n', '\r', '\f', ' \t\r\n\f']) {
+    const end = `</ScRiPt${whitespace}>`;
+    assert.equal(checkInlineScripts(`<script>let value = 1;${end}`, 'fixture'), 1);
+    for (const assignment of ['??=', '||=', '&&=']) {
+      assert.throws(() => checkInlineScripts(
+        `<script>let value; value ${assignment} 1;${end}`, 'fixture',
+      ), /fixture: inline script 1/);
+    }
+    // A skipped external/data script must end before the following inline JS.
+    const prefix = `<script src="external.js">${end}<script type="application/ld+json">{}${end}`;
+    assert.equal(checkInlineScripts(`${prefix}<script>let value = 1;</script>`, 'fixture'), 1);
+    assert.throws(() => checkInlineScripts(
+      `${prefix}<script>let value; value ??= 1;</script>`, 'fixture',
+    ), /fixture: inline script 1/);
+  }
+});
+
 test('built client modules and inline scripts parse at the ES2020 CEF syntax floor', () => {
   const output = files(dist);
   const modules = output.filter(path => path.endsWith('.js'));
@@ -26,15 +59,7 @@ test('built client modules and inline scripts parse at the ES2020 CEF syntax flo
   }
   let scripts = 0;
   for (const path of output.filter(path => path.endsWith('.html'))) {
-    for (const [, attrs, code] of readFileSync(path, 'utf8').matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
-      if (/\bsrc\s*=/i.test(attrs) || !code.trim()) continue;
-      const type = attrs.match(/\btype\s*=\s*["']([^"']+)["']/i)?.[1];
-      if (type && !['module', 'text/javascript', 'application/javascript'].includes(type)) continue;
-      scripts++;
-      assert.doesNotThrow(() => parse(code, {
-        ecmaVersion: 2020, sourceType: type === 'module' ? 'module' : 'script',
-      }), `${path}: inline script ${scripts}`);
-    }
+    scripts += checkInlineScripts(readFileSync(path, 'utf8'), path);
   }
   assert.ok(scripts > 0, 'build must include the inline scripts under test');
 });
