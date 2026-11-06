@@ -1,16 +1,18 @@
 ---
 import { site } from '../site.config';
+const un = site.home.upNext;
 ---
 
 <!-- Unified player: now-playing + transport controls + visualizer + up-next.
-     The inline script owns the audio element + Web Audio analyser, and
-     writes --efm-bass / --efm-mid / --efm-high / --efm-energy CSS variables
-     on :root every frame so anything on the page can react to the music. -->
+     The script below wires the transport to stream-audio.ts, which owns the
+     audio element + Web Audio analyser and writes --efm-bass / --efm-mid /
+     --efm-high / --efm-energy CSS variables on :root every frame so anything
+     on the page can react to the music. -->
 <section class="pt-2">
   <!-- No overflow-hidden here: the bass halo lives on #np-card::before and its
        box-shadow paints OUTSIDE the card box — an ancestor clip would erase it.
        Children that need clipping (#np-up-next, the progress track) clip themselves. -->
-  <div id="np-card" class="card vt-np bg-midnight/40 border-midnight/40 relative">
+  <div id="np-card" class="card bg-midnight/40 border-midnight/40 relative" data-offline={site.player.offline} data-break-title={site.player.breakTitle} data-break-artist={site.player.breakArtist}>
 
     <!-- Special-event banner — slides open when a live DJ connects
          (data.live.is_live from AzuraCast; live sets are always special events
@@ -42,7 +44,7 @@ import { site } from '../site.config';
           id="np-art"
           src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E"
           alt=""
-          class="vt-art rounded-lg object-cover bg-cream/10 shadow-xl block"
+          class="rounded-lg object-cover bg-cream/10 shadow-xl block"
           style="width: clamp(5rem, 14vw, 10rem); height: clamp(5rem, 14vw, 10rem);"
         />
         <div class="absolute inset-0 rounded-lg pointer-events-none ring-1 ring-inset ring-cream/10"></div>
@@ -64,13 +66,13 @@ import { site } from '../site.config';
         </div>
         <div id="np-title" class="truncate font-bold text-cream" style="font-size: clamp(1rem, 1.8vw, 1.375rem);">Loading…</div>
         <div id="np-artist" class="truncate text-cream/75" style="font-size: clamp(0.875rem, 1.3vw, 1.0625rem);">—</div>
-        <div id="np-album" class="truncate text-cream/45 mt-0.5" style="font-size: clamp(0.75rem, 1.1vw, 0.9375rem);"></div>
+        <div id="np-album" class="truncate text-cream/45 mt-0.5 min-h-[1.3em]" style="font-size: clamp(0.75rem, 1.1vw, 0.9375rem);"></div>
       </div>
 
       <!-- Transport stack — play button over volume slider, top-right of the
            card. Width clamps so the title block isn't squeezed on a 360px
            in-game phone iframe. -->
-      <div class="shrink-0 flex flex-col items-end" style="gap: clamp(0.5rem, 0.8vw, 0.625rem); width: clamp(3rem, 8vw, 5rem);">
+      <div class="efm-js-only shrink-0 flex flex-col items-end" style="gap: clamp(0.5rem, 0.8vw, 0.625rem); width: clamp(3rem, 8vw, 5rem);">
         <button
           id="efm-play"
           type="button"
@@ -93,6 +95,10 @@ import { site } from '../site.config';
       </div>
     </div>
 
+    <noscript>
+      <p class="mt-3 text-xs text-cream/70">The player needs JavaScript. You can still listen: <a class="underline text-sunburst" href="#ways">open the stream in your music app</a>.</p>
+    </noscript>
+
     <!-- Progress bar + times. Bar shimmers with mid frequencies when playing. -->
     <div style="margin-top: clamp(0.75rem, 1.2vw, 1rem);">
       <div id="np-bar-track" class="w-full rounded-full bg-cream/10 overflow-hidden relative" style="height: clamp(0.375rem, 0.5vw, 0.5rem);">
@@ -104,10 +110,28 @@ import { site } from '../site.config';
       </div>
     </div>
 
-    <!-- Up Next — slides down from the bottom of the card when playing_next is present. -->
-    <div id="np-up-next" class="mt-3 overflow-hidden max-h-0 opacity-0 transition-[max-height,opacity] duration-500 ease-out">
-      <div class="border-t border-cream/10 pt-3 flex items-center gap-3">
-        <div class="text-[10px] uppercase tracking-widest text-cream/45 shrink-0">Up Next</div>
+    <!-- Up Next. One fixed-height row (nothing below it ever moves) that
+         shows the next song for the whole of the current one — AzuraCast
+         cues playing_next when a song starts. When there is no song to show
+         (not known yet, an ad/station ID is next, a live set is on) the note
+         layer says so instead; nowplaying.ts cross-fades the two via .is-open
+         and retexts the note from the data-* copy below. -->
+    <div
+      id="np-up-next"
+      class="mt-3 border-t border-cream/10 pt-3"
+      data-choosing={un.choosing}
+      data-break={un.stationBreak}
+      data-live={un.live}
+      data-offline={un.offline}
+      data-exclude={JSON.stringify(site.player.excludePlaylists)}
+    >
+      <div class="np-un-wait flex items-center gap-3">
+        <div class="text-[10px] uppercase tracking-widest text-cream/45 shrink-0">{un.label}</div>
+        <div class="w-9 h-9 rounded-md border border-dashed border-cream/15 shrink-0" aria-hidden="true"></div>
+        <div id="up-next-note" class="min-w-0 flex-1 truncate text-[11px] lg:text-xs text-cream/55">{un.choosing}</div>
+      </div>
+      <div class="np-un-track flex items-center gap-3">
+        <div class="text-[10px] uppercase tracking-widest text-cream/45 shrink-0">{un.label}</div>
         <img id="up-next-art" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E" alt="" class="w-9 h-9 rounded-md object-cover bg-cream/10 shrink-0" />
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
@@ -117,17 +141,31 @@ import { site } from '../site.config';
           </div>
           <div id="up-next-artist" class="truncate text-[10px] lg:text-xs text-cream/60">—</div>
         </div>
+        <!-- "in 2:41" countdown to the change, painted by the RAF loop. -->
+        <div id="up-next-when" class="shrink-0 text-[10px] lg:text-xs tabular-nums text-cream/55"></div>
       </div>
     </div>
+
+    <!-- Card actions (index.astro passes Request a song / Web Player / Ways
+         to listen in here, so they sit with the player on the first screen). -->
+    <slot />
   </div>
 </section>
 
 <style is:global>
-  /* Up-next reveal — driven by .is-open class on #np-up-next. */
-  #np-up-next.is-open {
-    max-height: 80px;
-    opacity: 1;
-  }
+  /* Up next — .is-open on #np-up-next (set by nowplaying.ts whenever the
+     next song is known) shows the track layer; otherwise the note layer. The
+     two share one grid cell in a fixed-height row and cross-fade, so nothing
+     below the row moves when it switches. */
+  /* minmax(0, 1fr): without an explicit column the implicit auto column grows
+     to the track layer's min-content (the full title), so a long title never
+     truncates and pushes the REQUESTED badge and the "in m:ss" countdown past
+     the clipped edge. */
+  #np-up-next { display: grid; grid-template-columns: minmax(0, 1fr); height: 50px; overflow: hidden; }
+  #np-up-next > * { grid-area: 1 / 1; transition: opacity 500ms ease-out, visibility 500ms; }
+  #np-up-next .np-un-track { opacity: 0; visibility: hidden; }
+  #np-up-next.is-open .np-un-track { opacity: 1; visibility: visible; }
+  #np-up-next.is-open .np-un-wait { opacity: 0; visibility: hidden; }
 
   /* Special-event banner reveal — same mechanism, driven by nowplaying.ts. */
   #np-live-banner.is-open {
@@ -135,192 +173,102 @@ import { site } from '../site.config';
     opacity: 1;
   }
 
-  /* Custom range slider — integrated, slim. Cross-browser styling. */
+  /* Custom range slider. The input itself is a 28px-tall hit area (the old
+     4px-tall input with a 12px thumb was very hard to grab); the visible 5px
+     track is painted by the track pseudo-elements. Cross-browser styling. */
   input.efm-range {
     -webkit-appearance: none;
     appearance: none;
-    height: 4px;
+    height: 28px;
+    margin: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+  input.efm-range::-webkit-slider-runnable-track {
+    height: 5px;
     border-radius: 9999px;
     background: linear-gradient(
       to right,
       rgb(var(--efm-sunburst-rgb)) 0%,
       rgb(var(--efm-sunburst-rgb)) var(--vol, 80%),
-      rgb(var(--efm-cream-rgb) / 0.12) var(--vol, 80%),
-      rgb(var(--efm-cream-rgb) / 0.12) 100%
+      rgb(var(--efm-cream-rgb) / 0.16) var(--vol, 80%),
+      rgb(var(--efm-cream-rgb) / 0.16) 100%
     );
-    cursor: pointer;
+  }
+  input.efm-range::-moz-range-track {
+    height: 5px;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      rgb(var(--efm-sunburst-rgb)) 0%,
+      rgb(var(--efm-sunburst-rgb)) var(--vol, 80%),
+      rgb(var(--efm-cream-rgb) / 0.16) var(--vol, 80%),
+      rgb(var(--efm-cream-rgb) / 0.16) 100%
+    );
   }
   input.efm-range::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 12px;
-    height: 12px;
+    width: 18px;
+    height: 18px;
+    margin-top: -6.5px;
     border-radius: 9999px;
-    background: rgb(var(--efm-sunburst-rgb));
-    box-shadow: 0 0 0 2px rgb(var(--efm-ink-rgb) / 0.6);
+    background: rgb(var(--efm-cream-rgb));
+    border: 3px solid rgb(var(--efm-sunburst-rgb));
+    box-shadow: 0 1px 4px rgb(var(--efm-ink-rgb) / 0.6);
     cursor: pointer;
   }
   input.efm-range::-moz-range-thumb {
     width: 12px;
     height: 12px;
     border-radius: 9999px;
-    background: rgb(var(--efm-sunburst-rgb));
-    border: 2px solid rgb(var(--efm-ink-rgb) / 0.6);
+    background: rgb(var(--efm-cream-rgb));
+    border: 3px solid rgb(var(--efm-sunburst-rgb));
     cursor: pointer;
+  }
+  input.efm-range:focus-visible {
+    outline: 2px solid rgb(var(--efm-sunburst-rgb));
+    outline-offset: 2px;
+    border-radius: 6px;
   }
 </style>
 
-<script is:inline define:vars={{ streamUrl: site.azuracast.streamUrl }}>
-  (function () {
-    const audio = document.getElementById('efm-audio');
-    const btn = document.getElementById('efm-play');
-    const icon = document.getElementById('efm-play-icon');
-    const vol = document.getElementById('efm-volume');
-    const card = document.getElementById('np-card');
-    if (!audio || !btn || !icon || !vol) return;
+<script>
+  // Transport for the home player. The audio engine (play/stop, cache-busted
+  // live src, Web Audio analyser writing the --efm-* reaction vars, effects
+  // gating, Media Session bridge) lives in stream-audio.ts and is shared with
+  // the Web Player at /player/.
+  import { site } from '../site.config';
+  import { createStreamEngine } from '../scripts/stream-audio';
+  import { showToast } from '../scripts/toast';
 
-    const root = document.documentElement;
+  const audio = document.getElementById('efm-audio') as HTMLAudioElement | null;
+  const btn = document.getElementById('efm-play');
+  const icon = document.getElementById('efm-play-icon');
+  const vol = document.getElementById('efm-volume') as HTMLInputElement | null;
+  const card = document.getElementById('np-card');
 
+  if (audio && btn && icon && vol) {
     const playIcon = '<path d="M8 5v14l11-7z"/>';
     const pauseIcon = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
     audio.volume = Number(vol.value) / 100;
     vol.style.setProperty('--vol', vol.value + '%');
 
-    let audioCtx = null;
-    let analyser = null;
-    let dataArr = null;
-    let rafId = 0;
-    let sourceNode = null;
-    let playing = false;
-
-    const setupAnalyser = async () => {
-      try {
-        if (audioCtx) {
-          if (audioCtx.state === 'suspended') await audioCtx.resume();
-          return true;
-        }
-        const AC = window.AudioContext || window.webkitAudioContext;
-        if (!AC) return false;
-        audioCtx = new AC();
-        if (audioCtx.state === 'suspended') await audioCtx.resume();
-
-        sourceNode = audioCtx.createMediaElementSource(audio);
-        analyser = audioCtx.createAnalyser();
-        // 256 bins gives us enough resolution for bass/mid/high splits while
-        // keeping the per-frame copy cheap.
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.55;
-        analyser.minDecibels = -85;
-        analyser.maxDecibels = -10;
-        dataArr = new Uint8Array(analyser.frequencyBinCount);
-        sourceNode.connect(analyser);
-        analyser.connect(audioCtx.destination);
-        return true;
-      } catch (err) {
-        console.warn('[efm] Web Audio unavailable; reactions disabled', err);
-        return false;
-      }
-    };
-
-    // Per-frame tick — reads the FFT and writes four CSS variables on :root
-    // so anything on the page can react. Bands split roughly:
-    //   bass:  0 –  8% of bins  (kick + bass)
-    //   mid:   8 – 35%          (vocals, snare, instruments)
-    //   high: 35 – 100%         (cymbals, brightness)
-    //   energy: average of all  (overall loudness)
-    const tickReact = () => {
-      if (analyser && dataArr) {
-        analyser.getByteFrequencyData(dataArr);
-        const n = dataArr.length;
-        const bassEnd = Math.max(2, Math.floor(n * 0.08));
-        const midEnd  = Math.max(bassEnd + 2, Math.floor(n * 0.35));
-        let bs = 0, md = 0, hi = 0, all = 0;
-        for (let i = 0; i < n; i++) {
-          const v = dataArr[i];
-          all += v;
-          if (i < bassEnd) bs += v;
-          else if (i < midEnd) md += v;
-          else hi += v;
-        }
-        const bass = (bs / bassEnd) / 255;
-        const mid  = (md / (midEnd - bassEnd)) / 255;
-        const high = (hi / (n - midEnd)) / 255;
-        const energy = (all / n) / 255;
-        root.style.setProperty('--efm-bass',   bass.toFixed(3));
-        root.style.setProperty('--efm-mid',    mid.toFixed(3));
-        root.style.setProperty('--efm-high',   high.toFixed(3));
-        root.style.setProperty('--efm-energy', energy.toFixed(3));
-      }
-      rafId = requestAnimationFrame(tickReact);
-    };
-
-    const startReact = async () => {
-      // Effects toggle (effects.ts) can disable all visual reactivity while the
-      // music keeps playing. window.__efmFx is the live flag.
-      if (window.__efmFx && !window.__efmFx.on) return;
-      const ok = await setupAnalyser();
-      if (!ok) return;
-      cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(tickReact);
-    };
-    const stopReact = () => {
-      cancelAnimationFrame(rafId);
-      // Reset all reactivity vars so the page settles back to its idle look.
-      root.style.removeProperty('--efm-bass');
-      root.style.removeProperty('--efm-mid');
-      root.style.removeProperty('--efm-high');
-      root.style.removeProperty('--efm-energy');
-      if (card) card.classList.remove('is-playing');
-    };
-
-    audio.crossOrigin = 'anonymous';
-
-    const setPlayingUI = (isPlaying) => {
-      playing = isPlaying;
-      icon.innerHTML = isPlaying ? pauseIcon : playIcon;
-      btn.setAttribute('aria-label', isPlaying ? 'Pause' : 'Play');
-      if (card) card.classList.toggle('is-playing', isPlaying);
-    };
-
-    btn.addEventListener('click', async () => {
-      try {
-        if (audio.paused) {
-          audio.src = streamUrl + (streamUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
-          await audio.play();
-          setPlayingUI(true);
-          await startReact();
-        } else {
-          audio.pause();
-          audio.removeAttribute('src');
-          audio.load();
-          setPlayingUI(false);
-          stopReact();
-        }
-      } catch (err) {
-        console.warn('[efm] audio play failed', err);
-      }
+    const engine = createStreamEngine({
+      audio,
+      card,
+      getStreamUrl: () => site.azuracast.streamUrl,
+      onChange: (playing) => {
+        icon.innerHTML = playing ? pauseIcon : playIcon;
+        btn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+      },
+      onPlayError: () => showToast(site.player.playFailed),
     });
 
+    btn.addEventListener('click', () => { void engine.toggle(); });
     vol.addEventListener('input', () => {
       audio.volume = Number(vol.value) / 100;
       vol.style.setProperty('--vol', vol.value + '%');
     });
-    audio.addEventListener('ended', () => { setPlayingUI(false); stopReact(); });
-    audio.addEventListener('error', () => { setPlayingUI(false); stopReact(); });
-
-    // Effects toggle flipped (effects.ts): stop writing FFT vars when off, and
-    // resume if it's turned back on mid-playback. Music itself is unaffected.
-    document.addEventListener('efm:fx-change', (e) => {
-      const on = e.detail && e.detail.on;
-      if (!on) stopReact();
-      else if (playing) startReact();
-    });
-
-    // Bridge for Media Session API in nowplaying.ts.
-    window.__efmAudio = {
-      play: () => btn.click(),
-      pause: () => { if (!audio.paused) btn.click(); },
-      el: audio,
-    };
-  })();
+  }
 </script>

@@ -5,17 +5,207 @@ semver heading — never `[Unreleased]` — and bumps `package.json` "version" i
 the same commit. The footer on every page renders `v<version> · <sha>` so you
 can always tell which build is live.
 
-## [0.17.1] — 2026-09-26 — Upgrade Astro to 7.3.5; resolve AVIF RCE advisory (GHSA-26w7-cxv4-gfx2)
+## [0.22.7] - 2026-11-06 - Refresh the security upgrade
 
 ### Security
-- **Resolved the critical Astro advisory GHSA-26w7-cxv4-gfx2** (RCE through AVIF image optimization, vulnerable `<7.2.8`) by upgrading `astro` 6.4.6 → 7.3.5. There is no 6.x backport, so this is the 6 → 7 major. The same upgrade clears the Astro moderate/low advisories GHSA-f48w-9m4c-m7f5, GHSA-4g3v-8h47-v7g6, GHSA-376h-93r7-7g6f and GHSA-7pw4-f3q4-r2p2.
-- **Cleared every transitive high-severity advisory (plus the moderate `devalue` one)** that had been failing the `audit` CI gate on `main` since at least 2026-08-31, by re-resolving within existing semver ranges: `sharp` 0.34.5 → 0.35.4 (GHSA-f88m-g3jw-g9cj, GHSA-rgj7-g3m4-5g8c), `svgo` 4.0.1 → 4.1.0 (GHSA-2p49-hgcm-8545, GHSA-w27v-7q3p-w38r, GHSA-4vpr-x523-8j87), `js-yaml` 4.2.0 → 4.3.2 (GHSA-52cp-r559-cp3m, GHSA-5p4m-2wfm-xmqj, GHSA-2883-xcg3-v3hh), `smol-toml` 1.6.1 → 1.9.0 (GHSA-7w5x-hrqm-74c2), `postcss` 8.5.15 → 8.5.28 (GHSA-r28c-9q8g-f849, GHSA-fxqj-rqcc-2cmp), `nanoid` 3.3.12 → 3.3.19 (GHSA-28wg-ghj8-5hjv, GHSA-2v37-7h3g-55p8), `fast-uri` 3.1.5 → 3.1.8 (GHSA-5jgf-p345-68v8, GHSA-f65p-4m7j-42xc, GHSA-fph4-wmhf-6fwf, GHSA-jqff-g426-hqxp); the moderate `devalue` advisory GHSA-9rgm-9g3h-6x36 is fixed by `devalue` 5.8.1 → 5.9.4. No new `pnpm.overrides` were needed; the existing `esbuild@<0.28.1` override stays. `pnpm audit` now reports no known vulnerabilities at any severity (was 1 critical, 15 high, 6 moderate, 1 low).
+- Upgrade Astro 6 to 7.4.7 and refresh root dependencies and their lockfile to address the AVIF RCE and subsequent transitive advisories. Require Node >=22.23.4 to match Astro's engine floor; CI remains on Node 24.
+- Update the separate music portal's Next.js, Zod and development tooling; see music/CHANGELOG.md for its dependency changes.
 
 ### Changed
-- **Astro 7 brings Vite 8** (7.3.5 → 8.3.1, Rolldown bundler, Oxc JS minifier). Three config pins keep the build render-equivalent to 0.17.0: `compressHTML: true` (Astro 7's new `'jsx'` default drops whitespace between inline elements); `vite.build.cssMinify: 'esbuild'` (Vite 8's default lightningcss minifier strips `-webkit-backdrop-filter` and rewrites `min-width` media queries to range syntax, which the outdated in-game CEF and older Safari don't get); and an ES2020 build target for the client bundle (at Astro 7's `esnext` client target, Oxc minifies `if (x != null) return; x = …` guards into ES2021 `x ??= …`, a SyntaxError that would drop the whole module on older CEF). Astro hard-codes the client target and ignores `vite.build.target`, so the pin is a small inline Vite plugin (`configEnvironment`) that sets the client environment's `target: 'es2020'` and keeps `cssTarget: 'esnext'` so the CSS is unchanged. Tailwind stays at 4.3.1.
-- **Rendered output verified unchanged** against a 0.17.0 build: same file list, byte-identical `cef-test.html`, fonts, icons, `sw.js` and manifest; CSS identical apart from the scoped-style hash and the redundant default `ease` being dropped from three `transition`s. HTML differs only in inter-element whitespace next to comments/scripts and two developer comments in `EventStatus` that Astro 7 now keeps; neither changes layout. The JS bundle is re-minified by Oxc (and now also carries the full `site.config` object, all already-public copy) with no behaviour change; its syntax floor is unchanged at ES2020 (parses with acorn `--ecma2020`, same as the 0.17.0 bundle).
-- Added `@types/node` (^24, matching CI's Node 24) as a dev dependency so `astro check` no longer errors on `process.env` in `astro.config.mjs`.
-- Docs: "Astro 6" → "Astro 7" in `CLAUDE.md`, `README.md` and `docs/security/THREAT_MODEL.md`; `CLAUDE.md`'s stack line also said "Tailwind 3", stale since 0.11.0, now "Tailwind 4".
+- Preserve Astro 6 HTML compression and esbuild CSS minification, and pin the Astro client environment to ES2020 so the new bundler does not emit logical assignment syntax unsupported by older in-game CEF. Add a build-output parser check to the existing site suite to guard that syntax floor.
+- Reconcile PR #25 with current main without reverting the subsequent site and music portal releases.
+- Pin the Astro checker's WASM runtime peer to stable @emnapi/runtime 1.11.3; automatically selecting 2.0.0-beta.2 crashes astro2tsx before diagnostics can run.
+- Match the schedule's developer comment to sentence case, because Astro 7 retains the HTML comment and the existing copy regression test scans generated HTML.
+
+## [0.22.6] - 2026-10-22 - Project-manager skill
+
+### Added
+- **Added `/project-manager` Claude Code skill** (`.claude/skills/project-manager/SKILL.md`). Delegates all requested work to agents with written prompts: Opus for planning, Sonnet for coding, Haiku for lookups and low-level tasks. Tooling only; no runtime change.
+
+## [0.22.5] — 2026-09-29 — Events card hides the new helper playlist names
+
+### Fixed
+- **The schedule card (home + `/events/`) hides the Events station's pin and announcement playlists under their new names.** The events portal (music portal 0.5.2) renamed them from `~EVT<id> s<n>` / `~EVT<id> a<n>` to `EVT<id> s<n>` / `EVT<id> a<n>`: AzuraCast carried the `~` into the Liquidsoap variable name (`playlist_~evt1_s1`), Liquidsoap refused the whole config ("Error 2: Parse error") and the Event station went off the air during the 2026-09-29 live test. `isHelperRow` (`src/lib/event-schedule.ts`) now hides names matching `/^EVT\d+ [sa]\d+$/i` as well as any leftover `~` row, so only the main event row shows. The portal refuses event titles of that shape, so no real event is hidden.
+
+### Tests
+- `test/site-build.test.mjs`: the new helper names (any case, padded) and legacy `~EVT…` rows are hidden; look-alike titles (`EVT1 s1 afterparty`, `EVT party`, `EVT1s1`, `Car Meet ~ Night`) still show; a mixed schedule collapses to the main row.
+
+## [0.22.4] — 2026-09-29 — Events move to events.euphoric.fm
+
+### Changed
+- **`/events/` sends real browsers to https://events.euphoric.fm/**, where event requests, the calendar and event radio now live. A tiny `<head>` script redirects only a top-level page (`window.self === window.parent`, `location.replace`) — it never reads `window.top` and never breaks out of a frame, so inside the in-game phone's iframe (which can't load events.euphoric.fm) `/events/` stays and simply explains events: how they work, services, good-for list and the live schedule card. Without JavaScript a small link to events.euphoric.fm sits under the schedule card. The nav's Events link is unchanged.
+- The event inquiry pop-up and its "Plan your event" buttons are gone from `/events/`; the home events teaser's button is now a plain **Learn about events** link to `/events/`, and its empty calendar line no longer offers to book. (The home page's Get in touch "Plan an event" pop-up and the `/contact/event` relay are unchanged.)
+- The schedule card (home + `/events/`) ignores the station's `~` helper playlists (pinned songs, announcements), so only the main event row shows; midnight-split rows still merge. The row guard and merge moved to `src/lib/event-schedule.ts`.
+
+### Tests
+- `test/site-build.test.mjs`: the redirect script is on `/events/` only, in `<head>`, uses `window.self === window.parent` and the `site.config` URL; no built page uses `window.top`; `/events/` has no inquiry pop-up/CTA but keeps its explainer sections and the no-JS link; the teaser links `/events/` without `data-open`; `~` rows are filtered before the midnight merge.
+
+## [0.22.3] — 2026-09-29 — Contact forms relayed server-side
+
+### Security
+- **The contact webhook is no longer handed to every visitor.** `/efm-runtime-config.js` served the full Discord webhook URL (id + token), and anyone holding it can post as the webhook (including `@everyone`), rename it or delete it — silently breaking both forms. The "Contact us" and /events inquiry forms now POST their fields as JSON to the same-origin relay (`/contact/message`, `/contact/event`) in the `efm-requests` sidecar, which validates them (required fields, length caps, control characters stripped, the NewDayRP profile pattern), builds the same embeds the pop-ups built before, adds `allowed_mentions: {parse: []}` and forwards them to `DISCORD_CONTACT_WEBHOOK` — a runtime-only env var on `efm-requests` that is never logged and never sent to a browser. Each IP gets 5 sends per 10 minutes across both forms (Caddy's own `X-Forwarded-For`, rightmost entry). Replies: 204 sent, 400 invalid, 413 too large, 429 rate limited (`Retry-After`), 502 Discord failed or timed out (10 s), 503 not configured.
+- `/efm-runtime-config.js` answers an uncached **410**; no page loads it any more. The CSP `connect-src` drops `https://discord.com`. Caddy caps `/contact/*` bodies at 32 KB (the sidecar at 16 KiB).
+- **Deploy note:** set `DISCORD_CONTACT_WEBHOOK` in the host `.env` and give `efm-requests` the compose line **before** this version goes live (`docker compose up -d efm-requests`; a restart keeps the old env). `PUBLIC_DISCORD_CONTACT_WEBHOOK` is no longer read. Rotate the webhook afterwards — the old URL was public.
+
+### Changed
+- Both forms keep their success and error messages; a 429 now reads "You've sent a few messages already — please wait about N minutes and try again." The inputs carry `maxlength`s matching the relay's limits. Line breaks in the message / event details survive (other control characters are stripped).
+- `/contact/` (trailing slash) 301s to `/#contact` like `/contact`.
+
+### Tests
+- `server/index.test.mjs` (injected fetch only, never a real webhook): both payloads field for field incl. `allowed_mentions`, username/avatar/thread name/colour/footer, the 1024-char clip; required / too long / wrong type / bad profile / bad JSON / non-JSON content type → 400 and nothing forwarded; 413 with and without Content-Length; 5 per IP per 10 min shared by both forms, spoofed XFF prefixes don't help, the window rolls over; upstream HTTP error, network error and timeout → 502; unset or non-https webhook → 503 with a log line; no response or log line ever contains the webhook URL/token or a submitted field.
+- `test/caddy-player.sh` runs a stub `efm-requests` on a throwaway network and pins `euphoric.fm` to 127.0.0.1 (no request reaches production): `POST /contact/message` and `/contact/event` reach the sidecar with Caddy's `X-Forwarded-For` (a client-supplied one is dropped), a 40 KB body is a 413 from Caddy, `/api/station/…` still goes to the AzuraCast upstream, `/contact` and `/contact/` stay redirects, `/efm-runtime-config.js` is a `no-store` 410 with no webhook, the CSP has no discord.com.
+- `test/site-build.test.mjs`: no built page contains `discord.com`, a webhook path or the runtime-config script; the forms post to `/contact/message` / `/contact/event`; the relay's avatar URL, station name and profile pattern equal `site.config.ts`.
+
+## [0.22.2] — 2026-09-29 — Second pass: fresh pages after a deploy, offline state, copy
+
+### Fixed
+- **Returning visitors no longer get a broken page after a deploy.** Pages were served with no `Cache-Control`, so browsers guessed a freshness lifetime of hours and kept an HTML page whose `/_astro/*` files the deploy had already deleted; the SPA fallback then answered those missing scripts and stylesheets with the home page (refused under `nosniff`) — and marked it `immutable` for a year. Now pages carry `Cache-Control: no-cache` (revalidate every visit; the ETag makes it a cheap 304), a missing `/_astro`, `/fonts` or `/images` file is a plain uncached 404, and the immutable / max-age headers only apply to files that exist.
+- **Station offline state.** When the AzuraCast API can't be reached (network error, timeout, 5xx) the home card and `/player/` show **"Station offline — retrying"** with the OFFLINE pill instead of a live-looking "Loading…" and AUTO DJ forever; the stream is stopped, Up next and Recently played say so too, and the next good poll repaints everything. Each now-playing request times out after 8 s (`AbortSignal.timeout`), only one is ever in flight, and after three misses in a row the retry slows to every 30 s.
+- **A refused Play now says so**: when the browser rejects `audio.play()` the transport resets and a toast reads "Couldn't start the stream. Try again in a moment." (both players).
+- **Home card matches the Web Player:** ads and station imaging show as "Station break / EuphoricFM" and are left out of Recently played; the times row can no longer read "3:15 / 3:10".
+- **`/player/#history`** (the home card's Song history link) opens the full list on phones and tablets instead of three rows.
+- **Old section URLs:** `/stats`, `/stats/`, `/about`, `/listen` and `/contact` 301 to the one-page anchors (`/#stats` …) instead of the home page under the wrong URL or the stats API's JSON 404; `/stats/summary` and the rest of `/stats/*` still reach the sidecar.
+- **`/robots.txt` is a real file** (it was the whole home page via the SPA fallback).
+- **The shared top bar fits 320–359 px phones** (right gutter and the whole Menu button kept): tighter gap and Web Player padding below 360 px, a slightly smaller wordmark below 340 px. The portal picks it up through `music/src/shared/`.
+
+### Changed
+- **Copy:** the spelling is "EuphoricFM" everywhere (the events page, its meta / OG description, the event inquiry pop-up); `/events/` and the pop-up headings are in sentence case like the home ("Plan your event", "How it works", "Request a song", "Contact us", "Plan an event with EuphoricFM" …); the FAQ points at the **Requested** tab.
+- **Every Submit music button** (top bar, #music, footer) goes to `music.euphoric.fm/submit`; the footer's "Fix or remove a song" keeps `?intent=edit` like the #music links. The shared bar and phone menu name the product **EuphoricFM Music Portal** (`shared/nav.json`).
+- **Wordmark font:** the "FM" script face is served as a 18,992-byte WOFF2 subset (space, A–Z, a–z, with the `kern` + `calt` features the wordmark's contextual "M" needs) instead of the 521 KB TTF, which stays as the last fallback and for `docs/og/og-image.html`. Both wordmark fonts are preloaded. Made from `public/fonts/` with fontTools 4.66 (`pip install fonttools brotli`):
+  `pyftsubset CortadoScript-Regular.ttf --unicodes="U+0020,U+0041-005A,U+0061-007A" --layout-features="kern,calt" --no-hinting --flavor=woff2 --output-file=CortadoScript-Regular.woff2`
+  (the full basic-Latin range with `calt` came to 28.6 KB; glyph outlines and positions for "FM", "EuphoricFM" and a pangram were checked identical to the TTF with HarfBuzz).
+- **`og.png` is 99,895 bytes** (was 329,620): the same 1200×630 image as a dithered 192-colour palette PNG; the Pillow command is in `docs/og/og-image.html`. One `og:image`, still a PNG.
+- **Lighter polling:** `/requests/pending` refreshes on a track change, right after a request and every 30 s (skipped while hidden) instead of on every 5 s now-playing poll; `/efm-runtime-config.js` is loaded with `defer` so it no longer blocks the first paint.
+
+### Removed
+- The dead PWA files `public/manifest.webmanifest` and `public/icon.svg` (nothing links them since the CEF first-paint fix). `public/cef-test.html` stays as the in-game iframe diagnostic; its copy is corrected.
+
+### Dev
+- `@types/node` in devDependencies, so `astro check` is clean and can become a real CI gate.
+
+### Tests
+- `test/caddy-player.sh`: `/`, `/player/` and the fallback are `no-cache`; real `/_astro/*.css` and `.js` are immutable; `/_astro/nope.js`, `/_astro/nope.css`, `/fonts/nope.woff2`, `/images/nope.png` are 404 with no `immutable` and no HTML; the WOFF2 is served as `font/woff2`; `/robots.txt` is the file; the five section redirects, `/stats/summary` still proxied and `/aboutx` untouched.
+- `test/site-build.test.mjs`: no "Euphoric FM" on any built page; sentence-case headings and the Requested-tab FAQ; every Submit music → `/submit`; the product name in `nav.json`; the phone-bar row budget; the now-playing poller with a failing fetch (5xx, network, timeout → offline; slower retry; recovery) and its in-flight guard; the offline copy and play-failure toast wiring on both players; break filter, clamp and 30 s pending refresh on the home card; `/player/#history` expansion; deferred runtime config; `og.png` ≤ 100 KB; `dist/robots.txt` starts with `User-agent`; no manifest or `icon.svg`; the WOFF2 ≤ 20 KB, listed before the TTF and preloaded.
+
+## [0.22.1] — 2026-09-28 — Up next all song long, one songs card
+
+### Changed
+- **Up next shows the whole time.** The player's Up next row shows the next song (art, title, artist, REQUESTED badge and an "in m:ss" countdown) from the start of the current one — AzuraCast cues it at song start — instead of only in the last ~40 s. The reveal delay and the "Shows here near the end of this song" placeholder are gone. When there's no song to show, the same fixed-height row says so in one line: "Station break next" when an ad / station ID is next (same break filter as the Web Player), "Choosing the next song…" when nothing is cued yet, and "Back to the playlist after the live set" during a live set. The Web Player already showed Up next straight away; unchanged.
+- **Recently played and Requested songs are one card with two tabs** — *Recently played* (selected by default) and *Requested* with a count badge (a filled badge when something is waiting, a quiet 0 otherwise). The card keeps one constant height (four rows, so on desktop it is exactly as tall as the player beside it and leaves no empty band under the player) on both tabs, so requests arriving or leaving never move anything, and the empty box the old Requested card reserved is gone. The Requested tab lists pending requests (more scroll inside) or, when empty, "No requests right now" with a **Request a song** button that opens the request pop-up. The tabs are bordered buttons with hover / pressed / focus-ring states and full ARIA tabs semantics (←/→, Home/End). Same card, same height, under the player on phones and tablets. `/requests/pending` polling is unchanged.
+
+### Fixed
+- **Long titles no longer push the REQUESTED badge and the countdown out of the Up next row.** The row's grid had no column template, so its implicit column grew to the full title width and the title never truncated; the badge and "in m:ss" were clipped off the row's edge (phones for titles like "Fuck You (I Wanna Love Me and Love You)", desktop for ~80-character titles). The column is now `minmax(0, 1fr)`: the title ellipsises and the badge and countdown always stay visible.
+
+### Removed
+- `RecentlyPlayed.astro` and `RequestedSongs.astro` (merged into `SongsCard.astro`) and their CSS.
+
+### Tests
+- `test/site-build.test.mjs`: no Up next reveal constant or "near the end" copy, the neutral Up next lines and break filter are wired, the songs card is a single sidebar card with a two-tab ARIA tablist (Recently played selected, roving tabindex, panels labelled by their tabs, arrow-key handling), and no standalone Requested card remains; the Up next row's grid column can shrink (`minmax(0, 1fr)`).
+
+## [0.22.0] — 2026-09-28 — One-page radio-first home
+
+### Added
+- **The home page is one radio-first page** (Release 4 of the approved redesign), in this order, with ids matching the shared top bar:
+  1. **`#listen`** — tagline "San Andreas pop, all day." over the player card (compact on phones, so Play and **Request a song** are on the first screen), with **Request a song** · **Web Player** · **Ways to listen** under it and Recently played + Requested songs beside it on desktop (below it on phones). Requested songs now always shows, with a fixed-height body (room for three requests, more scroll inside it; the empty note sits in the same box), so nothing below it moves when requests come or go. The player's Up next row always shows too: "Shows here near the end of this song" until the next track is known, then the track fades in over it.
+  2. **`#about`** — "What is EuphoricFM?" (the existing text) beside a **live station facts** card from the stats sidecar: on air since, listens all-time, tracks by N artists, listener requests played, peak listeners (with month), 24/7 · auto DJ, around the clock. A fact with no data is hidden, never shown as 0; with JavaScript off only the 24/7 fact shows.
+  3. **`#events`** — events teaser with **Plan your event** (opens the existing event inquiry form; links to `/events/` without JavaScript), **How events work** (→ `/events/`) and the live Happening now / On the calendar status from the events script.
+  4. **`#music`** — "Get your music on EuphoricFM": four steps, **Submit music** (→ music.euphoric.fm), and "Already on the station? Fix a song's info or cover / ask to remove a song" (→ the portal library with the edit / remove intent).
+  5. **`#ways`** — Listen anywhere: Right here (back to the player and start it), Web Player (Open / Pop out), Your music app (`.pls` / `.m3u` built from the station's real mounts, same helpers as the Web Player) and the direct stream URL with a **Copy** button (falls back to select + copy, then "Press Ctrl+C", for the in-game browser).
+  6. **`#stats`** — condensed Station stats: range tabs, 4 KPI tiles, the Listeners chart and the top 5 tracks and artists, with **Show full stats** revealing the existing Listens and Rhythm charts and the longer top lists (same `stats.ts`, no rewrite).
+  7. **`#contact`** — Get in touch: Contact us (existing contact form), Advertise your business (existing Business AD pop-up; its in-universe copy is unchanged, including "Average of 120,000 listeners per day") and Book an event.
+  8. **`#faq`** — six questions as native `<details>`: requesting, in-game phone listening, why the title changes before the song, getting your music played (→ Music Portal), advertising, and who runs EuphoricFM.
+  9. **Footer** with Listen / Station / Music / Contact columns, the Effects switch and the version link.
+- **Share previews work:** a real 1200×630 `og:image` at `/images/og.png` (rendered from `docs/og/og-image.html` with the site's own logo fonts and colours), plus `og:image:width/height/alt` and `twitter:image`. It used to point at a missing `/images/og.jpg`, which the SPA fallback answered with HTML.
+- `test/site-build.test.mjs`: the home sections exist once each and in order, no duplicate ids, every section's key pieces (portal links, playlist files, stats toggle, pop-ups, six FAQ entries, the ad copy), pop-ups outside `<main>` and above the bar, **no "discord" anywhere in the built `/`, `/events/` and `/player/`**, `stats.ts` not in the home entry script, and a real 1200×630 PNG share image; the Requested songs body and Up next row reserve their space, the live facts and `<button data-open>` controls are JS-only, and no page uses a View Transition. `test/shared-drift.test.mjs`: every `/#…` anchor in `nav.json` is a real, unique element id on the home page. `test/caddy-player.sh`: `/images/og.png` is served as an image and the runtime config uses the neutral key.
+
+### Changed
+- **The old button row is gone**; each button moved into the section it belongs to. Pop-ups open from any `data-open="request|contact|business|event-inquiry"` control through the new `ModalControls.astro` (on every full-site page; on a page without that pop-up a link simply navigates).
+- **Contact** in the top bar now goes to the Get in touch section (`/#contact`) instead of opening the contact form directly.
+- **Controls look clickable:** every `.btn` has a visible edge, hover tint, pressed state and the focus ring; new `btn-ghost` / `btn-outline` / `btn-sm` variants. Stats top-track and top-artist rows are bordered rows with a hover tint and a chevron. Pop-up close buttons are 44px bordered buttons (were a bare 28×20 "×").
+- **Lighter first load:** `stats.ts` (the biggest script, ~10 KB gzip) loads only when `#stats` nears the viewport or Show full stats is pressed; `/stats/summary` is fetched once and shared by the facts card and the stats section. Home entry JS ~19 KB → ~13 KB gzip.
+- Station stats render their skeleton at full size from the start (no layout shift), and show a short note instead of hiding when the stats service is unavailable. The Stats section's element id is now `stats` (was `stats-section`), so `/#stats` from the bar lands on it.
+- **Pop-ups open instantly:** they no longer go through a View Transition (`document.startViewTransition`), which snapshots the whole page first and held a pop-up back 1.5–4 s on the long one-page home in a loaded browser. The pop-up card keeps its CSS fade-in. Same for the event inquiry pop-up on `/events/`.
+- **No dead controls with JavaScript off:** the pre-paint script marks `html.efm-js`; without it, `<button data-open>` controls (they only open pop-ups), the live facts and the player's Play/volume are hidden, and the player says it needs JavaScript and links to the stream links in Listen anywhere.
+- The contact webhook is handed out as `window.__EFM_CONFIG__.contact.webhook` (was `….discord.contactWebhook`) and the rate-limit message no longer names the provider, so the built info pages never say "Discord" (owner decision). Same env var, same webhook.
+
+### Fixed
+- **Pop-up close buttons were hidden under the sticky top bar on phones** (from 0.21.0): the pop-ups lived inside `<main>`, a `z-[1]` stacking context, so they could never cover the bar. They now render in a new `overlays` slot of `BaseLayout` outside `<main>` at `z-[70]` (request, contact, business, event inquiry, and the stats detail pop-up, which moved to `StatsDetailModal.astro`).
+- The `/#stats` top-bar link had no target (the section's id was `stats-section`).
+- Layout shifts at 320px: the album line reserves its height, and on phones the stats range tabs always take their own row (they used to wrap below the heading once filled).
+
+## [0.21.0] — 2026-09-28 — Shared top bar on both sites
+
+### Added
+- **One top bar for info.euphoric.fm and music.euphoric.fm** (Release 3 of the approved redesign), identical on both sites and for every role: EuphoricFM logo (→ info home) · Listen · About · Events · Stats · **Music ▾** · Contact, plus a gold **Web Player** button (→ `/player/`). Sticky, solid dark (no blur: the in-game browser paints blur black), 64px (56px on phones).
+  - **Music ▾** opens a panel with a gold **Submit music** button (→ `music.euphoric.fm/submit`), **My music** (→ `/dashboard`) and **Library** (→ `/library`) on the portal. Staff items (Review, Admin) never appear in the top bar; nothing in it mentions Discord.
+  - **Phones (<768px):** logo · gold Web Player · **Menu**, which opens a full-width sheet with every item (EuphoricFM: Listen, About, Events, Stats, Contact, Web Player; Music portal: Submit music, My music, Library). Below 380px the Menu button keeps only its icon.
+  - **Works without JavaScript** (the in-game CEF browser): Music ▾ and Menu are `<details>/<summary>`. A small script only adds closing on outside click, Escape (focus returns to the button) and after following a link.
+  - Current page marked with `aria-current`: Listen on the home page, Events on `/events/`, Web Player on `/player/`; jumping to a home section (`/#about` …) moves the mark there.
+  - **Contact** opens the existing contact modal on the home page; elsewhere it links to `/#contact`, and the home page opens the modal when it is loaded with `#contact` (so Contact works the same from `/events/`, `/player/` and the portal).
+  - Home page anchors: `#listen` (player + recently played), `#about`, `#stats`, `#contact` (the action row). In-page jumps land below the sticky bar (`scroll-padding-top`).
+- **Shared files** in `shared/`: `nav.json` (every item, label, target and icon) and `efm-bar.css` (the bar's styles; `efmh-` / `efms-` prefixed plain CSS on the shared colour tokens). The Astro header imports them directly; the portal (Docker context `music/`) keeps byte-for-byte copies in `music/src/shared/`, refreshed with `pnpm sync:shared` (`node shared/sync.mjs`).
+- **Drift test** `test/shared-drift.test.mjs` (in `pnpm test:site`, run by CI): fails if a portal copy differs from `shared/`, if the portal's colour tokens differ from `src/styles/tokens.css`, if the bar CSS uses blur/filter or a non-shared token, if `nav.json` loses an approved item or gains Discord/staff/Schedule items, or if any built page (`/`, `/events/`, `/player/`) renders a bar that is not exactly `nav.json` (every link's text and absolute target, in order). The portal's `test/ui/site-bar.test.tsx` checks its rendered bar against the same expected list.
+
+### Changed
+- The old centred wordmark header on `/`, `/events/` and `/player/` is replaced by the shared bar (the home page keeps its tagline as a small line under the bar; `/events/` keeps a visually hidden page heading). The Web Player's own slim bar (logo · Web Player · Full site) is gone: the full player uses the shared bar with Web Player marked, and the pop-out strip stays chrome-free.
+- Page content (`.phone`) is capped at the bar's width (72rem) so it lines up under the bar on wide screens instead of running edge to edge.
+- `BaseLayout` has a `header` slot, rendered outside `<main>`.
+
+### Fixed
+- **Home page layout shift on phones.** Recently Played now renders five placeholder rows the same height as the real ones (one of them says "Loading recent tracks…"), so the list no longer pushes About, Stats and the footer down when the history arrives. Home-page CLS at 800px viewport height: 320px 0.15 → 0.000, 390px 0.108 → 0.000, 600px 0.127 → 0.000.
+- **Section links from other pages land on the section on phones.** Arriving on `/#about`, `/#stats` … keeps the section under the bar while late content (recently played, requested songs, stats) loads, and stops as soon as the visitor scrolls, taps or types (or after 8 seconds). Needs JavaScript; without it the browser's normal jump applies.
+- **Home page no longer scrolls sideways at 320px** (pre-existing: the hero grid column grew to its widest child, 357px). The hero column is `minmax(0, 1fr)`.
+- **Web Player lines up under the bar**: from 1100px the player uses the bar's width (72rem) and side gutter (content x = 88..1192 at 1280, same as the bar), and the sticky Song history panel sits below the sticky bar instead of sliding under it.
+- The bar reserves the logo's loaded width, so the web-font swap no longer nudges the nav and buttons sideways.
+
+## [0.20.0] — 2026-09-28 — Web Player at /player/
+
+### Added
+- **Web Player — `info.euphoric.fm/player/`** (Release 2 of the approved redesign). A real built page (`dist/player/index.html`) with its own title/description, its own slim top bar (logo → home · "Web Player" · **Full site** button; the shared site header is Release 3) and no Discord anywhere on it:
+  - large album art, station name + description, AUTO DJ / ON AIR / OFFLINE pill, listener count, title / artist / album, progress with elapsed and duration;
+  - transport: 80px play/pause, mute + a volume slider with a 44px hit area (6px track, 20px thumb; hidden on iOS where page volume can't be set), and a **stream quality picker built from the station's real mounts** (`station.mounts`, only https URLs on the stream's own origin, default first; remembered per browser);
+  - Up next card with countdown (hidden during a live set and for ad/imaging rows) and REQUESTED badges;
+  - actions: **Request a song** (the existing request modal and flow), **Playlist** (download `.pls` or `.m3u` built from the same mounts), **Pop out** (`window.open('/player/?popout=1', 'efm-player', 'popup,width=360,height=200')`, falling back to a normal link when blocked; the pop-out takes over playback, and clicking Pop out again just focuses a running pop-out instead of reloading it), and **Song history** (last 15 with art, time ago, REQUESTED badges; ads and station imaging filtered with the same rules as the stats sidecar).
+  - Responsive by available space: ≥1100px card + history side panel; 700–1099px art beside the details with history below in two columns (8 rows + "Show all"); <700px stacked phone layout with history collapsed to 3 rows + "Show all 15"; **pop-out strip** for `?popout=1` or any viewport ≤ 420×260 (small art, title/artist, progress, play/pause, mute, Up next line, "Open the full player"; long titles and Up next lines are cut with an ellipsis so every control stays inside the strip). Action-button labels wrap inside the button rather than clipping when a wide system font (e.g. DejaVu Sans) is in use.
+  - Live DJ state: solid ON AIR pill, "Live Broadcast · <DJ>" line, streamer art when AzuraCast sends it, indeterminate ruby bar with `LIVE · h:mm:ss`. Media Session metadata and hardware media keys as on the home page; tab title shows `▶ Title – Artist` while playing; Space toggles play.
+  - Effects toggle, reduced motion and the in-game CEF safe mode are respected (no blur/filter in the page CSS; Pop out and Playlist are hidden in-game, where pop-up windows and downloads don't exist).
+- **"Web Player" button on the home page** (action row, sunburst outline + gold play dot) linking to `/player/` until the shared header lands. The row now has six buttons laid out 2×3, 3×2 or in one row — chosen by the row's own width (container query; viewport breakpoints as the fallback) so labels like "Request a song" stay on one line — and no button (previously Business AD) is left alone on a row.
+- Tests: `test/site-build.test.mjs` (`pnpm test:site`, now run in CI after the build) checks the built player page (title, meta, canonical, its own script bundle, no "discord", no webhook runtime config), the home Web Player link, that the player's break filter matches the stats sidecar's exclude list, and unit-tests the mount/playlist/break helpers. `test/caddy-player.sh` validates the Caddyfile and asserts `/player/` (and `?popout=1`) serves the player — not the SPA-fallback home — and that `/player` 308s to `/player/` (query kept) like `/events`.
+
+### Changed
+- The now-playing poller and the stream audio engine are now shared modules (`src/scripts/np-core.ts`, `src/scripts/stream-audio.ts`, pure helpers in `src/lib/player-data.ts`). The home `PlayerCard` and `nowplaying.ts` use them with unchanged behaviour (same 5 s poll, hidden-tab pause, `?t=` cache-busted stream, analyser, effects gating, Media Session); the Media Session "play" action now only starts playback instead of toggling.
+- `BaseLayout` takes `scripts="site" | "none"`; the Web Player loads only its own entry script and skips `/efm-runtime-config.js` (it has no contact modal).
+- The request modal's close control is now a bordered 44px button instead of a bare 28×20 "×".
+- No Caddyfile routing or CSP change was needed: `try_files {path} {path}/` already serves `/player/`, and the stream, API, art and playlist `data:` downloads all fit the existing policy. Only the fallback comment was updated.
+
+## [0.19.2] — 2026-09-28 — tickets.euphoric.gg: 404 the machine-only APIs at Caddy
+
+### Fixed
+- **`tickets.euphoric.gg` no longer exposes `/api/internal/*` or `/api/v1/*`.** The `.gg` Caddy block now answers a plain 404 (site headers kept) for `path_regexp (?i)^/api/(internal|v1)(/.*)?$` before proxying to `tickets-web:3000`, matching rule #5 of the `tickets.euphoric.fm` Cloudflare tunnel, so both hostnames expose the same surface. Before this, `/api/internal/notify` was reachable on `.gg` (GET 405 / POST 401, guarded only by `INTERNAL_TOKEN`). The bot and the music portal call these routes over the private docker networks at `tickets-web:3000`, never through the public hostnames, so nothing legitimate is affected. The match runs on Caddy's decoded, cleaned path, so encoded (`/api/%69nternal`, `/api/internal%2fnotify`), dot-segment and doubled-slash forms are blocked too; `/api/internalx` and `/api/v10` are not.
+- `test/caddy-tickets-internal-block.sh` — runs the Caddyfile in `caddy:2.10-alpine` next to a stub `tickets-web` on a throwaway docker network and asserts every blocked form (including the bypass attempts) gets 404 without reaching the stub, and that normal pages, auth and `/_next/static` still proxy through.
+
+## [0.19.1] — 2026-09-27 — Listeners graph shows peak listeners
+
+- The Listeners graph now plots each bucket's **peak** listener count (the full number tuned in at the busiest moment of that day/hour) instead of the average across it. The table's first value column is now Peak, and Avg stays as the second column.
+
+## [0.19.0] — 2026-09-27 — Music portal entry: /music redirect and Submit music button
+
+### Added
+- **`info.euphoric.fm/music` → the music portal.** A new Caddy block matches ONLY `path /music /music/*` and always answers with a 302 (`Cache-Control: no-store`) to the fixed host: `/music` → `https://music.euphoric.fm/`, `/music/<rest>` → `https://music.euphoric.fm/<rest>` (query kept). The target is the literal host followed by the prefix-stripped `{uri}` only when that stripped URI starts with `/`; otherwise it is the plain root redirect. The guard is needed because Caddy matches the *decoded* path but strips `/music` from the *raw* one: `/music%2f@evil.com/pwn` matches `/music/*` yet leaves `%2f@evil.com/pwn`, and appending that to the host would send browsers to `evil.com`. It now goes to `https://music.euphoric.fm/`, so the authority can't be extended or replaced. `/music.evil.com`, `/music@evil.com` and `/musicx` never match and fall through to the normal site; `/music//evil.com` stays on music.euphoric.fm. There is no in-game or iframe special-casing: framed and CitizenFX requests get the same redirect (if the portal doesn't load in the in-game phone, that's handled later).
+- **"Submit music" button** in the homepage action row (where "Submit a song" was): a plain link to `https://music.euphoric.fm/` with `target="_blank" rel="noopener"`, the same everywhere, in-game included.
+- `test/caddy-music-redirect.sh` — runs the Caddyfile in `caddy:2.10-alpine` against `dist/` and asserts every positive and negative redirect case (including encoded-slash `/music%2f@evil.com` variants, and framed/CitizenFX requests getting the same 302) and that the runtime config no longer serves the submission webhook.
+
+### Removed
+- **`SubmitSongModal`**, which posted straight to a public Discord webhook. `/efm-runtime-config.js` now serves only `contactWebhook`; `PUBLIC_DISCORD_REQUEST_WEBHOOK` is dropped from `docker-compose.yml`, `.env.example` and the docs. The old URL is still in git history (root commit) — rotate it in Discord after this ships. The contact webhook is still public by design (ContactModal + /events inquiry); moving it behind the `efm-requests` sidecar is tracked separately.
+
+## [0.18.0] — 2026-09-27 — EFM Music Portal core (music/)
+
+### Added
+- **`music/`**: the EFM Music Portal (`music.euphoric.fm`), phase P2 security foundation. It is its own package, lockfile and compose project (`efm-music`), so the Astro site build is untouched. See `music/README.md` and `music/CHANGELOG.md`.
+- A CI job, `build-music`: `pnpm audit --prod`, a typecheck, and the Docker test harness (`music/test/run.sh`, mocks only). On `main` it pushes the tested images as `ghcr.io/jason-tucker/euphoricfm-website-music:{web,worker,probe}-<sha7>` (plus `-latest`). Watchtower stays off for these images.
+
+### Changed
+- The site's `tsconfig.json` and `.dockerignore` exclude `music/`.
 
 ## [0.17.0] — 2026-09-26 — Stats count listens instead of plays
 

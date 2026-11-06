@@ -1,0 +1,11 @@
+# music-fetch runtime dependencies — exact pins, hash-locked, installed with
+#   pip install --no-deps --require-hashes --only-binary=:all:
+# yt-dlp is installed WITHOUT its optional extras ([default]: requests,
+# websockets, certifi, brotli, mutagen, pycryptodomex, curl-cffi): the
+# SoundCloud extractor needs none of them and each is extra attack surface.
+#
+# MONTHLY BUMP (Renovate-style; see README.md "Version pins and the monthly
+# bump"): next review due 2026-10-27.
+#   pinned 2026-09-27: yt-dlp 2026.8.19 (released 2026-08-19; OSV: no advisories)
+yt-dlp==2026.8.19 \
+    --hash=sha256:1d57897e94c6665a0a6f9bc54b34e584284e32c034ffab3a7df25d8f7b24eedf

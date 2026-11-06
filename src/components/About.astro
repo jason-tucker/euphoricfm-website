@@ -1,11 +1,41 @@
 ---
+// #about — "What is EuphoricFM?" (site.aboutText) beside a card of live
+// station facts. The facts are filled by scripts/station-facts.ts from the
+// stats summary; each shows a placeholder until then and is hidden if the
+// sidecar has no data for it. With JavaScript off they can never fill, so
+// they are hidden (.efm-js-only) and only the static 24/7 fact shows. No team section and no community-invite button
+// by owner decision.
 import { site } from '../site.config';
+const a = site.home.about;
+const f = a.facts;
 const paragraphs = site.aboutText.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
+const dynamic = [
+  ['since', f.since, true],
+  ['listens', f.listens, false],
+  ['tracks', f.tracksPlain, false],
+  ['requests', f.requests, false],
+  ['peak', f.peakPlain, false],
+] as const;
 ---
 
-<section class="section">
-  <div class="card">
-    <h2 class="text-base lg:text-xl font-bold tracking-wide text-sunburst">What is EuphoricFM?</h2>
-    {paragraphs.map((p) => <p class="mt-3 text-sm lg:text-base leading-relaxed text-cream/85">{p}</p>)}
+<section id="about" class="hm-section" aria-labelledby="about-h">
+  <div class="hm-about-grid">
+    <div>
+      <p class="hm-eyebrow">{a.eyebrow}</p>
+      <h2 id="about-h" class="hm-h2">What is {site.name}?</h2>
+      {paragraphs.map((p) => <p class="hm-about-p">{p}</p>)}
+      <div class="hm-btnrow mt-5">
+        <a class="btn btn-outline" href="#music">{a.musicCta}<span class="hm-chev" aria-hidden="true">›</span></a>
+      </div>
+    </div>
+    <div id="about-facts" class="hm-surface hm-facts" aria-label="Station facts">
+      {dynamic.map(([key, sub, hl]) => (
+        <div class:list={['hm-fact', 'efm-js-only', { 'hm-fact-hl': hl }]} data-fact={key}>
+          <b data-v>—</b><span data-s>{sub}</span>
+        </div>
+      ))}
+      <div class="hm-fact"><b>{f.always}</b><span>{f.alwaysSub}</span></div>
+      <p class="hm-facts-src efm-js-only" data-facts-source>{a.source} · <a class="hm-link" href="#stats">{a.seeStats}</a></p>
+    </div>
   </div>
 </section>

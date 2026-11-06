@@ -1,0 +1,10 @@
+node_modules
+.next
+dist
+data
+env/*.env
+.env
+test/.out
+*.md
+# music-fetch is its own build context (fetch/Dockerfile)
+fetch/

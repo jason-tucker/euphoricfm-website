@@ -1,0 +1,1662 @@
+import { createHash } from 'node:crypto'
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { writeSpoolResultNoClobber } from '@/server/spool/protocol'
+import { probeRequestIdForUpload } from '@/events/contract/paths'
+import { finalizeRequestIdFor } from '@/events/worker/jobs/audio'
+import { lastLiquidsoapBanner, liquidsoapConfigErrors } from '@/events/worker/jobs/build'
+import { endWaitTarget } from '@/events/worker/jobs/kicks'
+import { eventsAlerter } from '@/events/worker/main'
+import { EVENTS_MUTATING_KINDS, runEventJob, tickPeriodic } from '@/events/worker/loop'
+import { harness, OWNER, settingsWith, type Harness } from './events-fakes'
+
+let dirs: { spoolIn: string; spoolOut: string; final: string }
+beforeEach(() => {
+  const root = mkdtempSync(join(tmpdir(), 'efm-events-'))
+  dirs = { spoolIn: mkdtempSync(join(root, 'in-')), spoolOut: mkdtempSync(join(root, 'out-')), final: mkdtempSync(join(root, 'final-')) }
+})
+
+const T = (iso: string) => new Date(iso).getTime()
+
+async function drain(h: Harness, max = 200): Promise<number> {
+  let n = 0
+  for (; n < max; n++) {
+    const job = await h.store.claimJob(EVENTS_MUTATING_KINDS)
+    if (!job) break
+    await runEventJob(h.ctx, job)
+  }
+  return n
+}
+
+async function runOne(h: Harness, kind: string) {
+  const j = h.store.jobs.find((x) => x.kind === kind && x.status === 'queued')
+  if (!j) throw new Error(`no queued ${kind}`)
+  j.runAfter = 0
+  const claimed = (await h.store.claimJob(EVENTS_MUTATING_KINDS))!
+  expect(claimed.kind).toBe(kind)
+  await runEventJob(h.ctx, claimed)
+  return h.store.jobs.find((x) => x.id === claimed.id)!
+}
+
+// A built-ready world: event 42 (2026-10-10 20:00–22:00 ET) with two
+// library songs; 501 also sits in legacy 74 and station-1 playlist 5.
+function world(start = '2026-10-01T12:03:00Z') {
+  const h = harness(start, dirs)
+  h.store.settingRows = settingsWith({})
+  const s1 = h.az.addFile('Music/Artists/A/a.mp3', { id: 501, playlists: [74, 5] })
+  const s2 = h.az.addFile('Music/Artists/B/b.mp3', { id: 502 })
+  h.az.addFile('Music/Artists/C/c.mp3', { id: 503 })
+  h.az.addFile('EFM Stingers/welcome.mp3', { id: 601, length: 30 })
+  h.store.stingers = [{ mediaId: 601, path: 'EFM Stingers/welcome.mp3', title: 'Welcome', lengthS: 30 }]
+  h.store.addEvent({ id: 42 })
+  h.store.trackRows.set(42, [
+    { position: 1, source: 'library', mediaId: 501, audioId: null, pinAt: null },
+    { position: 2, source: 'library', mediaId: 502, audioId: null, pinAt: null },
+  ])
+  return { h, s1, s2 }
+}
+
+const mainIdOf = (h: Harness, eventId: number) => h.store.reg.find((r) => r.eventId === eventId && r.role === 'main' && !r.deletedAt)!.playlistId!
+
+describe('events worker: tickets', () => {
+  it('opens in eventrequest with event:<id> and the events link; posts wait for the ticket, then go with an Idempotency-Key', async () => {
+    const { h } = world()
+    h.store.events[0]!.status = 'pending'
+    await h.store.enqueue('ticket_post', { eventId: 42, kind: 'submitted', body: 'Submitted for review', idem: 'submitted:42:1' })
+    await h.store.enqueue('ticket_open', { eventId: 42 })
+    await drain(h)
+    const open = h.tickets.calls.find((c) => c.url.endsWith('/api/v1/tickets'))!
+    expect(open.body).toMatchObject({ categoryKey: 'eventrequest', openerDiscordId: OWNER, subject: 'Event request #42', externalRef: 'event:42', card: { link: { url: 'https://events.euphoric.fm/my/events/42' } } })
+    expect(h.store.events[0]!.ticketId).toBe(500)
+    // the post waited (a ticket_open job existed), then was woken
+    h.clock.t += 61_000
+    await drain(h)
+    const post = h.tickets.calls.find((c) => c.url.endsWith('/messages'))!
+    expect(post.url).toContain('/api/v1/tickets/500/messages')
+    expect(post.idem).toBe('evt:submitted:42:1')
+    expect(post.body).toMatchObject({ kind: 'system', body: 'Submitted for review' })
+    await h.store.enqueue('ticket_close', { eventId: 42, reason: 'Withdrawn by the member' })
+    await drain(h)
+    expect(h.tickets.calls.at(-1)).toMatchObject({ method: 'PATCH', body: { status: 'closed' } })
+  })
+
+  it('a staff booking without a ticket: posts are dropped, not retried forever', async () => {
+    const { h } = world()
+    await h.store.enqueue('ticket_post', { eventId: 42, kind: 'approved', body: 'x', idem: 'approved:42:1' })
+    await drain(h)
+    expect(h.tickets.calls).toHaveLength(0)
+    expect(h.store.job('ticket_post')[0]!.status).toBe('done')
+  })
+})
+
+describe('events worker: build', () => {
+  it('build respects events_autobuild_enabled; build_now bypasses it', async () => {
+    const { h } = world()
+    await h.store.enqueue('build', { eventId: 42, version: 1 })
+    await drain(h)
+    expect(h.az.writes()).toHaveLength(0)
+    expect(h.store.audits.some((a) => a.action === 'events.build.skipped')).toBe(true)
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('built')
+  })
+
+  it('autobuild on: intent row before every create, created disabled, membership merged, enabled, kicks scheduled', async () => {
+    const { h, s1, s2 } = world()
+    h.store.settingRows = settingsWith({ events_autobuild_enabled: true })
+    const intents: boolean[] = []
+    h.az.onCreate = (name) => intents.push(h.store.reg.some((r) => r.intentName === name && r.playlistId === null))
+    await h.store.enqueue('build', { eventId: 42, version: 1 })
+    await drain(h)
+    expect(intents).toEqual([true])
+    const create = h.az.writes().find((w) => w.method === 'POST')!
+    expect(create.body).toMatchObject({ name: 'Grand Opening', is_enabled: false, source: 'songs', include_in_on_demand: false, include_in_requests: false })
+    const main = mainIdOf(h, 42)
+    expect(main).toBeGreaterThan(80)
+    expect(h.az.playlists.get(main)!.is_enabled).toBe(true)
+    expect(s1.playlists.sort((a, b) => a - b)).toEqual([5, 74, main])
+    expect(s2.playlists).toEqual([main])
+    expect(h.store.events[0]!.status).toBe('built')
+    expect(h.store.maxLockDepth).toBe(1)
+    const start = h.store.job('start_kick')[0]!
+    expect(start.runAfter).toBe(T('2026-10-10T20:00:05-04:00'))
+    expect(start.maxAttempts).toBe(2)
+    expect(h.store.job('end_kick')[0]!.runAfter).toBe(T('2026-10-10T22:00:00-04:00'))
+    expect(h.store.job('recheck')[0]!.runAfter).toBe(T('2026-10-10T19:00:00-04:00'))
+    // verify ran and asked to post 'built'
+    expect(h.store.job('verify')[0]!.status).toBe('done')
+    expect(h.store.job('ticket_post', (p) => p.kind === 'built')).toHaveLength(1)
+    // no legacy playlist was ever written
+    expect(h.az.writes().some((w) => /\/playlist\/(7[4-8]|[1-7]?\d)(\/|$)/.test(w.path))).toBe(false)
+  })
+
+  it('shared song across two events + legacy 74 + station-1 id; teardown of one leaves the other intact', async () => {
+    const { h, s1 } = world()
+    h.store.addEvent({ id: 43, title: 'Car Meet', startsAt: new Date('2026-10-11T20:00:00-04:00'), endsAt: new Date('2026-10-11T22:00:00-04:00') })
+    h.store.trackRows.set(43, [
+      { position: 1, source: 'library', mediaId: 501, audioId: null, pinAt: null },
+      { position: 2, source: 'library', mediaId: 503, audioId: null, pinAt: null },
+    ])
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await h.store.enqueue('build_now', { eventId: 43 })
+    await drain(h)
+    const a = mainIdOf(h, 42)
+    const b = mainIdOf(h, 43)
+    expect(s1.playlists.sort((x, y) => x - y)).toEqual([5, 74, a, b].sort((x, y) => x - y))
+    h.store.events.find((e) => e.id === 43)!.status = 'cancelled'
+    await h.store.enqueue('teardown', { eventId: 43 }, { dedupeExtra: 'cancelled' })
+    await drain(h)
+    expect(h.az.playlists.has(b)).toBe(false)
+    expect(s1.playlists.sort((x, y) => x - y)).toEqual([5, 74, a])
+    expect(h.store.reg.filter((r) => r.eventId === 43).every((r) => r.deletedAt)).toBe(true)
+    expect(h.store.reg.filter((r) => r.eventId === 42).every((r) => !r.deletedAt)).toBe(true)
+  })
+
+  it('rebuild: same main playlist, a dropped song loses only this event’s id, a new pin playlist appears', async () => {
+    const { h, s2 } = world()
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const main = mainIdOf(h, 42)
+    s2.playlists.push(74)
+    const ev = h.store.events[0]!
+    ev.version = 2
+    h.store.trackRows.set(42, [
+      { position: 1, source: 'library', mediaId: 501, audioId: null, pinAt: null },
+      { position: 2, source: 'library', mediaId: 503, audioId: null, pinAt: new Date('2026-10-10T21:00:00-04:00') },
+    ])
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v2' })
+    await drain(h)
+    expect(mainIdOf(h, 42)).toBe(main)
+    expect(s2.playlists).toEqual([74])
+    const pin = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!
+    expect(pin.intentName).toBe('EVT42 s1')
+    expect(h.az.files.get(503)!.playlists).toEqual([pin.playlistId])
+    expect(h.az.playlists.get(pin.playlistId!)!.backend_options).toEqual(['single_track'])
+    expect(h.store.buildRows.find((b) => b.version === 2)!.status).toBe('applied')
+  })
+
+  it('an orphan from a crash between create and record is adopted, never duplicated', async () => {
+    const { h } = world()
+    const ev = h.store.events[0]!
+    const b = await h.store.createBuild(42, 1, {})
+    const row = await h.store.insertIntent(42, b.id, 'main', 'Grand Opening')
+    // the crashed attempt: marker committed (highest id then: 149), POST
+    // made playlist 150, the worker died before recording it
+    await h.store.markCreateAttempt(row.id, { eventId: 42, buildId: b.id, name: 'Grand Opening', maxIdBefore: 149 })
+    h.az.playlists.set(150, { ...h.az.playlists.get(76)!, id: 150, name: 'Grand Opening', is_enabled: false })
+    await h.store.enqueue('build_now', { eventId: ev.id })
+    await drain(h)
+    expect(mainIdOf(h, 42)).toBe(150)
+    expect(h.az.writes().some((w) => w.method === 'POST' && w.path.endsWith('/playlists'))).toBe(false)
+    expect(h.alerts.some((a) => a.includes('adopted orphan playlist 150'))).toBe(true)
+    expect(h.store.events[0]!.status).toBe('built')
+  })
+
+  it('a create crash is healed end to end: the retried build adopts what the first attempt created', async () => {
+    const { h } = world()
+    // the first attempt's POST succeeds, then the worker "dies" before the id is recorded
+    const record = h.store.setRegistryPlaylist.bind(h.store)
+    let died = false
+    h.store.setRegistryPlaylist = async (...a) => {
+      if (!died) {
+        died = true
+        throw new Error('worker died')
+      }
+      return record(...a)
+    }
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const made = [...h.az.playlists.values()].filter((p) => p.name === 'Grand Opening')
+    expect(made).toHaveLength(1)
+    expect(h.store.reg.find((r) => r.intentName === 'Grand Opening')!.playlistId).toBeNull()
+    // the retry (same build id) adopts it; no second create
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(mainIdOf(h, 42)).toBe(made[0]!.id)
+    expect([...h.az.playlists.values()].filter((p) => p.name === 'Grand Opening')).toHaveLength(1)
+    expect(h.store.events[0]!.status).toBe('built')
+  })
+
+  it('first build of an event titled like an existing disabled station playlist fails and alerts; it never adopts it', async () => {
+    const { h } = world()
+    // a staff playlist kept for later, same name as the member's event title
+    h.az.playlists.set(150, { ...h.az.playlists.get(76)!, id: 150, name: 'Grand Opening', is_enabled: false })
+    h.az.addFile('Music/Artists/D/d.mp3', { id: 504, playlists: [150] })
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(h.store.buildRows[0]!.status).toBe('failed')
+    expect(h.store.buildRows[0]!.lastError).toBe('playlist_name_collision')
+    expect(h.alerts.some((a) => a.includes('playlist_name_collision'))).toBe(true)
+    expect(h.alerts.some((a) => a.includes('adopted'))).toBe(false)
+    expect(h.store.events[0]!.status).toBe('approved')
+    // playlist 150 untouched: no write to it, still holds its file, nothing registered
+    expect(h.az.writes().some((w) => /\/playlist\/150(\/|$)/.test(w.path))).toBe(false)
+    expect(h.az.writes().some((w) => w.method === 'POST' && w.path.endsWith('/playlists'))).toBe(false)
+    expect(h.az.files.get(504)!.playlists).toEqual([150])
+    expect(h.store.reg.some((r) => r.playlistId === 150)).toBe(false)
+    // a cancel + teardown never deletes it either
+    h.store.events[0]!.status = 'cancelled'
+    await h.store.enqueue('teardown', { eventId: 42 }, { dedupeExtra: 'cancelled' })
+    await drain(h)
+    expect(h.az.playlists.has(150)).toBe(true)
+  })
+
+  it('an intent row left WITHOUT a create-attempt marker (crash before the POST) never adopts a same-named playlist', async () => {
+    const { h } = world()
+    const b = await h.store.createBuild(42, 1, {})
+    await h.store.insertIntent(42, b.id, 'main', 'Grand Opening')
+    h.az.playlists.set(150, { ...h.az.playlists.get(76)!, id: 150, name: 'Grand Opening', is_enabled: false })
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(h.store.buildRows[0]!.lastError).toBe('playlist_name_collision')
+    expect(h.store.reg.some((r) => r.playlistId === 150)).toBe(false)
+  })
+
+  it('a marker only proves playlists created after it: an older same-named playlist is a collision', async () => {
+    const { h } = world()
+    const b = await h.store.createBuild(42, 1, {})
+    const row = await h.store.insertIntent(42, b.id, 'main', 'Grand Opening')
+    h.az.playlists.set(150, { ...h.az.playlists.get(76)!, id: 150, name: 'Grand Opening', is_enabled: false })
+    await h.store.markCreateAttempt(row.id, { eventId: 42, buildId: b.id, name: 'Grand Opening', maxIdBefore: 150 })
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(h.store.buildRows[0]!.lastError).toBe('playlist_name_collision')
+    expect(h.store.reg.some((r) => r.playlistId === 150)).toBe(false)
+  })
+
+  it('custom audio of another member fails the build; a compile error fails it with a ticket note', async () => {
+    const { h } = world()
+    h.store.addAudio({ id: 7, ownerUserId: 'user-2', ownerDiscordId: '700000000000000002', status: 'live', mediaId: 700, kind: 'song' })
+    h.store.trackRows.set(42, [...(await h.store.tracks(42)), { position: 3, source: 'upload', mediaId: null, audioId: 7, pinAt: null }])
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(h.az.writes()).toHaveLength(0)
+    expect(h.alerts.some((a) => a.includes('audio_not_owned'))).toBe(true)
+    const { h: h2 } = world()
+    h2.store.trackRows.set(42, [{ position: 1, source: 'library', mediaId: 501, audioId: null, pinAt: new Date('2026-10-10T21:55:00-04:00') }, { position: 2, source: 'library', mediaId: 502, audioId: null, pinAt: null }])
+    await h2.store.enqueue('build_now', { eventId: 42 })
+    await drain(h2)
+    expect(h2.store.buildRows[0]!.status).toBe('failed')
+    expect(h2.store.buildRows[0]!.lastError).toBe('pin_too_late')
+    expect(h2.store.job('ticket_post', (p) => p.kind === 'failed')).toHaveLength(1)
+  })
+
+  it('verify: a tampered playlist fails the build', async () => {
+    const { h } = world()
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const build = h.store.buildRows[0]!
+    h.az.playlists.get(mainIdOf(h, 42))!.include_in_on_demand = true
+    await h.store.enqueue('verify', { eventId: 42, buildId: build.id }, { dedupeKey: 'verify:again' })
+    await drain(h)
+    expect(build.status).toBe('failed')
+    expect(build.lastError).toContain('include_in_on_demand')
+  })
+
+  // Regression (0.5.1 live test 1, station 14 playlists 81/82): the order
+  // step sent a JSON list and parsed the answer as {success}; AzuraCast's
+  // GET /order is an array of entries and PUT /order takes a {entry id:
+  // weight} map and echoes it. Playlists with no backend options read back
+  // as [""].
+  it('a sequential build against the real AzuraCast shapes completes: order PUT is the entry-id → weight map, verify passes with backend_options [""]', async () => {
+    const { h } = world()
+    h.store.events[0]!.playlistOrder = 'sequential'
+    h.store.trackRows.set(42, [
+      { position: 1, source: 'library', mediaId: 502, audioId: null, pinAt: null },
+      { position: 2, source: 'library', mediaId: 503, audioId: null, pinAt: null },
+      { position: 3, source: 'library', mediaId: 501, audioId: null, pinAt: null },
+    ])
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const build = h.store.buildRows[0]!
+    expect(build.lastError).toBeNull()
+    expect(build.status).toBe('applied')
+    expect(h.store.events[0]!.status).toBe('built')
+    const main = mainIdOf(h, 42)
+    // what the station holds, as AzuraCast would answer it
+    expect(h.az.playlists.get(main)!.backend_options).toEqual([''])
+    const orderPut = h.az.writes().filter((w) => w.path === `/api/station/14/playlist/${main}/order`)
+    expect(orderPut).toHaveLength(1)
+    const entry = (mid: number) => String(main * 100000 + mid)
+    expect(orderPut[0]!.body).toEqual({ order: { [entry(502)]: 1, [entry(503)]: 2, [entry(501)]: 3 } })
+    expect((await h.ctx.az.playlistMediaOrder(main)).map((e) => e.mediaId)).toEqual([502, 503, 501])
+    // verify ran on the fresh reads and found nothing
+    expect(h.store.job('verify')[0]!.status).toBe('done')
+    expect(h.store.audits.find((a) => a.action === 'events.build.verified')!.detail.problems).toEqual([])
+    expect(h.store.job('ticket_post', (p) => p.kind === 'built')).toHaveLength(1)
+  })
+
+  it('verify flags an order that drifted on the station', async () => {
+    const { h } = world()
+    h.store.events[0]!.playlistOrder = 'sequential'
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const build = h.store.buildRows[0]!
+    expect(build.status).toBe('applied')
+    h.az.order.set(mainIdOf(h, 42), [502, 501])
+    await h.store.enqueue('verify', { eventId: 42, buildId: build.id }, { dedupeKey: 'verify:again' })
+    await drain(h)
+    expect(build.status).toBe('failed')
+    expect(build.lastError).toContain('order')
+  })
+
+  it('schedule ids: follow the rows AzuraCast holds (a full-body PUT replaces them); a create answer without ids is completed by a GET', async () => {
+    const { h } = world()
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const row = h.store.reg.find((r) => r.eventId === 42 && r.role === 'main')!
+    const onStation = (h.az.playlists.get(row.playlistId!)!.schedule_items as { id: number }[]).map((s) => s.id)
+    expect(onStation.length).toBeGreaterThan(0)
+    expect(row.scheduleIds).toEqual(onStation)
+
+    // a live event's build creates its playlists enabled (no enable PUT
+    // after): the ids can only come from the create answer or the GET
+    const w2 = world()
+    w2.h.store.events[0]!.status = 'live'
+    w2.h.az.createOmitsScheduleIds = true
+    await w2.h.store.enqueue('build_now', { eventId: 42 })
+    await drain(w2.h)
+    const row2 = w2.h.store.reg.find((r) => r.eventId === 42 && r.role === 'main')!
+    const onStation2 = (w2.h.az.playlists.get(row2.playlistId!)!.schedule_items as { id: number }[]).map((s) => s.id)
+    expect(onStation2.length).toBeGreaterThan(0)
+    expect(row2.scheduleIds).toEqual(onStation2)
+    expect(w2.h.store.buildRows[0]!.status).toBe('applied')
+    expect(w2.h.az.writes().filter((w) => w.method === 'PUT' && /\/playlist\/\d+$/.test(w.path))).toHaveLength(0)
+  })
+})
+
+describe('events worker: kicks and teardown', () => {
+  async function built(start?: string) {
+    const w = world(start)
+    await w.h.store.enqueue('build_now', { eventId: 42 })
+    await drain(w.h)
+    return w
+  }
+
+  it('start kick: waits for start + 5 s, purges, restarts once, goes live', async () => {
+    const { h } = await built()
+    h.az.queue = [9]
+    h.clock.t = T('2026-10-10T20:00:00-04:00')
+    await runOne(h, 'start_kick')
+    expect(h.az.restarts).toBe(0)
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.az.restarts).toBe(1)
+    expect(h.az.queue).toEqual([])
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.store.job('ticket_post', (p) => p.kind === 'on_air')).toHaveLength(1)
+  })
+
+  // ---- 0.5.2: restart confirmation + rollback (2026-09-29 station-14 outage) ----
+
+  const restartCalls = (h: Harness) => h.az.calls.filter((c) => c.path.endsWith('/backend/restart')).length
+  const statusReads = (h: Harness) => h.az.calls.filter((c) => c.path === '/api/station/14/status').length
+  const eventIds = (h: Harness, eventId = 42) => h.store.reg.filter((r) => r.eventId === eventId && !r.deletedAt && r.playlistId !== null).map((r) => r.playlistId!)
+
+  // event 42 with a pinned song and an 'at' stinger: main + `EVT42 s1` + `EVT42 a1`
+  async function builtWithHelpers() {
+    const w = world()
+    w.h.store.trackRows.set(42, [
+      { position: 1, source: 'library', mediaId: 501, audioId: null, pinAt: null },
+      { position: 2, source: 'library', mediaId: 502, audioId: null, pinAt: new Date('2026-10-10T21:00:00-04:00') },
+    ])
+    w.h.store.annRows.set(42, [{ id: 1, source: 'stinger', mediaId: 601, audioId: null, mode: 'at', at: new Date('2026-10-10T20:30:00-04:00'), everyMin: null, fromAt: null, untilAt: null }])
+    await w.h.store.enqueue('build_now', { eventId: 42 })
+    await drain(w.h)
+    expect(w.h.store.events[0]!.status).toBe('built')
+    return w
+  }
+
+  it('start kick: confirms backend_running (two running reads in a row) before going live', async () => {
+    const { h } = await built()
+    // supervisord flickering right after the restart: running, not running, then steady
+    h.az.statusScript = [true, false]
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(1)
+    expect(statusReads(h)).toBeGreaterThanOrEqual(4)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.alerts).toEqual([])
+  })
+
+  it('start kick: a failed restart call is rolled back at once (no retry) — event playlists disabled, one more restart, station confirmed, build failed, ticket + alert', async () => {
+    const { h } = await builtWithHelpers()
+    const ids = eventIds(h)
+    expect(ids).toHaveLength(3)
+    expect(ids.every((id) => h.az.playlists.get(id)!.is_enabled)).toBe(true)
+    h.az.failRestarts = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    const kick = h.store.job('start_kick')[0]!
+    expect(kick.status).toBe('done')
+    expect(restartCalls(h)).toBe(2)
+    // every playlist of the event disabled BETWEEN the failed restart and the rollback restart
+    const w = h.az.writes().map((x) => `${x.method} ${x.path}`)
+    const first = w.indexOf('POST /api/station/14/backend/restart')
+    const second = w.lastIndexOf('POST /api/station/14/backend/restart')
+    for (const id of ids) {
+      const at = w.indexOf(`PUT /api/station/14/playlist/${id}`, first)
+      expect(at).toBeGreaterThan(first)
+      expect(at).toBeLessThan(second)
+      expect(h.az.playlists.get(id)!.is_enabled).toBe(false)
+    }
+    expect(h.az.backendRunning).toBe(true)
+    expect(h.store.events[0]!.status).toBe('failed')
+    const build = h.store.buildRows.at(-1)!
+    expect(build.status).toBe('failed')
+    expect(build.lastError).toContain('rolled back')
+    expect(h.store.job('ticket_post', (p) => p.kind === 'failed')).toHaveLength(1)
+    expect(h.alerts).toContain('start of event 42 failed — rolled back, Event station restored')
+    expect(h.alerts.some((a) => a.includes('EVENT STATION DOWN'))).toBe(false)
+    // never a loop: nothing restarts again
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+  })
+
+  // The 2026-09-29 incident (live test 2): the event's '~EVT1 s1' / '~EVT1 a1'
+  // playlists were enabled, the restart regenerated the .liq, Liquidsoap hit
+  // `playlist_~evt1_s1 = playlist(…)` — "Error 2: Parse error" — and the
+  // backend went FATAL. The start kick retried once, then left it down.
+  it('the incident: an enabled "~" playlist of the event makes Liquidsoap refuse the config; the kick sees the backend down, rolls back within ~40 s and the station is back', async () => {
+    const { h } = await builtWithHelpers()
+    const pinRow = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!
+    // what production held: the registry and the station both carry the old name
+    pinRow.intentName = '~EVT42 s1'
+    h.az.playlists.get(pinRow.playlistId!)!.name = '~EVT42 s1'
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    const t0 = h.clock.t
+    await drain(h)
+    // the restart "worked" (200) but the backend never came up: parse error, no banner
+    expect(h.az.liquidsoapLog).toContain('Error 2: Parse error (playlist_~evt42_s1')
+    expect(restartCalls(h)).toBe(2)
+    expect(statusReads(h)).toBeLessThanOrEqual(14 + 14 + 2)
+    expect(h.clock.t - t0).toBeLessThanOrEqual(2 * 42_000)
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled === false)).toBe(true)
+    expect(h.az.invalidLiquidsoapPlaylists()).toEqual([])
+    expect(h.az.backendRunning).toBe(true)
+    expect(h.store.events[0]!.status).toBe('failed')
+    expect(h.store.buildRows.at(-1)!.status).toBe('failed')
+    expect(h.alerts).toContain('start of event 42 failed — rolled back, Event station restored')
+    const failed = h.store.audits.find((a) => a.action === 'events.kick.start_failed')!
+    expect(failed.detail).toMatchObject({ stage: 'not_running', backend: 'not running', newStart: false })
+    expect(String((failed.detail.liquidsoapErrors as string[]).join('\n'))).toContain('Error 2: Parse error')
+  })
+
+  // Incident fact: after staff disabled 81–84 and restarted, the station still
+  // played a song from playlist 81 — the AutoDJ had queued it before the
+  // disable. The rollback purges the queue AFTER disabling, BEFORE restarting.
+  it('the rollback purges a song the AutoDJ queued from an event playlist: disable → purge queue → restart → confirm', async () => {
+    const { h } = await builtWithHelpers()
+    const pinRow = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!
+    pinRow.intentName = '~EVT42 s1'
+    h.az.playlists.get(pinRow.playlistId!)!.name = '~EVT42 s1'
+    h.az.queue = [7] // purged by the kick itself before its restart
+    const queueAtRestart: number[][] = []
+    h.az.onRestart = () => {
+      queueAtRestart.push([...h.az.queue])
+      // the AutoDJ queues the next song from the (still enabled) event main playlist
+      if (h.az.restarts === 1) h.az.queue.push(31)
+    }
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    // queue empty at BOTH restarts, the event's song removed by the rollback
+    expect(queueAtRestart).toEqual([[], []])
+    expect(h.az.queue).toEqual([])
+    const w = h.az.writes().map((x) => `${x.method} ${x.path}`)
+    const first = w.indexOf('POST /api/station/14/backend/restart')
+    const second = w.lastIndexOf('POST /api/station/14/backend/restart')
+    const purge = w.indexOf('DELETE /api/station/14/queue/31')
+    const lastDisable = Math.max(...eventIds(h).map((id) => w.indexOf(`PUT /api/station/14/playlist/${id}`, first)))
+    expect(first).toBeLessThan(lastDisable)
+    expect(lastDisable).toBeLessThan(purge)
+    expect(purge).toBeLessThan(second)
+    expect(h.alerts).toContain('start of event 42 failed — rolled back, Event station restored')
+  })
+
+  it('the off-air restart purges the queue after the playlists are off and before it restarts', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    const main = mainIdOf(h, 42)
+    h.az.queue = [44]
+    h.clock.t = T('2026-10-10T22:00:00-04:00') + 91_000
+    await drain(h)
+    const w = h.az.writes().map((x) => `${x.method} ${x.path}`)
+    const disable = w.lastIndexOf(`PUT /api/station/14/playlist/${main}`)
+    const purge = w.indexOf('DELETE /api/station/14/queue/44')
+    const restart = w.lastIndexOf('POST /api/station/14/backend/restart')
+    expect(disable).toBeGreaterThan(-1)
+    expect(disable).toBeLessThan(purge)
+    expect(purge).toBeLessThan(restart)
+    expect(h.az.queue).toEqual([])
+  })
+
+  // ---- verifier cases (fresh-context refutation of the first rollback) ----
+
+  const kinds = (h: Harness) => h.store.job('ticket_post').map((j) => (j.payload as { kind: string }).kind)
+  function withFetch(h: Harness, wrap: (orig: typeof fetch) => typeof fetch) {
+    const orig = h.az.fetch
+    ;(h.az as unknown as { fetch: typeof fetch }).fetch = wrap(orig)
+    h.ctx.az = h.az.client()
+    h.ctx.az.setWriteGate(async () => {
+      if (h.store.paused) throw new Error('queues paused')
+    })
+  }
+
+  it('a rollback is durable: a second queued start kick (other version) never restarts into it again — 2 restarts, one alert, no "on air"', async () => {
+    const { h } = await built()
+    h.store.events[0]!.version = 2
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v2' })
+    await drain(h)
+    expect(h.store.job('start_kick')).toHaveLength(2)
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    h.clock.t += 120_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    expect(h.alerts).toEqual(['start of event 42 failed — rolled back, Event station restored'])
+    // the EVENT status is the one record: the second kick sees `failed` and skips
+    expect(h.store.events[0]!.status).toBe('failed')
+    expect(h.store.job('start_kick').every((j) => j.status === 'done')).toBe(true)
+    expect(h.store.audits.some((a) => a.action === 'events.job.stale' && a.detail.kind === 'start_kick' && a.detail.status === 'failed')).toBe(true)
+    expect(kinds(h)).not.toContain('on_air')
+    expect(h.alerts.some((a) => a.includes('needs rebuild'))).toBe(false)
+  })
+
+  it('a backend that reports running for a few seconds and then dies (late parse failure) is rolled back: running reads must span ≥ 12 s', async () => {
+    const { h } = await built()
+    h.az.forceBackendDown = 1
+    h.az.statusScript = [true, true]
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    expect(h.store.events[0]!.status).toBe('failed')
+    expect(h.az.backendRunning).toBe(true)
+    expect(h.alerts).toEqual(['start of event 42 failed — rolled back, Event station restored'])
+  })
+
+  it('the end kick of a rolled-back event neither restarts nor posts "ended"; it keeps the playlists off and schedules the teardown', async () => {
+    const { h } = await built()
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    h.clock.t = T('2026-10-10T22:00:00-04:00') + 91_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    expect(h.store.job('off_air_restart')).toHaveLength(0)
+    expect(h.store.events[0]!.status).toBe('failed') // stays failed (not 'ended')
+    expect(kinds(h)).not.toContain('ended')
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled === false)).toBe(true)
+    expect(h.store.job('teardown')).toHaveLength(1)
+  })
+
+  it('no off-air restart runs while another event is inside its window: it is requeued until 2 min after that event ends', async () => {
+    const { h } = await built()
+    h.store.addEvent({ id: 44, title: 'Late Show', createdByStaff: true, startsAt: new Date('2026-10-10T22:15:00-04:00'), endsAt: new Date('2026-10-10T23:00:00-04:00') })
+    h.store.trackRows.set(44, [{ position: 1, source: 'library', mediaId: 503, audioId: null, pinAt: null }])
+    await h.store.enqueue('build_now', { eventId: 44 })
+    await drain(h)
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    // event 42's end kick is held up until event 44 is on air
+    const endA = h.store.jobs.find((j) => j.kind === 'end_kick' && (j.payload as { eventId: number }).eventId === 42)!
+    endA.runAfter = T('2026-10-10T22:20:00-04:00')
+    h.clock.t = T('2026-10-10T22:15:05-04:00')
+    await drain(h)
+    expect(h.store.events[1]!.status).toBe('live')
+    const before = restartCalls(h)
+    h.clock.t = T('2026-10-10T22:20:00-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('ended')
+    expect(restartCalls(h)).toBe(before)
+    expect(h.store.audits.some((a) => a.action === 'events.kick.off_air_deferred' && a.detail.onAir === 44)).toBe(true)
+    expect(eventIds(h, 44).every((id) => h.az.playlists.get(id)!.is_enabled)).toBe(true)
+    // requeued, not done: it runs 2 min after event 44's end (never while 44 airs)
+    const offAir = h.store.jobs.find((j) => j.kind === 'off_air_restart' && (j.payload as { eventId: number }).eventId === 42)!
+    expect(offAir.status).toBe('queued')
+    expect(offAir.runAfter).toBe(T('2026-10-10T23:00:00-04:00') + 120_000)
+    h.clock.t = T('2026-10-10T22:59:00-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(before)
+    h.clock.t = T('2026-10-10T23:00:00-04:00') + 120_000
+    await drain(h)
+    expect(offAir.status).toBe('done')
+    expect(restartCalls(h)).toBeGreaterThan(before)
+  })
+
+  it('a failed live re-kick (staff-confirmed schedule change) says the live event was taken off air — never "restored" — and later kicks stay silent', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    const ev = h.store.events[0]!
+    ev.version = 2
+    ev.endsAt = new Date('2026-10-10T22:30:00-04:00')
+    h.az.forceBackendDown = 1
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v2' })
+    await drain(h)
+    expect(restartCalls(h)).toBe(3)
+    expect(h.alerts).toEqual(['live event 42 taken off air — rolled back, Event station restarted without it'])
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled === false)).toBe(true)
+    // the v2 start kick at the (unchanged) start already ran; anything later is quiet
+    await h.store.enqueue('start_kick', { eventId: 42 }, { dedupeExtra: 'late' })
+    await drain(h)
+    expect(restartCalls(h)).toBe(3)
+    expect(h.alerts.some((a) => a.includes('needs rebuild'))).toBe(false)
+  })
+
+  it('Build now after a rollback (same version, inside the window) re-arms a FRESH start kick: confirmed restart, then live', async () => {
+    const { h } = await built()
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    h.clock.t = T('2026-10-10T20:10:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'again' })
+    await drain(h)
+    expect(h.store.job('start_kick')).toHaveLength(2)
+    expect(restartCalls(h)).toBe(3)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled)).toBe(true)
+  })
+
+  it('a queue purge that fails on one row still clears the others, and the rollback alert does not claim "restored"', async () => {
+    const { h } = await built()
+    let queued = false
+    h.az.onRestart = () => {
+      if (!queued) {
+        queued = true
+        h.az.queue.push(31, 32)
+      }
+    }
+    withFetch(h, (orig) => (async (i: string | URL, init?: RequestInit) => (init?.method === 'DELETE' && String(i).endsWith('/queue/31') ? new Response('err', { status: 500 }) : orig(i as string, init))) as typeof fetch)
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.az.queue).toEqual([31])
+    expect(h.alerts).toHaveLength(1)
+    expect(h.alerts[0]).toContain('queue could not be purged')
+    expect(h.alerts[0]).not.toContain('restored')
+  })
+
+  it('a hanging status endpoint cannot hold the kick: the confirmation is bounded by elapsed time', async () => {
+    const { h } = await built()
+    withFetch(h, (orig) => (async (i: string | URL, init?: RequestInit) => {
+      if (String(i).endsWith('/status')) {
+        h.clock.t += 30_000 // each read runs into its timeout
+        throw new DOMException('timeout', 'TimeoutError')
+      }
+      return orig(i as string, init)
+    }) as typeof fetch)
+    const t0 = T('2026-10-10T20:00:05-04:00')
+    h.clock.t = t0
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    expect(h.clock.t - t0).toBeLessThan(3 * 60_000)
+    expect(h.alerts[0]).toMatch(/^EVENT STATION DOWN/)
+  })
+
+  // ---- redesign (event status `failed` is the one record of a rollback) ----
+
+  it('N1: a no-change Build now on a LIVE event (even one re-armed after a rollback) never restarts', async () => {
+    const { h } = await built()
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('failed')
+    h.clock.t = T('2026-10-10T20:10:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'staff1' })
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(restartCalls(h)).toBe(3) // kick + rollback + the ONE re-armed kick
+    for (const [i, t] of ['20:20', '20:30', '20:40'].entries()) {
+      h.clock.t = T(`2026-10-10T${t}:00-04:00`)
+      await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: `again${i}` })
+      await drain(h)
+    }
+    // autobuild rebuilds of the same inputs change nothing either
+    h.store.settingRows = settingsWith({ events_autobuild_enabled: true })
+    await h.store.enqueue('build', { eventId: 42, version: 1 }, { dedupeExtra: 'auto' })
+    await drain(h)
+    expect(restartCalls(h)).toBe(3)
+    expect(h.store.job('start_kick')).toHaveLength(2)
+  })
+
+  it('no-change Build now on a live event that never failed: zero restarts', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(1)
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'nochange' })
+    await drain(h)
+    expect(restartCalls(h)).toBe(1)
+    expect(h.store.events[0]!.status).toBe('live')
+  })
+
+  it('N5: an event re-armed after a rollback whose later verify only logs a config error ends NORMALLY (off-air restart + "ended")', async () => {
+    const { h } = await built()
+    h.store.events[0]!.version = 2
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v2' })
+    await drain(h)
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    h.clock.t = T('2026-10-10T20:10:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'staff1' })
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(restartCalls(h)).toBe(3)
+    h.az.liquidsoapLog = '2026/10/11 [main:3] Liquidsoap 2.2.5\n2026/10/11 At line 3, char 4: Error 5: something\n'
+    h.clock.t += 120_000
+    await drain(h)
+    expect(h.alerts.at(-1)).toContain('liquidsoap log shows config errors')
+    h.clock.t = T('2026-10-10T22:00:00-04:00') + 91_000
+    await drain(h)
+    h.clock.t += 120_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(4) // the normal off-air restart
+    expect(h.store.events[0]!.status).toBe('ended')
+    expect(kinds(h)).toContain('ended')
+  })
+
+  it('queues paused when a rollback is needed: page "rollback needed but queues are paused" and change NOTHING (no status flip, no DOWN page, no writes)', async () => {
+    const { h } = await builtWithHelpers()
+    h.az.forceBackendDown = 1
+    h.az.onRestart = () => {
+      h.store.paused = true // staff pause while the kick waits for the backend
+    }
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(1)
+    expect(h.store.events[0]!.status).toBe('built')
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled)).toBe(true)
+    const w = h.az.writes().map((x) => `${x.method} ${x.path}`)
+    expect(w.slice(w.indexOf('POST /api/station/14/backend/restart') + 1)).toEqual([]) // nothing written after the restart
+    expect(h.alerts).toHaveLength(1)
+    expect(h.alerts[0]).toMatch(/rollback needed for start of event 42 but queues are paused — nothing was changed/)
+    expect(h.alerts.some((a) => a.includes('EVENT STATION DOWN'))).toBe(false)
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+  })
+
+  it('verify while queues are paused and the backend is down: one DOWN page, no writes, no state change', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    h.store.paused = true
+    h.az.backendRunning = false
+    const writes = h.az.writes().length
+    const job = h.store.jobs.find((j) => j.kind === 'verify' && j.status === 'queued')!
+    job.runAfter = 0
+    await runOne(h, 'verify')
+    expect(h.az.writes().length).toBe(writes)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    expect(h.alerts).toHaveLength(1)
+    expect(h.alerts[0]).toMatch(/^EVENT STATION DOWN/)
+  })
+
+  it('staff Build now on a failed event: back to built, exactly ONE fresh start kick and ONE restart; the event airs', async () => {
+    const { h } = await builtWithHelpers()
+    h.az.forceBackendDown = 1
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('failed')
+    expect(restartCalls(h)).toBe(2)
+    h.clock.t = T('2026-10-10T20:15:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'staff' })
+    await drain(h)
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(3)
+    expect(h.store.job('start_kick')).toHaveLength(2)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled)).toBe(true)
+  })
+
+  it('AzuraCast answering the restart with 500 ("Exited too quickly") rolls back without waiting for status polls', async () => {
+    const { h } = await builtWithHelpers()
+    const pinRow = h.store.reg.find((r) => r.eventId === 42 && r.role === 'pin')!
+    pinRow.intentName = '~EVT42 s1'
+    h.az.playlists.get(pinRow.playlistId!)!.name = '~EVT42 s1'
+    h.az.restartErrorsWhenDown = true
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    // one diagnostic read after the failed call, then the rollback restart's confirmation
+    const w = h.az.calls.map((c) => `${c.method} ${c.path}`)
+    const first = w.indexOf('POST /api/station/14/backend/restart')
+    const second = w.lastIndexOf('POST /api/station/14/backend/restart')
+    expect(w.slice(first, second).filter((x) => x.endsWith('/status'))).toHaveLength(1)
+    expect(h.alerts).toContain('start of event 42 failed — rolled back, Event station restored')
+  })
+
+  it('a rollback restart that does not bring the station back pages EVENT STATION DOWN once and stops (never a restart loop)', async () => {
+    const { h } = await builtWithHelpers()
+    // a foreign enabled playlist the event rollback cannot touch keeps the config broken
+    h.az.playlists.set(160, { ...h.az.playlists.get(76)!, id: 160, name: '~Staff special', is_enabled: true })
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+    expect(h.az.backendRunning).toBe(false)
+    expect(h.az.playlists.get(160)!.is_enabled).toBe(true) // never written
+    expect(h.az.writes().some((x) => x.path.endsWith('/playlist/160'))).toBe(false)
+    expect(eventIds(h).every((id) => h.az.playlists.get(id)!.is_enabled === false)).toBe(true)
+    const down = h.alerts.filter((a) => a.startsWith('EVENT STATION DOWN — manual action needed'))
+    expect(down).toHaveLength(1)
+    expect(down[0]).toContain('start of event 42 failed')
+    expect(h.alerts.some((a) => a.includes('Event station restored'))).toBe(false)
+    expect(h.store.buildRows.at(-1)!.lastError).toContain('station still down')
+    expect(h.store.job('ticket_post', (p) => p.kind === 'failed')).toHaveLength(1)
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(2)
+  })
+
+  it('a start kick whose build still names legacy "~" playlists (pre-0.5.2, like production event 1) never restarts: it asks for a rebuild', async () => {
+    const { h } = await builtWithHelpers()
+    for (const r of h.store.reg.filter((x) => x.eventId === 42 && x.role !== 'main')) {
+      const legacy = `~${r.intentName}`
+      h.az.playlists.get(r.playlistId!)!.name = legacy
+      for (const p of (h.store.buildRows[0]!.plan as { playlists: { name: string }[] }).playlists) if (p.name === r.intentName) p.name = legacy
+      r.intentName = legacy
+    }
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(0)
+    expect(h.alerts.some((a) => a.includes('needs rebuild'))).toBe(true)
+    expect(h.store.events[0]!.status).toBe('built')
+  })
+
+  it('supersede: a rebuild of a pre-0.5.2 build creates the ASCII helper playlists and DELETEs the old "~" ones (never a PUT rename); then the start kick airs it', async () => {
+    const { h } = await builtWithHelpers()
+    const main = mainIdOf(h, 42)
+    const old = new Map<number, string>()
+    for (const r of h.store.reg.filter((x) => x.eventId === 42 && x.role !== 'main')) {
+      const legacy = `~${r.intentName}`
+      const pl = h.az.playlists.get(r.playlistId!)!
+      pl.name = legacy
+      pl.is_enabled = false // disabled by hand after the outage
+      for (const p of (h.store.buildRows[0]!.plan as { playlists: { name: string }[] }).playlists) if (p.name === r.intentName) p.name = legacy
+      r.intentName = legacy
+      old.set(r.playlistId!, legacy)
+    }
+    expect([...old.values()].sort()).toEqual(['~EVT42 a1', '~EVT42 s1'])
+    // autobuild, same version: the applied-but-legacy build is NOT skipped
+    h.store.settingRows = settingsWith({ events_autobuild_enabled: true })
+    const before = h.az.calls.length
+    await h.store.enqueue('build', { eventId: 42, version: 1 }, { dedupeExtra: 'supersede' })
+    await drain(h)
+    const calls = h.az.calls.slice(before)
+    for (const [id] of old) {
+      expect(h.az.playlists.has(id)).toBe(false)
+      const onOld = calls.filter((c) => c.method !== 'GET' && c.path === `/api/station/14/playlist/${id}`)
+      expect(onOld.map((c) => c.method)).toEqual(['DELETE'])
+    }
+    const live = h.store.reg.filter((r) => r.eventId === 42 && !r.deletedAt)
+    expect(live.map((r) => r.intentName).sort()).toEqual(['EVT42 a1', 'EVT42 s1', 'Grand Opening'])
+    expect(h.store.reg.filter((r) => old.has(r.playlistId!)).every((r) => r.deletedAt)).toBe(true)
+    expect(mainIdOf(h, 42)).toBe(main)
+    const pin = live.find((r) => r.role === 'pin')!
+    const ann = live.find((r) => r.role === 'announce')!
+    expect(h.az.playlists.get(pin.playlistId!)!).toMatchObject({ name: 'EVT42 s1', is_enabled: true })
+    expect(h.az.playlists.get(ann.playlistId!)!).toMatchObject({ name: 'EVT42 a1', is_enabled: true })
+    expect(h.az.files.get(502)!.playlists).toEqual([pin.playlistId])
+    expect(h.az.files.get(601)!.playlists).toEqual([ann.playlistId])
+    expect(h.az.invalidLiquidsoapPlaylists()).toEqual([])
+    const verified = h.store.audits.filter((a) => a.action === 'events.build.verified').at(-1)!
+    expect(verified.detail.problems).toEqual([])
+    // the start kick now restarts into a config Liquidsoap accepts
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(restartCalls(h)).toBe(1)
+    expect(h.az.backendRunning).toBe(true)
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.alerts.filter((a) => !a.includes('adopted'))).toEqual([])
+  })
+
+  it('an off-air restart that leaves the backend down pages EVENT STATION DOWN at once; one retry, then the final alert (bounded)', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    const end = T('2026-10-10T22:00:00-04:00')
+    h.clock.t = end + 91_000
+    h.az.forceBackendDown = 2
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('ended')
+    const down = () => h.alerts.filter((a) => a.startsWith('EVENT STATION DOWN — manual action needed'))
+    expect(down()).toHaveLength(1)
+    expect(down()[0]).toContain("off-air restart after event 42's end")
+    const job = h.store.job('off_air_restart')[0]!
+    expect(job.status).toBe('queued')
+    h.clock.t += 60_000
+    await drain(h)
+    expect(job.status).toBe('dead')
+    expect(down()).toHaveLength(2)
+    expect(h.alerts.some((a) => a.includes('off-air restart FAILED for event #42'))).toBe(true)
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(restartCalls(h)).toBe(3) // the start kick + 2 off-air attempts
+  })
+
+  it('end kick: waits for the last song (≤ 90 s), then disables, purges, restarts; teardown 24 h later', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    const end = T('2026-10-10T22:00:00-04:00')
+    h.clock.t = end
+    h.az.np = { is_online: true, now_playing: { played_at: (end - 100_000) / 1000, duration: 160 } }
+    await drain(h)
+    expect(h.az.restarts).toBe(1)
+    expect(h.store.job('end_kick')[0]!.runAfter).toBe(end + 62_000)
+    h.clock.t = end + 62_000
+    await drain(h)
+    expect(h.az.restarts).toBe(2)
+    expect(h.az.playlists.get(mainIdOf(h, 42))!.is_enabled).toBe(false)
+    expect(h.store.events[0]!.status).toBe('ended')
+    const td = h.store.job('teardown')[0]!
+    expect(td.runAfter).toBe(end + 24 * 3600_000)
+    h.clock.t = end + 24 * 3600_000
+    await drain(h)
+    expect(h.store.reg.every((r) => r.deletedAt)).toBe(true)
+    expect(h.store.buildRows.every((b) => b.status === 'torn_down')).toBe(true)
+  })
+
+  it('end wait target: capped at the deadline, unknown now-playing waits for it, a song after the end means go', () => {
+    const end = 1_000_000_000_000
+    const dl = end + 90_000
+    expect(endWaitTarget({ now_playing: { played_at: (end - 10_000) / 1000, duration: 600 } }, end, dl, end)).toBe(dl)
+    expect(endWaitTarget(null, end, dl, end)).toBe(dl)
+    expect(endWaitTarget({ now_playing: { played_at: (end + 5_000) / 1000, duration: 200 } }, end, dl, end + 6_000)).toBe(end + 6_000)
+    expect(endWaitTarget({ is_online: false }, end, dl, end)).toBe(end)
+    expect(endWaitTarget({ now_playing: { played_at: (end - 10_000) / 1000, duration: 20 } }, end, dl, end)).toBe(end + 12_000)
+  })
+
+  it('adjacent staff pair: the ending event only disables; the next start kick does the single purge + restart', async () => {
+    const { h } = await built()
+    h.store.addEvent({ id: 44, title: 'After Party', createdByStaff: true, startsAt: new Date('2026-10-10T22:00:00-04:00'), endsAt: new Date('2026-10-10T23:00:00-04:00') })
+    h.store.trackRows.set(44, [{ position: 1, source: 'library', mediaId: 503, audioId: null, pinAt: null }])
+    await h.store.enqueue('build_now', { eventId: 44 })
+    await drain(h)
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.az.restarts).toBe(1)
+    h.clock.t = T('2026-10-10T22:00:00-04:00')
+    h.az.np = { is_online: true, now_playing: { played_at: (h.clock.t - 10_000) / 1000, duration: 200 } }
+    await drain(h)
+    expect(h.store.events.find((e) => e.id === 42)!.status).toBe('ended')
+    expect(h.az.playlists.get(mainIdOf(h, 42))!.is_enabled).toBe(false)
+    expect(h.az.restarts).toBe(1)
+    h.clock.t = T('2026-10-10T22:00:05-04:00')
+    await drain(h)
+    expect(h.az.restarts).toBe(2)
+    expect(h.store.events.find((e) => e.id === 44)!.status).toBe('live')
+  })
+
+  it('a rebuild before the start leaves two start kicks queued: only one restart', async () => {
+    const { h } = await built()
+    const ev = h.store.events[0]!
+    ev.version = 2
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v2' })
+    await drain(h)
+    expect(h.store.job('start_kick')).toHaveLength(2)
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.az.restarts).toBe(1)
+    expect(h.store.job('start_kick').every((j) => j.status === 'done')).toBe(true)
+  })
+
+  it('a staff-confirmed schedule change while live restarts once to load the new rows', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.az.restarts).toBe(1)
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    const ev = h.store.events[0]!
+    ev.version = 2
+    ev.endsAt = new Date('2026-10-10T22:30:00-04:00')
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v2' })
+    await drain(h)
+    expect(h.az.restarts).toBe(2)
+    expect(h.az.playlists.get(mainIdOf(h, 42))!.schedule_items).toMatchObject([{ start_time: 2000, end_time: 2230 }])
+  })
+
+  it('a start kick never restarts into a stale build (build inputs changed, no rebuild)', async () => {
+    const { h } = await built()
+    const ev = h.store.events[0]!
+    ev.version = 2
+    ev.title = 'Renamed' // the public main playlist's name: a build input
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.az.restarts).toBe(0)
+    expect(h.alerts.some((a) => a.includes('no applied build for version 2') && a.includes('press Build now'))).toBe(true)
+  })
+
+  it('autobuild off: a details-only edit (version bump, same build inputs) still starts on time and verifies', async () => {
+    const { h } = await built()
+    expect(typeof (h.store.buildRows[0]!.plan as { inputKey?: unknown }).inputKey).toBe('string')
+    const ev = h.store.events[0]!
+    ev.version = 2 // description / host / location / type edit: not in EventRow, not a build input
+    ev.eventType = 'car_meet'
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.az.restarts).toBe(1)
+    expect(ev.status).toBe('live')
+    expect(h.alerts).toEqual([])
+    // the post-kick verify is not dropped as stale
+    h.clock.t += 61_000
+    await drain(h)
+    expect(h.store.audits.filter((a) => a.action === 'events.build.verified')).toHaveLength(2)
+    expect(h.store.audits.some((a) => a.action === 'events.job.stale' && a.detail.kind === 'verify')).toBe(false)
+  })
+
+  it('a private event\'s title is not a build input (its playlist is "Private event")', async () => {
+    const w = world()
+    w.h.store.events[0]!.visibility = 'private'
+    await w.h.store.enqueue('build_now', { eventId: 42 })
+    await drain(w.h)
+    const ev = w.h.store.events[0]!
+    ev.version = 2
+    ev.title = 'Something else'
+    w.h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(w.h)
+    expect(w.h.az.restarts).toBe(1)
+  })
+
+  it('rebuild_needed: alerts "press Build now" and notes the ticket only while the applied build is stale', async () => {
+    const { h } = await built()
+    const ev = h.store.events[0]!
+    ev.version = 2
+    await h.store.enqueue('rebuild_needed', { eventId: 42, version: 2 })
+    await drain(h)
+    expect(h.alerts).toEqual([])
+    expect(h.store.audits.some((a) => a.action === 'events.build.rebuild_not_needed')).toBe(true)
+    ev.version = 3
+    ev.endsAt = new Date('2026-10-10T22:30:00-04:00')
+    await h.store.enqueue('rebuild_needed', { eventId: 42, version: 3 })
+    await drain(h)
+    expect(h.alerts.filter((a) => a.includes('event #42') && a.includes('needs rebuild — press Build now'))).toHaveLength(1)
+    const note = h.store.job('ticket_post', (p) => p.kind === 'note' && String(p.idem).startsWith('rebuild_needed:42:v3'))
+    expect(note).toHaveLength(1)
+    // Build now: current again, a later check stays quiet
+    await h.store.enqueue('build_now', { eventId: 42 }, { dedupeExtra: 'v3' })
+    await drain(h)
+    ev.version = 4
+    await h.store.enqueue('rebuild_needed', { eventId: 42, version: 4 })
+    await drain(h)
+    expect(h.alerts.filter((a) => a.includes('needs rebuild'))).toHaveLength(1)
+  })
+
+  it('cancel while live + one failed restart: the retried off-air restart still restarts (registry already empty)', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    const main = mainIdOf(h, 42)
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    h.store.events[0]!.status = 'cancelled'
+    h.az.failRestarts = 1
+    await h.store.enqueue('teardown', { eventId: 42 }, { dedupeExtra: 'v1:cancel' })
+    await drain(h)
+    // playlists gone and the registry rows marked deleted, the first restart failed
+    expect(h.az.playlists.has(main)).toBe(false)
+    expect(h.store.reg.every((r) => r.deletedAt)).toBe(true)
+    expect(h.store.job('teardown')[0]!.status).toBe('done')
+    const job = h.store.job('off_air_restart')[0]!
+    expect(job.status).toBe('queued')
+    expect(h.az.restarts).toBe(1)
+    h.clock.t += 31_000
+    await drain(h)
+    expect(job.status).toBe('done')
+    expect(h.az.restarts).toBe(2)
+    expect(h.az.calls.filter((c) => c.path.endsWith('/backend/restart'))).toHaveLength(3)
+  })
+
+  it('the off-air restart waits while a playlist of the event is still enabled (teardown mid-way)', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    const main = mainIdOf(h, 42)
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    h.store.events[0]!.status = 'cancelled'
+    await h.store.enqueue('off_air_restart', { eventId: 42, reason: 'teardown' }, { dedupeExtra: 'x' })
+    await runOne(h, 'off_air_restart')
+    expect(h.az.restarts).toBe(1)
+    expect(h.store.job('off_air_restart')[0]!.status).toBe('queued')
+    h.az.playlists.get(main)!.is_enabled = false
+    h.clock.t += 60_000
+    await drain(h)
+    expect(h.az.restarts).toBe(2)
+  })
+
+  it('end kick whose restart always fails: exactly 2 restart attempts 30 s apart, then an alert and stop', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    const end = T('2026-10-10T22:00:00-04:00')
+    h.clock.t = end + 91_000
+    h.az.failRestarts = 100
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('ended')
+    const job = h.store.job('off_air_restart')[0]!
+    expect(job.maxAttempts).toBe(2)
+    expect(job.runAfter).toBe(h.clock.t + 30_000)
+    h.clock.t += 30_000
+    await drain(h)
+    expect(job.status).toBe('dead')
+    h.clock.t += 3600_000
+    await drain(h)
+    const restartCalls = h.az.calls.filter((c) => c.path.endsWith('/backend/restart'))
+    expect(restartCalls).toHaveLength(3) // the start kick + 2 off-air attempts
+    expect(h.alerts.some((a) => a.includes('off-air restart FAILED for event #42') && a.includes('after its end'))).toBe(true)
+    expect(h.store.job('end_kick')[0]!.status).toBe('done')
+  })
+
+  it('an on-air teardown whose restart always fails: 2 attempts, then an alert', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    h.clock.t = T('2026-10-10T20:30:00-04:00')
+    h.store.events[0]!.status = 'cancelled'
+    h.az.failRestarts = 100
+    await h.store.enqueue('teardown', { eventId: 42 }, { dedupeExtra: 'v1:cancel' })
+    await drain(h)
+    h.clock.t += 31_000
+    await drain(h)
+    h.clock.t += 3600_000
+    await drain(h)
+    expect(h.store.job('off_air_restart')[0]!.status).toBe('dead')
+    expect(h.az.calls.filter((c) => c.path.endsWith('/backend/restart'))).toHaveLength(3)
+    expect(h.alerts.some((a) => a.includes('off-air restart FAILED for event #42') && a.includes('after its teardown'))).toBe(true)
+  })
+
+  it('verify after the start kick reads the liquidsoap log: a config-load error after the restart is ALERTED only (the backend runs; nothing changes)', async () => {
+    const { h } = await built()
+    // an older error before the last start banner is ignored; the one after it fails the build
+    h.az.liquidsoapLog = [
+      '2026/10/10 23:40:00 [lang:2] Parse error: an old run, before this restart',
+      '2026/10/11 00:00:06 [main:3] Liquidsoap 2.2.5',
+      '2026/10/11 00:00:07 [lang:1] Error while loading playlist EVT42 s1',
+    ].join('\n')
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    h.clock.t += 61_000
+    await drain(h)
+    const build = h.store.buildRows[0]!
+    expect(build.status).toBe('applied')
+    expect(h.store.events[0]!.status).toBe('live')
+    const verified = h.store.audits.filter((a) => a.action === 'events.build.verified').at(-1)!
+    expect(verified.detail.liquidsoapErrors).toEqual(['2026/10/11 00:00:07 [lang:1] Error while loading playlist EVT42 s1'])
+    expect(h.alerts).toEqual(["events: station 14's liquidsoap log shows config errors after event 42's kick (the backend is running)"])
+    expect(h.az.calls.some((c) => c.path === '/api/station/14/log/liquidsoap_log')).toBe(true)
+  })
+
+  it('verify after the start kick: a clean log (or only errors from before the restart) passes', async () => {
+    const { h } = await built()
+    h.az.liquidsoapLog = ['2026/10/10 19:40:00 [lang:2] Parse error: before the restart (ET clock)', '2026/10/10 20:00:07 [main:3] Liquidsoap 2.2.5', '2026/10/10 20:00:08 [clock:3] Streaming loop starts'].join('\n')
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    h.clock.t += 61_000
+    await drain(h)
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    expect(h.alerts).toEqual([])
+    const verified = h.store.audits.filter((a) => a.action === 'events.build.verified').at(-1)!
+    expect(verified.detail).toMatchObject({ problems: [], backend: 'running', liquidsoapLog: 'clean' })
+  })
+
+  it('liquidsoap log scan: only lines after the last start banner count, whatever their timestamps', () => {
+    const log = [
+      'Error 5: from an older run (not counted)',
+      '2026/10/10 23:59:00 [main:3] Liquidsoap 2.2.5',
+      '2026/10/10 23:59:01 [lang:1] Parse error: the previous start (not counted)',
+      '2026/10/10 20:00:06 [main:3] Liquidsoap 2.2.5',
+      '2026/10/10 20:00:06 [lang:1] At line 12, char 3-10:',
+      'Error 5: this value has type string but it should be int',
+      '2026/10/10 15:00:00 [lang:1] Script error: unknown variable',
+    ].join('\n')
+    expect(liquidsoapConfigErrors(log)).toEqual([
+      '2026/10/10 20:00:06 [lang:1] At line 12, char 3-10:',
+      'Error 5: this value has type string but it should be int',
+      '2026/10/10 15:00:00 [lang:1] Script error: unknown variable',
+    ])
+    // an old config error before the banner does not fail; nothing after it
+    expect(liquidsoapConfigErrors('2026/10/10 23:40:00 [lang:2] Parse error: old\n2026/10/10 00:00:01 [main:3] Liquidsoap 2.2.5\n2026/10/10 00:00:02 [clock:3] Streaming loop starts')).toEqual([])
+    // other banner spellings
+    expect(liquidsoapConfigErrors('Parse error: old\n[main:3] Liquidsoap version 2.3.0 starting\nok')).toEqual([])
+    // an error line that mentions Liquidsoap is not a banner
+    expect(liquidsoapConfigErrors('[main:3] Liquidsoap 2.2.5\nError while loading Liquidsoap script, version mismatch')).toEqual(['Error while loading Liquidsoap script, version mismatch'])
+    // no banner: the last 200 lines are judged
+    const noBanner = ['Parse error: long ago', ...Array.from({ length: 200 }, (_, i) => `line ${i}`)].join('\n')
+    expect(liquidsoapConfigErrors(noBanner)).toEqual([])
+    expect(liquidsoapConfigErrors('x\nScript error: recent')).toEqual(['Script error: recent'])
+    expect(liquidsoapConfigErrors('')).toEqual([])
+    // the 2026-09-29 outage's shapes: a position line, then "Error 2: Parse error"
+    expect(liquidsoapConfigErrors('[main:3] Liquidsoap 2.2.5\nAt line 212, char 9-10:\nError 2: Parse error')).toEqual(['At line 212, char 9-10:', 'Error 2: Parse error'])
+    expect(liquidsoapConfigErrors('[main:3] Liquidsoap 2.2.5\nUnknown position:\nError 2: Parse error')).toEqual(['Unknown position:', 'Error 2: Parse error'])
+    // Liquidsoap refusing the config never logs a new banner: judged on the tail
+    expect(liquidsoapConfigErrors('ok\nAt line 3, char 1-2:\nError 2: Parse error')).toEqual(['At line 3, char 1-2:', 'Error 2: Parse error'])
+    expect(lastLiquidsoapBanner('a\n2026/10/11 00:00:01 [main:3] Liquidsoap 2.2.5\nError 2: Parse error')).toBe('2026/10/11 00:00:01 [main:3] Liquidsoap 2.2.5')
+    expect(lastLiquidsoapBanner('Error 2: Parse error')).toBeNull()
+  })
+
+  it('verify NEVER rolls back or writes: one "not running" read is re-checked with the kick\'s span; still down → one EVENT STATION DOWN page, nothing changed', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    h.az.backendRunning = false
+    h.az.liquidsoapLog = 'At line 212, char 9-10:\nError 2: Parse error'
+    const writes = h.az.writes().length
+    h.clock.t += 61_000
+    await drain(h)
+    expect(h.az.writes().length).toBe(writes) // no disable, no purge, no restart
+    expect(h.store.events[0]!.status).toBe('live')
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    expect(h.alerts).toHaveLength(1)
+    expect(h.alerts[0]).toMatch(/^EVENT STATION DOWN — manual action needed: station 14's backend is not running during live event 42/)
+    expect(h.store.audits.some((a) => a.action === 'events.verify.station_down')).toBe(true)
+  })
+
+  it('verify: a single "not running" read that recovers on the re-check (running reads spanning 12 s) changes nothing and pages nobody', async () => {
+    const { h } = await built()
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    h.az.statusScript = [false]
+    const writes = h.az.writes().length
+    h.clock.t += 61_000
+    await drain(h)
+    expect(h.az.writes().length).toBe(writes)
+    expect(h.alerts).toEqual([])
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    const verified = h.store.audits.filter((a) => a.action === 'events.build.verified').at(-1)!
+    expect(verified.detail.backend).toBe('running (after a re-check)')
+  })
+
+  it('teardown of an event sent back for review only disables its playlists', async () => {
+    const { h } = await built()
+    h.store.events[0]!.status = 'pending'
+    await h.store.enqueue('teardown', { eventId: 42 }, { dedupeExtra: 'edit' })
+    await drain(h)
+    expect(h.az.playlists.get(mainIdOf(h, 42))!.is_enabled).toBe(false)
+    expect(h.store.reg.every((r) => !r.deletedAt)).toBe(true)
+  })
+
+  it('recheck (T−60): an archived song is dropped from this event only; the ticket is told', async () => {
+    const { h, s2 } = await built()
+    const main = mainIdOf(h, 42)
+    s2.path = 'Removed/12/b.mp3'
+    s2.playlists.push(74)
+    h.clock.t = T('2026-10-10T19:00:00-04:00')
+    await drain(h)
+    expect(s2.playlists).toEqual([74])
+    expect(h.az.files.get(501)!.playlists).toContain(main)
+    expect(h.store.job('ticket_post', (p) => p.kind === 'recheck')).toHaveLength(1)
+  })
+
+  it('queues_paused holds every AzuraCast-writing kind; tickets still run', async () => {
+    const { h } = world()
+    h.store.paused = true
+    h.store.events[0]!.status = 'pending'
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await h.store.enqueue('ticket_open', { eventId: 42 })
+    await drain(h)
+    expect(h.store.job('build_now')[0]!.status).toBe('queued')
+    expect(h.store.job('ticket_open')[0]!.status).toBe('done')
+    expect(h.az.writes()).toHaveLength(0)
+  })
+})
+
+describe('events worker: stale jobs do nothing (event moved on)', () => {
+  const stale = (h: Harness, kind: string) => h.store.audits.filter((a) => a.action === 'events.job.stale' && a.detail.kind === kind)
+
+  it('build: an older version or a non-buildable status is done with a note, no station write', async () => {
+    const { h } = world()
+    h.store.settingRows = settingsWith({ events_autobuild_enabled: true })
+    h.store.events[0]!.version = 2
+    await h.store.enqueue('build', { eventId: 42, version: 1 })
+    h.store.events[0]!.status = 'approved'
+    await drain(h)
+    expect(h.store.job('build')[0]!.status).toBe('done')
+    expect(stale(h, 'build')[0]!.detail).toMatchObject({ jobVersion: 1, version: 2 })
+    h.store.events[0]!.status = 'pending'
+    await h.store.enqueue('build', { eventId: 42, version: 2 })
+    await drain(h)
+    expect(stale(h, 'build')).toHaveLength(2)
+    expect(h.az.writes()).toHaveLength(0)
+    expect(h.store.buildRows).toHaveLength(0)
+  })
+
+  it('build_now on a withdrawn event: done with a note, not dead, no alert', async () => {
+    const { h } = world()
+    h.store.events[0]!.status = 'withdrawn'
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(h.store.job('build_now')[0]!.status).toBe('done')
+    expect(stale(h, 'build_now')).toHaveLength(1)
+    expect(h.alerts).toEqual([])
+    expect(h.az.writes()).toHaveLength(0)
+  })
+
+  it('a details-only edit that lands DURING the build: the event is still marked built and kicks are scheduled', async () => {
+    const { h } = world()
+    const ev = h.store.events[0]!
+    h.az.onCreate = () => {
+      ev.version = 2 // description edit: same build inputs
+    }
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(ev.status).toBe('built')
+    expect(h.store.job('start_kick')).toHaveLength(1)
+  })
+
+  it('an edit that lands DURING the build: the build is recorded, but the event is not marked built and no kicks are scheduled', async () => {
+    const { h } = world()
+    const ev = h.store.events[0]!
+    h.az.onCreate = () => {
+      ev.version = 2
+      ev.status = 'pending'
+    }
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    expect(ev.status).toBe('pending')
+    expect(h.store.buildRows[0]!.status).toBe('applied')
+    for (const k of ['start_kick', 'end_kick', 'recheck', 'verify']) expect(h.store.job(k), k).toHaveLength(0)
+    expect(stale(h, 'build')[0]!.detail).toMatchObject({ buildVersion: 1, version: 2, status: 'pending' })
+  })
+
+  it('verify, recheck, start and end kicks of an event sent back to pending: done with a note, nothing written', async () => {
+    const w = world()
+    const h = w.h
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    const build = h.store.buildRows[0]!
+    const ev = h.store.events[0]!
+    // a member edit: back to pending at a new version (the web enqueues the teardown)
+    ev.version = 2
+    ev.status = 'pending'
+    const writesBefore = h.az.writes().length
+    await h.store.enqueue('verify', { eventId: 42, buildId: build.id }, { dedupeKey: 'verify:stale' })
+    await drain(h)
+    expect(stale(h, 'verify')[0]!.detail).toMatchObject({ buildId: build.id, buildVersion: 1 })
+    expect(build.status).toBe('applied')
+    h.clock.t = T('2026-10-10T19:00:00-04:00')
+    await drain(h)
+    expect(stale(h, 'recheck')).toHaveLength(1)
+    h.clock.t = T('2026-10-10T22:05:00-04:00')
+    await drain(h)
+    expect(stale(h, 'start_kick')).toHaveLength(1)
+    expect(stale(h, 'end_kick')).toHaveLength(1)
+    for (const k of ['recheck', 'start_kick', 'end_kick']) expect(h.store.job(k)[0]!.status, k).toBe('done')
+    expect(h.az.writes()).toHaveLength(writesBefore)
+    expect(h.az.restarts).toBe(0)
+    expect(h.store.job('ticket_post', (p) => p.kind === 'on_air' || p.kind === 'ended')).toHaveLength(0)
+  })
+
+  it('recheck of a built event whose build inputs moved on without a rebuild: done with a note', async () => {
+    const { h, s2 } = world()
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    h.store.events[0]!.version = 2
+    h.store.events[0]!.playlistOrder = 'sequential'
+    s2.path = 'Removed/12/b.mp3'
+    h.clock.t = T('2026-10-10T19:00:00-04:00')
+    await runOne(h, 'recheck')
+    expect(stale(h, 'recheck')[0]!.detail).toMatchObject({ buildVersion: 1, version: 2 })
+    expect(h.store.job('ticket_post', (p) => p.kind === 'recheck')).toHaveLength(0)
+  })
+
+  it('an end kick is never dropped for a version bump alone (it is what takes the event off air)', async () => {
+    const { h } = world()
+    await h.store.enqueue('build_now', { eventId: 42 })
+    await drain(h)
+    h.clock.t = T('2026-10-10T20:00:05-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('live')
+    h.store.events[0]!.version = 2 // a live details edit with autobuild off: no rebuild
+    h.clock.t = T('2026-10-10T22:01:30-04:00')
+    await drain(h)
+    expect(h.store.events[0]!.status).toBe('ended')
+    expect(h.az.playlists.get(mainIdOf(h, 42))!.is_enabled).toBe(false)
+  })
+})
+
+describe('events worker: custom audio', () => {
+  const UPLOAD = 'ab'.repeat(16)
+
+  async function probed(h: Harness, over: Record<string, unknown> = {}, durationS = 29.6) {
+    h.store.addAudio({ id: 7, uploadId: UPLOAD, kind: 'announcement', title: 'Welcome to the show', ...over })
+    await writeSpoolResultNoClobber(dirs.spoolOut, { v: 1, id: probeRequestIdForUpload(UPLOAD), source: 'in-web', type: 'probe', ok: true, sha256: 'a'.repeat(64), size: 1000, durationS, bitrate: 192000, tags: { title: null, artist: null, album: null, genre: null }, cover: null, flags: [] })
+    await tickPeriodic(h.ctx, {})
+  }
+
+  function finalize(h: Harness, bytes = Buffer.from('ID3 final bytes')) {
+    const a = h.store.audio.find((x) => x.id === 7)!
+    const file = '11111111-1111-4111-8111-111111111111.mp3'
+    writeFileSync(join(dirs.final, file), bytes)
+    return writeSpoolResultNoClobber(dirs.spoolOut, { v: 1, id: finalizeRequestIdFor(a), source: 'in-worker', type: 'finalize', ok: true, file, finalSha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length })
+  }
+
+  it('collect → ready → finalize with server-set tags → ingest with pacing → verify after two scans → live', async () => {
+    const h = harness('2026-10-01T12:03:00Z', dirs)
+    h.store.settingRows = settingsWith({})
+    await probed(h)
+    const a = h.store.audio[0]!
+    expect(a.status).toBe('ready')
+    expect(a.durationS).toBe(30)
+    await drain(h)
+    expect(a.status).toBe('ingesting')
+    const req = JSON.parse(readFileSync(join(dirs.spoolIn, readdirSync(dirs.spoolIn).find((f) => f.endsWith('.json'))!), 'utf8'))
+    expect(req).toMatchObject({ type: 'finalize', upload: UPLOAD, approvedSha256: 'a'.repeat(64), tags: { title: 'Welcome to the show', artist: 'EuphoricFM Events', album: 'EuphoricFM Events', genre: '' }, cover: null })
+    // finalize result not there yet: a wait
+    expect(h.store.job('audio_ingest')[0]!.status).toBe('queued')
+    await finalize(h)
+    // the music worker uploaded 30 s ago: ≥ 90 s spacing
+    h.store.musicLastUpload = h.clock.t - 30_000
+    h.clock.t += 5_000
+    await drain(h)
+    expect(h.az.writes()).toHaveLength(0)
+    expect(h.store.job('audio_ingest')[0]!.runAfter).toBe(h.store.musicLastUpload + 90_000)
+    h.clock.t = h.store.musicLastUpload + 90_000
+    await drain(h)
+    const post = h.az.writes().find((w) => w.method === 'POST')!
+    expect(post.path).toBe('/api/station/14/files')
+    expect((post.body as { path: string }).path).toBe(`Events/Uploads/${OWNER}/evt-a7.mp3`)
+    expect(h.az.writes().some((w) => w.method === 'PUT' && /\/file\/\d+$/.test(w.path))).toBe(true)
+    expect(a.mediaId).not.toBeNull()
+    expect(a.status).toBe('ingesting')
+    expect(h.store.uploadAttempts).toHaveLength(1)
+    h.clock.t += 11 * 60_000
+    await drain(h)
+    expect(a.status).toBe('live')
+    expect(readdirSync(dirs.spoolIn).length).toBe(2) // finalize + cleanup_final
+  })
+
+  it('outside the scan window, or at the hourly cap, the upload waits', async () => {
+    const h = harness('2026-10-01T12:01:10Z', dirs)
+    h.store.settingRows = settingsWith({})
+    await probed(h)
+    await drain(h)
+    await finalize(h)
+    h.clock.t += 5_000
+    await drain(h)
+    expect(h.az.writes()).toHaveLength(0)
+    const ingest = h.store.job('audio_ingest')[0]!
+    expect(ingest.lastError).toContain('outside scan window')
+    expect(ingest.runAfter).toBe(T('2026-10-01T12:01:30Z'))
+    h.clock.t = T('2026-10-01T12:03:00Z')
+    h.store.uploadAttempts = [h.clock.t - 50 * 60_000, h.clock.t - 40 * 60_000, h.clock.t - 30 * 60_000, h.clock.t - 20 * 60_000]
+    ingest.runAfter = 0
+    await drain(h)
+    expect(h.az.writes()).toHaveLength(0)
+    expect(ingest.lastError).toContain('events pacing')
+    expect(ingest.runAfter).toBe(h.clock.t + 10 * 60_000)
+  })
+
+  it('a fresh upload that a folder playlist grabbed fails and blocks further ingest', async () => {
+    const h = harness('2026-10-01T12:03:00Z', dirs)
+    h.store.settingRows = settingsWith({})
+    await probed(h)
+    await drain(h)
+    await finalize(h)
+    h.clock.t += 5_000
+    await drain(h)
+    const a = h.store.audio[0]!
+    h.az.files.get(a.mediaId!)!.playlists = [5]
+    h.clock.t += 11 * 60_000
+    await drain(h)
+    expect(a.status).toBe('failed')
+    expect(a.lastError).toBe('folder_playlist_attached')
+    expect(h.ctx.ingestBlocked).toContain('playlist')
+  })
+
+  it('a song keeps the member tags unless they collide with a library song; empty tags are refused', async () => {
+    const h = harness('2026-10-01T12:03:00Z', dirs)
+    h.store.settingRows = settingsWith({})
+    h.store.library = [{ artist: 'GRIM', title: 'Touch' }]
+    await probed(h, { kind: 'song', title: 'Touch', artist: 'grim' }, 200)
+    await drain(h)
+    const req = JSON.parse(readFileSync(join(dirs.spoolIn, readdirSync(dirs.spoolIn)[0]!), 'utf8'))
+    expect(req.tags).toMatchObject({ title: 'Touch (event version)', artist: 'grim' })
+    const h2 = harness('2026-10-01T12:03:00Z', { ...dirs, spoolOut: mkdtempSync(join(tmpdir(), 'out2-')) })
+    h2.store.settingRows = settingsWith({})
+    dirs.spoolOut = h2.ctx.spoolOutDir
+    await probed(h2, { kind: 'song', title: 'Untitled', artist: '  ' }, 200)
+    await drain(h2)
+    expect(h2.store.audio[0]!.status).toBe('failed')
+    expect(h2.store.audio[0]!.lastError).toBe('empty_tags')
+  })
+
+  it('a 5 s announcement (the events probe accepts from 3 s) becomes ready', async () => {
+    const h = harness('2026-10-01T12:03:00Z', dirs)
+    h.store.settingRows = settingsWith({})
+    await probed(h, {}, 5)
+    expect(h.store.audio[0]!.status).toBe('ready')
+    expect(h.store.audio[0]!.durationS).toBe(5)
+  })
+
+  it('a song under 30 s passes the (3 s) probe but is rejected too_short by audio_collect', async () => {
+    const h2 = harness('2026-10-01T12:03:00Z', dirs)
+    h2.store.settingRows = settingsWith({})
+    await probed(h2, { kind: 'song', title: 'Short', artist: 'grim' }, 29.6)
+    expect(h2.store.audio[0]).toMatchObject({ status: 'rejected', lastError: 'too_short', durationS: 30 })
+    expect(h2.store.job('audio_finalize')).toHaveLength(0)
+  })
+
+  it('a rejected probe releases the staging bytes', async () => {
+    const h = harness('2026-10-01T12:03:00Z', dirs)
+    h.store.addAudio({ id: 8, uploadId: UPLOAD })
+    await writeSpoolResultNoClobber(dirs.spoolOut, { v: 1, id: probeRequestIdForUpload(UPLOAD), source: 'in-web', type: 'probe', ok: false, error: 'too_long', released: true })
+    await tickPeriodic(h.ctx, {})
+    expect(h.store.audio[0]!.status).toBe('rejected')
+    expect(h.store.expiredUploads).toEqual([UPLOAD])
+  })
+
+  it('audio_delete: waits while an active event uses it, then the narrow delete; never without deleted_at', async () => {
+    const { h } = world()
+    const f = h.az.addFile(`Events/Uploads/${OWNER}/evt-a7.mp3`)
+    h.store.addAudio({ id: 7, status: 'live', mediaId: f.id, path: f.path, deletedAt: null })
+    await h.store.enqueue('audio_delete', { audioId: 7 })
+    await drain(h)
+    expect(h.store.job('audio_delete')[0]!.status).toBe('dead')
+    expect(h.az.files.has(f.id)).toBe(true)
+    h.store.audio[0]!.deletedAt = new Date(h.clock.t)
+    h.store.annRows.set(42, [{ id: 1, source: 'upload', mediaId: null, audioId: 7, mode: 'at', at: new Date('2026-10-10T20:30:00-04:00'), everyMin: null, fromAt: null, untilAt: null }])
+    await h.store.enqueue('audio_delete', { audioId: 7 }, { dedupeKey: 'again' })
+    await drain(h)
+    expect(h.az.files.has(f.id)).toBe(true)
+    h.store.events[0]!.status = 'ended'
+    h.clock.t += 3601_000
+    await drain(h)
+    expect(h.az.files.has(f.id)).toBe(false)
+  })
+})
+
+describe('events worker: sweeps', () => {
+  it('pending_expire 12 h before start; one staff reminder; unused audio expiry', async () => {
+    const h = harness('2026-10-10T09:00:00-04:00', dirs)
+    h.store.settingRows = settingsWith({})
+    h.store.addEvent({ id: 50, status: 'pending', ticketId: 9, startsAt: new Date('2026-10-10T20:00:00-04:00'), endsAt: new Date('2026-10-10T22:00:00-04:00') })
+    h.store.addEvent({ id: 51, status: 'pending', ticketId: 10, submittedAt: new Date('2026-10-06T00:00:00Z'), startsAt: new Date('2026-11-10T20:00:00-05:00'), endsAt: new Date('2026-11-10T22:00:00-05:00') })
+    h.store.addAudio({ id: 70, status: 'live', mediaId: 900, createdAt: new Date('2026-09-20T00:00:00Z') })
+    h.store.addAudio({ id: 71, status: 'live', mediaId: 901, createdAt: new Date('2026-09-20T00:00:00Z'), usedAt: new Date('2026-09-21T00:00:00Z') })
+    const state = {}
+    await tickPeriodic(h.ctx, state)
+    expect(h.store.events.find((e) => e.id === 50)!.status).toBe('expired')
+    expect(h.store.job('ticket_close', (p) => p.eventId === 50)).toHaveLength(1)
+    expect(h.store.job('teardown', (p) => p.eventId === 50)).toHaveLength(1)
+    expect(h.store.job('ticket_post', (p) => p.kind === 'reminder' && p.eventId === 51)).toHaveLength(1)
+    expect(h.store.audio.find((a) => a.id === 70)!.deletedAt).not.toBeNull()
+    expect(h.store.audio.find((a) => a.id === 71)!.deletedAt).toBeNull()
+    expect(h.store.job('audio_delete', (p) => p.audioId === 70)).toHaveLength(1)
+    h.clock.t += 3600_000
+    await tickPeriodic(h.ctx, {})
+    expect(h.store.job('ticket_post', (p) => p.kind === 'reminder')).toHaveLength(1)
+  })
+
+  it('stinger sync caches EFM Stingers/ media only', async () => {
+    const h = harness('2026-10-01T12:03:00Z', dirs)
+    h.az.addFile('EFM Stingers/one.mp3', { id: 601, title: 'One', length: 12.4 })
+    h.az.addFile('EFM Stingers/two.mp3', { id: 602, title: '', length: 8 })
+    h.az.addFile('ADS/ad.mp3', { id: 603 })
+    await tickPeriodic(h.ctx, {})
+    expect(h.store.stingers).toEqual([
+      { mediaId: 601, path: 'EFM Stingers/one.mp3', title: 'One', lengthS: 12 },
+      { mediaId: 602, path: 'EFM Stingers/two.mp3', title: 'two', lengthS: 8 },
+    ])
+  })
+})
+
+describe('events worker: alerts', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('reuse the music makeAlert: the optional ALERT_DISCORD_WEBHOOK is paged (labelled Events), then an audit row', async () => {
+    const posts: { url: string; body: { content: string; allowed_mentions: unknown } }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      posts.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      return new Response(null, { status: 204 })
+    }))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const audits: { action: string; detail: unknown }[] = []
+    const store = { audit: async (action: string, _t: string, _id: number, detail?: Record<string, unknown>) => void audits.push({ action, detail }) }
+    const on = await eventsAlerter(store, { ALERT_DISCORD_WEBHOOK: 'https://discord.example/api/webhooks/1/x' })
+    await on('events start kick FAILED for event #42', { eventId: 42 })
+    expect(posts).toHaveLength(1)
+    expect(posts[0]!.url).toBe('https://discord.example/api/webhooks/1/x')
+    expect(posts[0]!.body.content).toBe('⚠️ EFM Events Portal: events start kick FAILED for event #42')
+    expect(posts[0]!.body.allowed_mentions).toEqual({ parse: [] })
+    expect(audits).toEqual([{ action: 'events.alert', detail: { title: 'events start kick FAILED for event #42', detail: { eventId: 42 } } }])
+    const off = await eventsAlerter(store, {})
+    await off('another', {})
+    expect(posts).toHaveLength(1)
+    expect(audits).toHaveLength(2)
+  })
+})
+
+describe('events worker: stinger_sync', () => {
+  it('stores top-level EFM Stingers files that AzuraCast lists as type "media" and skips folders, subfolders and unprocessed files', async () => {
+    const h = harness('2026-10-01T12:03:00Z', dirs)
+    h.az.addFile('EFM Stingers/euphoricfm.mp3', { id: 4473, length: 10, title: 'Youre Listening to EuphoricFM' })
+    h.az.addFile('EFM Stingers/elsie.mp3', { id: 4393, length: 9.6, title: '' })
+    h.az.addFile('EFM Stingers/Staff/deep.mp3', { id: 4500, length: 8, title: 'deep' })
+    h.az.addFile('EFM Stingers/zero.mp3', { id: 4501, length: 0, title: 'zero length' })
+    await tickPeriodic(h.ctx, {})
+    const rows = [...h.store.stingers].sort((a, b) => a.mediaId - b.mediaId)
+    expect(rows.map((r) => [r.mediaId, r.path, r.lengthS])).toEqual([
+      [4393, 'EFM Stingers/elsie.mp3', 10],
+      [4473, 'EFM Stingers/euphoricfm.mp3', 10],
+    ])
+    expect(rows.find((r) => r.mediaId === 4393)!.title).toBe('elsie')
+  })
+})

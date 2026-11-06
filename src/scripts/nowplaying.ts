@@ -1,7 +1,8 @@
 // Client-side driver for the now-playing card + recently-played list.
 //
 // Reads `window.__EFM_CONFIG__` (populated by BaseLayout.astro from site.config)
-// and polls the AzuraCast `/api/nowplaying/<station>` endpoint on an interval.
+// and subscribes to np-core.ts, which polls the AzuraCast
+// `/api/nowplaying/<station>` endpoint on an interval (shared with /player/).
 // Between polls, a requestAnimationFrame loop interpolates the progress bar
 // using the server-provided `played_at` + `duration` so the UI feels real-time
 // even though we're polling every 5 seconds.
@@ -13,37 +14,20 @@ import type {
   AzuraNowPlayingResponse,
   AzuraNowPlayingEntry,
 } from '../lib/azuracast';
+import { fmtTime, fmtElapsed, fmtAgo, escapeHtml as escape, isBreakEntry } from '../lib/player-data';
+import {
+  getConfig,
+  subscribeNowPlaying,
+  stationUnavailable,
+  toSameOriginArt,
+  setMediaMetadata,
+  bindMediaSessionActions,
+} from './np-core';
 
-interface EfmConfig {
-  apiBase: string;
-  stationId: string;
-  pollMs: number;
-  mode: 'poll' | 'sse';
-  // Editable live-event copy (site.config.ts → BaseLayout clientConfig).
-  liveEvents: {
-    pill: string;
-    idlePill: string;
-    label: string;
-    fallbackName: string;
-    elapsedPrefix: string;
-  };
-}
-
-interface EfmAudioBridge {
-  play: () => void;
-  pause: () => void;
-  el: HTMLAudioElement;
-}
-
-declare global {
-  interface Window {
-    __EFM_CONFIG__: EfmConfig;
-    __efmAudio?: EfmAudioBridge;
-  }
-}
+const PENDING_REFRESH_MS = 30_000;
 
 (() => {
-  const cfg = window.__EFM_CONFIG__;
+  const cfg = getConfig();
   if (!cfg) {
     console.warn('[efm] no __EFM_CONFIG__ on window — nowplaying script disabled');
     return;
@@ -62,15 +46,30 @@ declare global {
   const elCard = $('np-card');
   const elRecent = $('recent-list');
   const elStatus = $('np-status');
-  // Up-next slide-down panel.
+  // Up-next row (fixed height: a track layer and a note layer).
   const elUpNext = $('np-up-next');
   const elUpNextArt = $<HTMLImageElement>('up-next-art');
   const elUpNextTitle = $('up-next-title');
   const elUpNextArtist = $('up-next-artist');
-  // Pending-requests card (sibling of recently-played in the sidebar).
-  const elPendingSection = $('req-pending-section');
+  const elUpNextWhen = $('up-next-when');
+  const elUpNextNote = $('up-next-note');
+  const upNextCopy = {
+    choosing: elUpNext?.dataset.choosing || '',
+    stationBreak: elUpNext?.dataset.break || '',
+    live: elUpNext?.dataset.live || '',
+    offline: elUpNext?.dataset.offline || '',
+  };
+  // Ads / station imaging show as "Station break / EuphoricFM", like /player/.
+  const breakCopy = {
+    title: elCard?.dataset.breakTitle || '',
+    artist: elCard?.dataset.breakArtist || '',
+  };
+  let excludePlaylists: string[] = [];
+  try { excludePlaylists = JSON.parse(elUpNext?.dataset.exclude || '[]'); } catch { /* keep [] */ }
+  // Requested tab of the sidebar songs card (SongsCard.astro).
   const elPendingList = $('req-pending-list');
   const elPendingCount = $('req-pending-count');
+  const elPendingEmpty = $('req-pending-empty');
   // REQUESTED badges — toggled from `is_request` on each entry.
   const elNpRequested = $('np-requested');
   const elUpNextRequested = $('up-next-requested');
@@ -83,6 +82,10 @@ declare global {
 
   // Mutable state for the RAF loop.
   let lastShId = 0;
+  // Offline state: set while the station's API is unreachable (np-core
+  // reports failed polls); cleared by the next successful poll.
+  let hasData = false;
+  let offline = false;
   let playedAt = 0; // ms
   let duration = 0; // seconds
   let listeners = 0;
@@ -99,76 +102,57 @@ declare global {
   const baseTitle = document.title;
   const eyebrowDefault = elEyebrow?.textContent || 'Now Playing';
 
-  // Up-next reveal threshold: slide in when this many seconds (or fewer) remain
-  // on the current track. 40s sits in the sweet spot the user asked for (30–45s).
-  const UP_NEXT_REVEAL_SEC = 40;
-  let upNextReady = false; // becomes true once we have a valid playing_next song
-
-  const fmtTime = (sec: number) => {
-    if (!isFinite(sec) || sec < 0) sec = 0;
-    const m = Math.floor(sec / 60);
-    const s = Math.floor(sec % 60);
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  };
-
-  // Broadcast elapsed — like fmtTime but grows an hours segment past 1h,
-  // since live sets routinely run longer than any single track.
-  const fmtElapsed = (sec: number) => {
-    if (!isFinite(sec) || sec < 0) sec = 0;
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const ss = Math.floor(sec % 60).toString().padStart(2, '0');
-    return h > 0 ? `${h}:${m.toString().padStart(2, '0')}:${ss}` : `${m}:${ss}`;
-  };
-
-  // Rewrite euphoric.fm album-art URLs to our own origin (/efm-art/...) so the
-  // effects module can read the image onto a <canvas> for colour extraction
-  // without tainting it — Caddy reverse-proxies /efm-art/* back to euphoric.fm.
-  // data: URIs and anything already same-origin pass through untouched.
-  const toSameOriginArt = (raw: string): string => {
-    try {
-      const u = new URL(raw, location.href);
-      return u.origin === 'https://euphoric.fm' ? '/efm-art' + u.pathname + u.search : raw;
-    } catch {
-      return raw;
-    }
-  };
+  const BLANK_ART = "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E";
+  // True while #np-up-next shows a track (then tick() paints its countdown).
+  let upNextShown = false;
+  let upNextWhen = '';
 
   const applyNowPlaying = (np: AzuraNowPlayingEntry) => {
     const song = np.song;
+    const brk = isBreakEntry(np, excludePlaylists);
+    const title = brk ? breakCopy.title : song.title || song.text || 'Unknown track';
+    const artist = brk ? breakCopy.artist : song.artist || '—';
     if (elArt && song.art) {
       const artUrl = toSameOriginArt(song.art);
       elArt.src = artUrl;
-      elArt.alt = `${song.title} — ${song.artist}`;
+      elArt.alt = `${title} — ${artist}`;
       // Announce the (same-origin) art URL so effects.ts can extract its
       // palette. It dedupes by URL, so firing every poll is harmless.
       document.dispatchEvent(new CustomEvent('efm:track-art', { detail: { url: artUrl } }));
     }
-    if (elTitle) elTitle.textContent = song.title || song.text || 'Unknown track';
-    if (elArtist) elArtist.textContent = song.artist || '—';
-    if (elAlbum) elAlbum.textContent = song.album || '';
-    if (elNpRequested) elNpRequested.classList.toggle('hidden', !np.is_request);
+    if (elTitle) elTitle.textContent = title;
+    if (elArtist) elArtist.textContent = artist;
+    if (elAlbum) elAlbum.textContent = brk ? '' : song.album || '';
+    if (elNpRequested) elNpRequested.classList.toggle('hidden', brk || !np.is_request);
     playedAt = (np.played_at || 0) * 1000;
     duration = np.duration || 0;
   };
 
-  // Keep the panel's content primed at all times — the actual reveal is timed
-  // off the current song's remaining seconds in the RAF tick loop below.
+  // Up next shows for the whole of the current song: AzuraCast cues
+  // playing_next when a song starts, so whenever it is a real song it is on
+  // screen. Ads / station IDs (the /player/ break filter), a live set, or no
+  // entry at all show a one-line note in the same fixed-height row instead.
+  const setUpNextNote = (text: string) => {
+    if (elUpNextNote && elUpNextNote.textContent !== text) elUpNextNote.textContent = text;
+  };
   const applyUpNext = (next: AzuraNowPlayingEntry | null) => {
     if (!elUpNext) return;
-    if (!next || !next.song || !(next.song.title || next.song.text)) {
-      upNextReady = false;
-      elUpNext.classList.remove('is-open');
-      if (elUpNextRequested) elUpNextRequested.classList.add('hidden');
+    const song = next?.song;
+    const known = !!song && !!(song.title || song.text);
+    const brk = known && isBreakEntry(next, excludePlaylists);
+    upNextShown = known && !brk && !isLive;
+    elUpNext.classList.toggle('is-open', upNextShown);
+    if (!upNextShown) {
+      setUpNextNote(isLive ? upNextCopy.live : brk ? upNextCopy.stationBreak : upNextCopy.choosing);
       return;
     }
-    const song = next.song;
-    if (elUpNextTitle) elUpNextTitle.textContent = song.title || song.text || '';
-    if (elUpNextArtist) elUpNextArtist.textContent = song.artist || '';
-    if (elUpNextArt && song.art) elUpNextArt.src = toSameOriginArt(song.art);
-    if (elUpNextRequested) elUpNextRequested.classList.toggle('hidden', !next.is_request);
-    upNextReady = true;
-    // Don't add .is-open here — tick() decides based on remaining seconds.
+    if (elUpNextTitle) elUpNextTitle.textContent = song!.title || song!.text || '';
+    if (elUpNextArtist) elUpNextArtist.textContent = song!.artist || '';
+    if (elUpNextArt) {
+      const art = song!.art ? toSameOriginArt(song!.art) : BLANK_ART;
+      if (elUpNextArt.getAttribute('src') !== art) elUpNextArt.src = art;
+    }
+    if (elUpNextRequested) elUpNextRequested.classList.toggle('hidden', !next!.is_request);
   };
 
   // ---- Pending requests (your-requests sidebar card) ------------------
@@ -199,24 +183,19 @@ declare global {
     }
   };
 
-  const fmtAgo = (sec: number) => {
-    if (sec < 60) return 'just now';
-    const m = Math.floor(sec / 60);
-    if (m < 60) return `${m}m ago`;
-    const h = Math.floor(m / 60);
-    return `${h}h ago`;
-  };
-
   const renderPending = (pending: PendingRequest[]) => {
-    if (!elPendingSection || !elPendingList) return;
+    if (!elPendingList) return;
+    // The Requested tab lives in a fixed-height card body: the empty note or
+    // the list fills it (more rows scroll inside), so nothing below moves.
+    elPendingEmpty?.classList.toggle('hidden', pending.length > 0);
+    if (elPendingCount) {
+      elPendingCount.textContent = String(pending.length);
+      elPendingCount.classList.toggle('is-zero', !pending.length);
+    }
     if (!pending.length) {
-      elPendingSection.classList.add('hidden');
       elPendingList.innerHTML = '';
-      if (elPendingCount) elPendingCount.textContent = '';
       return;
     }
-    elPendingSection.classList.remove('hidden');
-    if (elPendingCount) elPendingCount.textContent = String(pending.length);
     const nowSec = Date.now() / 1000;
     // Newest first — fresher submissions belong at the top.
     const rows = [...pending].sort((a, b) => b.ts - a.ts).map((p) => {
@@ -245,7 +224,7 @@ declare global {
   };
 
   // Re-render right after RequestModal POSTs a new entry — without this the
-  // sidebar wouldn't update until the next 5s poll.
+  // sidebar wouldn't update until the next track change or 30 s refresh.
   document.addEventListener('efm:pending-changed', () => {
     refreshPending();
   });
@@ -253,7 +232,8 @@ declare global {
   const applyRecent = (history: AzuraNowPlayingEntry[]) => {
     if (!elRecent) return;
     const nowSec = Date.now() / 1000;
-    const rows = history.slice(0, 5).map((h) => {
+    // Same break filter as /player/'s Song history: no ads or imaging rows.
+    const rows = history.filter((h) => !isBreakEntry(h, excludePlaylists)).slice(0, 4).map((h) => {
       // "X minutes ago" should be relative to when the track *ended*, not
       // when it started. Each history entry's end = played_at + duration.
       const endedAt = (h.played_at || 0) + (h.duration || 0);
@@ -274,11 +254,6 @@ declare global {
     });
     elRecent.innerHTML = rows.join('');
   };
-
-  const escape = (s: string) =>
-    s.replace(/[&<>"']/g, (c) =>
-      c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
-    );
 
   // Status pill — three states: OFFLINE, AUTO DJ (autopilot), ON AIR (live
   // DJ). Only the #np-status-text child is retexted; assigning textContent on
@@ -344,46 +319,69 @@ declare global {
     if ((changed || renamed) && lastNp) updateMediaSession(lastNp);
   };
 
-  const refresh = async () => {
-    try {
-      const r = await fetch(`${cfg.apiBase}/nowplaying/${cfg.stationId}`, {
-        cache: 'no-store',
-      });
-      if (!r.ok) return;
-      const data = (await r.json()) as AzuraNowPlayingResponse;
-      const np = data.now_playing;
-      listeners = data.listeners?.current ?? 0;
-      if (elListeners) elListeners.textContent = String(listeners);
-      if (np) lastNp = np;
-      // applyLive first — setOnline and updateMediaSession read `isLive`.
-      const online = data.is_online !== false;
-      applyLive(data.live, online);
-      setOnline(online);
+  // Runs on every now-playing poll (np-core owns the fetch, the interval and
+  // the hidden-tab pause).
+  const onNowPlaying = (data: AzuraNowPlayingResponse) => {
+    hasData = true;
+    offline = false;
+    const np = data.now_playing;
+    listeners = data.listeners?.current ?? 0;
+    if (elListeners) elListeners.textContent = String(listeners);
+    if (np) lastNp = np;
+    // applyLive first — setOnline and updateMediaSession read `isLive`.
+    const online = data.is_online !== false;
+    applyLive(data.live, online);
+    setOnline(online);
 
-      if (np && np.sh_id !== lastShId) {
-        applyNowPlaying(np);
-        if (lastShId !== 0 && elCard) {
-          elCard.classList.remove('np-flash');
-          void elCard.offsetWidth;
-          elCard.classList.add('np-flash');
-        }
-        lastShId = np.sh_id;
-        updateMediaSession(np);
+    if (np && np.sh_id !== lastShId) {
+      applyNowPlaying(np);
+      if (lastShId !== 0 && elCard) {
+        elCard.classList.remove('np-flash');
+        void elCard.offsetWidth;
+        elCard.classList.add('np-flash');
       }
-      applyRecent(data.song_history || []);
-      applyUpNext(data.playing_next || null);
-      // Don't await — pending-list latency shouldn't gate the now-playing
-      // paint. The fetch races the next poll harmlessly if it's slow.
+      lastShId = np.sh_id;
+      updateMediaSession(np);
+      // A track change is when a pending request most likely aired. Not
+      // awaited — the pending list must not gate the now-playing paint.
       refreshPending();
-    } catch (err) {
-      console.warn('[efm] refresh failed', err);
     }
+    applyRecent(data.song_history || []);
+    applyUpNext(data.playing_next || null);
+  };
+
+  // The station's API is unreachable (network error, timeout, 5xx). Replace
+  // the live-looking "Loading…" / AUTO DJ state with an honest offline card,
+  // stop the stream (it comes from the same server) and keep retrying; the
+  // next successful poll repaints everything (lastShId = 0 forces it).
+  const onUnavailable = (failures: number) => {
+    if (offline || !stationUnavailable(failures, hasData)) return;
+    offline = true;
+    if (isLive) applyLive(undefined, false);
+    setOnline(false);
+    lastShId = 0;
+    playedAt = 0;
+    duration = 0;
+    if (elTitle) elTitle.textContent = elCard?.dataset.offline || '';
+    if (elArtist) elArtist.textContent = '—';
+    if (elAlbum) elAlbum.textContent = '';
+    if (elNpRequested) elNpRequested.classList.add('hidden');
+    if (elBar) elBar.style.width = '0%';
+    if (elTimes) elTimes.textContent = '0:00 / 0:00';
+    if (elListeners) elListeners.textContent = '0';
+    upNextShown = false;
+    elUpNext?.classList.remove('is-open');
+    setUpNextNote(upNextCopy.offline);
+    if (elRecent) {
+      const note = escape(elRecent.dataset.offline || '');
+      elRecent.innerHTML = `<li class="py-2 text-sm text-cream/50">${note}</li>`;
+    }
+    window.__efmAudio?.pause();
   };
 
   // RAF loop: paint the progress bar between polls using the server-anchored
   // playedAt timestamp + duration. This makes the UI feel real-time. The Up
-  // Next panel is also toggled here so the reveal lines up smoothly with the
-  // progress bar rather than only on the 5-second poll cadence.
+  // next countdown is painted here too.
   const tick = () => {
     if (isLive) {
       // Live event: the bar is a CSS indeterminate sweep (.np-live on the
@@ -396,93 +394,50 @@ declare global {
             ? `${liveCopy.elapsedPrefix} · ${fmtElapsed(Math.max(0, (Date.now() - broadcastStartMs) / 1000))}`
             : liveCopy.elapsedPrefix;
       }
-      // playing_next is meaningless mid-broadcast — keep the panel shut.
-      // applyUpNext keeps priming content, so normal reveal resumes on exit.
-      if (elUpNext) elUpNext.classList.remove('is-open');
     } else if (duration > 0 && playedAt > 0) {
-      const elapsedSec = (Date.now() - playedAt) / 1000;
-      const pct = Math.min(100, Math.max(0, (elapsedSec / duration) * 100));
+      // Clamped like /player/: poll data that lags the real song end must not
+      // read "3:15 / 3:10".
+      const elapsedSec = Math.min(duration, Math.max(0, (Date.now() - playedAt) / 1000));
+      const pct = (elapsedSec / duration) * 100;
       if (elBar) elBar.style.width = `${pct}%`;
       if (elTimes) {
         elTimes.textContent = `${fmtTime(elapsedSec)} / ${fmtTime(duration)}`;
       }
 
-      // Slide Up Next in when remaining ≤ threshold; slide out otherwise.
-      // (Without `upNextReady`, the panel only animates the empty content.)
-      if (elUpNext) {
+      // Countdown to the change on the Up next row (text only rewritten
+      // when it changes).
+      if (upNextShown && elUpNextWhen) {
         const remaining = duration - elapsedSec;
-        const shouldShow = upNextReady && remaining > 0 && remaining <= UP_NEXT_REVEAL_SEC;
-        if (shouldShow && !elUpNext.classList.contains('is-open')) {
-          elUpNext.classList.add('is-open');
-        } else if (!shouldShow && elUpNext.classList.contains('is-open')) {
-          elUpNext.classList.remove('is-open');
-        }
+        const when = remaining > 1 ? `in ${fmtTime(remaining)}` : 'next';
+        if (when !== upNextWhen) elUpNextWhen.textContent = upNextWhen = when;
       }
     }
     requestAnimationFrame(tick);
   };
-
-  let pollHandle: number | null = null;
-  const startPolling = () => {
-    if (pollHandle != null) return;
-    pollHandle = window.setInterval(refresh, cfg.pollMs);
-  };
-  const stopPolling = () => {
-    if (pollHandle != null) {
-      clearInterval(pollHandle);
-      pollHandle = null;
-    }
-  };
-
-  // Pause polling when the iframe/page is hidden; snap back when visible.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      refresh();
-      startPolling();
-    } else {
-      stopPolling();
-    }
-  });
 
   // ---- Media Session API ------------------------------------------------
   // When the stream is playing, this exposes title/artist/album/artwork to
   // the OS so it appears on lock screens, in the system tray on desktop, and
   // bound to hardware media keys + bluetooth headphone controls.
   const updateMediaSession = (np: AzuraNowPlayingEntry) => {
-    if (!('mediaSession' in navigator)) return;
-    const song = np.song;
-    try {
-      const art = song.art || '';
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: song.title || song.text || 'EuphoricFM',
-        // During a live event the DJ gets the credit — applyLive re-invokes
-        // this on is_live flips and mid-event renames, so it restores too.
-        artist: isLive ? `${liveCopy.elapsedPrefix}: ${liveStreamer}` : song.artist || 'EuphoricFM',
-        album: song.album || 'EuphoricFM',
-        artwork: art
-          ? [
-              { src: art, sizes: '96x96',   type: 'image/jpeg' },
-              { src: art, sizes: '192x192', type: 'image/jpeg' },
-              { src: art, sizes: '512x512', type: 'image/jpeg' },
-            ]
-          : [],
-      });
-    } catch (err) {
-      console.warn('[efm] mediaSession metadata failed', err);
-    }
+    // During a live event the DJ gets the credit — applyLive re-invokes this
+    // on is_live flips and mid-event renames, so it restores too.
+    const brk = isBreakEntry(np, excludePlaylists);
+    setMediaMetadata(
+      brk ? { title: breakCopy.title, art: np.song.art } : np.song,
+      isLive ? `${liveCopy.elapsedPrefix}: ${liveStreamer}` : brk ? breakCopy.artist : np.song.artist || 'EuphoricFM',
+    );
   };
 
-  if ('mediaSession' in navigator) {
-    const bridge = () => window.__efmAudio;
-    navigator.mediaSession.setActionHandler('play', () => bridge()?.play());
-    navigator.mediaSession.setActionHandler('pause', () => bridge()?.pause());
-    navigator.mediaSession.setActionHandler('stop', () => bridge()?.pause());
-    // Seek doesn't apply to a live stream; skip prev/next intentionally too.
-  }
+  bindMediaSessionActions();
 
-  // Boot.
+  // Boot. The pending list is refreshed on a track change, right after this
+  // visitor requests a song (efm:pending-changed) and otherwise every 30 s
+  // (skipped while the tab is hidden) — not on every 5 s now-playing poll.
   refreshPending();
-  refresh();
-  startPolling();
+  window.setInterval(() => {
+    if (document.visibilityState !== 'hidden') refreshPending();
+  }, PENDING_REFRESH_MS);
+  subscribeNowPlaying(onNowPlaying, onUnavailable);
   requestAnimationFrame(tick);
 })();

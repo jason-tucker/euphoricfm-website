@@ -1,0 +1,1 @@
+ALTER TABLE "items" ADD COLUMN "transcode_kbps" integer;

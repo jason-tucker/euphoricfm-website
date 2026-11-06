@@ -1,5 +1,6 @@
 // Client-side driver for EventStatus.astro's live on-air card + "On the
-// Calendar" list on /events.
+// Calendar" list on /events, and the same evst-* block in the home page's
+// events teaser (EventsTeaser.astro).
 //
 // Source of truth is the dedicated Euphoric Events AzuraCast station
 // (shortcode `event`, config: site.events.station) — a PUBLIC,
@@ -10,7 +11,7 @@
 //
 // Progressive enhancement, same spirit as stats.ts: this script ships on
 // every page via BaseLayout, so it early-bails when #evst-card (only on
-// /events) is absent. All failures are silent (console.warn) and leave
+// /events and the home page) is absent. All failures are silent (console.warn) and leave
 // whatever the page already had on screen — first-load failure leaves the
 // server-rendered off-air empty state exactly as it renders. Manual config
 // override (`site.events.status.current` non-null) stamps
@@ -22,34 +23,7 @@
 // event names (e.g. "Fasion Show" — spelling is theirs) and render verbatim.
 
 import { site } from '../site.config';
-
-interface ScheduleEntry {
-  id: number;
-  type: 'playlist' | 'streamer';
-  name: string;
-  title: string;
-  description: string;
-  start_timestamp: number; // unix seconds
-  start: string;
-  end_timestamp: number; // unix seconds
-  end: string;
-  is_now: boolean;
-}
-
-// Guards against a malformed row (missing/mistyped field) before it reaches
-// date math or textContent — cheap insurance against a schema drift on the
-// upstream station without crashing the whole render.
-const isValidEntry = (e: unknown): e is ScheduleEntry => {
-  if (!e || typeof e !== 'object') return false;
-  const r = e as Record<string, unknown>;
-  return (
-    (typeof r.id === 'number' || typeof r.id === 'string') &&
-    typeof r.name === 'string' &&
-    typeof r.start_timestamp === 'number' &&
-    typeof r.end_timestamp === 'number' &&
-    typeof r.is_now === 'boolean'
-  );
-};
+import { eventRows, isValidEntry, type ScheduleEntry } from '../lib/event-schedule';
 
 (() => {
   const elCard = document.getElementById('evst-card');
@@ -63,6 +37,8 @@ const isValidEntry = (e: unknown): e is ScheduleEntry => {
   const elCalendarList = document.getElementById('evst-calendar-list');
   if (!elOffair || !elOnair || !elCalendar || !elCalendarList) return;
 
+  // Optional "nothing booked" line (the home page's events teaser has one).
+  const elCalendarEmpty = document.getElementById('evst-calendar-empty');
   const elOnName = document.getElementById('evst-on-name');
   const elOnTimes = document.getElementById('evst-on-times');
 
@@ -73,36 +49,6 @@ const isValidEntry = (e: unknown): e is ScheduleEntry => {
   // Display cap for "On the Calendar" — a fixed UI constant, independent of
   // `station.scheduleRows` (how many raw rows are fetched from the API).
   const CALENDAR_LIMIT = 5;
-
-  // A booking that crosses midnight comes back from the schedule API split
-  // into per-day rows (…–23:59, then 00:00–…). Rows of the SAME playlist
-  // whose gap is at most this many seconds are one event to a listener —
-  // merge them. 5 minutes comfortably covers the day-split seam without
-  // ever merging genuinely separate sessions hours apart.
-  const MERGE_GAP_SEC = 300;
-
-  // Collapse contiguous/overlapping same-id rows into single events spanning
-  // the full range (is_now survives from any merged part). Exact duplicate
-  // rows merge too (zero/negative gap). Output is sorted by start.
-  const mergeContiguous = (entries: ScheduleEntry[]): ScheduleEntry[] => {
-    const sorted = entries
-      .slice()
-      .sort((a, b) => (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : a.start_timestamp - b.start_timestamp));
-    const out: ScheduleEntry[] = [];
-    for (const e of sorted) {
-      const prev = out[out.length - 1];
-      if (prev && String(prev.id) === String(e.id) && e.start_timestamp - prev.end_timestamp <= MERGE_GAP_SEC) {
-        if (e.end_timestamp > prev.end_timestamp) {
-          prev.end_timestamp = e.end_timestamp;
-          prev.end = e.end;
-        }
-        if (e.is_now) prev.is_now = true;
-        continue;
-      }
-      out.push({ ...e });
-    }
-    return out.sort((a, b) => a.start_timestamp - b.start_timestamp);
-  };
 
   // ---- date/time formatting (station timezone, undefined locale — same
   // convention as stats.ts) --------------------------------------------------
@@ -159,10 +105,11 @@ const isValidEntry = (e: unknown): e is ScheduleEntry => {
 
   const render = (rawEntries: ScheduleEntry[]) => {
     const nowSec = Date.now() / 1000;
-    // Merge FIRST: an on-air event whose second (post-midnight) half is still
+    // Drop "~" helper playlists (pinned songs / announcements), then merge
+    // FIRST: an on-air event whose second (post-midnight) half is still
     // "upcoming" must read as one broadcast with the full time range — never
     // an ON AIR card plus a duplicate calendar row.
-    const entries = mergeContiguous(rawEntries);
+    const entries = eventRows(rawEntries);
     const onAir = entries.find((e) => e.is_now === true && e.end_timestamp > nowSec) ?? null;
 
     elOffair!.classList.toggle('hidden', !!onAir);
@@ -188,6 +135,7 @@ const isValidEntry = (e: unknown): e is ScheduleEntry => {
     upcoming.sort((a, b) => a.start_timestamp - b.start_timestamp);
     const shown = upcoming.slice(0, CALENDAR_LIMIT);
 
+    elCalendarEmpty?.classList.toggle('hidden', shown.length > 0);
     if (shown.length === 0) {
       elCalendar!.classList.add('hidden');
       elCalendarList!.innerHTML = ''; // static clear — no dynamic string involved

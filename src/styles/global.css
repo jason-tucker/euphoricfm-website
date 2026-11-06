@@ -69,10 +69,14 @@
   font-display: swap;
 }
 
-/* Cortado Script — used for the "FM" word in the wordmark. */
+/* Cortado Script — used for the "FM" word in the wordmark. The WOFF2 is a
+   subset (space + A–Z + a–z, kern + calt kept, ~19 KB instead of the 521 KB
+   TTF; the command is in CHANGELOG 0.22.2). The TTF stays last as the fallback
+   and for docs/og/og-image.html. */
 @font-face {
   font-family: 'Cortado Script';
-  src: url('/fonts/CortadoScript-Regular.ttf') format('truetype');
+  src: url('/fonts/CortadoScript-Regular.woff2') format('woff2'),
+       url('/fonts/CortadoScript-Regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -144,11 +148,13 @@
      phone iframe all the way to a 4K monitor. */
   .phone {
     width: 100%;
-    max-width: 100%;
+    /* Same width as the shared top bar (shared/efm-bar.css), so the page lines up under it. */
+    max-width: var(--efmh-max, 72rem);
     margin-left: auto;
     margin-right: auto;
-    padding-left: clamp(0.5rem, 2vw, 2rem);
-    padding-right: clamp(0.5rem, 2vw, 2rem);
+    /* Same side gutter as the shared top bar, so page edges line up with it. */
+    padding-left: var(--efmh-gutter, 16px);
+    padding-right: var(--efmh-gutter, 16px);
   }
   .section {
     padding-top: clamp(0.75rem, 1.5vw, 1.5rem);
@@ -171,13 +177,18 @@
      barely room for a single entry. */
   .efm-hero {
     display: grid;
-    grid-template-columns: 1fr;
+    /* minmax(0, …) so a wide child cannot stretch the column past the
+       viewport (1fr alone let the page scroll sideways at 320px). */
+    grid-template-columns: minmax(0, 1fr);
     gap: clamp(0.5rem, 1.5vw, 1.25rem);
     align-items: start;
   }
-  @media (min-width: 720px) {
+  /* Player + side column from 1024px (the side column is a fixed 23rem so
+     the player keeps its width); below that the side cards stack under the
+     player (two across from 640px, see home.css). */
+  @media (min-width: 1024px) {
     .efm-hero {
-      grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr);
+      grid-template-columns: minmax(0, 1fr) 23rem;
     }
   }
 
@@ -237,17 +248,43 @@
   .efm-sidebar-scroll::-webkit-scrollbar-corner {
     background: transparent;
   }
+  /* Every button looks like a button: a visible 1px edge, a hover tint, a
+     pressed state and the global focus ring (owner rule: controls must be
+     obviously clickable). Variants below only change colours. */
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold min-h-[48px] transition-transform active:scale-[0.98];
+    border: 1px solid transparent;
+    cursor: pointer;
+    text-decoration: none;
+    transition: transform 120ms ease, background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
   }
+  .btn:active { transform: scale(0.98); box-shadow: inset 0 2px 6px rgb(var(--efm-ink-rgb) / 0.35); }
+  /* Neutral bordered button (secondary actions). */
+  .btn-ghost {
+    color: rgb(var(--efm-cream-rgb));
+    border-color: rgb(var(--efm-cream-rgb) / 0.25);
+    background-color: rgb(var(--efm-cream-rgb) / 0.08);
+  }
+  .btn-ghost:hover { border-color: rgb(var(--efm-cream-rgb) / 0.5); background-color: rgb(var(--efm-cream-rgb) / 0.14); }
+  /* Gold outline (navigation-style actions). */
+  .btn-outline {
+    color: rgb(var(--efm-sunburst-rgb));
+    border-color: rgb(var(--efm-sunburst-rgb) / 0.6);
+    background-color: rgb(var(--efm-sunburst-rgb) / 0.07);
+  }
+  .btn-outline:hover { border-color: rgb(var(--efm-sunburst-rgb)); background-color: rgb(var(--efm-sunburst-rgb) / 0.15); }
+  .btn-sm { min-height: 44px; padding: 0 0.875rem; border-radius: 0.625rem; }
   .btn-sunburst {
     @apply text-ink bg-gradient-to-br from-sunburst to-gold;
+    border-color: rgb(var(--efm-gold-rgb) / 0.8);
+    box-shadow: inset 0 1px 0 rgb(var(--efm-cream-rgb) / 0.35), 0 4px 14px rgb(var(--efm-sunburst-rgb) / 0.25);
   }
   .btn-midnight {
     @apply text-cream bg-midnight;
   }
   .btn-ruby {
     @apply text-cream bg-ruby;
+    border-color: rgb(var(--efm-ruby-rgb) / 0.9);
   }
   /* Navy→red. sRGB interpolates this span through a muddy grey-brown midpoint;
      OKLCH (where supported) keeps the middle a clean brand violet. CEF + older
@@ -279,17 +316,12 @@
   100% { box-shadow: 0 0 0 0 rgb(var(--efm-sunburst-rgb) / 0); }
 }
 
-/* View Transitions API — name the now-playing card so the browser can
-   animate the modal-open/close crossfade smoothly. */
-@supports (view-transition-name: x) {
-  .vt-np  { view-transition-name: np-card; }
-  .vt-art { view-transition-name: np-art; }
-}
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 220ms;
-  animation-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
-}
+/* JavaScript off (BaseLayout adds html.efm-js before first paint): hide what
+   only a script can make work — a <button data-open> opens a pop-up, and
+   .efm-js-only marks live data and the player's transport. A link with
+   data-open keeps working through its href, so it stays. */
+html:not(.efm-js) button[data-open],
+html:not(.efm-js) .efm-js-only { display: none !important; }
 
 /* Modal overlays fade/scale in. */
 .efm-modal-enter {
@@ -479,16 +511,8 @@ html.efm-fx-off #np-status { animation: none; }
 
 /* --- Site-wide subtle reactions (kept "a lil"). ------------------------- */
 
-/* Header wordmark: pinned — no honey-float, no bass scale (the moving
-   wordmark read as the whole page shifting). Keeps only the bass glow,
-   which brightens in place without moving anything. */
-header h1 span {
-  text-shadow: 0 0 calc(var(--efm-bass) * 12px) rgb(var(--efm-sunburst-rgb) / calc(var(--efm-bass) * 0.5));
-  transition: text-shadow 80ms linear;
-}
-
-/* Action row + recently-played cards lift with bass kicks. Very small. */
-.efm-extras .btn, #recent-list li {
+/* Recently-played rows lift with bass kicks. Very small. */
+#recent-list li {
   transform: translateY(calc(var(--efm-bass) * -1px));
   transition: transform 80ms linear;
 }
@@ -500,6 +524,7 @@ header h1 span {
     filter: brightness(1.06);
   }
 }
+html.efm-cef .btn:hover { filter: none; }
 
 /* ---------------------------------------------------------------------------
  * Fluid music-reactive background — three big blurred colour blobs.
@@ -661,6 +686,12 @@ html.efm-cef .efm-bg { display: none; }   /* drop the blur(64px) blob layer enti
    compositor drops → the ENTIRE page renders blank (this is what regressed
    the phone in 0.7.3/0.8.0). If one ever sneaks back in, the phone survives. */
 html.efm-cef body { filter: none !important; }
+/* The pop-up overlays' backdrop-blur paints black in CEF too. */
+html.efm-cef .backdrop-blur-sm {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background-color: rgb(var(--efm-ink-rgb) / 0.92);
+}
 html.efm-cef .card {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -811,16 +842,33 @@ html.efm-cef .card {
 }
 
 /* ---------------------------------------------------------------------------
- * Euphoric FM Events (src/pages/events.astro + EventsHero/EventsHowItWorks/
+ * EuphoricFM Events (src/pages/events.astro + EventsHero/EventsHowItWorks/
  * EventsServices/EventStatus/EventInquiryModal). Tokens only — every colour
  * below resolves to the shared --efm-*-rgb channels in tokens.css, same
  * discipline as the rest of this file. No filter/backdrop-filter (CEF-safe
  * per CLAUDE.md rule 5); the equalizer motif animates transform: scaleY only.
  * ------------------------------------------------------------------------- */
 
-/* Homepage discoverability button — ActionRow's 3rd item. Outline style so
-   it reads as navigation, visually distinct from the four solid-fill action
-   buttons (Request/Submit/Contact/Business AD). */
+/* Modal close button — a real bordered 44px button (the old bare "×" was a
+   28×20 target that didn't read as clickable). */
+.efm-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 0.75rem;
+  border: 1px solid rgb(var(--efm-cream-rgb) / 0.22);
+  background: rgb(var(--efm-cream-rgb) / 0.06);
+  color: rgb(var(--efm-cream-rgb) / 0.85);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.efm-close-btn:hover { background: rgb(var(--efm-cream-rgb) / 0.14); border-color: rgb(var(--efm-cream-rgb) / 0.45); color: rgb(var(--efm-cream-rgb)); }
+.efm-close-btn:active { transform: scale(0.96); }
+.efm-close-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+
 .btn-events {
   color: rgb(var(--efm-sunburst-rgb));
   border: 1px solid rgb(var(--efm-sunburst-rgb) / 0.45);
@@ -894,4 +942,34 @@ html.efm-fx-off .efm-eq span {
     animation: none !important;
     transform: scaleY(0.6);
   }
+}
+
+/* Status toast (scripts/toast.ts) — e.g. "Couldn't start the stream". Above
+   the sticky bar and the pop-ups (z 70); solid background, no blur, so it
+   paints in the in-game CEF too. */
+.efm-toast {
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 80;
+  max-width: min(calc(100vw - 32px), 420px);
+  padding: 10px 16px;
+  border-radius: 12px;
+  border: 1px solid rgb(var(--efm-ruby-rgb) / 0.5);
+  background: rgb(var(--efm-ink-rgb) / 0.96);
+  color: rgb(var(--efm-cream-rgb));
+  font-size: 14px;
+  line-height: 1.35;
+  text-align: center;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, 8px);
+  transition: opacity 200ms ease-out, transform 200ms ease-out, visibility 200ms;
+  pointer-events: none;
+}
+.efm-toast.is-open {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
 }

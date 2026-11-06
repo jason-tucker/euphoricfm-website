@@ -1,0 +1,10 @@
+node_modules/
+.next/
+dist/
+next-env.d.ts
+*.tsbuildinfo
+# real env files never leave the host (only *.env.example is tracked)
+env/*.env
+.env
+data/
+test/.out/

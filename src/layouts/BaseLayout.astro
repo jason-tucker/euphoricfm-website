@@ -2,17 +2,26 @@
 import '../styles/tokens.css';
 import '../styles/global.css';
 import { site } from '../site.config';
+import ModalControls from '../components/ModalControls.astro';
 
 interface Props {
   title?: string;
   description?: string;
   ogImage?: string;
+  /**
+   * 'site' (default) ships the full-site bundle (now-playing card, effects,
+   * events, station facts, the lazy stats loader and the pop-up controls).
+   * 'none' ships nothing, so a page such as /player/ can load its own entry
+   * script instead.
+   */
+  scripts?: 'site' | 'none';
 }
 
 const {
   title = site.name,
   description = site.description,
-  ogImage = '/images/og.jpg',
+  ogImage = '/images/og.png',
+  scripts = 'site',
 } = Astro.props;
 
 const fullTitle = title === site.name ? title : `${title} — ${site.name}`;
@@ -42,6 +51,10 @@ const clientConfig = {
     <meta name="color-scheme" content="dark" />
     <meta name="format-detection" content="telephone=no" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Both wordmark fonts are in the shared top bar on every page; preload
+         them so they are not discovered only after the stylesheet parses. -->
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/Begaron-Regular.woff2" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/CortadoScript-Regular.woff2" />
     <!-- PWA bits (manifest, apple-touch-icon, theme-color, apple-mobile meta tags)
          were removed. The in-game phone is the primary use case, and some custom
          FiveM phone CEF builds were failing to first-paint the iframe when the
@@ -53,6 +66,10 @@ const clientConfig = {
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
     <meta property="og:image" content={new URL(ogImage, Astro.site).toString()} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={`${site.name} — ${site.tagline}`} />
+    <meta name="twitter:image" content={new URL(ogImage, Astro.site).toString()} />
     <meta property="og:url" content={Astro.url.toString()} />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="canonical" href={Astro.url.toString()} />
@@ -71,10 +88,16 @@ const clientConfig = {
 
          2. Effects on/off. Mirrors effects.ts's logic: explicit localStorage
             choice wins; otherwise default off under reduced-motion, on elsewhere.
-            Sets `html.efm-fx-off` which CSS uses to force the static brand look. -->
+            Sets `html.efm-fx-off` which CSS uses to force the static brand look.
+
+         3. `html.efm-js` marks that scripts run at all. Controls that only work
+            through a script (a <button data-open>, the live station facts, the
+            home player's transport) are hidden without it (global.css), so a
+            visitor with JavaScript off never gets a dead button or a dash. -->
     <script is:inline>
       (function () {
         var el = document.documentElement;
+        el.classList.add('efm-js');
         try {
           if (/CitizenFX/i.test(navigator.userAgent)) el.classList.add('efm-cef');
         } catch (e) { /* navigator unavailable → assume a normal browser */ }
@@ -86,6 +109,7 @@ const clientConfig = {
         } catch (e) { /* storage blocked → default on */ }
       })();
     </script>
+    <slot name="head" />
   </head>
   <body class="overflow-x-hidden">
     <!-- Fluid music-reactive backdrop. Three big blurred colour blobs that
@@ -98,22 +122,30 @@ const clientConfig = {
       <div class="efm-orbit efm-orbit--pink"><div class="efm-float" style="--efm-depth: 1;"><div class="efm-blob efm-blob--pink"></div></div></div>
       <div class="efm-orbit efm-orbit--gold"><div class="efm-float" style="--efm-depth: 0.8;"><div class="efm-blob efm-blob--gold"></div></div></div>
     </div>
-    <!-- Caddy renders /runtime-config.js from env vars at request time so
-         webhook URLs aren't baked into the static bundle. Loaded first so the
-         modals' inline scripts (later in body) can read window.__EFM_CONFIG__.discord. -->
-    <script is:inline src="/efm-runtime-config.js"></script>
     <script is:inline define:vars={{ clientConfig }}>
       window.__EFM_CONFIG__ = Object.assign(window.__EFM_CONFIG__ || {}, clientConfig);
     </script>
+    <!-- The shared top bar (Header.astro) sits outside <main>, above the blobs. -->
+    <slot name="header" />
     <!-- relative + z-index keeps all content painting above the .efm-bg blobs. -->
     <main id="main" class="relative z-[1]"><slot /></main>
+    <!-- Pop-ups (slot="overlays") render OUTSIDE <main>: <main> is a z-[1]
+         stacking context, so an overlay inside it could never cover the sticky
+         top bar (z-index 50). The overlays use z-[70]. -->
+    <slot name="overlays" />
 
-    <script>
-      import '../scripts/nowplaying.ts';
-      import '../scripts/effects.ts';
-      import '../scripts/stats.ts';
-      import '../scripts/events.ts';
-    </script>
+    {scripts === 'site' && <ModalControls />}
+    {scripts === 'site' && (
+      <script>
+        // stats.ts itself is loaded on demand by stats-lazy.ts (only when the
+        // #stats section nears the viewport) — it is the heaviest script.
+        import '../scripts/nowplaying.ts';
+        import '../scripts/effects.ts';
+        import '../scripts/events.ts';
+        import '../scripts/station-facts.ts';
+        import '../scripts/stats-lazy.ts';
+      </script>
+    )}
     <script is:inline>
       // Best-effort cleanup of any service worker registered by an earlier
       // build. sw.js itself is now a killswitch — visiting the page in any

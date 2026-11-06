@@ -63,20 +63,40 @@ hover-only affordances. Use the `.phone` container utility for max-width.
 ### 7. Editable copy stays in `src/site.config.ts`; webhook URLs are runtime env-injected
 About text, business AD info, station name, `discord.avatarUrl`, and other editable strings live in `src/site.config.ts`. Don't sprinkle copy across components.
 
-Webhook URLs (`PUBLIC_DISCORD_REQUEST_WEBHOOK`, `PUBLIC_DISCORD_CONTACT_WEBHOOK`) are **never** hardcoded or build-time inlined. Caddy templates them into `/efm-runtime-config.js` at request time from the container's env vars (set in `.env` on the host). The modals read them off `window.__EFM_CONFIG__.discord.{requestWebhook,contactWebhook}`. To rotate a webhook: edit `.env` + `docker compose up -d` — no rebuild needed.
+The Discord contact webhook (`DISCORD_CONTACT_WEBHOOK`, the only one left since song submission moved to the music portal) is **never** in the browser, hardcoded or build-time inlined. It lives only in the `efm-requests` sidecar's runtime env; the contact and event-inquiry modals POST JSON to the same-origin relay `/contact/message` and `/contact/event` (`server/index.mjs`), which validates, rate-limits per IP, forwards with `allowed_mentions: {parse: []}` and never logs the URL. There is no `/efm-runtime-config.js` any more (it answers 410).
 
 ## Architecture
 
 ```
 src/
-  layouts/BaseLayout.astro     window.__EFM_CONFIG__ injected here; imports nowplaying.ts + effects.ts
+  layouts/BaseLayout.astro     window.__EFM_CONFIG__ injected here; `scripts="site"` (default)
+                               ships nowplaying/effects/stats/events + the webhook runtime config,
+                               `scripts="none"` ships neither (the Web Player loads its own entry)
   pages/index.astro            composes the page top-to-bottom
-  pages/events.astro           composes the Euphoric FM Events page (Header → EventsHero →
-                               EventsHowItWorks → EventsServices → EventStatus → Footer,
-                               EventInquiryModal outside .phone)
+  pages/events.astro           the EuphoricFM Events explainer (Header → EventsHero →
+                               EventsHowItWorks → EventsServices → EventStatus → Footer). A <head>
+                               script sends TOP-LEVEL visits to events.euphoric.fm
+                               (`window.self === window.parent`, never window.top); inside an
+                               iframe (in-game phone) the page stays. No inquiry pop-up here
+  pages/player.astro           the Web Player (/player/, dist/player/index.html): the shared top bar
+                               (Web Player marked current), full layout + pop-out strip (no bar)
+                               (?popout=1 or ≤420×260 → html.efm-popout), reuses RequestModal.
+                               No Discord anywhere on it. Styles: styles/player.css (.efmp-*)
+  components/Header.astro      the shared EuphoricFM top bar (Release 3): logo · Listen · About ·
+                               Events · Stats · Music ▾ · Contact · gold Web Player, phone Menu
+                               sheet; <details>/<summary> menus (work with JS off). Rendered from
+                               shared/nav.json with shared/efm-bar.css, same data + CSS as the
+                               portal's music/src/components/SiteBar.tsx
   site.config.ts               single source of truth for editable strings (NOT webhook URLs);
                                includes the `events` block — all /events copy lives here
-  scripts/nowplaying.ts        client-side polling + RAF progress bar
+  scripts/np-core.ts           shared now-playing poller (subscribeNowPlaying), art proxy rewrite,
+                               Media Session helpers — used by nowplaying.ts and player.ts
+  scripts/stream-audio.ts      shared live-stream engine (play/stop, ?t= cache-bust, Web Audio
+                               analyser → --efm-* vars, effects gating, window.__efmAudio bridge)
+                               — used by PlayerCard.astro and player.ts
+  scripts/nowplaying.ts        home now-playing card + recently played + RAF progress bar
+  scripts/player.ts            Web Player page driver (data-np bindings, quality picker from
+                               station.mounts, .pls/.m3u, pop-out, history, volume/mute)
   scripts/effects.ts           music-reactive visual effects (spring physics, album-art theming,
                                OKLCH colour extractor, effects master toggle)
   scripts/stats.ts              station stats section: fetch/render, hand-rolled SVG charts,
@@ -85,6 +105,8 @@ src/
                                PUBLIC schedule API and hydrates EventStatus (ON AIR card +
                                "On the Calendar" upcoming list); config override wins
   lib/azuracast.ts             TS types + URL helpers
+  lib/player-data.ts           pure helpers (formatting, ad/break filter, mounts → stream options,
+                               .pls/.m3u builders) — imported by node:test straight from source
   lib/version.ts               version + sha for footer
   lib/stats.ts                  TS types for the /stats/* payloads (kept in sync with server/stats.mjs)
   styles/tokens.css            centralised CSS colour tokens (brand palette + semantic roles)
@@ -92,11 +114,17 @@ src/
                                scripts/stats.ts)
   components/EventsHero.astro, EventsHowItWorks.astro, EventsServices.astro,
     EventStatus.astro, EventInquiryModal.astro
-                               /events page components; EventInquiryModal posts to the
-                               existing contact Discord webhook with a distinguished embed;
+                               /events page components; EventInquiryModal (home page only,
+                               "Plan an event") posts to the /contact/event relay;
                                EventStatus renders off-air/on-air/calendar blocks hydrated by
-                               scripts/events.ts from the events station's schedule — a
+                               scripts/events.ts from the events station's schedule ("~"
+                               helper playlists hidden, lib/event-schedule.ts) — a
                                non-null site.events.status.current still overrides it
+shared/                        files BOTH sites use: nav.json (top-bar items) + efm-bar.css (its
+                               styles). The portal builds from music/ only, so it keeps byte-for-
+                               byte copies in music/src/shared/ — after editing run
+                               `node shared/sync.mjs`; test/shared-drift.test.mjs (pnpm test:site,
+                               CI) fails on any drift, incl. tokens.css vs music/src/app/tokens.css
 public/
   fonts/                       Begaron (Euphoric) + Cortado Script (FM)
   favicon.svg
@@ -149,6 +177,9 @@ displays `v<package.json version> · <short SHA>` so you always know which build
 | `pnpm build` | `astro build` — production static build |
 | `pnpm preview` | `astro preview` — preview the production build locally |
 | `pnpm test` | `node --test server/*.test.mjs` — server sidecar test suite (node:test, zero deps) |
+| `pnpm test:site` | `node --test test/*.test.mjs` — dist/ checks (needs `pnpm build`), shared top-bar drift checks, player helper tests |
+| `pnpm sync:shared` | copy `shared/nav.json` + `shared/efm-bar.css` into `music/src/shared/` (the portal's copies) |
+| `sh test/caddy-player.sh` | Caddy serves /player/ as the player (not the SPA fallback), /player → 308 (needs `pnpm build` + docker) |
 
 There is **no `typecheck` script** in `package.json`. Type-checking runs as `pnpm exec astro check`. CI runs it with `continue-on-error: true` — type errors warn but do not fail the build.
 
@@ -176,11 +207,13 @@ There is **no `typecheck` script** in `package.json`. Type-checking runs as `pnp
 
 ## Discord webhooks
 
-The "submit a song" and "contact us" forms POST to Discord webhooks. Webhook URLs are
-**runtime env-injected** (see Rule 7): Caddy serves `/efm-runtime-config.js` which templates
-`PUBLIC_DISCORD_REQUEST_WEBHOOK` and `PUBLIC_DISCORD_CONTACT_WEBHOOK` from the container env into
-`window.__EFM_CONFIG__.discord`. The modals read them at submit time from that object. They are
-never baked into the static build. Match the embed shape that AzuraCast's existing button uses —
+The "contact us" form (and the /events inquiry form) POST to a Discord webhook. Song
+submission is NOT a form any more: the "Submit music" button opens the portal at
+music.euphoric.fm, and `/music` 302-redirects there (see the Caddyfile "Music portal entry"
+block). The contact/event webhook is
+**server-side only** (see Rule 7): the modals POST to `/contact/*` on the same origin and the
+`efm-requests` sidecar relays to Discord from `DISCORD_CONTACT_WEBHOOK`. Nothing about Discord
+reaches the static build or the browser. Match the embed shape that AzuraCast's existing button uses —
 `username`, `avatar_url`, `thread_name`, `embeds[{ title, description, fields,
 color, timestamp, footer }]` — so the team's existing Discord thread routing
 keeps working.

@@ -73,13 +73,14 @@
     # behaviour, so every origin the app legitimately talks to is allow-listed:
     #   img-src    : same-origin art (/efm-art), data: placeholder, raw
     #                euphoric.fm art used by the Media Session API.
-    #   connect-src: euphoric.fm (now-playing + library fetches) + discord.com
-    #                (webhook POSTs) + self (/requests, /api proxies).
+    #   connect-src: euphoric.fm (now-playing + library fetches) + self
+    #                (/requests, /stats, /contact, /api proxies). No discord.com:
+    #                the contact forms post to the same-origin /contact/* relay.
     #   media-src  : the euphoric.fm audio stream.
     # script-src/style-src keep 'unsafe-inline' because the page is inline-script
     # heavy (no nonces); the stored-XSS fix is the server+client escaping, this
     # is a second layer. object-src/base-uri lock down plugin + <base> injection.
-    Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://euphoric.fm; font-src 'self'; connect-src 'self' https://euphoric.fm https://discord.com; media-src https://euphoric.fm; object-src 'none'; base-uri 'self'; form-action 'self'; worker-src 'self'; frame-ancestors *"
+    Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://euphoric.fm; font-src 'self'; connect-src 'self' https://euphoric.fm; media-src https://euphoric.fm; object-src 'none'; base-uri 'self'; form-action 'self'; worker-src 'self'; frame-ancestors *"
 
     # Remove default X-Frame-Options so it doesn't conflict with frame-ancestors.
     -X-Frame-Options
@@ -88,22 +89,68 @@
     -Server
   }
 
-  # ---- Runtime-injected config ------------------------------------------
-  # Caddy renders /efm-runtime-config.js inline from env vars at request time
-  # so webhook URLs aren't baked into the static bundle. Edit `.env` +
-  # `docker compose up -d` to swap a webhook; no rebuild needed.
-  #
-  # SECURITY NOTE: these webhook URLs ARE exposed to anyone visiting the
-  # site — that's a deliberate trade-off (client posts directly to Discord
-  # so Discord sees real user IPs for its own rate limiting). If the
-  # webhooks ever get abused at scale, rotate them in the Discord channel
-  # settings and update .env.
+  # ---- Retired runtime config ---------------------------------------------
+  # Until v0.22.3 this path served a script carrying the contact webhook URL
+  # to every visitor. The forms now post to the /contact/* relay below, so
+  # the path answers a plain, uncached 410 (never the home-page fallback) and
+  # carries nothing (test/caddy-player.sh).
   @runtimeConfig path /efm-runtime-config.js
   handle @runtimeConfig {
-    header Content-Type "application/javascript; charset=utf-8"
     header Cache-Control "no-store"
-    respond `(function(){window.__EFM_CONFIG__=window.__EFM_CONFIG__||{};window.__EFM_CONFIG__.discord={requestWebhook:"{$PUBLIC_DISCORD_REQUEST_WEBHOOK}",contactWebhook:"{$PUBLIC_DISCORD_CONTACT_WEBHOOK}"};})();`
+    respond "Gone" 410
   }
+
+  # ---- Music portal entry: /music → music.euphoric.fm -------------------
+  # The music submission portal lives at https://music.euphoric.fm (separate
+  # stack). Every request to /music(/…) gets the same fixed-host 302 — no
+  # in-game/iframe special-casing:
+  #   /music         → https://music.euphoric.fm/
+  #   /music/<rest>  → https://music.euphoric.fm/<rest>   (query string kept)
+  #
+  # Open-redirect safety: the matcher is ONLY `path /music /music/*`, so
+  # /music.evil.com, /music@evil.com and /musicx never match and fall through
+  # to the normal site handling below. When it does match, the target is the
+  # literal host followed by the prefix-stripped `{uri}` — but ONLY if that
+  # stripped URI starts with "/". It usually does, but not always: the path
+  # matcher sees the DECODED path (/music%2f@evil.com matches /music/*) while
+  # handle_path strips "/music" from the RAW path, leaving "%2f@evil.com";
+  # `https://music.euphoric.fm%2f@evil.com` would make evil.com the host. Any
+  # stripped URI that doesn't start with "/" gets the plain root redirect, so
+  # the authority is never extended or replaced
+  # (/music//evil.com → https://music.euphoric.fm/evil.com, still that host).
+  @musicPortal path /music /music/*
+  handle @musicPortal {
+    header Cache-Control "no-store"
+
+    handle_path /music/* {
+      @rooted expression `{http.request.uri}.startsWith("/")`
+      handle @rooted {
+        redir https://music.euphoric.fm{uri} 302
+      }
+      handle {
+        redir https://music.euphoric.fm/ 302
+      }
+    }
+
+    handle {
+      redir https://music.euphoric.fm/ 302
+    }
+  }
+
+  # ---- Old section URLs → the one-page anchors -------------------------------
+  # Since v0.22.0 Stats, About, Listen and Contact are sections of the home
+  # page. Typed or bookmarked /stats, /about, /listen and /contact used to
+  # render the home page under the wrong URL (or, for /stats/, the stats
+  # sidecar's JSON 404). Exact paths only (no `*`), so /stats/summary and the
+  # other /stats/* API routes still reach the sidecar (test/caddy-player.sh).
+  redir /stats /#stats 301
+  redir /stats/ /#stats 301
+  redir /about /#about 301
+  redir /listen /#listen 301
+  redir /contact /#contact 301
+  # /contact/ too: `handle /contact/*` below would otherwise send it to the
+  # sidecar's JSON 404.
+  redir /contact/ /#contact 301
 
   # ---- Shared pending-requests API --------------------------------------
   # Tiny Node service in the `efm-requests` container holds the cross-visitor
@@ -115,6 +162,25 @@
       # Pass the real visitor IP so efm-requests' per-IP rate limiter works.
       # Safe to trust: efm-requests has no host port binding and is only
       # reachable through this Caddy, so no external client can forge it.
+      header_up X-Forwarded-For {remote_host}
+    }
+  }
+
+  # ---- Contact relay ------------------------------------------------------
+  # The "Contact us" and /events inquiry forms POST their fields to
+  # /contact/message and /contact/event; the same `efm-requests` container
+  # validates them, rate-limits per IP (5 per 10 min) and forwards them to the
+  # Discord webhook, whose URL lives only in that container's env
+  # (DISCORD_CONTACT_WEBHOOK). The bare /contact and /contact/ are the
+  # redirects above (`redir` runs before `handle`). request_body caps what we
+  # forward; the sidecar enforces its own 16 KiB limit too.
+  handle /contact/* {
+    request_body {
+      max_size 32KB
+    }
+    reverse_proxy efm-requests:3000 {
+      # LOAD-BEARING: the per-IP contact limit keys on this header, same as
+      # /requests/* above.
       header_up X-Forwarded-For {remote_host}
     }
   }
@@ -184,29 +250,67 @@
     }
   }
 
+  # ---- Missing build assets: a real 404, never the landing page -----------
+  # Every deploy replaces dist/ wholesale, so the previous build's hashed
+  # /_astro/* files vanish. A visitor holding an older HTML page asks for those
+  # old hashes; without this block the fallback below would answer with the
+  # home page as text/html (refused as a script/stylesheet under nosniff → an
+  # unstyled page with no player). Missing /_astro, /fonts and /images paths
+  # therefore fail loudly, uncached (test/caddy-player.sh).
+  @missingAsset {
+    path /_astro/* /fonts/* /images/*
+    not file
+  }
+  handle @missingAsset {
+    header Cache-Control "no-store"
+    respond "Not found" 404
+  }
+
   # ---- Static file serving + landing-page fallback -----------------------
   # The in-game phone hardcodes a single URL and may append suffixes we don't
   # control. Query strings were always harmless, but a PATH suffix (e.g.
-  # /mobile) used to hit the 404 page. There are no other pages, so any path
-  # that isn't a real built file (or one of the proxied prefixes above) now
-  # serves the landing page — whatever gets appended, the phone renders the
-  # site. Real files (/cef-test.html, /_astro/*, /fonts/*, sw.js) still win
-  # because try_files checks the actual path first.
+  # /mobile) used to hit the 404 page. Any path that isn't a real built file
+  # (or one of the proxied prefixes above) now serves the landing page —
+  # whatever gets appended, the phone renders the site. Real files
+  # (/_astro/*, /fonts/*, /robots.txt, sw.js, and /cef-test.html — kept on
+  # purpose as the no-framework page for checking that the in-game phone's
+  # iframe can reach this origin at all) and the built page
+  # directories (/events/, /player/ — served via `{path}/`, with the bare
+  # /events and /player 308-redirected to the slash form by file_server)
+  # still win because try_files checks the actual path first
+  # (test/caddy-player.sh).
+  #
+  # Pages are revalidated on every visit (`no-cache` = keep a copy, but ask
+  # first; the ETag makes that a cheap 304). Without an explicit policy
+  # browsers guessed a freshness lifetime of hours and kept showing a page
+  # whose /_astro/* hashes a deploy had already deleted. The `?` only sets the
+  # header when nothing earlier did, so the asset/icon/sw.js policies below win.
   handle {
     try_files {path} {path}/ /index.html
+    header ?Cache-Control "no-cache"
     file_server
   }
 
-  # Fingerprinted Astro assets — cache forever.
-  @astroAssets path /_astro/*
+  # Fingerprinted Astro assets — cache forever. `file` scopes these to files
+  # that exist: a missing hash (404 above) must never be marked immutable.
+  @astroAssets {
+    path /_astro/*
+    file
+  }
   header @astroAssets Cache-Control "public, max-age=31536000, immutable"
 
   # Font files don't change once shipped — cache hard.
-  @fonts path /fonts/*
+  @fonts {
+    path /fonts/*
+    file
+  }
   header @fonts Cache-Control "public, max-age=31536000, immutable"
 
   # Images cached for a week.
-  @images path /images/*
+  @images {
+    path /images/*
+    file
+  }
   header @images Cache-Control "public, max-age=604800"
 
   # Icons and small meta files cached a day.
@@ -230,8 +334,6 @@
   log {
     output stdout
     format json
-    # Don't log the runtime-config endpoint — its response body includes
-    # webhook URLs and we don't want them in logs.
     level INFO
   }
 }
@@ -268,6 +370,20 @@
     -X-Frame-Options
     -Server
   }
+
+  # Machine-only APIs never go out on the public hostname. /api/internal/*
+  # (INTERNAL_TOKEN routes, e.g. /api/internal/notify) and /api/v1/* (the
+  # Integration API) are called only over the private docker networks at
+  # tickets-web:3000 by the bot and the music portal. This is the .gg twin of
+  # the tickets.euphoric.fm Cloudflare tunnel's rule #5 (404 for
+  # ^/api/(internal|v1)/ before the app), so both hostnames expose the same
+  # surface. path_regexp runs on Caddy's decoded, cleaned path (%XX decoded,
+  # "//" merged, "." and ".." resolved), so /api/%69nternal/notify,
+  # /api/internal%2fnotify and /x/../api/internal/notify are blocked too. The
+  # bare /api/internal and /api/v1 are included; /api/internalx and /api/v10
+  # are not. (?i) also covers /API/..., which the app wouldn't route anyway.
+  @internal_api path_regexp internal_api (?i)^/api/(internal|v1)(/.*)?$
+  respond @internal_api 404
 
   reverse_proxy tickets-web:3000 {
     header_up X-Real-IP {remote_host}

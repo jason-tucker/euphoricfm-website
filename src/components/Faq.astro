@@ -1,0 +1,25 @@
+---
+// #faq — six questions as <details> (work with JS off and in the in-game
+// browser). Answers come from site.home.faq; "{portal}" becomes a link to the
+// Music Portal. No team names and no Discord, by owner decision.
+import { site } from '../site.config';
+const f = site.home.faq;
+const parts = (a: string) => a.split('{portal}');
+---
+
+<section id="faq" class="hm-section" aria-labelledby="faq-h">
+  <p class="hm-eyebrow">{f.eyebrow}</p>
+  <h2 id="faq-h" class="hm-h2">{f.heading}</h2>
+  <div class="hm-faq mt-5">
+    {f.items.map((item, i) => (
+      <details open={i === 0 ? true : undefined}>
+        <summary>{item.q}</summary>
+        <div class="hm-ans">
+          {parts(item.a).map((chunk, j) => (
+            <>{j > 0 && <a class="hm-link" href={site.music.portalUrl}>{f.portalLabel}</a>}{chunk}</>
+          ))}
+        </div>
+      </details>
+    ))}
+  </div>
+</section>

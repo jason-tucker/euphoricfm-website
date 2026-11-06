@@ -1,0 +1,435 @@
+import { createHmac, randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { describe, expect, it } from 'vitest'
+import { decryptField, deriveSubkey, encryptField, parseEncKey } from '@/server/crypto'
+import { checkCsrf } from '@/server/http/csrf'
+import { buildCsp } from '@/server/http/csp'
+import { clientKey, LIMITS, limitAfterBody, limitFor, limitNeedsBody, RateLimiter } from '@/server/http/ratelimit'
+import { middleware } from '@/middleware'
+import { NextRequest } from 'next/server'
+import { checkBodyLimited, readBodyLimited } from '@/server/http/body'
+import { computePerms } from '@/server/authz/permissions'
+import { canComment, canSeeComment, canViewOwned, type Viewer } from '@/server/authz/predicates'
+import { verifyTicketsSignature } from '@/server/hooks/signature'
+import { signMediaUrl, verifyMediaSig } from '@/server/media/signing'
+import { assertProbeEnvClean, loadWebEnv, loadWorkerEnv } from '@/server/env'
+import { assertSeedable } from '@/migrate/main'
+import { encryptAccountTokens } from '@/server/auth/tokens'
+import { checkCreateHeaders, checkPatchHeaders, declaredKind, maxBytesFor } from '@/server/uploads/caps'
+import { DEFAULT_CAPS } from '@/server/settings-defaults'
+import { SETTING_SCHEMAS } from '@/server/admin/settings'
+
+const H = (o: Record<string, string>) => new Headers(o)
+const ORIGIN = 'https://music.euphoric.fm'
+
+describe('CSRF gate', () => {
+  it('requires exact Origin AND Sec-Fetch-Site: same-origin on unsafe methods', () => {
+    expect(checkCsrf('POST', '/api/batches', H({ origin: ORIGIN, 'sec-fetch-site': 'same-origin' }), ORIGIN).ok).toBe(true)
+    expect(checkCsrf('POST', '/api/batches', H({ origin: 'https://euphoric.fm', 'sec-fetch-site': 'same-site' }), ORIGIN)).toEqual({ ok: false, reason: 'origin' })
+    expect(checkCsrf('POST', '/api/batches', H({ origin: ORIGIN, 'sec-fetch-site': 'same-site' }), ORIGIN)).toEqual({ ok: false, reason: 'fetch_site' })
+    expect(checkCsrf('DELETE', '/x', H({ 'sec-fetch-site': 'same-origin' }), ORIGIN)).toEqual({ ok: false, reason: 'origin' })
+    expect(checkCsrf('PATCH', '/x', H({ origin: 'null', 'sec-fetch-site': 'same-origin' }), ORIGIN).ok).toBe(false)
+    expect(checkCsrf('PUT', '/x', H({ origin: `${ORIGIN}.evil.com`, 'sec-fetch-site': 'same-origin' }), ORIGIN).ok).toBe(false)
+    expect(checkCsrf('POST', '/x', H({ origin: 'http://music.euphoric.fm', 'sec-fetch-site': 'same-origin' }), ORIGIN).ok).toBe(false)
+  })
+  it('safe methods pass; only the exact hook path is exempt', () => {
+    expect(checkCsrf('GET', '/api/me', H({}), ORIGIN).ok).toBe(true)
+    expect(checkCsrf('HEAD', '/api/uploads/x', H({}), ORIGIN).ok).toBe(true)
+    expect(checkCsrf('POST', '/api/hooks/tickets', H({}), ORIGIN).ok).toBe(true)
+    expect(checkCsrf('POST', '/api/hooks/tickets/x', H({}), ORIGIN).ok).toBe(false)
+    expect(checkCsrf('POST', '/api/hooks/', H({}), ORIGIN).ok).toBe(false)
+  })
+})
+
+describe('CSP', () => {
+  it('is exactly the plan directives', () => {
+    expect(buildCsp('N')).toBe(
+      "default-src 'self'; script-src 'self' 'nonce-N'; img-src 'self' data: blob: https://cdn.discordapp.com https://euphoric.fm; media-src 'self' blob:; connect-src 'self'; form-action 'self' https://discord.com; frame-ancestors 'none'; base-uri 'none'",
+    )
+  })
+})
+
+describe('rate limiter', () => {
+  it('limits per key and window, evicts oldest keys', () => {
+    const rl = new RateLimiter(3)
+    for (let i = 0; i < 20; i++) expect(rl.hit(LIMITS.auth, 'a', 0).ok).toBe(true)
+    expect(rl.hit(LIMITS.auth, 'a', 0)).toEqual({ ok: false, retryAfterS: 60 })
+    expect(rl.hit(LIMITS.auth, 'b', 0).ok).toBe(true)
+    expect(rl.hit(LIMITS.auth, 'a', 60_000).ok).toBe(true)
+    rl.hit(LIMITS.auth, 'c', 0)
+    rl.hit(LIMITS.auth, 'd', 0)
+    expect((rl as unknown as { buckets: Map<string, unknown> }).buckets.size).toBe(3)
+  })
+  it('event edits (event PATCH, playlist PUT, combined draft POST) are counted on their own 120/min bucket first; every other mutation stays at 30', () => {
+    expect(LIMITS.eventEdit.max).toBe(120)
+    expect(LIMITS.mutation.max).toBe(30)
+    expect(limitFor('/api/ev/events/13', 'PATCH', true, false)).toBe(LIMITS.eventEdit)
+    expect(limitFor('/api/ev/events/13/playlist', 'PUT', true, false)).toBe(LIMITS.eventEdit)
+    expect(limitFor('/api/ev/events/13/draft', 'POST', true, false)).toBe(LIMITS.eventEdit)
+    // everything else on the same resources stays on the mutation bucket
+    for (const [path, method] of [
+      ['/api/ev/events', 'POST'],
+      ['/api/ev/events/13', 'DELETE'],
+      ['/api/ev/events/13/playlist', 'PATCH'],
+      ['/api/ev/events/13/draft', 'PUT'],
+      ['/api/ev/events/13', 'POST'],
+      ['/api/ev/events/13/submit', 'POST'],
+      ['/api/ev/events/13/withdraw', 'POST'],
+      ['/api/ev/events/13/approve', 'POST'],
+      ['/api/ev/events/13x', 'PATCH'],
+      ['/api/ev/events/13/playlist/x', 'PUT'],
+      ['/api/submissions', 'POST'],
+    ] as const)
+      expect(limitFor(path, method, true, false), `${method} ${path}`).toBe(LIMITS.mutation)
+    expect(limitFor('/api/auth/signin', 'POST', true, false)).toBe(LIMITS.auth)
+    expect(limitFor('/api/ev/events/13', 'GET', false, false)).toBeNull()
+    expect(limitFor('/api/hooks/tickets', 'POST', true, true)).toBeNull()
+    // the buckets are separate: 30 mutations do not use up the edit budget
+    const rl = new RateLimiter()
+    for (let i = 0; i < 30; i++) rl.hit(LIMITS.mutation, 'k', 0)
+    expect(rl.hit(LIMITS.mutation, 'k', 0).ok).toBe(false)
+    for (let i = 0; i < 120; i++) expect(rl.hit(LIMITS.eventEdit, 'k', 0).ok).toBe(true)
+    expect(rl.hit(LIMITS.eventEdit, 'k', 0).ok).toBe(false)
+  })
+  it('only draft autosave stays on the edit bucket alone: a PATCH / PUT whose body does not expect a draft is also held to 30/min', () => {
+    // the body decides for PATCH event and PUT playlist only (POST /draft is drafts-only on the server)
+    expect(limitNeedsBody('/api/ev/events/13', 'PATCH')).toBe(true)
+    expect(limitNeedsBody('/api/ev/events/13/playlist', 'PUT')).toBe(true)
+    for (const [path, method] of [
+      ['/api/ev/events/13/draft', 'POST'],
+      ['/api/ev/events/13', 'DELETE'],
+      ['/api/ev/events/13/playlist', 'PATCH'],
+      ['/api/ev/events/13/submit', 'POST'],
+      ['/api/ev/events', 'POST'],
+      ['/api/submissions/13', 'PATCH'],
+    ] as const)
+      expect(limitNeedsBody(path, method), `${method} ${path}`).toBe(false)
+    expect(limitAfterBody(JSON.stringify({ hostName: 'x', version: 3, expectStatus: 'draft', saveId: 'abcdefgh' }))).toBeNull()
+    expect(limitAfterBody(Buffer.from(JSON.stringify({ tracks: [], expectStatus: 'draft' })))).toBeNull()
+    // an explicit edit of a pending / approved event, no guard, not JSON, not an object: mutation
+    for (const b of [
+      JSON.stringify({ hostName: 'x', version: 3, expectStatus: 'pending' }),
+      JSON.stringify({ hostName: 'x', version: 3 }),
+      JSON.stringify({ expectStatus: 'DRAFT' }),
+      JSON.stringify(['draft']),
+      JSON.stringify('draft'),
+      '{"expectStatus":"draft"',
+      '',
+    ])
+      expect(limitAfterBody(b), b).toBe(LIMITS.mutation)
+    // duplicate keys: the last one wins, exactly as in the route's JSON.parse
+    expect(limitAfterBody('{"expectStatus":"draft","expectStatus":"pending"}')).toBe(LIMITS.mutation)
+    expect(limitAfterBody('{"expectStatus":"pending","expectStatus":"draft"}')).toBeNull()
+  })
+  it('the middleware: draft autosave PATCH / PUT and POST /draft sustain 120/min; any other PATCH / PUT is refused after 30/min', async () => {
+    const prev = { origin: process.env.PORTAL_ORIGIN, site: process.env.PORTAL_SITE }
+    process.env.PORTAL_ORIGIN = 'https://portal.test'
+    process.env.PORTAL_SITE = 'events'
+    try {
+      let ip = 0
+      /** n requests from one fresh client: how many passed (no 429). */
+      const run = async (n: number, method: string, path: string, body: unknown) => {
+        const addr = `198.51.100.${++ip}`
+        let passed = 0
+        for (let i = 0; i < n; i++) {
+          const req = new NextRequest(`https://portal.test${path}`, {
+            method,
+            headers: { origin: 'https://portal.test', 'sec-fetch-site': 'same-origin', 'content-type': 'application/json', 'cf-connecting-ip': addr },
+            body: JSON.stringify(body),
+          })
+          const res = await middleware(req)
+          if (res.status === 429) expect(await res.json()).toEqual({ error: 'rate_limited' })
+          else passed++
+        }
+        return passed
+      }
+      const draft = { hostName: 'x', version: 3, expectStatus: 'draft', saveId: 'abcdefgh' }
+      expect(await run(125, 'PATCH', '/api/ev/events/13', draft)).toBe(120)
+      expect(await run(125, 'PUT', '/api/ev/events/13/playlist', { tracks: [], announcements: [], playlistOrder: 'shuffle', version: 3, expectStatus: 'draft' })).toBe(120)
+      expect(await run(125, 'POST', '/api/ev/events/13/draft', draft)).toBe(120)
+      // a pending / approved event's edit (it posts to the ticket), or no guard at all: 30/min
+      expect(await run(40, 'PATCH', '/api/ev/events/13', { hostName: 'x', version: 3, expectStatus: 'pending' })).toBe(30)
+      expect(await run(40, 'PATCH', '/api/ev/events/13', { hostName: 'x' })).toBe(30)
+      expect(await run(40, 'PUT', '/api/ev/events/13/playlist', { tracks: [], announcements: [], playlistOrder: 'shuffle', expectStatus: 'approved' })).toBe(30)
+      // mixed on one client: explicit edits share the 30/min mutation budget with other mutations
+      const addr = `198.51.100.${++ip}`
+      const hit = (method: string, path: string, body: unknown) =>
+        middleware(
+          new NextRequest(`https://portal.test${path}`, {
+            method,
+            headers: { origin: 'https://portal.test', 'sec-fetch-site': 'same-origin', 'content-type': 'application/json', 'cf-connecting-ip': addr },
+            body: JSON.stringify(body),
+          }),
+        )
+      for (let i = 0; i < 30; i++) expect((await hit('POST', '/api/ev/events/13/submit', {})).status).not.toBe(429)
+      expect((await hit('PATCH', '/api/ev/events/13', { hostName: 'x', expectStatus: 'pending' })).status).toBe(429)
+      expect((await hit('PATCH', '/api/ev/events/13', draft)).status).not.toBe(429)
+    } finally {
+      for (const [k, v] of [['PORTAL_ORIGIN', prev.origin], ['PORTAL_SITE', prev.site]] as const) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  })
+  it('keys on cf-connecting-ip only when it looks like an IP', () => {
+    expect(clientKey(H({ 'cf-connecting-ip': '203.0.113.9', 'x-forwarded-for': '1.1.1.1' }))).toBe('203.0.113.9')
+    expect(clientKey(H({ 'x-forwarded-for': '1.1.1.1' }))).toBe('no-cf-ip')
+    expect(clientKey(H({ 'cf-connecting-ip': 'x; drop' }))).toBe('no-cf-ip')
+    // IPv6: one bucket per /64; IPv4-mapped → IPv4
+    expect(clientKey(H({ 'cf-connecting-ip': '2001:db8:1:2:aaaa::1' }))).toBe('2001:db8:1:2::/64')
+    expect(clientKey(H({ 'cf-connecting-ip': '2001:db8:1:2:bbbb:cccc:dddd:eeee' }))).toBe('2001:db8:1:2::/64')
+    expect(clientKey(H({ 'cf-connecting-ip': '2001:db8:1:3::1' }))).not.toBe('2001:db8:1:2::/64')
+    expect(clientKey(H({ 'cf-connecting-ip': '::ffff:203.0.113.9' }))).toBe('203.0.113.9')
+    expect(clientKey(H({ 'cf-connecting-ip': '::1' }))).toBe('0:0:0:0::/64')
+    expect(clientKey(H({ 'cf-connecting-ip': '1:2:3:4:5:6:7:8:9' }))).toBe('no-cf-ip')
+  })
+})
+
+describe('body cap', () => {
+  it('refuses declared and streamed bodies over the cap', async () => {
+    await expect(readBodyLimited(new Request('http://x', { method: 'POST', body: 'x'.repeat(10), headers: { 'content-length': '10' } }), 5)).rejects.toMatchObject({ status: 413 })
+    const stream = new ReadableStream({ start(c) { c.enqueue(new Uint8Array(4)); c.enqueue(new Uint8Array(4)); c.close() } })
+    await expect(readBodyLimited(new Request('http://x', { method: 'POST', body: stream, duplex: 'half' } as RequestInit), 5)).rejects.toMatchObject({ status: 413 })
+    expect((await readBodyLimited(new Request('http://x', { method: 'POST', body: 'abc' }), 5)).toString()).toBe('abc')
+  })
+
+  // bytes are counted first: a stream that fails AFTER the cap was exceeded
+  // is still 413; one that fails below the cap is 400 bad_body
+  const failing = (sizes: number[]) =>
+    new Request('http://x', {
+      method: 'POST',
+      duplex: 'half',
+      // pull-based: error() would discard chunks still queued
+      body: new ReadableStream({
+        pull(c) {
+          const n = sizes.shift()
+          if (n === undefined) c.error(new Error('ECONNRESET'))
+          else c.enqueue(new Uint8Array(n))
+        },
+      }),
+    } as RequestInit)
+  it('a stream error after the cap is exceeded is 413, below it 400', async () => {
+    await expect(readBodyLimited(failing([4, 4]), 5)).rejects.toMatchObject({ status: 413 })
+    await expect(readBodyLimited(failing([4]), 5)).rejects.toMatchObject({ status: 400, code: 'bad_body' })
+    expect(await checkBodyLimited(failing([4, 4]), 5)).toBe('too_large')
+    expect(await checkBodyLimited(failing([4]), 5)).toBe('bad_body')
+  })
+
+  it('checkBodyLimited (middleware) reads to the end and applies the same cap', async () => {
+    const chunked = (sizes: number[]) =>
+      new Request('http://x', { method: 'POST', duplex: 'half', body: new ReadableStream({ start(c) { for (const n of sizes) c.enqueue(new Uint8Array(n)); c.close() } }) } as RequestInit)
+    expect(await checkBodyLimited(chunked([2, 3]), 5)).toBe('ok')
+    expect(await checkBodyLimited(chunked([2, 3, 1]), 5)).toBe('too_large')
+    expect(await checkBodyLimited(new Request('http://x', { method: 'POST', body: 'x'.repeat(10), headers: { 'content-length': '10' } }), 5)).toBe('too_large')
+    expect(await checkBodyLimited(new Request('http://x', { method: 'POST' }), 5)).toBe('ok')
+    const cl = new Request('http://x', { method: 'POST', body: 'abc' })
+    expect(await checkBodyLimited(cl, 5)).toBe('ok')
+  })
+})
+
+describe('AES-256-GCM token envelopes', () => {
+  const key = parseEncKey('0123456789abcdef'.repeat(4))
+  it('round-trips and binds the AAD', () => {
+    const e = encryptField('secret-token', 'account:discord:1:access_token', key)
+    expect(e).not.toContain('secret-token')
+    expect(decryptField(e, 'account:discord:1:access_token', key)).toBe('secret-token')
+    expect(() => decryptField(e, 'account:discord:1:refresh_token', key)).toThrow()
+    expect(() => decryptField(e, 'account:discord:2:access_token', key)).toThrow()
+    const i = e.length - 2
+    const tampered = e.slice(0, i) + (e[i] === 'A' ? 'B' : 'A') + e.slice(i + 1)
+    expect(tampered).not.toBe(e)
+    expect(() => decryptField(tampered, 'account:discord:1:access_token', key)).toThrow()
+  })
+  it('refuses short keys', () => {
+    expect(() => parseEncKey('abcd')).toThrow()
+  })
+  it('the adapter hook encrypts every token column', () => {
+    const acc = encryptAccountTokens({ provider: 'discord', providerAccountId: '1', access_token: 'A', refresh_token: 'R', type: 'oauth' }, key)
+    expect(acc.access_token).toMatch(/^v1:/)
+    expect(acc.refresh_token).toMatch(/^v1:/)
+  })
+  it('derives independent subkeys', () => {
+    expect(deriveSubkey(key, 'a').equals(deriveSubkey(key, 'b'))).toBe(false)
+  })
+})
+
+describe('signed media URLs', () => {
+  const k = Buffer.alloc(32, 7)
+  it('bind kind, item, user and expiry', () => {
+    const u = new URL(signMediaUrl('audio', 5, 'user-a', 1000, k), 'http://x')
+    const exp = u.searchParams.get('exp')
+    const sig = u.searchParams.get('sig')
+    expect(verifyMediaSig('audio', 5, 'user-a', exp, sig, 1000, k)).toBe(true)
+    expect(verifyMediaSig('audio', 5, 'user-b', exp, sig, 1000, k)).toBe(false)
+    expect(verifyMediaSig('cover', 5, 'user-a', exp, sig, 1000, k)).toBe(false)
+    expect(verifyMediaSig('audio', 6, 'user-a', exp, sig, 1000, k)).toBe(false)
+    expect(verifyMediaSig('audio', 5, 'user-a', exp, sig, 1000 + 301, k)).toBe(false)
+    expect(verifyMediaSig('audio', 5, 'user-a', String(Number(exp) + 1), sig, 1000, k)).toBe(false)
+    expect(verifyMediaSig('audio', 5, 'user-a', '99999999999', sig, 1000, k)).toBe(false)
+  })
+})
+
+describe('permissions and predicates (plan §3.3)', () => {
+  const bindings = [
+    { roleId: '1144462744456794153', permission: 'review' as const },
+    { roleId: '1144462744456794153', permission: 'manage' as const },
+  ]
+  const base = { member: true, pending: false, roleIds: [], discordId: '111111111111111111', bindings, ownerIds: ['117501528641634310'] }
+  it('member → submit/request; bound role → review/manage; owner → admin', () => {
+    expect([...computePerms(base)].sort()).toEqual(['request', 'submit'])
+    expect([...computePerms({ ...base, roleIds: ['1144462744456794153'] })].sort()).toEqual(['manage', 'request', 'review', 'submit'])
+    expect(computePerms({ ...base, discordId: '117501528641634310' }).has('admin')).toBe(true)
+  })
+  it('non-members and pending members get nothing, even the owner', () => {
+    expect(computePerms({ ...base, member: false, discordId: '117501528641634310' }).size).toBe(0)
+    expect(computePerms({ ...base, pending: true, roleIds: ['1144462744456794153'] }).size).toBe(0)
+  })
+  it('no role grants admin', () => {
+    expect(computePerms({ ...base, roleIds: ['1144462744456794153'], bindings: [...bindings, { roleId: '9', permission: 'manage' }] }).has('admin')).toBe(false)
+  })
+  const v = (id: string, perms: string[]): Viewer => ({ userId: id, discordId: id, name: null, perms: new Set(perms) as Viewer['perms'] })
+  it('ownership predicates and staff visibility', () => {
+    const owner = v('a', ['submit'])
+    const other = v('b', ['submit'])
+    const reviewer = v('r', ['submit', 'review'])
+    const row = { ownerUserId: 'a' }
+    expect(canViewOwned(owner, row)).toBe(true)
+    expect(canViewOwned(other, row)).toBe(false)
+    expect(canViewOwned(reviewer, row)).toBe(true)
+    expect(canSeeComment(owner, row, { visibility: 'staff' })).toBe(false)
+    expect(canSeeComment(reviewer, row, { visibility: 'staff' })).toBe(true)
+    expect(canComment(owner, row, 'staff')).toBe(false)
+    expect(canComment(owner, row, 'all')).toBe(true)
+    expect(canComment(other, row, 'all')).toBe(false)
+  })
+})
+
+describe('tickets webhook signature (receiver side)', () => {
+  const secret = 's'.repeat(40)
+  const sign = (t: number, id: string, body: string) => `t=${t},v1=${createHmac('sha256', secret).update(`${t}.${id}.${body}`).digest('hex')}`
+  it('accepts a fresh valid signature; rejects stale, tampered, malformed', () => {
+    const id = randomUUID()
+    const body = '{"event":"ticket.closed","ticketId":1}'
+    const now = 1_800_000_000
+    const ok = (h: string, b = body, d: string = id, n = now) => verifyTicketsSignature({ secrets: [secret], header: h, deliveryId: d, rawBody: Buffer.from(b), nowSec: n })
+    expect(ok(sign(now, id, body))).toEqual({ ok: true })
+    expect(ok(sign(now - 301, id, body))).toEqual({ ok: false, reason: 'stale' })
+    expect(ok(sign(now + 301, id, body))).toEqual({ ok: false, reason: 'stale' })
+    expect(ok(sign(now, id, body), body + ' ')).toEqual({ ok: false, reason: 'mismatch' })
+    expect(ok(sign(now, id, body), body, randomUUID())).toEqual({ ok: false, reason: 'mismatch' })
+    expect(ok('t=1,v1=zz')).toEqual({ ok: false, reason: 'malformed' })
+    expect(ok(sign(now, id, body), body, 'not-a-uuid')).toEqual({ ok: false, reason: 'malformed' })
+    expect(verifyTicketsSignature({ secrets: ['other'.repeat(8), secret], header: sign(now, id, body), deliveryId: id, rawBody: Buffer.from(body), nowSec: now })).toEqual({ ok: true })
+  })
+})
+
+describe('service env isolation', () => {
+  const web = {
+    DATABASE_URL: 'postgres://x', AUTH_SECRET: 'a'.repeat(40), AUTH_DISCORD_ID: 'i', AUTH_DISCORD_SECRET: 's',
+    APP_ENC_KEY: '0'.repeat(64), TICKETS_WEBHOOK_SECRET: 'w'.repeat(40), AUTH_URL: 'https://music.euphoric.fm',
+  }
+  it('web refuses worker secrets and non-https Discord endpoints', () => {
+    expect(() => loadWebEnv(web)).not.toThrow()
+    expect(() => loadWebEnv({ ...web, AZURACAST_API_KEY: 'x' })).toThrow(/another service/)
+    expect(() => loadWebEnv({ ...web, TICKETS_WRITE_KEY: 'x' })).toThrow(/another service/)
+    expect(() => loadWebEnv({ ...web, DISCORD_TOKEN_URL: 'http://evil/token' })).toThrow(/https/)
+    expect(() => loadWebEnv({ ...web, AUTH_URL: 'https://evil.example' })).toThrow(/AUTH_URL/)
+    expect(() => loadWebEnv({ ...web, AUTH_URL: undefined })).toThrow(/AUTH_URL/)
+  })
+  it('web Discord issuer defaults to https://discord.com and honours AUTH_DISCORD_ISSUER (0.5.4)', () => {
+    expect(loadWebEnv(web).AUTH_DISCORD_ISSUER).toBe('https://discord.com')
+    expect(loadWebEnv({ ...web, AUTH_DISCORD_ISSUER: 'https://discord.example' }).AUTH_DISCORD_ISSUER).toBe('https://discord.example')
+  })
+  it('worker refuses web secrets', () => {
+    const w = { DATABASE_URL: 'postgres://x', AZURACAST_API_KEY: 'k'.repeat(20), TICKETS_WRITE_KEY: 't' }
+    expect(() => loadWorkerEnv(w)).not.toThrow()
+    expect(() => loadWorkerEnv({ ...w, TICKETS_GUILD_READ_KEY: 'x' })).toThrow(/another service/)
+    expect(() => loadWorkerEnv({ ...w, APP_ENC_KEY: 'x' })).toThrow(/another service/)
+    expect(() => loadWorkerEnv({ ...w, AZURACAST_BASE_URL: 'http://az' })).toThrow(/https/)
+  })
+  it('probe refuses any secret-looking env', () => {
+    expect(() => assertProbeEnvClean({ PATH: '/bin', HOME: '/tmp', NODE_VERSION: '24' })).not.toThrow()
+    for (const k of ['AZURACAST_API_KEY', 'DATABASE_URL', 'SOME_TOKEN', 'X_SECRET']) expect(() => assertProbeEnvClean({ [k]: '1' })).toThrow()
+  })
+  it('web.env.example holds no tickets:* write key and no AzuraCast key', () => {
+    const text = readFileSync(new URL('../env/web.env.example', import.meta.url), 'utf8')
+    const keys = text.split('\n').filter((l) => /^[A-Z_]+=/.test(l)).map((l) => l.split('=')[0])
+    expect(keys).not.toContain('TICKETS_WRITE_KEY')
+    expect(keys).not.toContain('AZURACAST_API_KEY')
+    expect(keys.filter((k) => k!.startsWith('TICKETS_') && k!.endsWith('_KEY'))).toEqual(['TICKETS_GUILD_READ_KEY'])
+  })
+})
+
+describe('tus header admission', () => {
+  it('Upload-Length 1..100 MB (v0.3.5: a too-big MP3 is converted down), no defer, no concat, no creation body', () => {
+    expect(checkCreateHeaders(H({ 'upload-length': '1000' }))).toEqual({ length: 1000, kind: 'mp3' })
+    expect(checkCreateHeaders(H({ 'upload-length': String(35 * 1024 * 1024 + 1) }))).toEqual({ length: 35 * 1024 * 1024 + 1, kind: 'mp3' })
+    expect(checkCreateHeaders(H({ 'upload-length': String(100 * 1024 * 1024) }))).toEqual({ length: 100 * 1024 * 1024, kind: 'mp3' })
+    expect(checkCreateHeaders(H({ 'upload-length': String(100 * 1024 * 1024 + 1) }))).toMatchObject({ status: 413, code: 'upload_too_large' })
+    expect(checkCreateHeaders(H({ 'upload-length': '-1' }))).toMatchObject({ status: 400 })
+    expect(checkCreateHeaders(H({ 'upload-length': '0' }))).toMatchObject({ status: 400 })
+    expect(checkCreateHeaders(H({}))).toMatchObject({ code: 'upload_length_required' })
+    expect(checkCreateHeaders(H({ 'upload-defer-length': '1' }))).toMatchObject({ code: 'defer_length_disabled' })
+    expect(checkCreateHeaders(H({ 'upload-length': '10', 'upload-concat': 'partial' }))).toMatchObject({ code: 'concatenation_disabled' })
+    expect(checkCreateHeaders(H({ 'upload-length': '10', 'content-length': '5' }))).toMatchObject({ code: 'creation_with_upload_disabled' })
+    expect(checkPatchHeaders(H({ 'content-length': String(8 * 1024 * 1024 + 1) }))).toMatchObject({ status: 413 })
+    expect(checkPatchHeaders(H({}))).toMatchObject({ status: 411 })
+    expect(checkPatchHeaders(H({ 'content-length': '100' }))).toBeNull()
+  })
+})
+
+describe('tus admission by DECLARED type (v0.3.0 WAV)', () => {
+  const MB = 1024 * 1024
+  const md = (filetype: string) => ({ 'upload-metadata': `filetype ${Buffer.from(filetype).toString('base64')}` })
+  it('Upload-Metadata filetype audio/wav (and its aliases) allows up to 250 MB; anything else stays at 100 MB', () => {
+    for (const t of ['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave', 'AUDIO/WAV', 'audio/wav; codecs=1']) {
+      expect(declaredKind(H(md(t))), t).toBe('wav')
+    }
+    expect(checkCreateHeaders(H({ 'upload-length': String(250 * MB), ...md('audio/wav') }))).toEqual({ length: 250 * MB, kind: 'wav' })
+    expect(checkCreateHeaders(H({ 'upload-length': String(250 * MB + 1), ...md('audio/wav') }))).toEqual({ status: 413, code: 'wav_upload_too_large' })
+    // a declared MP3 (or no / unknown / malformed type) keeps the MP3 cap
+    for (const extra of [md('audio/mpeg'), md('audio/flac'), {}, { 'upload-metadata': 'filetype' }, { 'upload-metadata': 'filetype !!notbase64' }, { 'upload-metadata': `filename ${Buffer.from('a.wav').toString('base64')}` }]) {
+      expect(checkCreateHeaders(H({ 'upload-length': String(101 * MB), ...extra })), JSON.stringify(extra)).toEqual({ status: 413, code: 'upload_too_large' })
+    }
+    // a repeated filetype is ambiguous → the smaller cap
+    const two = `filetype ${Buffer.from('audio/wav').toString('base64')},filetype ${Buffer.from('audio/mpeg').toString('base64')}`
+    expect(declaredKind(H({ 'upload-metadata': two }))).toBe('mp3')
+    expect(declaredKind(H({ 'upload-metadata': `x ${'A'.repeat(5000)},filetype ${Buffer.from('audio/wav').toString('base64')}` }))).toBe('mp3')
+    // other keys are ignored
+    expect(declaredKind(H({ 'upload-metadata': `filename ${Buffer.from('x.mp3').toString('base64')},filetype ${Buffer.from('audio/x-wav').toString('base64')}` }))).toBe('wav')
+  })
+  it('an admin-lowered WAV cap applies; the compiled 250 MB is the ceiling; MP3 cap unchanged', () => {
+    const caps = { ...DEFAULT_CAPS, maxWavUploadBytes: 100 * MB }
+    expect(maxBytesFor('wav', caps)).toBe(100 * MB)
+    expect(maxBytesFor('wav', { ...DEFAULT_CAPS, maxWavUploadBytes: 999 * MB })).toBe(250 * MB)
+    expect(maxBytesFor('mp3', caps)).toBe(100 * MB)
+    expect(checkCreateHeaders(H({ 'upload-length': String(101 * MB), ...md('audio/wav') }), caps)).toEqual({ status: 413, code: 'wav_upload_too_large' })
+  })
+  it('v0.3.5: the MP3 input cap is its own key (maxMp3UploadBytes), admin-lowerable, 100 MB ceiling; maxUploadBytes (the 35 MB final cap) never caps an upload', () => {
+    expect(DEFAULT_CAPS.maxMp3UploadBytes).toBe(100 * MB)
+    expect(DEFAULT_CAPS.maxUploadBytes).toBe(35 * MB)
+    expect(maxBytesFor('mp3', { ...DEFAULT_CAPS, maxMp3UploadBytes: 50 * MB })).toBe(50 * MB)
+    expect(maxBytesFor('mp3', { ...DEFAULT_CAPS, maxMp3UploadBytes: 999 * MB })).toBe(100 * MB)
+    // the stale production row (maxUploadBytes 36700160 = 35 MB) does not cap MP3 uploads
+    expect(maxBytesFor('mp3', { ...DEFAULT_CAPS, maxUploadBytes: 36700160 })).toBe(100 * MB)
+    expect(SETTING_SCHEMAS.caps!.safeParse({ ...DEFAULT_CAPS, maxMp3UploadBytes: 50 * MB }).success).toBe(true)
+    expect(SETTING_SCHEMAS.caps!.safeParse({ ...DEFAULT_CAPS, maxMp3UploadBytes: 101 * MB }).success).toBe(false)
+    const { maxMp3UploadBytes: _omit, ...older } = DEFAULT_CAPS
+    expect(SETTING_SCHEMAS.caps!.safeParse({ ...older, maxUploadBytes: 36700160 }).success).toBe(true) // the stale production row stays valid
+  })
+  it('loadCaps-style overrides: the admin schema accepts a lower WAV cap and refuses a higher one', () => {
+    const base = { ...DEFAULT_CAPS }
+    expect(SETTING_SCHEMAS.caps!.safeParse({ ...base, maxWavUploadBytes: 100 * MB }).success).toBe(true)
+    expect(SETTING_SCHEMAS.caps!.safeParse({ ...base, maxWavUploadBytes: 251 * MB }).success).toBe(false)
+    const { maxWavUploadBytes: _omit, ...older } = base
+    expect(SETTING_SCHEMAS.caps!.safeParse(older).success).toBe(true) // caps saved before v0.3.0 stay valid
+  })
+})
+
+describe('one-time reviewer seed', () => {
+  it('refuses to mark the seed done with zero roles; later runs do not need roles', () => {
+    expect(() => assertSeedable(false, [])).toThrow(/at least one role/)
+    expect(() => assertSeedable(false, ['1144462744456794153'])).not.toThrow()
+    expect(() => assertSeedable(true, [])).not.toThrow()
+  })
+})
